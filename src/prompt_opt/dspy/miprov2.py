@@ -1,4 +1,4 @@
-"""DSPy-compatible MIPROv2 wrapper for prompt-opt."""
+"""DSPy-compatible MIPROv2 wrapper backed by the local offline SDK."""
 
 from __future__ import annotations
 
@@ -7,7 +7,8 @@ import json
 import math
 from typing import Any, Literal
 
-from prompt_opt.mipro import proposer_backends, run_mipro
+from prompt_opt.mipro import proposer_backends
+from prompt_opt.sdk.optimization.internal.prompt_learning import PromptLearningJob
 
 
 def _extract_text_field(example: Any, keys: tuple[str, ...]) -> str:
@@ -69,29 +70,32 @@ def _resolve_num_trials(
     raise ValueError("num_trials must be provided when auto is None.")
 
 
-def _extract_seed_candidate_from_student(student: Any) -> tuple[dict[str, str], str | None]:
+def _extract_seed_candidate_from_student(student: Any) -> dict[str, str]:
     named_predictors = getattr(student, "named_predictors", None)
     if callable(named_predictors):
         try:
             entries = list(named_predictors())
-            if entries:
-                first_name, first_predictor = entries[0]
-                signature = getattr(first_predictor, "signature", None)
+            candidate: dict[str, str] = {}
+            for entry_index, (name, predictor) in enumerate(entries):
+                signature = getattr(predictor, "signature", None)
                 instructions = getattr(signature, "instructions", None)
                 if isinstance(instructions, str) and instructions.strip():
-                    return {"system_prompt": instructions.strip()}, str(first_name)
+                    candidate[str(name or f"predictor_{entry_index}")] = instructions.strip()
+            if candidate:
+                return candidate
         except Exception:
             pass
-    return {"system_prompt": "You are a helpful assistant."}, None
+    return {"default": "You are a helpful assistant."}
 
 
-def _apply_prompt_to_student(student: Any, prompt: str, target_predictor_name: str | None = None) -> Any:
+def _apply_prompts_to_student(student: Any, prompts: dict[str, str]) -> Any:
     named_predictors = getattr(student, "named_predictors", None)
     if not callable(named_predictors):
         return student
     try:
         for name, predictor in list(named_predictors()):
-            if target_predictor_name is not None and name != target_predictor_name:
+            prompt = prompts.get(str(name))
+            if not isinstance(prompt, str) or not prompt.strip():
                 continue
             signature = getattr(predictor, "signature", None)
             if signature is None:
@@ -101,17 +105,28 @@ def _apply_prompt_to_student(student: Any, prompt: str, target_predictor_name: s
                 predictor.signature = with_instructions(prompt)
             else:
                 signature.instructions = prompt
-            break
     except Exception:
         return student
     return student
 
 
-def _extract_best_prompt(best_policy_payload: dict[str, Any]) -> str | None:
-    template = best_policy_payload.get("template")
-    if isinstance(template, str) and template.strip():
-        return template.strip()
-    return None
+def _extract_best_prompts(result_payload: dict[str, Any]) -> dict[str, str]:
+    best_candidate = result_payload.get("best_candidate")
+    if not isinstance(best_candidate, dict):
+        return {}
+    stage_items = best_candidate.get("stages") or best_candidate.get("candidate", {}).get("stages") or []
+    prompts: dict[str, str] = {}
+    for stage in stage_items:
+        if not isinstance(stage, dict):
+            continue
+        stage_key = str(stage.get("id") or stage.get("name") or f"stage_{len(prompts)}")
+        for message in stage.get("messages", []):
+            if isinstance(message, dict) and message.get("role") == "system":
+                text = message.get("pattern") or message.get("content")
+                if isinstance(text, str) and text.strip():
+                    prompts[stage_key] = text.strip()
+                    break
+    return prompts
 
 
 class MIPROv2:
@@ -194,9 +209,7 @@ class MIPROv2:
             provide_traceback,
         )
         if self.backend_mode != "local":
-            raise ValueError(
-                "prompt-opt is local-only. Use backend_mode='local'."
-            )
+            raise ValueError("prompt-opt is local-only. Use backend_mode='local'.")
 
         if not callable(getattr(self.task_model, "__call__", None)):
             raise ValueError(
@@ -207,7 +220,6 @@ class MIPROv2:
         run_seed = int(seed if seed is not None else self.seed)
         train_records = _materialize_dataset(trainset)
         val_records = _materialize_dataset(valset) if valset is not None else train_records
-        combined_records = list(train_records) + list(val_records)
         effective_num_candidates = int(num_candidates) if num_candidates is not None else self.num_candidates
         trials = _resolve_num_trials(
             auto=self.auto,
@@ -215,40 +227,55 @@ class MIPROv2:
             num_candidates=effective_num_candidates,
             student=student,
         )
-        seed_candidate, target_predictor_name = _extract_seed_candidate_from_student(student)
-        initial_policy = {"template": seed_candidate.get("system_prompt", "")}
-        dataset_payload = {
-            "id": "mipro-local",
-            "examples": [
-                {"input": row.get("input", ""), "expected": row.get("answer", ""), "metadata": {}}
-                for row in combined_records
-            ],
+        seed_candidate = _extract_seed_candidate_from_student(student)
+        stages = [
+            {
+                "id": stage_id,
+                "name": stage_id,
+                "messages": [
+                    {"role": "system", "pattern": prompt, "order": 0},
+                    {"role": "user", "pattern": "{input}", "order": 1},
+                ],
+                "wildcards": {},
+            }
+            for stage_id, prompt in seed_candidate.items()
+        ]
+        prompt_learning_config = {
+            "prompt_learning": {
+                "algorithm": "mipro",
+                "execution_mode": "retrieved",
+                "task_data": {
+                    "train_examples": train_records,
+                    "validation_examples": val_records,
+                },
+                "mipro": {
+                    "initial_candidate": {"stages": stages},
+                    "num_candidates": max(1, int(effective_num_candidates or 8)),
+                    "max_iterations": max(1, int(trials)),
+                    "early_stop_rounds": 3,
+                    "min_improvement": 1e-6,
+                    "seed": run_seed,
+                    "proposer_backend": self.proposer_backend,
+                    "termination_conditions": {
+                        "total_rollouts": max(1, int(trials)) * max(1, len(val_records)),
+                    },
+                },
+                "local_runtime": {
+                    "task_model": self.task_model,
+                },
+            }
         }
-        config = {
-            "num_candidates": max(1, int(effective_num_candidates or 8)),
-            "holdout_ratio": 0.2,
-            "max_iterations": max(1, int(trials)),
-            "early_stop_rounds": 3,
-            "min_improvement": 1e-6,
-            "seed": run_seed,
-            "proposer_backend": self.proposer_backend,
-        }
-
-        result = run_mipro(
-            config=config,
-            initial_policy=initial_policy,
-            dataset=dataset_payload,
-            task_llm=self.task_model,
+        job = PromptLearningJob.from_dict(
+            prompt_learning_config,
+            backend_url="local://prompt-opt",
+            api_key="local",
         )
+        job.submit()
+        result = job.stream_until_complete(timeout=300.0, interval=0.05).to_dict()
         optimized_program = copy.deepcopy(student)
-        best_policy = result.get("best_policy", {})
-        best_prompt = _extract_best_prompt(best_policy if isinstance(best_policy, dict) else {})
-        if best_prompt:
-            optimized_program = _apply_prompt_to_student(
-                optimized_program,
-                best_prompt,
-                target_predictor_name=target_predictor_name,
-            )
+        best_prompts = _extract_best_prompts(result)
+        if best_prompts:
+            optimized_program = _apply_prompts_to_student(optimized_program, best_prompts)
         if self.track_stats:
             setattr(optimized_program, "prompt_opt_result", json.loads(json.dumps(result)))
         return optimized_program

@@ -66,6 +66,7 @@ print(result.val_aggregate_scores[result.best_idx])
 - The vendored `mipro_v2` source is included as code provenance from Horizons.
 - MIPRO proposer backends are now explicitly: `single_prompt` and `rlm`.
 - Python MIPRO should call the shared Rust core via `rust_py` bindings for parity with Rust behavior.
+- Near-term roadmap: refactor the package to a pure-Python implementation so the default optimizer path does not depend on Rust bindings.
 
 ## Examples
 

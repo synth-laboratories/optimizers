@@ -749,6 +749,12 @@ class LocalPromptLearningRuntime:
         options = root_payload.get("local_runtime")
         if not isinstance(options, dict):
             options = {}
+        mipro_payload = root_payload.get("mipro")
+        if isinstance(mipro_payload, dict):
+            if "parallel_batches" in mipro_payload and "parallel_batches" not in options:
+                options["parallel_batches"] = mipro_payload["parallel_batches"]
+            if "parallel_batch_size" in mipro_payload and "parallel_batch_size" not in options:
+                options["parallel_batch_size"] = mipro_payload["parallel_batch_size"]
         if parsed_config.container_url and "container_url" not in options:
             options["container_url"] = parsed_config.container_url
         if parsed_config.execution_mode and "execution_mode" not in options:
@@ -965,14 +971,29 @@ class LocalPromptLearningRuntime:
         score_extractor = record.local_runtime_options.get("score_extractor")
         headers = dict(record.local_runtime_options.get("headers") or {})
         timeout_seconds = float(record.local_runtime_options.get("timeout_seconds", 30.0))
+        parallel_enabled = bool(record.local_runtime_options.get("parallel_batches", True))
+        max_parallel = int(
+            record.local_runtime_options.get(
+                "parallel_batch_size",
+                record.local_runtime_options.get(
+                    "max_concurrent_rollouts",
+                    record.local_runtime_options.get("max_concurrent", 100),
+                ),
+            )
+        )
+        concurrency = max(1, min(len(examples), max_parallel if parallel_enabled else 1))
 
-        rewards: list[float] = []
-        for index, example in enumerate(examples):
-            record.wait_if_paused()
-            record.check_cancelled()
+        async def evaluate_example(index: int, example: dict[str, Any]) -> SeedEvalRecord:
+            await asyncio.to_thread(record.wait_if_paused)
+            await asyncio.to_thread(record.check_cancelled)
 
             if adapter is not None:
-                eval_batch = adapter.evaluate([example], candidate_payload, capture_traces=False)
+                eval_batch = await asyncio.to_thread(
+                    adapter.evaluate,
+                    [example],
+                    candidate_payload,
+                    False,
+                )
                 score_list = getattr(eval_batch, "scores", None) or [0.0]
                 reward = float(score_list[0])
                 metadata = {
@@ -1012,7 +1033,7 @@ class LocalPromptLearningRuntime:
                     headers=http_headers,
                     method="POST",
                 )
-                with request.urlopen(http_request, timeout=timeout_seconds) as response:
+                with await asyncio.to_thread(request.urlopen, http_request, timeout=timeout_seconds) as response:
                     response_payload = json.loads(response.read().decode("utf-8"))
                 if callable(score_extractor):
                     reward = float(score_extractor(response_payload))
@@ -1027,21 +1048,41 @@ class LocalPromptLearningRuntime:
                 raise RuntimeError("Local runtime requires either local_runtime.task_model or container_url")
 
             reward = float(reward)
-            rollout_id = f"{split}-{candidate_id}-{index}"
-            seed = int(example.get("seed", index))
-            rewards.append(reward)
-            record.record_seed_eval(
-                SeedEvalRecord(
-                    candidate_id=candidate_id,
-                    split=split,
-                    seed=seed,
-                    reward=reward,
-                    rollout_id=rollout_id,
-                    success=True,
-                    metadata=metadata,
-                    created_at=_utc_now_iso(),
-                )
+            return SeedEvalRecord(
+                candidate_id=candidate_id,
+                split=split,
+                seed=int(example.get("seed", index)),
+                reward=reward,
+                rollout_id=f"{split}-{candidate_id}-{index}",
+                success=True,
+                metadata=metadata,
+                created_at=_utc_now_iso(),
             )
+
+        rewards: list[float] = []
+        if concurrency == 1:
+            for index, example in enumerate(examples):
+                seed_eval = await evaluate_example(index, example)
+                rewards.append(seed_eval.reward)
+                record.record_seed_eval(seed_eval)
+        else:
+            semaphore = asyncio.Semaphore(concurrency)
+            tasks = []
+            try:
+                for index, example in enumerate(examples):
+                    async def run_one(i: int = index, ex: dict[str, Any] = example) -> SeedEvalRecord:
+                        async with semaphore:
+                            return await evaluate_example(i, ex)
+                    tasks.append(asyncio.create_task(run_one()))
+                for task in asyncio.as_completed(tasks):
+                    seed_eval = await task
+                    rewards.append(seed_eval.reward)
+                    record.record_seed_eval(seed_eval)
+            except Exception:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise
         return sum(rewards) / max(1, len(rewards))
 
     def get_candidate(self, job_id: str, candidate_id: str) -> dict[str, Any]:

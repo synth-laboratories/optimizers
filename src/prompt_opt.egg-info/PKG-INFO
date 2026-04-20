@@ -1,3 +1,15 @@
+Metadata-Version: 2.4
+Name: prompt-opt
+Version: 0.1.0
+Summary: Apache-2.0 prompt optimization with Horizons MIPRO and Synth/GEPA adapters.
+Author: Synth
+License: Apache-2.0
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: pydantic<3,>=2
+Dynamic: license-file
+
 # prompt-opt
 
 Apache-2.0 licensed Python-only prompt optimization package that provides a local offline mirror of the public Synth GEPA/MIPRO SDK surfaces under `prompt_opt.sdk.optimization.*`.
@@ -113,14 +125,12 @@ print(result.val_aggregate_scores[result.best_idx])
   - `examples/dspy_gepa_slot_example.py`
 - Local offline Banking77 via Synth `InProcessContainer`:
   - `examples/banking77_container_example.py`
-- Local offline GEPA for simple JSONL task files:
-  - `examples/gepa_taskfile_container_eval.py`
 
 Run the Banking77 local regression harness with:
 
 ```bash
-PYTHONPATH=/Users/joshpurtell/Documents/GitHub/prompt-opt/src:/Users/joshpurtell/Documents/GitHub/synth-ai \
-uv run --active /Users/joshpurtell/Documents/GitHub/prompt-opt/examples/banking77_container_example.py \
+PYTHONPATH=/Users/joshpurtell/Documents/Github/prompt-opt/src:/Users/joshpurtell/Documents/Github/synth-ai \
+python3 /Users/joshpurtell/Documents/Github/prompt-opt/examples/banking77_container_example.py \
   --algorithms gepa mipro \
   --train-per-label 4 \
   --held-out-per-label 2 \
@@ -131,93 +141,3 @@ uv run --active /Users/joshpurtell/Documents/GitHub/prompt-opt/examples/banking7
 ```
 
 The script prints per-algorithm JSON with `train_*` and `held_out_*` metrics and raises if held-out improvement does not exceed `--min-held-out-delta`.
-
-Find simple eval task files and run local taskfile optimization (`gepa` or `mipro`) with:
-
-```bash
-PYTHONPATH=/Users/joshpurtell/Documents/GitHub/prompt-opt/src:/Users/joshpurtell/Documents/GitHub/synth-ai \
-uv run --active /Users/joshpurtell/Documents/GitHub/prompt-opt/examples/gepa_taskfile_container_eval.py \
-  --list-simple-task-files
-```
-
-```bash
-PYTHONPATH=/Users/joshpurtell/Documents/GitHub/prompt-opt/src:/Users/joshpurtell/Documents/GitHub/synth-ai \
-uv run --active /Users/joshpurtell/Documents/GitHub/prompt-opt/examples/gepa_taskfile_container_eval.py \
-  --algorithm gepa \
-  --task-file /Users/joshpurtell/Documents/GitHub/evals/mipro/tasks/multimodal_smoke.jsonl \
-  --train-size 8 \
-  --num-generations 2 \
-  --children-per-generation 8 \
-  --total-rollouts 64
-```
-
-```bash
-PYTHONPATH=/Users/joshpurtell/Documents/GitHub/prompt-opt/src:/Users/joshpurtell/Documents/GitHub/synth-ai \
-uv run --active /Users/joshpurtell/Documents/GitHub/prompt-opt/examples/gepa_taskfile_container_eval.py \
-  --algorithm gepa \
-  --task-preset medec_smoke \
-  --train-size 8 \
-  --num-generations 2 \
-  --children-per-generation 8 \
-  --total-rollouts 64
-```
-
-```bash
-PYTHONPATH=/Users/joshpurtell/Documents/GitHub/prompt-opt/src:/Users/joshpurtell/Documents/GitHub/synth-ai \
-uv run --active /Users/joshpurtell/Documents/GitHub/prompt-opt/examples/gepa_taskfile_container_eval.py \
-  --algorithm mipro \
-  --task-preset drugprot_train_public \
-  --train-size 8 \
-  --num-candidates 24 \
-  --max-iterations 16 \
-  --children-per-generation 16 \
-  --total-rollouts 256
-```
-
-```bash
-PYTHONPATH=/Users/joshpurtell/Documents/GitHub/prompt-opt/src:/Users/joshpurtell/Documents/GitHub/synth-ai \
-uv run --active /Users/joshpurtell/Documents/GitHub/prompt-opt/examples/gepa_taskfile_container_eval.py \
-  --algorithm mipro \
-  --task-preset langprobe_banking77 \
-  --train-size 32 \
-  --num-candidates 12 \
-  --max-iterations 8 \
-  --children-per-generation 8 \
-  --total-rollouts 96
-```
-
-```bash
-PYTHONPATH=/Users/joshpurtell/Documents/GitHub/prompt-opt/src:/Users/joshpurtell/Documents/GitHub/synth-ai \
-uv run --active /Users/joshpurtell/Documents/GitHub/prompt-opt/examples/gepa_taskfile_container_eval.py \
-  --algorithm mipro \
-  --task-preset langprobe_hotpotqa \
-  --train-size 8 \
-  --num-candidates 8 \
-  --max-iterations 6 \
-  --children-per-generation 8 \
-  --total-rollouts 64
-```
-
-```bash
-PYTHONPATH=/Users/joshpurtell/Documents/GitHub/prompt-opt/src:/Users/joshpurtell/Documents/GitHub/synth-ai \
-uv run --active /Users/joshpurtell/Documents/GitHub/prompt-opt/examples/gepa_taskfile_container_eval.py \
-  --algorithm mipro \
-  --task-preset langprobe_iris \
-  --train-size 60 \
-  --num-candidates 10 \
-  --max-iterations 8 \
-  --children-per-generation 8 \
-  --total-rollouts 96
-```
-
-```bash
-PYTHONPATH=/Users/joshpurtell/Documents/GitHub/prompt-opt/src:/Users/joshpurtell/Documents/GitHub/synth-ai \
-uv run --active /Users/joshpurtell/Documents/GitHub/prompt-opt/examples/gepa_taskfile_container_eval.py \
-  --algorithm mipro \
-  --task-preset langprobe_hover \
-  --train-size 60 \
-  --num-candidates 10 \
-  --max-iterations 8 \
-  --children-per-generation 8 \
-  --total-rollouts 96
-```

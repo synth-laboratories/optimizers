@@ -1,6 +1,12 @@
-# prompt-opt
+# synth-optimizers
 
 Apache-2.0 licensed Python-only prompt optimization package that provides a local offline mirror of the public Synth GEPA/MIPRO SDK surfaces under `prompt_opt.sdk.optimization.*`.
+
+Repo name: `optimizers`
+
+PyPI distribution name: `synth-optimizers`
+
+Python import package: `prompt_opt`
 
 ## What is included
 
@@ -22,7 +28,7 @@ Apache-2.0 licensed Python-only prompt optimization package that provides a loca
 ## Install (editable, local)
 
 ```bash
-cd prompt-opt
+cd optimizers
 pip install -e .
 ```
 

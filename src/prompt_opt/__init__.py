@@ -1,4 +1,4 @@
-"""prompt-opt public API."""
+"""synth-optimizers public API exposed through the `prompt_opt` package."""
 
 from .gepa_ai_compat import LocalGEPAAdapterProtocol, optimize
 from .mipro import proposer_backends, run_mipro

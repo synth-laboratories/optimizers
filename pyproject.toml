@@ -1,23 +1,48 @@
-[build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "synth-optimizers"
-version = "0.1.0"
-description = "Apache-2.0 prompt optimization package with GEPA and MIPRO adapters."
+version = "0.1.0a0"
+description = "Public Synth optimizer tooling with a Rust GEPA core."
+authors = [{name = "Synth Laboratories", email = "josh@usesynth.ai"}]
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "Apache-2.0"
-authors = [{ name = "Synth" }]
-dependencies = ["pydantic>=2,<3"]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "maturin>=1.7.0",
+    "ruff>=0.6.0",
+    "ty>=0.0.32",
+]
+
+[dependency-groups]
+dev = [
+    "maturin>=1.7.0",
+    "ruff>=0.6.0",
+    "ty>=0.0.32",
+]
+
+[project.scripts]
+synth-optimizers = "synth_optimizers.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/synth-laboratories/optimizers"
 Repository = "https://github.com/synth-laboratories/optimizers"
+Issues = "https://github.com/synth-laboratories/optimizers/issues"
 
-[tool.setuptools]
-package-dir = { "" = "src" }
+[build-system]
+requires = ["maturin>=1.7.0"]
+build-backend = "maturin"
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.maturin]
+manifest-path = "rust/crates/synth_optimizers_py/Cargo.toml"
+module-name = "synth_optimizers._synth_optimizers"
+python-source = "src"
+
+[tool.uv]
+package = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src"]

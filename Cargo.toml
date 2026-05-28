@@ -1,0 +1,30 @@
+[workspace]
+members = [
+    "rust/crates/synth_optimizer_platform",
+    "rust/crates/synth_gepa",
+    "rust/crates/synth_optimizers_py",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0-alpha.0"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["Synth Laboratories <josh@usesynth.ai>"]
+repository = "https://github.com/synth-laboratories/synth-cookbooks-public"
+
+[workspace.dependencies]
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+fs2 = "0.4"
+libc = "0.2"
+pyo3 = { version = "0.22", features = ["abi3-py311", "extension-module"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+thiserror = "1.0"
+time = { version = "0.3", features = ["formatting", "macros"] }
+toml = "0.8"
+uuid = { version = "1.10", features = ["v4"] }

@@ -81,9 +81,11 @@ pub struct WorkspaceRunRequestStatus {
     pub output_dir: String,
     pub run_dir: String,
     pub priority: i64,
+    pub manual_step: bool,
     pub submitted_at: String,
     pub leased_at: Option<String>,
     pub lease_expires_at: Option<String>,
+    pub pause_expires_at: Option<String>,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
     pub updated_at: String,
@@ -317,6 +319,7 @@ impl WorkspaceStore {
     }
 
     pub fn status(&self) -> Result<WorkspaceStatus> {
+        self.recover_expired_run_requests()?;
         self.refresh_workspace_health()?;
         let schema_version = self
             .conn
@@ -556,6 +559,45 @@ impl WorkspaceStore {
     ) -> Result<WorkspaceRunRequestStatus> {
         let config_path = config_path.as_ref();
         let config = SynthOptimizerConfig::from_toml_file(config_path)?;
+        self.submit_run_config(
+            config,
+            &config_path.display().to_string(),
+            priority,
+            false,
+            Some(json!({"config_path": config_path.display().to_string()})),
+        )
+    }
+
+    pub fn submit_run_config(
+        &self,
+        config: SynthOptimizerConfig,
+        config_source: &str,
+        priority: i64,
+        manual_step: bool,
+        metadata: Option<Value>,
+    ) -> Result<WorkspaceRunRequestStatus> {
+        self.submit_run_config_with_identity(
+            config,
+            config_source,
+            priority,
+            manual_step,
+            metadata,
+            None,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // identity + idempotency fields are an irreducible request signature
+    pub fn submit_run_config_with_identity(
+        &self,
+        config: SynthOptimizerConfig,
+        config_source: &str,
+        priority: i64,
+        manual_step: bool,
+        metadata: Option<Value>,
+        idempotency_key: Option<&str>,
+        request_body_sha256: Option<&str>,
+    ) -> Result<WorkspaceRunRequestStatus> {
         let paths = ArtifactPaths::new(&config.run.output_dir, &config.run.run_id);
         let cache_mode = CacheMode::from(config.cache.mode);
         let cache_namespace = config
@@ -570,16 +612,17 @@ impl WorkspaceStore {
             INSERT INTO run_requests(
                 request_id, run_id, status, config_path, config_json,
                 container_url, cache_mode, cache_namespace, output_dir,
-                run_dir, priority, submitted_at, updated_at
+                run_dir, priority, manual_step, idempotency_key,
+                request_body_sha256, submitted_at, updated_at
             ) VALUES (
-                ?1, ?2, 'queued', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+                ?1, ?2, 'queued', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
                 datetime('now'), datetime('now')
             )
             "#,
             params![
                 request_id,
                 config.run.run_id,
-                config_path.display().to_string(),
+                config_source,
                 config_json,
                 config.container.url.unwrap_or_default(),
                 cache_mode.as_str(),
@@ -587,14 +630,15 @@ impl WorkspaceStore {
                 config.run.output_dir.display().to_string(),
                 paths.run_dir.display().to_string(),
                 priority,
+                if manual_step { 1 } else { 0 },
+                idempotency_key,
+                request_body_sha256,
             ],
         )?;
         let request = self.run_request(&request_id)?;
-        let mut metadata = Map::new();
-        metadata.insert(
-            "config_path".to_string(),
-            Value::String(config_path.display().to_string()),
-        );
+        let metadata = metadata
+            .and_then(|value| value.as_object().cloned())
+            .unwrap_or_default();
         self.record_run_request_operation(
             "submit_run_request",
             &request,
@@ -662,6 +706,7 @@ impl WorkspaceStore {
                 worker_id = ?2,
                 leased_at = datetime('now'),
                 lease_expires_at = datetime('now', ?3),
+                pause_expires_at = NULL,
                 updated_at = datetime('now')
             WHERE request_id = ?4 AND status = 'queued'
             "#,
@@ -789,6 +834,64 @@ impl WorkspaceStore {
                 recovered.push(request);
             }
         }
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT request_id
+            FROM run_requests
+            WHERE status = 'paused'
+              AND pause_expires_at IS NOT NULL
+              AND pause_expires_at <= datetime('now')
+            ORDER BY pause_expires_at, request_id
+            "#,
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut pause_expired = Vec::new();
+        while let Some(row) = rows.next()? {
+            pause_expired.push(row.get::<_, String>(0)?);
+        }
+        drop(rows);
+        drop(stmt);
+
+        for request_id in pause_expired {
+            let error = serde_json::json!({
+                "reason": "pause_timeout",
+            });
+            let updated = self.conn.execute(
+                r#"
+                UPDATE run_requests
+                SET status = 'cancelled',
+                    finished_at = datetime('now'),
+                    lease_id = NULL,
+                    worker_id = NULL,
+                    lease_expires_at = NULL,
+                    pause_expires_at = NULL,
+                    error_json = ?2,
+                    updated_at = datetime('now')
+                WHERE request_id = ?1
+                  AND status = 'paused'
+                  AND pause_expires_at IS NOT NULL
+                  AND pause_expires_at <= datetime('now')
+                "#,
+                params![request_id, stable_json(&error)],
+            )?;
+            if updated > 0 {
+                let request = self.run_request(&request_id)?;
+                self.update_resource_leases_for_request(&request_id, "released")?;
+                let mut metadata = Map::new();
+                metadata.insert(
+                    "reason".to_string(),
+                    Value::String("pause_timeout".to_string()),
+                );
+                self.record_run_request_operation(
+                    "cancel_run_request",
+                    &request,
+                    "completed",
+                    None,
+                    metadata,
+                )?;
+                recovered.push(request);
+            }
+        }
         Ok(recovered)
     }
 
@@ -805,6 +908,75 @@ impl WorkspaceStore {
 
     pub fn run_request(&self, request_id: &str) -> Result<WorkspaceRunRequestStatus> {
         self.load_run_request(request_id)
+    }
+
+    pub fn run_request_by_run_id(&self, run_id: &str) -> Result<Option<WorkspaceRunRequestStatus>> {
+        self.recover_expired_run_requests()?;
+        self.conn
+            .query_row(
+                r#"
+                SELECT request_id, run_id, status, config_path, container_url,
+                       cache_mode, cache_namespace, output_dir, run_dir,
+                       priority, manual_step, submitted_at, leased_at, lease_expires_at,
+                       pause_expires_at, started_at, finished_at, updated_at, lease_id,
+                       worker_id, run_workspace_db_path, result_manifest_path,
+                       best_candidate_id, cost_usd, usage_json, result_json,
+                       error_json
+                FROM run_requests
+                WHERE run_id = ?1
+                ORDER BY submitted_at DESC, request_id DESC
+                LIMIT 1
+                "#,
+                params![run_id],
+                run_request_from_row,
+            )
+            .optional()
+            .map_err(OptimizerError::from)
+    }
+
+    pub fn run_request_by_idempotency_key(
+        &self,
+        idempotency_key: &str,
+    ) -> Result<Option<(WorkspaceRunRequestStatus, Option<String>)>> {
+        self.recover_expired_run_requests()?;
+        self.conn
+            .query_row(
+                r#"
+                SELECT request_id, run_id, status, config_path, container_url,
+                       cache_mode, cache_namespace, output_dir, run_dir,
+                       priority, manual_step, submitted_at, leased_at, lease_expires_at,
+                       pause_expires_at, started_at, finished_at, updated_at, lease_id,
+                       worker_id, run_workspace_db_path, result_manifest_path,
+                       best_candidate_id, cost_usd, usage_json, result_json,
+                       error_json, request_body_sha256
+                FROM run_requests
+                WHERE idempotency_key = ?1
+                ORDER BY submitted_at DESC, request_id DESC
+                LIMIT 1
+                "#,
+                params![idempotency_key],
+                |row| {
+                    let request = run_request_from_row(row)?;
+                    let request_body_sha256 = row.get::<_, Option<String>>(27)?;
+                    Ok((request, request_body_sha256))
+                },
+            )
+            .optional()
+            .map_err(OptimizerError::from)
+    }
+
+    pub fn delete_run_request_by_run_id(&self, run_id: &str) -> Result<bool> {
+        self.conn.execute(
+            "DELETE FROM resource_leases WHERE run_id = ?1",
+            params![run_id],
+        )?;
+        self.conn
+            .execute("DELETE FROM operations WHERE run_id = ?1", params![run_id])?;
+        let deleted = self.conn.execute(
+            "DELETE FROM run_requests WHERE run_id = ?1",
+            params![run_id],
+        )?;
+        Ok(deleted > 0)
     }
 
     pub fn run_request_config(&self, request_id: &str) -> Result<SynthOptimizerConfig> {
@@ -888,6 +1060,7 @@ impl WorkspaceStore {
                 lease_id = NULL,
                 worker_id = NULL,
                 lease_expires_at = NULL,
+                pause_expires_at = NULL,
                 error_json = NULL,
                 updated_at = datetime('now')
             WHERE request_id = ?1
@@ -918,6 +1091,7 @@ impl WorkspaceStore {
                 lease_id = NULL,
                 worker_id = NULL,
                 lease_expires_at = NULL,
+                pause_expires_at = NULL,
                 error_json = NULL,
                 updated_at = datetime('now')
             WHERE request_id = ?1
@@ -939,6 +1113,69 @@ impl WorkspaceStore {
             Map::new(),
         )?;
         Ok(Some(request))
+    }
+
+    pub fn mark_run_request_paused(
+        &self,
+        request_id: &str,
+        reason: &str,
+        timeout_seconds: u64,
+    ) -> Result<WorkspaceRunRequestStatus> {
+        let pause_modifier = format!("+{timeout_seconds} seconds");
+        let request = self.update_run_request_status(
+            request_id,
+            "paused",
+            r#"
+            UPDATE run_requests
+            SET status = 'paused',
+                lease_id = NULL,
+                worker_id = NULL,
+                lease_expires_at = NULL,
+                pause_expires_at = datetime('now', ?2),
+                updated_at = datetime('now')
+            WHERE request_id = ?1
+              AND status IN ('queued', 'leased', 'running', 'paused')
+            "#,
+            params![request_id, pause_modifier],
+        )?;
+        self.update_resource_leases_for_request(request_id, "released")?;
+        let mut metadata = Map::new();
+        metadata.insert("reason".to_string(), Value::String(reason.to_string()));
+        self.record_run_request_operation(
+            "pause_run_request",
+            &request,
+            "completed",
+            None,
+            metadata,
+        )?;
+        Ok(request)
+    }
+
+    pub fn mark_run_request_resumed(&self, request_id: &str) -> Result<WorkspaceRunRequestStatus> {
+        let request = self.update_run_request_status(
+            request_id,
+            "queued",
+            r#"
+            UPDATE run_requests
+            SET status = 'queued',
+                lease_id = NULL,
+                worker_id = NULL,
+                lease_expires_at = NULL,
+                pause_expires_at = NULL,
+                updated_at = datetime('now')
+            WHERE request_id = ?1
+              AND status = 'paused'
+            "#,
+            params![request_id],
+        )?;
+        self.record_run_request_operation(
+            "resume_run_request",
+            &request,
+            "completed",
+            None,
+            Map::new(),
+        )?;
+        Ok(request)
     }
 
     pub fn record_run_request_result(&self, request_id: &str, result: &Value) -> Result<()> {
@@ -1026,6 +1263,7 @@ impl WorkspaceStore {
                 lease_id = NULL,
                 worker_id = NULL,
                 lease_expires_at = NULL,
+                pause_expires_at = NULL,
                 error_json = ?2,
                 updated_at = datetime('now')
             WHERE request_id = ?1
@@ -1059,6 +1297,7 @@ impl WorkspaceStore {
                 lease_id = NULL,
                 worker_id = NULL,
                 lease_expires_at = NULL,
+                pause_expires_at = NULL,
                 error_json = ?3,
                 updated_at = datetime('now')
             WHERE request_id = ?1
@@ -1102,6 +1341,7 @@ impl WorkspaceStore {
                 lease_id = NULL,
                 worker_id = NULL,
                 lease_expires_at = NULL,
+                pause_expires_at = NULL,
                 error_json = ?2,
                 updated_at = datetime('now')
             WHERE request_id = ?1
@@ -1138,6 +1378,7 @@ impl WorkspaceStore {
                 lease_id = NULL,
                 worker_id = NULL,
                 lease_expires_at = NULL,
+                pause_expires_at = NULL,
                 error_json = ?3,
                 updated_at = datetime('now')
             WHERE request_id = ?1
@@ -3101,9 +3342,13 @@ impl WorkspaceStore {
                 output_dir TEXT NOT NULL,
                 run_dir TEXT NOT NULL,
                 priority INTEGER NOT NULL DEFAULT 0,
+                manual_step INTEGER NOT NULL DEFAULT 0,
+                idempotency_key TEXT,
+                request_body_sha256 TEXT,
                 submitted_at TEXT NOT NULL,
                 leased_at TEXT,
                 lease_expires_at TEXT,
+                pause_expires_at TEXT,
                 started_at TEXT,
                 finished_at TEXT,
                 updated_at TEXT NOT NULL,
@@ -4167,6 +4412,9 @@ impl WorkspaceStore {
             CREATE INDEX IF NOT EXISTS idx_run_requests_run_id
             ON run_requests(run_id);
 
+            CREATE INDEX IF NOT EXISTS idx_run_requests_idempotency_key
+            ON run_requests(idempotency_key);
+
             CREATE INDEX IF NOT EXISTS idx_operations_run_status
             ON operations(run_id, status);
 
@@ -4250,7 +4498,11 @@ impl WorkspaceStore {
     }
 
     fn ensure_run_request_schema(&self) -> Result<()> {
+        self.ensure_column("run_requests", "manual_step", "INTEGER NOT NULL DEFAULT 0")?;
+        self.ensure_column("run_requests", "idempotency_key", "TEXT")?;
+        self.ensure_column("run_requests", "request_body_sha256", "TEXT")?;
         self.ensure_column("run_requests", "run_workspace_db_path", "TEXT")?;
+        self.ensure_column("run_requests", "pause_expires_at", "TEXT")?;
         self.ensure_column("run_requests", "result_manifest_path", "TEXT")?;
         self.ensure_column("run_requests", "best_candidate_id", "TEXT")?;
         self.ensure_column("run_requests", "cost_usd", "REAL")?;
@@ -4316,8 +4568,8 @@ impl WorkspaceStore {
             r#"
             SELECT request_id, run_id, status, config_path, container_url,
                    cache_mode, cache_namespace, output_dir, run_dir, priority,
-                   submitted_at, leased_at, lease_expires_at, started_at,
-                   finished_at, updated_at, lease_id, worker_id,
+                   manual_step, submitted_at, leased_at, lease_expires_at,
+                   pause_expires_at, started_at, finished_at, updated_at, lease_id, worker_id,
                    run_workspace_db_path, result_manifest_path,
                    best_candidate_id, cost_usd, usage_json, result_json,
                    error_json
@@ -4339,8 +4591,8 @@ impl WorkspaceStore {
                 r#"
                 SELECT request_id, run_id, status, config_path, container_url,
                        cache_mode, cache_namespace, output_dir, run_dir,
-                       priority, submitted_at, leased_at, lease_expires_at,
-                       started_at, finished_at, updated_at, lease_id,
+                       priority, manual_step, submitted_at, leased_at,
+                       lease_expires_at, pause_expires_at, started_at, finished_at, updated_at, lease_id,
                        worker_id, run_workspace_db_path, result_manifest_path,
                        best_candidate_id, cost_usd, usage_json, result_json,
                        error_json
@@ -5937,9 +6189,9 @@ pub fn workspace_status(path: impl AsRef<Path>) -> Result<WorkspaceStatus> {
 }
 
 fn run_request_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkspaceRunRequestStatus> {
-    let usage_json = row.get::<_, Option<String>>(22)?;
-    let result_json = row.get::<_, Option<String>>(23)?;
-    let error_json = row.get::<_, Option<String>>(24)?;
+    let usage_json = row.get::<_, Option<String>>(24)?;
+    let result_json = row.get::<_, Option<String>>(25)?;
+    let error_json = row.get::<_, Option<String>>(26)?;
     Ok(WorkspaceRunRequestStatus {
         request_id: row.get(0)?,
         run_id: row.get(1)?,
@@ -5951,18 +6203,20 @@ fn run_request_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkspaceRu
         output_dir: row.get(7)?,
         run_dir: row.get(8)?,
         priority: row.get(9)?,
-        submitted_at: row.get(10)?,
-        leased_at: row.get(11)?,
-        lease_expires_at: row.get(12)?,
-        started_at: row.get(13)?,
-        finished_at: row.get(14)?,
-        updated_at: row.get(15)?,
-        lease_id: row.get(16)?,
-        worker_id: row.get(17)?,
-        run_workspace_db_path: row.get(18)?,
-        result_manifest_path: row.get(19)?,
-        best_candidate_id: row.get(20)?,
-        cost_usd: row.get(21)?,
+        manual_step: row.get::<_, i64>(10)? != 0,
+        submitted_at: row.get(11)?,
+        leased_at: row.get(12)?,
+        lease_expires_at: row.get(13)?,
+        pause_expires_at: row.get(14)?,
+        started_at: row.get(15)?,
+        finished_at: row.get(16)?,
+        updated_at: row.get(17)?,
+        lease_id: row.get(18)?,
+        worker_id: row.get(19)?,
+        run_workspace_db_path: row.get(20)?,
+        result_manifest_path: row.get(21)?,
+        best_candidate_id: row.get(22)?,
+        cost_usd: row.get(23)?,
         usage: parse_json_or_null(usage_json.as_deref()),
         result: parse_json_or_null(result_json.as_deref()),
         error: parse_json_or_null(error_json.as_deref()),

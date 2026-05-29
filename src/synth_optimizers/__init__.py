@@ -1,6 +1,13 @@
-"""Public Synth optimizer package."""
+"""Public Synth optimizer package.
+
+The HTTP service (`gepa_serve`) is the public surface. Raw worker/workspace
+PyO3 exports were demoted in the v2 service rebuild and are no longer importable.
+"""
 
 from ._synth_optimizers import (
+    BudgetExceededError,
+    CacheCorruptError,
+    CacheFullError,
     CacheMissError,
     CancelledError,
     ConfigError,
@@ -8,6 +15,7 @@ from ._synth_optimizers import (
     EventCompareError,
     GepaRun,
     GepaRunResult,
+    InvariantError,
     OptimizerDiskBudgetError,
     OptimizerHttpError,
     OptimizerIoError,
@@ -22,26 +30,12 @@ from ._synth_optimizers import (
     events_compare,
     events_replay,
     gepa_serve,
-    gepa_service_recover,
-    gepa_service_run_next,
-    gepa_service_tick,
-    workspace_cancel_run_request,
-    workspace_claim_optimizer_job,
-    workspace_claim_next_optimizer_job,
-    workspace_claim_next_run_request,
-    workspace_complete_run_request,
-    workspace_fail_run_request,
-    workspace_heartbeat_run_request,
-    workspace_heartbeat_optimizer_job,
-    workspace_mark_optimizer_job_running,
-    workspace_recover_expired_optimizer_jobs,
-    workspace_recover_expired_run_requests,
-    workspace_start_run_request,
-    workspace_status,
-    workspace_submit_run_request,
 )
 
 __all__ = [
+    "BudgetExceededError",
+    "CacheCorruptError",
+    "CacheFullError",
     "CacheMissError",
     "CancelledError",
     "ConfigError",
@@ -49,6 +43,7 @@ __all__ = [
     "EventCompareError",
     "GepaRun",
     "GepaRunResult",
+    "InvariantError",
     "OptimizerDiskBudgetError",
     "OptimizerHttpError",
     "OptimizerIoError",
@@ -63,21 +58,4 @@ __all__ = [
     "events_compare",
     "events_replay",
     "gepa_serve",
-    "gepa_service_recover",
-    "gepa_service_run_next",
-    "gepa_service_tick",
-    "workspace_cancel_run_request",
-    "workspace_claim_optimizer_job",
-    "workspace_claim_next_optimizer_job",
-    "workspace_claim_next_run_request",
-    "workspace_complete_run_request",
-    "workspace_fail_run_request",
-    "workspace_heartbeat_run_request",
-    "workspace_heartbeat_optimizer_job",
-    "workspace_mark_optimizer_job_running",
-    "workspace_recover_expired_optimizer_jobs",
-    "workspace_recover_expired_run_requests",
-    "workspace_start_run_request",
-    "workspace_status",
-    "workspace_submit_run_request",
 ]

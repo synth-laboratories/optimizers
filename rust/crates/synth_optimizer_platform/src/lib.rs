@@ -125,4 +125,4 @@ pub use workspace::{
     WorkspaceStateTransitionStatus, WorkspaceStatus, WorkspaceStore, WorkspaceView,
 };
 
-pub const GEPA_OPTIMIZER_CONTRACT_VERSION: &str = "synth_optimizers.gepa.v1";
+pub const GEPA_OPTIMIZER_CONTRACT_VERSION: &str = "synth_optimizers.gepa.v2";

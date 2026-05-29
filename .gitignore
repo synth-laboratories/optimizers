@@ -1,7 +1,7 @@
-target/
-build/
-dist/
+/target
+**/target
 .venv/
-*.egg-info/
 __pycache__/
-*.py[cod]
+*.pyc
+*.abi3.so
+.ruff_cache/

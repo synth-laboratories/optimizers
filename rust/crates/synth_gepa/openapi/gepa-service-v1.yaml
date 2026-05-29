@@ -1,0 +1,982 @@
+openapi: 3.1.0
+
+# =============================================================================
+# GEPA Service API — v1 (2026-05-28)
+# Canonical contract. CLI + Python SDK are thin clients of this.
+# Single-worker v1: runs execute one-at-a-time, FIFO. `priority`, `attempt`,
+# `submitted_by` are intentionally absent until their backing feature lands.
+# Status reflects WHY a run ended, never result quality (read candidates for that).
+# =============================================================================
+
+info:
+  title: GEPA Service
+  version: 1.0.0
+  description: |
+    HTTP service that runs GEPA prompt-optimization. The service owns the worker
+    loop in-process; worker internals (leases, tick actions, cursor phases,
+    workspace paths) are never exposed on the wire. The user submits a Run and
+    observes it via REST + a WebSocket event stream.
+
+    NOUN BOUNDARY: this service's `Run` is a distinct bounded context from
+    managed-research's `Run`. They are not the same entity; a managed-research
+    Run may wrap a GEPA-service Run, but the two must not be conflated.
+
+    VERSIONING: routes are unversioned; the contract version lives in
+    `info.version`. A future v2 would be introduced via content negotiation,
+    not a path prefix.
+
+servers:
+  - url: http://127.0.0.1:8080
+    description: Local single-workspace server
+
+paths:
+  # ---------------------------------------------------------------------------
+  # Submission + lifecycle
+  # ---------------------------------------------------------------------------
+  /runs:
+    post:
+      operationId: createRun
+      summary: Submit a new Run
+      description: |
+        Auto-starts execution unless `manual_step=true`. Supply `Idempotency-Key`
+        to make retries safe: the same key returns the existing Run (200) instead
+        of creating a duplicate.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RunRequest' }
+      responses:
+        '201':
+          description: Run created and (unless manual_step) started.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Run' }
+        '200':
+          description: Idempotency-Key matched an existing Run; that Run is returned.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Run' }
+        '422': { $ref: '#/components/responses/InvalidConfig' }
+        '409':
+          description: Idempotency-Key reused with a different body.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    get:
+      operationId: listRuns
+      summary: List Runs
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/RunStatus' }
+        - name: since
+          in: query
+          schema: { type: string, format: date-time }
+        - name: until
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Page of Runs.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Run' }
+                  next_cursor:
+                    type: [string, 'null']
+                    description: Opaque cursor; null when no further pages.
+
+  /runs/{run_id}:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+    get:
+      operationId: getRun
+      summary: Get a Run
+      responses:
+        '200':
+          description: Run snapshot.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Run' }
+        '404': { $ref: '#/components/responses/RunNotFound' }
+    delete:
+      operationId: deleteRun
+      summary: Hard-delete a Run and all its artifacts
+      description: 409 if the Run is not terminal. Idempotent on already-deleted Runs.
+      responses:
+        '204': { description: Deleted (or already absent). }
+        '409': { $ref: '#/components/responses/NotTerminal' }
+
+  /runs/{run_id}/stop:
+    parameters: [ { $ref: '#/components/parameters/RunId' } ]
+    post:
+      operationId: stopRun
+      summary: Graceful stop — finalize early with current best
+      description: Terminal status becomes `succeeded`; `stopped_by.kind = external_signal`.
+      responses:
+        '202':
+          description: Stop accepted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Run' }
+        '404': { $ref: '#/components/responses/RunNotFound' }
+        '409': { $ref: '#/components/responses/InvalidTransition' }
+
+  /runs/{run_id}/cancel:
+    parameters: [ { $ref: '#/components/parameters/RunId' } ]
+    post:
+      operationId: cancelRun
+      summary: Abort — drop state, no result
+      description: Terminal status becomes `cancelled`. Idempotent.
+      responses:
+        '202':
+          description: Cancel accepted (or already cancelled).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Run' }
+        '404': { $ref: '#/components/responses/RunNotFound' }
+
+  /runs/{run_id}/pause:
+    parameters: [ { $ref: '#/components/parameters/RunId' } ]
+    post:
+      operationId: pauseRun
+      summary: Pause at the next generation boundary
+      description: |
+        Non-terminal `paused`. Auto-cancels on timeout
+        (`outcome.reason = pause_timeout`). 409 on a `manual_step` run
+        (already paused-by-default). Idempotent — re-pausing resets the timer.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                timeout_seconds:
+                  type: integer
+                  default: 1800
+                  minimum: 1
+                  maximum: 14400
+      responses:
+        '202':
+          description: Pause accepted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Run' }
+        '404': { $ref: '#/components/responses/RunNotFound' }
+        '409': { $ref: '#/components/responses/InvalidTransition' }
+
+  /runs/{run_id}/resume:
+    parameters: [ { $ref: '#/components/parameters/RunId' } ]
+    post:
+      operationId: resumeRun
+      summary: Resume a paused Run
+      description: Continues from the last persisted cursor — no rewind.
+      responses:
+        '202':
+          description: Resume accepted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Run' }
+        '404': { $ref: '#/components/responses/RunNotFound' }
+        '409': { $ref: '#/components/responses/InvalidTransition' }
+
+  /runs/{run_id}/step:
+    parameters: [ { $ref: '#/components/parameters/RunId' } ]
+    post:
+      operationId: stepRun
+      summary: Advance a manual_step Run by one unit
+      description: |
+        Manual-step runs only. Advances exactly one engine unit (one
+        `tick_next_unit`). 409 unless the Run was created with `manual_step=true`.
+        Async phases (`proposer_waiting`, `candidate_minibatch`) never block:
+        step N kicks off the job, step N+1 consumes it or reports "still waiting".
+      responses:
+        '200':
+          description: Step result.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StepResult' }
+        '404': { $ref: '#/components/responses/RunNotFound' }
+        '409':
+          description: Run is not in manual_step mode.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  # ---------------------------------------------------------------------------
+  # Candidates & rollouts (the value surface)
+  # ---------------------------------------------------------------------------
+  /runs/{run_id}/candidates:
+    parameters: [ { $ref: '#/components/parameters/RunId' } ]
+    get:
+      operationId: listCandidates
+      summary: List Candidates
+      description: |
+        "Best" is a view over this list:
+        `?accepted=true&sort=-heldout_score&limit=1`. "Frontier" is `?accepted=true`.
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - name: accepted
+          in: query
+          schema: { type: boolean }
+        - name: generation
+          in: query
+          schema: { type: integer, minimum: 0 }
+        - name: sort
+          in: query
+          description: Whitelisted sort key with optional `-` (descending) prefix.
+          schema: { $ref: '#/components/schemas/CandidateSort' }
+      responses:
+        '200':
+          description: Page of Candidates.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Candidate' }
+                  next_cursor: { type: [string, 'null'] }
+        '404': { $ref: '#/components/responses/RunNotFound' }
+
+  /runs/{run_id}/candidates/{candidate_id}:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+      - $ref: '#/components/parameters/CandidateId'
+    get:
+      operationId: getCandidate
+      summary: Get a Candidate
+      responses:
+        '200':
+          description: Candidate.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Candidate' }
+        '404': { $ref: '#/components/responses/RunNotFound' }
+
+  /runs/{run_id}/candidates/{candidate_id}/rollouts:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+      - $ref: '#/components/parameters/CandidateId'
+    get:
+      operationId: listRollouts
+      summary: List RolloutResults for a Candidate
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Page of RolloutResults (trajectory omitted).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/RolloutResult' }
+                  next_cursor: { type: [string, 'null'] }
+        '404': { $ref: '#/components/responses/RunNotFound' }
+
+  /runs/{run_id}/rollouts/{rollout_id}:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+      - name: rollout_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      operationId: getRollout
+      summary: Get a single RolloutResult
+      parameters:
+        - name: include
+          in: query
+          description: Set to `trajectory` to attach the full transcript (heavy).
+          schema: { type: string, enum: [trajectory] }
+      responses:
+        '200':
+          description: RolloutResult; `trajectory` present only when requested.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RolloutResult' }
+        '404': { $ref: '#/components/responses/RunNotFound' }
+
+  # ---------------------------------------------------------------------------
+  # Artifacts
+  # ---------------------------------------------------------------------------
+  /runs/{run_id}/artifacts/{name}:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+      - name: name
+        in: path
+        required: true
+        description: Canonical artifact name, e.g. manifest.json, event_feed.jsonl.
+        schema: { type: string }
+    get:
+      operationId: getArtifact
+      summary: Stream artifact bytes
+      responses:
+        '200':
+          description: Artifact bytes; Content-Type per the artifact.
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        '404': { $ref: '#/components/responses/RunNotFound' }
+
+  /runs/{run_id}/artifacts:
+    parameters: [ { $ref: '#/components/parameters/RunId' } ]
+    delete:
+      operationId: dropArtifacts
+      summary: Drop heavy artifact bytes, keep Candidate/RolloutResult records
+      responses:
+        '204': { description: Bytes dropped; records retained. }
+        '404': { $ref: '#/components/responses/RunNotFound' }
+
+  # ---------------------------------------------------------------------------
+  # WebSocket (documented here; OpenAPI 3.1 cannot model the upgrade directly)
+  # ---------------------------------------------------------------------------
+  /runs/{run_id}/ws:
+    parameters: [ { $ref: '#/components/parameters/RunId' } ]
+    get:
+      operationId: runWebSocket
+      summary: "WebSocket: subscribe-on-connect event stream + control frames"
+      description: |
+        Upgrade to WebSocket. Protocol:
+
+        1. Client MUST send a `subscribe` frame first:
+           `{ "type": "subscribe", "kinds": ["*"], "since": 0 }`
+           (`kinds:["*"]` = all; `since` optional, default 0).
+        2. Server replies `{ "type": "subscribed", "kinds": [...], "replay": <bool> }`.
+        3. Server streams `event` frames (monotonic `seq`), periodic `status`,
+           and a final `terminal` frame.
+        4. Client MAY send control frames: stop | cancel | pause | resume | step.
+
+        COLD REPLAY: connecting to an already-terminal Run sets `replay:true`,
+        replays buffered events from `since`, sends `terminal`, then closes.
+
+        REPLAY CAP: the server buffers up to `event_replay_cap` (default 50000)
+        most-recent events. A client requesting `since` older than the retained
+        window receives a `{ "type": "truncated", "earliest_seq": N }` frame and
+        should fetch `event_feed.jsonl` for the full history.
+      responses:
+        '101': { description: Switching Protocols (WebSocket). }
+        '404': { $ref: '#/components/responses/RunNotFound' }
+
+  # ---------------------------------------------------------------------------
+  # Workspace / operator
+  # ---------------------------------------------------------------------------
+  /health:
+    get:
+      operationId: health
+      summary: Liveness
+      responses:
+        '200':
+          description: OK.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, const: ok }
+
+  /workspace:
+    get:
+      operationId: getWorkspace
+      summary: Aggregate counters + worker liveness
+      responses:
+        '200':
+          description: Workspace summary.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Workspace' }
+
+  /workspace/usage:
+    get:
+      operationId: getWorkspaceUsage
+      summary: Per-run disk usage report
+      responses:
+        '200':
+          description: Usage report.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [total_bytes, runs]
+                properties:
+                  total_bytes: { type: integer }
+                  runs:
+                    type: array
+                    items:
+                      type: object
+                      required: [run_id, bytes]
+                      properties:
+                        run_id: { type: string }
+                        bytes: { type: integer }
+
+  /workspace/prune:
+    post:
+      operationId: pruneWorkspace
+      summary: Bulk delete terminal Runs
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                older_than: { type: string, format: date-time }
+                status:
+                  type: array
+                  items: { $ref: '#/components/schemas/RunStatus' }
+                dry_run: { type: boolean, default: true }
+      responses:
+        '200':
+          description: Affected run_ids (a list only; nothing deleted when dry_run).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [run_ids, dry_run]
+                properties:
+                  run_ids: { type: array, items: { type: string } }
+                  dry_run: { type: boolean }
+
+  /openapi.yaml:
+    get:
+      operationId: getOpenApi
+      summary: This spec (self-served for introspection + codegen)
+      responses:
+        '200':
+          description: The OpenAPI document.
+          content:
+            application/yaml:
+              schema: { type: string }
+
+# =============================================================================
+components:
+
+  parameters:
+    RunId:
+      name: run_id
+      in: path
+      required: true
+      schema: { type: string }
+    CandidateId:
+      name: candidate_id
+      in: path
+      required: true
+      schema: { type: string }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+    Cursor:
+      name: cursor
+      in: query
+      description: Opaque pagination cursor from a prior `next_cursor`.
+      schema: { type: string }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema: { type: string, maxLength: 255 }
+
+  responses:
+    RunNotFound:
+      description: No Run with that id.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    InvalidConfig:
+      description: Request body failed validation.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    InvalidTransition:
+      description: Control verb not valid from the Run's current status.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    NotTerminal:
+      description: Operation requires a terminal Run.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  schemas:
+
+    # ---- Enums -------------------------------------------------------------
+    RunStatus:
+      type: string
+      enum: [queued, running, paused, succeeded, failed, cancelled]
+    Provider:
+      type: string
+      enum: [openai, openrouter, anthropic, groq, together, fireworks]
+    DisableReasoning:
+      type: string
+      enum: [auto, "on", "off"]
+      default: auto
+    ApiFamily:
+      type: string
+      description: OpenAI-compatible inference family the model is called with.
+      enum: [chat_completions, responses]
+      default: chat_completions
+    Metric:
+      type: string
+      enum: [heldout, train]
+    StopKind:
+      type: string
+      enum: [max_rollouts, max_wall_seconds, max_generations, max_cost_usd, no_improvement, score_threshold, external_signal]
+    FailureClass:
+      type: string
+      enum: [container_unreachable, provider_auth, provider_rate_limit, budget_exhausted, invalid_config, internal]
+    ArtifactKind:
+      type: string
+      enum: [manifest, event_feed, score_chart, candidate_registry, frontier]
+    CursorPhase:
+      type: string
+      enum: [initializing, seed_full_train, generation_start, proposer_waiting, candidate_minibatch, candidate_full_train, heldout, finalizing, paused, completed, failed, cancelled]
+    EventKind:
+      type: string
+      enum:
+        - run.status_changed
+        - generation.started
+        - proposer.completed
+        - candidate.scored
+        - candidate.accepted
+        - candidate.rejected
+        - heldout.started
+        - heldout.completed
+        - usage.tick
+        - frontier.updated
+        - run.terminal
+    CandidateSort:
+      type: string
+      enum:
+        - heldout_score
+        - -heldout_score
+        - train_score
+        - -train_score
+        - generation
+        - -generation
+
+    # ---- Core entities -----------------------------------------------------
+    Run:
+      type: object
+      required: [run_id, status, config, submitted_at]
+      properties:
+        run_id: { type: string }
+        status: { $ref: '#/components/schemas/RunStatus' }
+        config:
+          allOf: [ { $ref: '#/components/schemas/RunRequest' } ]
+          description: |
+            The resolved, defaults-filled spec this Run executed. `container_url`
+            and `manual_step` live here — not duplicated at the top level.
+        submitted_at: { type: string, format: date-time }
+        started_at: { type: [string, 'null'], format: date-time }
+        finished_at: { type: [string, 'null'], format: date-time }
+        usage: { $ref: '#/components/schemas/Usage' }
+        totals:
+          type: object
+          description: Work counters (cost/tokens live in `usage`).
+          properties:
+            rollouts: { type: integer }
+            generations: { type: integer }
+        outcome:
+          description: |
+            null while non-terminal. On terminal, a discriminated object keyed on
+            `result` (succeeded | failed | cancelled). Status reflects WHY the run
+            ended, never result quality — read candidates for that. While running,
+            current-best is the candidates view (?accepted=true&sort=-heldout_score).
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/Outcome'
+        # --- Commented out: no consumer in v1; uncomment when one exists. ---
+        # config_hash:   # sha256 of normalized config — Idempotency-Key covers dedup today.
+        #   { type: string }
+        # links:         # untyped HATEOAS bag — typed clients derive routes from the spec.
+        #   type: object
+        #   additionalProperties: { type: string }
+
+    Candidate:
+      type: object
+      required: [candidate_id, run_id, generation, accepted, program]
+      properties:
+        candidate_id: { type: string }
+        run_id: { type: string }
+        generation: { type: integer, minimum: 0 }
+        parent_id: { type: [string, 'null'] }
+        accepted: { type: boolean }
+        rejection_reason: { type: [string, 'null'] }
+        train_score: { type: [number, 'null'] }
+        heldout_score: { type: [number, 'null'] }
+        program: { type: string, description: "The candidate prompt/program text." }
+
+    RolloutResult:
+      type: object
+      required: [rollout_id, candidate_id, seed_id, score]
+      properties:
+        rollout_id: { type: string }
+        candidate_id: { type: string }
+        seed_id: { type: integer }
+        score: { type: number }
+        tokens: { type: [integer, 'null'] }
+        latency_ms: { type: [integer, 'null'] }
+        trajectory:
+          description: Full transcript. Present ONLY on single-rollout GET with ?include=trajectory.
+          type: [object, 'null']
+          additionalProperties: true
+
+    Artifact:
+      type: object
+      required: [name, kind, sha256, bytes, content_type]
+      properties:
+        name: { type: string }
+        kind: { $ref: '#/components/schemas/ArtifactKind' }
+        sha256: { type: string }
+        bytes: { type: integer }
+        content_type: { type: string }
+
+    Usage:
+      type: object
+      description: LLM accounting only. Rollout count lives in `Run.totals.rollouts`.
+      properties:
+        input_tokens: { type: integer }
+        output_tokens: { type: integer }
+        cost_usd: { type: number }
+
+    Outcome:
+      type: object
+      required: [result]
+      discriminator:
+        propertyName: result
+      oneOf:
+        - $ref: '#/components/schemas/OutcomeSucceeded'
+        - $ref: '#/components/schemas/OutcomeFailed'
+        - $ref: '#/components/schemas/OutcomeCancelled'
+
+    OutcomeSucceeded:
+      type: object
+      required: [result, stopped_by]
+      description: Run ended because a configured stop condition fired.
+      properties:
+        result: { type: string, const: succeeded }
+        stopped_by: { $ref: '#/components/schemas/StoppedBy' }
+        best:
+          type: [object, 'null']
+          description: Best accepted candidate; null if the run accepted none.
+          properties:
+            candidate_id: { type: string }
+            heldout_score: { type: number }
+
+    OutcomeFailed:
+      type: object
+      required: [result, error]
+      description: Run hit an error it could not proceed past.
+      properties:
+        result: { type: string, const: failed }
+        error: { $ref: '#/components/schemas/RunFailure' }
+
+    OutcomeCancelled:
+      type: object
+      required: [result, reason]
+      description: Run was cancelled by the user or auto-cancelled on pause timeout.
+      properties:
+        result: { type: string, const: cancelled }
+        reason: { type: string, enum: [cancelled_by_user, pause_timeout] }
+
+    StoppedBy:
+      type: object
+      required: [kind]
+      description: Which stop condition ended the run; carries that condition's params.
+      properties:
+        kind: { $ref: '#/components/schemas/StopKind' }
+      additionalProperties: true
+
+    RunFailure:
+      type: object
+      required: [kind, message]
+      description: Run-execution failure (distinct from a request-level error).
+      properties:
+        kind: { $ref: '#/components/schemas/FailureClass' }
+        message: { type: string }
+
+    StepResult:
+      type: object
+      required: [run_id, cursor_phase, terminal]
+      properties:
+        run_id: { type: string }
+        cursor_phase: { $ref: '#/components/schemas/CursorPhase' }
+        # --- Commented out: decorative; cursor_phase + terminal are the real signals. ---
+        # action_taken: { type: string }   # human-readable label of what this step did
+        terminal: { type: boolean }
+        events:
+          type: array
+          description: Events emitted by this step (same shape as WS event payloads).
+          items: { $ref: '#/components/schemas/Event' }
+
+    # ---- Submission body ---------------------------------------------------
+    RunRequest:
+      type: object
+      required: [container_url, policy, proposer, dataset]
+      properties:
+        container_url: { type: string, format: uri }
+        policy: { $ref: '#/components/schemas/PolicySpec' }
+        proposer: { $ref: '#/components/schemas/ProposerSpec' }
+        dataset: { $ref: '#/components/schemas/DatasetSpec' }
+        manual_step: { type: boolean, default: false }
+        stop_conditions:
+          type: array
+          description: "OR-ed. Default if omitted: [{kind: max_rollouts, n: <server default>}]."
+          items: { $ref: '#/components/schemas/StopCondition' }
+        advanced: { $ref: '#/components/schemas/Advanced' }
+
+    PolicySpec:
+      type: object
+      required: [provider, model, credentials]
+      description: |
+        The policy model under optimization. Flows to the container as the typed
+        rollout `policy` (the synth-containers "openai contract" — see RolloutPolicySpec
+        in container-contract). `api_family` selects chat/completions vs responses.
+      properties:
+        provider: { $ref: '#/components/schemas/Provider' }
+        model: { type: string }
+        api_family: { $ref: '#/components/schemas/ApiFamily' }
+        credentials: { $ref: '#/components/schemas/Credentials' }
+        base_url: { type: [string, 'null'], format: uri }
+        inference_url: { type: [string, 'null'], format: uri }
+        max_tokens: { type: [integer, 'null'] }
+        disable_reasoning: { $ref: '#/components/schemas/DisableReasoning' }
+
+    ProposerSpec:
+      type: object
+      required: [provider, model, credentials]
+      properties:
+        provider: { $ref: '#/components/schemas/Provider' }
+        model: { type: string }
+        api_family: { $ref: '#/components/schemas/ApiFamily' }
+        credentials: { $ref: '#/components/schemas/Credentials' }
+
+    Credentials:
+      type: object
+      required: [resolver]
+      description: |
+        Forward-compat credential reference. v1 implements only `env`.
+        Never `inline` — raw API keys are not accepted in request bodies.
+      properties:
+        resolver: { type: string, enum: [env, broker] }
+        env_var:
+          type: string
+          description: Required when resolver=env.
+      allOf:
+        - if:
+            properties: { resolver: { const: env } }
+          then:
+            required: [env_var]
+
+    DatasetSpec:
+      type: object
+      required: [train_seeds, heldout_seeds]
+      description: |
+        Explicit only in v1 — runs must be reproducible from the request alone.
+        ASSERTION: train_seeds and heldout_seeds MUST be disjoint (heldout leakage
+        guard) and both non-empty → else 422 invalid_config.
+      properties:
+        train_seeds:
+          type: array
+          minItems: 1
+          items: { type: integer }
+        heldout_seeds:
+          type: array
+          minItems: 1
+          items: { type: integer }
+
+    StopCondition:
+      type: object
+      required: [kind]
+      discriminator:
+        propertyName: kind
+      oneOf:
+        - $ref: '#/components/schemas/StopMaxRollouts'
+        - $ref: '#/components/schemas/StopMaxWallSeconds'
+        - $ref: '#/components/schemas/StopMaxGenerations'
+        - $ref: '#/components/schemas/StopMaxCostUsd'
+        - $ref: '#/components/schemas/StopNoImprovement'
+        - $ref: '#/components/schemas/StopScoreThreshold'
+        - $ref: '#/components/schemas/StopExternalSignal'
+
+    StopMaxRollouts:
+      type: object
+      required: [kind, n]
+      properties:
+        kind: { type: string, const: max_rollouts }
+        n: { type: integer, minimum: 1 }
+    StopMaxWallSeconds:
+      type: object
+      required: [kind, n]
+      properties:
+        kind: { type: string, const: max_wall_seconds }
+        n: { type: integer, minimum: 1 }
+    StopMaxGenerations:
+      type: object
+      required: [kind, n]
+      properties:
+        kind: { type: string, const: max_generations }
+        n: { type: integer, minimum: 1 }
+    StopMaxCostUsd:
+      type: object
+      required: [kind, value]
+      properties:
+        kind: { type: string, const: max_cost_usd }
+        value: { type: number, exclusiveMinimum: 0 }
+    StopNoImprovement:
+      type: object
+      required: [kind, generations]
+      properties:
+        kind: { type: string, const: no_improvement }
+        generations: { type: integer, minimum: 1 }
+        metric: { $ref: '#/components/schemas/Metric' }
+    StopScoreThreshold:
+      type: object
+      required: [kind, value]
+      properties:
+        kind: { type: string, const: score_threshold }
+        value: { type: number }
+        metric: { $ref: '#/components/schemas/Metric' }
+    StopExternalSignal:
+      type: object
+      required: [kind]
+      description: Fires when the client sends a `stop` control frame / POST /stop.
+      properties:
+        kind: { type: string, const: external_signal }
+
+    Advanced:
+      type: object
+      description: All optional. Loop/perf tuning folded out of the common path.
+      properties:
+        pipeline: { $ref: '#/components/schemas/PipelineConfig' }
+        timeouts: { $ref: '#/components/schemas/Timeouts' }
+        policy_io:
+          type: object
+          properties:
+            concurrency: { type: integer, default: 50, minimum: 1 }
+            retries: { type: integer, default: 2, minimum: 0 }
+            timeout_seconds: { type: integer, default: 20, minimum: 1 }
+        proposer_io:
+          type: object
+          properties:
+            timeout_seconds: { type: integer, default: 120, minimum: 1 }
+        adaptive_rollout_concurrency:
+          type: boolean
+          default: true
+          description: Bool only — the 6 internal tuning sub-knobs are server-managed.
+
+    PipelineConfig:
+      type: object
+      properties:
+        max_generations: { type: integer, default: 5, minimum: 1 }
+        proposals_per_generation: { type: integer, default: 4, minimum: 1 }
+        minibatch_size: { type: [integer, 'null'], minimum: 1 }
+        max_in_flight_candidates: { type: integer, default: 4, minimum: 1 }
+        rollout_workers: { type: integer, default: 20, minimum: 1 }
+        rollout_chunk_size:
+          type: [integer, 'null']
+          minimum: 1
+          default: null
+          description: |
+            Rollout rows dispatched per chunk in async-pipelined mode (ignored in
+            other modes). Mirrors the runtime `Option<usize>`: null/omitted = AUTO
+            (server derives from rollout concurrency, clamped 1..128); an explicit
+            integer must be >= 1. NOTE: 0 is invalid, not a sentinel. The TOML/CLI
+            "auto" string maps to null here — the wire contract never carries "auto".
+
+    Timeouts:
+      type: object
+      properties:
+        rollout_seconds: { type: integer, default: 25, minimum: 1 }
+        container_http_seconds: { type: integer, default: 30, minimum: 1 }
+        rollout_http_retries: { type: integer, default: 1, minimum: 0 }
+
+    # ---- WebSocket frames (referenced from the /ws description) ------------
+    Event:
+      type: object
+      required: [type, seq, ts, kind, payload]
+      properties:
+        type: { type: string, const: event }
+        seq: { type: integer, minimum: 0 }
+        ts: { type: string, format: date-time }
+        kind: { $ref: '#/components/schemas/EventKind' }
+        payload: { type: object, additionalProperties: true }
+
+    # ---- Errors ------------------------------------------------------------
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      description: |
+        Request-level error (4xx/5xx on an HTTP call). Distinct from RunFailure,
+        which classifies why an executing Run died — the two are not merged.
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable machine code for the request error.
+              enum:
+                - run_not_found
+                - invalid_config
+                - invalid_transition
+                - not_terminal
+                - manual_step_required
+                - idempotency_conflict
+                - internal
+            message: { type: string }
+            detail:
+              type: [object, 'null']
+              additionalProperties: true
+
+    # ---- Workspace ---------------------------------------------------------
+    Workspace:
+      type: object
+      required: [schema_version, runs, liveness]
+      properties:
+        schema_version: { type: integer }
+        runs:
+          type: object
+          required: [total, by_status]
+          properties:
+            total: { type: integer }
+            by_status:
+              type: object
+              description: Run counts by public status.
+              properties:
+                queued: { type: integer }
+                running: { type: integer }
+                paused: { type: integer }
+                succeeded: { type: integer }
+                failed: { type: integer }
+                cancelled: { type: integer }
+        liveness:
+          type: object
+          description: Worker/queue health — detect wedged runs without polling each.
+          properties:
+            running_count: { type: integer }
+            oldest_queued_age_seconds: { type: [integer, 'null'] }
+            last_progress_at: { type: [string, 'null'], format: date-time }

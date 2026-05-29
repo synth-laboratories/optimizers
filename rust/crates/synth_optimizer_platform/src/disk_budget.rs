@@ -93,13 +93,13 @@ impl DiskBudgetConfig {
         if !self.enabled {
             return Ok(());
         }
-        if !(self.soft_limit_gb > 0.0) {
+        if self.soft_limit_gb.is_nan() || self.soft_limit_gb <= 0.0 {
             return Err(OptimizerError::Config(format!(
                 "disk_budget.soft_limit_gb must be > 0, got {}",
                 self.soft_limit_gb
             )));
         }
-        if !(self.hard_limit_gb > 0.0) {
+        if self.hard_limit_gb.is_nan() || self.hard_limit_gb <= 0.0 {
             return Err(OptimizerError::Config(format!(
                 "disk_budget.hard_limit_gb must be > 0, got {}",
                 self.hard_limit_gb

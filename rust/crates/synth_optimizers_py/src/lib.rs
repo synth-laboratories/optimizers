@@ -584,36 +584,7 @@ fn _synth_optimizers(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<(
     )?;
     module.add_function(wrap_pyfunction!(events_replay, module)?)?;
     module.add_function(wrap_pyfunction!(events_compare, module)?)?;
-    module.add_function(wrap_pyfunction!(workspace_status, module)?)?;
-    module.add_function(wrap_pyfunction!(workspace_submit_run_request, module)?)?;
-    module.add_function(wrap_pyfunction!(workspace_claim_next_run_request, module)?)?;
-    module.add_function(wrap_pyfunction!(workspace_heartbeat_run_request, module)?)?;
-    module.add_function(wrap_pyfunction!(workspace_start_run_request, module)?)?;
-    module.add_function(wrap_pyfunction!(workspace_complete_run_request, module)?)?;
-    module.add_function(wrap_pyfunction!(workspace_fail_run_request, module)?)?;
-    module.add_function(wrap_pyfunction!(workspace_cancel_run_request, module)?)?;
-    module.add_function(wrap_pyfunction!(
-        workspace_recover_expired_run_requests,
-        module
-    )?)?;
-    module.add_function(wrap_pyfunction!(
-        workspace_claim_next_optimizer_job,
-        module
-    )?)?;
-    module.add_function(wrap_pyfunction!(workspace_claim_optimizer_job, module)?)?;
-    module.add_function(wrap_pyfunction!(
-        workspace_mark_optimizer_job_running,
-        module
-    )?)?;
-    module.add_function(wrap_pyfunction!(workspace_heartbeat_optimizer_job, module)?)?;
-    module.add_function(wrap_pyfunction!(
-        workspace_recover_expired_optimizer_jobs,
-        module
-    )?)?;
     module.add_function(wrap_pyfunction!(gepa_serve, module)?)?;
-    module.add_function(wrap_pyfunction!(gepa_service_run_next, module)?)?;
-    module.add_function(wrap_pyfunction!(gepa_service_tick, module)?)?;
-    module.add_function(wrap_pyfunction!(gepa_service_recover, module)?)?;
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

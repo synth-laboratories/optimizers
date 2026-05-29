@@ -1220,7 +1220,7 @@ fn proposer_repair_hints_read_model(
         "literal_example_policy": proposer_literal_policy_json(input),
         "parent_candidate_id": input.parent.candidate_id,
         "target_modules": input.config.candidate.target_modules,
-        "label_confusion_clusters": clusters.into_iter().map(ProposerConfusionCluster::to_json).collect::<Vec<_>>(),
+        "label_confusion_clusters": clusters.into_iter().map(ProposerConfusionCluster::into_json).collect::<Vec<_>>(),
         "parent_loss_examples": parent_loss_examples,
         "guard_win_examples": guard_win_examples,
         "proposal_guidance": [
@@ -1244,7 +1244,7 @@ struct ProposerConfusionCluster {
 }
 
 impl ProposerConfusionCluster {
-    fn to_json(self) -> Value {
+    fn into_json(self) -> Value {
         json!({
             "expected_label": self.expected_label,
             "observed_prediction": self.observed_prediction,
@@ -1334,8 +1334,15 @@ fn proposer_metadata_read_model(
         "policy": {
             "provider": input.config.policy.provider,
             "model": input.config.policy.model,
+            "api_family": input.config.policy.api_family,
             "base_url": input.config.policy.base_url,
-            "api_key_env": input.config.policy.api_key_env,
+            "inference_url": input.config.policy.inference_url,
+            "max_tokens": input.config.policy.max_tokens,
+            "disable_reasoning": input.config.policy.disable_reasoning,
+            "tool_call_style": input.config.policy.tool_call_style,
+            "proxy_mode": input.config.policy.proxy_mode,
+            "credential_mode": input.config.policy.credential_mode,
+            "config": input.config.policy.config,
         },
         "proposer": {
             "backend": input.config.proposer.backend,

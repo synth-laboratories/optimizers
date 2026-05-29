@@ -34,6 +34,26 @@ fn default_policy_model() -> String {
     "gpt-4.1-nano".to_string()
 }
 
+fn default_policy_api_family() -> String {
+    "chat_completions".to_string()
+}
+
+fn default_policy_disable_reasoning() -> String {
+    "auto".to_string()
+}
+
+fn default_policy_tool_call_style() -> String {
+    "none".to_string()
+}
+
+fn default_policy_proxy_mode() -> String {
+    "allow_direct".to_string()
+}
+
+fn default_policy_credential_mode() -> String {
+    "byok".to_string()
+}
+
 fn default_proposer_backend() -> String {
     "codex_app_server".to_string()
 }
@@ -166,7 +186,7 @@ fn default_cache_mode() -> CacheConfigMode {
     CacheConfigMode::Readwrite
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SynthOptimizerConfig {
     #[serde(default)]
@@ -445,6 +465,7 @@ impl SynthOptimizerConfig {
             ));
         }
         validate_gepa_acceptance_criterion(&self.gepa.acceptance_criterion)?;
+        validate_policy_config(&self.policy)?;
         validate_gepa_objective_acceptance_config(&self.gepa.objective_acceptance)?;
         validate_gepa_candidate_selector_config(&self.gepa.candidate_selector)?;
         validate_gepa_batch_sampler_config(&self.gepa.batch_sampler)?;
@@ -522,6 +543,16 @@ impl SynthOptimizerConfig {
             return Err(OptimizerError::Config(format!(
                 "unsupported proposer.execution_mode {:?}; expected local_process",
                 self.proposer.execution_mode
+            )));
+        }
+        let proposer_api_family = normalize_enum_value(&self.proposer.api_family);
+        if !matches!(
+            proposer_api_family.as_str(),
+            "chat_completions" | "responses"
+        ) {
+            return Err(OptimizerError::Config(format!(
+                "proposer.api_family must be chat_completions or responses; got {:?}",
+                self.proposer.api_family
             )));
         }
         match self.proposer.auth_mode.trim() {
@@ -622,12 +653,26 @@ pub struct PolicyConfig {
     pub provider: String,
     #[serde(default = "default_policy_model")]
     pub model: String,
+    #[serde(default = "default_policy_api_family")]
+    pub api_family: String,
     #[serde(default)]
     pub base_url: Option<String>,
     #[serde(default)]
-    pub api_key_env: Option<String>,
+    pub inference_url: Option<String>,
     #[serde(default)]
-    pub extra: Map<String, Value>,
+    pub max_tokens: Option<u64>,
+    #[serde(default = "default_policy_disable_reasoning")]
+    pub disable_reasoning: String,
+    #[serde(default = "default_policy_tool_call_style")]
+    pub tool_call_style: String,
+    #[serde(default = "default_policy_proxy_mode")]
+    pub proxy_mode: String,
+    #[serde(default = "default_policy_credential_mode")]
+    pub credential_mode: String,
+    #[serde(default, skip_serializing)]
+    pub api_key_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub config: Map<String, Value>,
 }
 
 impl Default for PolicyConfig {
@@ -635,9 +680,16 @@ impl Default for PolicyConfig {
         Self {
             provider: default_policy_provider(),
             model: default_policy_model(),
+            api_family: default_policy_api_family(),
             base_url: None,
+            inference_url: None,
+            max_tokens: None,
+            disable_reasoning: default_policy_disable_reasoning(),
+            tool_call_style: default_policy_tool_call_style(),
+            proxy_mode: default_policy_proxy_mode(),
+            credential_mode: default_policy_credential_mode(),
             api_key_env: None,
-            extra: Map::new(),
+            config: Map::new(),
         }
     }
 }
@@ -649,6 +701,10 @@ pub struct ProposerConfig {
     pub backend: String,
     #[serde(default = "default_execution_mode")]
     pub execution_mode: String,
+    #[serde(default = "default_policy_provider")]
+    pub provider: String,
+    #[serde(default = "default_policy_api_family")]
+    pub api_family: String,
     #[serde(default)]
     pub command: Vec<String>,
     #[serde(default)]
@@ -674,6 +730,8 @@ impl Default for ProposerConfig {
         Self {
             backend: default_proposer_backend(),
             execution_mode: default_execution_mode(),
+            provider: default_policy_provider(),
+            api_family: default_policy_api_family(),
             command: Vec::new(),
             sandbox_mode: None,
             approval_policy: None,
@@ -803,6 +861,14 @@ pub struct GepaConfig {
     #[serde(default)]
     pub max_time_seconds: Option<u64>,
     #[serde(default)]
+    pub no_improvement_generations: Option<usize>,
+    #[serde(default)]
+    pub no_improvement_metric: Option<String>,
+    #[serde(default)]
+    pub score_threshold_value: Option<f64>,
+    #[serde(default)]
+    pub score_threshold_metric: Option<String>,
+    #[serde(default)]
     pub max_prompt_tokens: Option<u64>,
     #[serde(default)]
     pub max_completion_tokens: Option<u64>,
@@ -854,6 +920,10 @@ impl Default for GepaConfig {
             pipeline: default_gepa_pipeline_config(),
             max_cost_usd: 0.0,
             max_time_seconds: None,
+            no_improvement_generations: None,
+            no_improvement_metric: None,
+            score_threshold_value: None,
+            score_threshold_metric: None,
             max_prompt_tokens: None,
             max_completion_tokens: None,
             max_total_tokens: None,
@@ -1102,6 +1172,91 @@ fn validate_positive_f64_option(name: &str, value: Option<f64>) -> Result<()> {
         return Err(OptimizerError::Config(format!("{name} must be positive")));
     }
     Ok(())
+}
+
+fn validate_policy_config(config: &PolicyConfig) -> Result<()> {
+    if config.provider.trim().is_empty() {
+        return Err(OptimizerError::Config(
+            "policy.provider must be non-empty".to_string(),
+        ));
+    }
+    if config.model.trim().is_empty() {
+        return Err(OptimizerError::Config(
+            "policy.model must be non-empty".to_string(),
+        ));
+    }
+    validate_positive_option("policy.max_tokens", config.max_tokens)?;
+    let api_family = normalize_enum_value(&config.api_family);
+    if !matches!(api_family.as_str(), "chat_completions" | "responses") {
+        return Err(OptimizerError::Config(format!(
+            "policy.api_family must be chat_completions or responses; got {:?}",
+            config.api_family
+        )));
+    }
+    let disable_reasoning = normalize_enum_value(&config.disable_reasoning);
+    if !matches!(
+        disable_reasoning.as_str(),
+        "auto" | "on" | "off" | "true" | "false" | "1" | "0"
+    ) {
+        return Err(OptimizerError::Config(format!(
+            "policy.disable_reasoning must be auto, on, or off; got {:?}",
+            config.disable_reasoning
+        )));
+    }
+    let tool_call_style = normalize_enum_value(&config.tool_call_style);
+    if !matches!(
+        tool_call_style.as_str(),
+        "openai_chat" | "openai_responses" | "codex_session_native" | "none"
+    ) {
+        return Err(OptimizerError::Config(format!(
+            "policy.tool_call_style must be openai_chat, openai_responses, codex_session_native, or none; got {:?}",
+            config.tool_call_style
+        )));
+    }
+    let proxy_mode = normalize_enum_value(&config.proxy_mode);
+    if !matches!(
+        proxy_mode.as_str(),
+        "allow_direct" | "proxy_only" | "assert_proxy"
+    ) {
+        return Err(OptimizerError::Config(format!(
+            "policy.proxy_mode must be allow_direct, proxy_only, or assert_proxy; got {:?}",
+            config.proxy_mode
+        )));
+    }
+    let credential_mode = normalize_enum_value(&config.credential_mode);
+    if !matches!(credential_mode.as_str(), "byok" | "proxy") {
+        return Err(OptimizerError::Config(format!(
+            "policy.credential_mode must be byok or proxy; got {:?}",
+            config.credential_mode
+        )));
+    }
+    if credential_mode == "proxy"
+        && config
+            .inference_url
+            .as_deref()
+            .is_none_or(|value| value.trim().is_empty())
+    {
+        return Err(OptimizerError::Config(
+            "policy.inference_url must be set when policy.credential_mode is proxy".to_string(),
+        ));
+    }
+    for key in config.config.keys() {
+        let normalized = normalize_enum_value(key);
+        if normalized.contains("api_key")
+            || normalized.contains("authorization")
+            || normalized == "token"
+            || normalized.ends_with("_token")
+        {
+            return Err(OptimizerError::Config(format!(
+                "policy.config must not contain credential-shaped key {key:?}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn normalize_enum_value(value: &str) -> String {
+    value.trim().to_ascii_lowercase().replace('-', "_")
 }
 
 fn validate_gepa_candidate_selector_config(config: &GepaCandidateSelectorConfig) -> Result<()> {

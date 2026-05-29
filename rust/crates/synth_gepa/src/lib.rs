@@ -1519,6 +1519,9 @@ fn advance_gepa_sync_serial_once(
     if let Err(error) = check_cancelled(options.cancellation.as_ref()) {
         return terminalize_aborted_gepa_run(context, state, error, "GEPA run cancelled");
     }
+    if matches!(state.cursor.phase, GepaCursorPhase::Paused) {
+        return Ok(paused_gepa_outcome(context));
+    }
     let resources = ensure_step_resources(context, state)?;
     if let Some(job_id) = state.cursor.pending_job_id.clone() {
         return advance_pending_runtime_job(context, state, &resources, mode, &job_id, None);
@@ -1538,6 +1541,7 @@ fn advance_gepa_sync_serial_once(
         }
         GepaCursorPhase::Heldout => advance_heldout(context, state, &resources),
         GepaCursorPhase::Finalizing => finalize_completed_gepa_run(context, state, &resources),
+        GepaCursorPhase::Paused => Ok(paused_gepa_outcome(context)),
         GepaCursorPhase::Completed | GepaCursorPhase::Failed | GepaCursorPhase::Cancelled => {
             unreachable!("terminal cursor phases are handled before phase dispatch")
         }
@@ -1592,6 +1596,9 @@ fn advance_gepa_async_pipelined_once(
         state.cursor.pipeline_state.lane_leases.clear();
         state.cursor.pipeline_state.candidate_partials.clear();
         return terminalize_aborted_gepa_run(context, state, error, "GEPA run cancelled");
+    }
+    if matches!(state.cursor.phase, GepaCursorPhase::Paused) {
+        return Ok(paused_gepa_outcome(context));
     }
 
     if let Some(outcome) = terminalize_restored_unclaimable_async_job(context, state, mode)? {
@@ -1686,6 +1693,18 @@ fn advance_gepa_async_pipelined_once(
         result: None,
         message: "async-pipelined: waiting for lane capacity or completions".to_string(),
     })
+}
+
+fn paused_gepa_outcome(context: &GepaRunContext) -> GepaAdvanceOutcome {
+    GepaAdvanceOutcome {
+        action: planner::GepaTickAction::CheckpointRun {
+            run_id: context.config.run.run_id.clone(),
+            phase: "paused".to_string(),
+        },
+        terminal: false,
+        result: None,
+        message: "GEPA run is paused".to_string(),
+    }
 }
 
 fn terminalize_restored_unclaimable_async_job(
@@ -2992,6 +3011,96 @@ fn async_pipeline_stopper_satisfied(context: &GepaRunContext, state: &GepaRunSta
     state.cursor.generation >= context.config.gepa.max_generations
         || train_rollout_budget_reached(&context.config, state.rollout_count)
         || cost_budget_reached(&context.config, state.total_cost)
+        || score_threshold_reached(&context.config, state)
+        || no_improvement_reached(&context.config, state)
+}
+
+fn service_stop_condition_reached(config: &SynthOptimizerConfig, state: &GepaRunState) -> bool {
+    score_threshold_reached(config, state) || no_improvement_reached(config, state)
+}
+
+fn score_threshold_reached(config: &SynthOptimizerConfig, state: &GepaRunState) -> bool {
+    let Some(threshold) = config.gepa.score_threshold_value else {
+        return false;
+    };
+    let metric = config
+        .gepa
+        .score_threshold_metric
+        .as_deref()
+        .unwrap_or("heldout_score");
+    state
+        .candidates
+        .iter()
+        .filter_map(|candidate| candidate_metric_score(candidate, metric))
+        .any(|score| score >= threshold)
+}
+
+fn no_improvement_reached(config: &SynthOptimizerConfig, state: &GepaRunState) -> bool {
+    let Some(window) = config.gepa.no_improvement_generations else {
+        return false;
+    };
+    if window == 0 || state.cursor.generation <= window {
+        return false;
+    }
+    let metric = config
+        .gepa
+        .no_improvement_metric
+        .as_deref()
+        .unwrap_or("heldout_score");
+    let mut best_by_generation: BTreeMap<usize, f64> = BTreeMap::new();
+    for candidate in &state.candidates {
+        let Some(generation) = candidate_generation(candidate) else {
+            continue;
+        };
+        let Some(score) = candidate_metric_score(candidate, metric) else {
+            continue;
+        };
+        best_by_generation
+            .entry(generation)
+            .and_modify(|best| *best = best.max(score))
+            .or_insert(score);
+    }
+    if best_by_generation.len() <= window {
+        return false;
+    }
+    let latest_generation = best_by_generation.keys().copied().max().unwrap_or(0);
+    if latest_generation < window {
+        return false;
+    }
+    let prior_best = best_by_generation
+        .iter()
+        .filter(|(generation, _)| **generation < latest_generation.saturating_sub(window - 1))
+        .map(|(_, score)| *score)
+        .reduce(f64::max);
+    let Some(prior_best) = prior_best else {
+        return false;
+    };
+    let recent_best = best_by_generation
+        .iter()
+        .filter(|(generation, _)| **generation >= latest_generation.saturating_sub(window - 1))
+        .map(|(_, score)| *score)
+        .reduce(f64::max)
+        .unwrap_or(f64::NEG_INFINITY);
+    recent_best <= prior_best
+}
+
+fn candidate_metric_score(candidate: &CandidateRecord, metric: &str) -> Option<f64> {
+    match metric {
+        "train_score" | "train_reward" => candidate.train_reward.or(candidate.minibatch_reward),
+        "heldout_score" | "heldout_reward" => candidate.heldout_reward.or(candidate.train_reward),
+        _ => None,
+    }
+}
+
+fn candidate_generation(candidate: &CandidateRecord) -> Option<usize> {
+    if candidate.source == "seed" || candidate.parent_id.is_none() {
+        return Some(0);
+    }
+    candidate
+        .acceptance_metadata
+        .get("generation")
+        .and_then(Value::as_u64)
+        .map(|generation| generation as usize)
 }
 
 fn async_partial_id(stage: &str, generation: usize) -> String {
@@ -6900,6 +7009,7 @@ fn advance_generation_start(
     }
     if train_rollout_budget_reached(&context.config, state.rollout_count)
         || cost_budget_reached(&context.config, state.total_cost)
+        || service_stop_condition_reached(&context.config, state)
     {
         return move_to_pre_heldout(context, state, resources);
     }
@@ -7182,6 +7292,7 @@ fn advance_proposer_waiting(
             let proposal_parent_id = proposal_parent.candidate_id.clone();
             let mut acceptance_metadata = Map::new();
             acceptance_metadata.insert("proposal".to_string(), proposal.metadata_value());
+            acceptance_metadata.insert("generation".to_string(), json!(state.cursor.generation));
             let lever_bundle = proposal.lever_bundle.clone().unwrap_or_else(|| {
                 LeverBundle::from_prompt_payload(
                     candidate_id.clone(),
@@ -8149,7 +8260,13 @@ fn finalize_completed_gepa_run(
         usage: usage_value,
         state_history,
     };
-    let result_value = serde_json::to_value(&result)?;
+    let mut result_value = serde_json::to_value(&result)?;
+    if let Some(result_object) = result_value.as_object_mut() {
+        result_object.insert(
+            "stopped_by".to_string(),
+            stopped_by_value(&context.config, state),
+        );
+    }
     context
         .workspace
         .record_artifact_refs(&context.config.run.run_id, &result.artifact_refs)?;
@@ -8200,6 +8317,30 @@ fn finalize_completed_gepa_run(
         result: Some(result),
         message: "GEPA run completed".to_string(),
     })
+}
+
+fn stopped_by_value(config: &SynthOptimizerConfig, state: &GepaRunState) -> Value {
+    if score_threshold_reached(config, state) {
+        return json!({
+            "kind": "score_threshold",
+            "metric": config.gepa.score_threshold_metric.as_deref().unwrap_or("heldout_score"),
+            "value": config.gepa.score_threshold_value,
+        });
+    }
+    if no_improvement_reached(config, state) {
+        return json!({
+            "kind": "no_improvement",
+            "metric": config.gepa.no_improvement_metric.as_deref().unwrap_or("heldout_score"),
+            "generations": config.gepa.no_improvement_generations,
+        });
+    }
+    if cost_budget_reached(config, state.total_cost) {
+        return json!({"kind": "max_cost_usd", "value": config.gepa.max_cost_usd});
+    }
+    if train_rollout_budget_reached(config, state.rollout_count) {
+        return json!({"kind": "max_rollouts", "n": config.gepa.max_total_rollouts});
+    }
+    json!({"kind": "max_generations", "n": config.gepa.max_generations})
 }
 
 pub fn execute_gepa_with_options(
@@ -9293,6 +9434,7 @@ fn execute_gepa_monolithic_with_options(
             let proposal_parent_id = proposal_parent.candidate_id.clone();
             let mut acceptance_metadata = Map::new();
             acceptance_metadata.insert("proposal".to_string(), proposal.metadata_value());
+            acceptance_metadata.insert("generation".to_string(), json!(generation));
             let mut candidate = CandidateRecord {
                 lever_bundle: LeverBundle::from_prompt_payload(
                     candidate_id.clone(),
@@ -14191,6 +14333,10 @@ fn run_proposer(
                 generation,
                 seed_pool_rows,
                 workspace_dir,
+            })
+            .map_err(|error| {
+                eprintln!("[gepa-proposer] codex_app_server proposer failed: {error}");
+                error
             })
         }
         "local_process_json" => Err(OptimizerError::Config(

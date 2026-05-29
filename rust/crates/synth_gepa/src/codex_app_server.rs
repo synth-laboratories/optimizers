@@ -3099,6 +3099,13 @@ fn validate_manifest_contract(manifest: &Value) -> Result<()> {
                 "codex app-server proposer evidence missing {field}"
             )));
         };
+        // `winning_patterns` may legitimately be empty: on sparse-reward,
+        // long-horizon tasks (e.g. Crafter ReAct) the seed candidate can score
+        // zero, so there are no winning rollouts to ground a pattern in. Require
+        // the field to be present, but do not force content for it.
+        if field == "winning_patterns" {
+            continue;
+        }
         let has_content = match value {
             Value::String(text) => !text.trim().is_empty(),
             Value::Array(items) => items.iter().any(|item| {

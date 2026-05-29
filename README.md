@@ -27,12 +27,52 @@ uv add synth-optimizers
 
 ## Quickstart
 
+A run is defined entirely by one TOML: which **container** to talk to, which prompt
+modules to optimize, and how to score them. The optimizer launches (or connects to)
+the container, then only speaks HTTP to it.
+
+```toml
+[container]
+url = "http://127.0.0.1:8765"
+command = ["uv", "run", "python", "banking77_container/synth_service_app.py", "--port", "8765"]
+
+[candidate]
+target_modules = ["stage2_system"]
+
+[seed_candidate]
+stage2_system = "Classify the query into exactly one Banking77 intent. Return only the label."
+
+[dataset]
+train_seeds = [0, 1, 2, 3, 4, 5, 6, 7]
+heldout_seeds = [100, 101, 102, 103]
+```
+
+GEPA can only optimize against a **live container** — it speaks HTTP, nothing else.
+The same `url` you put in `[container]` is the one to confirm is up via `GET /health`
+before spending a single rollout:
+
 ```python
+import urllib.request, json
 from synth_optimizers import GepaRun
 
+CONTAINER_URL = "http://127.0.0.1:8765"
+
+with urllib.request.urlopen(f"{CONTAINER_URL}/health", timeout=5) as r:
+    assert json.load(r)["status"] == "ok", "container is up but not ready"
+
 result = GepaRun.from_toml("gepa.toml").execute()
-print(result.best_candidate)
+
+print(result.best_candidate["stage2_system"])
+print(f"cost:       ${result.cost_usd:.2f}")
+print(f"frontier:   {result.frontier_path}")
+print(f"score plot: {result.score_chart_path}")
+print(f"events:     {result.event_feed_path}")
 ```
+
+> `from_toml` takes only a path — the container URL lives in the TOML and is the single
+> source of truth, so the health check above points at that same `url`. If a connection
+> error fires instead of the assertion, no container is running: start it (the
+> `[container].command` lets GEPA launch it for you) and re-run.
 
 Or from the CLI:
 

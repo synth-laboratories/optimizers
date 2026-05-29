@@ -53,17 +53,14 @@ CLI:
 ```bash
 synth-optimizers gepa run --config gepa.toml
 synth-optimizers gepa service --db service.sqlite --bind 127.0.0.1:8879
-synth-optimizers gepa run-next --db service.sqlite
 synth-optimizers events replay --events runs/latest/events.jsonl
 synth-optimizers events compare --left runs/a/events.normalized.jsonl --right runs/b/events.normalized.jsonl
-synth-optimizers workspace status --db runs/latest/workspace.sqlite
-synth-optimizers workspace submit --db service.sqlite --config gepa.toml
-synth-optimizers workspace claim --db service.sqlite --lease-id worker-1
-synth-optimizers workspace start --db service.sqlite --request-id runreq_...
-synth-optimizers workspace complete --db service.sqlite --request-id runreq_...
-synth-optimizers workspace cancel --db service.sqlite --request-id runreq_...
-synth-optimizers workspace recover --db service.sqlite
 ```
+
+Queue submission, claiming, run lifecycle control, and workspace status are the
+standing service's responsibility and are driven through its HTTP routes
+(`/runs`, `/runs/{run_id}/...`, `/workspace`) rather than standalone CLI
+subcommands.
 
 Result fields:
 

@@ -50,6 +50,7 @@ have runnable examples across task shapes: Banking77, HotpotQA, MiniGrid, TBLite
 
 - [Cookbooks](https://github.com/synth-laboratories/synth-cookbooks-public/tree/main/cookbooks/optimizers/gepa) — runnable GEPA examples
 - [synth-containers](https://github.com/synth-laboratories/containers) — the task contract
+- [Agent skill](skills/gepa/SKILL.md) — drop into a coding agent to run and adapt GEPA
 - [GEPA service OpenAPI](rust/crates/synth_gepa/openapi/gepa-service-v1.yaml)
 - [GEPA paper](https://arxiv.org/abs/2507.19457)
 

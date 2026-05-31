@@ -11,7 +11,7 @@
 * Added OpenAI, OpenRouter, and ChatGPT proposer auth modes.
 * Moved Codex auth, JSON-RPC, and usage normalization into platform agent runtime.
 * Added live terminal policy/proposer usage rollups.
-* Merged PR #3 `better-ai-auth`; PR #2 `better-sdk` remains the SDK base.
+* Merged [PR #3](https://github.com/synth-laboratories/optimizers/pull/3) `better-ai-auth`; [PR #2](https://github.com/synth-laboratories/optimizers/pull/2) `better-sdk` remains the SDK base.
 * Direct DeepSeek is still blocked; use OpenRouter DeepSeek slugs.
 
 ## 2026-05-30

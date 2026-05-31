@@ -564,19 +564,7 @@ impl SynthOptimizerConfig {
                 self.proposer.api_family
             )));
         }
-        match self.proposer.auth_mode.trim() {
-            "auto" | "host" | "api_key" => {}
-            mode => {
-                return Err(OptimizerError::Config(format!(
-                    "unsupported proposer.auth_mode {mode:?}; expected auto, host, or api_key"
-                )));
-            }
-        }
-        if self.proposer.auth_mode.trim() == "api_key" && self.proposer.copy_host_auth {
-            return Err(OptimizerError::Config(
-                "proposer.auth_mode = \"api_key\" cannot be combined with proposer.copy_host_auth = true".to_string(),
-            ));
-        }
+        validate_proposer_auth_config(&self.proposer)?;
         validate_proposer_prompt_config(&self.proposer.prompt)?;
         Ok(())
     }
@@ -734,6 +722,8 @@ pub struct ProposerConfig {
     #[serde(default)]
     pub copy_host_auth: bool,
     #[serde(default)]
+    pub codex_home: Option<PathBuf>,
+    #[serde(default)]
     pub api_key_env: Option<String>,
     #[serde(default = "default_timeout_seconds")]
     pub timeout_seconds: u64,
@@ -756,12 +746,134 @@ impl Default for ProposerConfig {
             reasoning_effort: None,
             auth_mode: default_proposer_auth_mode(),
             copy_host_auth: false,
+            codex_home: None,
             api_key_env: None,
             timeout_seconds: default_timeout_seconds(),
             model: None,
             prompt: ProposerPromptConfig::default(),
         }
     }
+}
+
+/// Proposer models allowed when using ChatGPT subscription auth (`auth_mode = chatgpt`).
+pub const CHATGPT_PROPOSER_MODELS: &[&str] = &[
+    "gpt-5.4-mini",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.5",
+];
+
+pub fn proposer_auth_mode_normalized(auth_mode: &str) -> String {
+    normalize_enum_value(auth_mode)
+}
+
+pub fn proposer_uses_chatgpt_auth(auth_mode: &str) -> bool {
+    proposer_auth_mode_normalized(auth_mode) == "chatgpt"
+}
+
+pub fn validate_chatgpt_proposer_model(model: &str) -> Result<()> {
+    let normalized = normalize_chatgpt_proposer_model_id(model);
+    if CHATGPT_PROPOSER_MODELS
+        .iter()
+        .any(|allowed| *allowed == normalized.as_str())
+    {
+        return Ok(());
+    }
+    Err(OptimizerError::Config(format!(
+        "proposer.model {model:?} is not allowed for proposer.auth_mode = \"chatgpt\"; \
+         allowed models: {}",
+        CHATGPT_PROPOSER_MODELS.join(", ")
+    )))
+}
+
+pub fn validate_chatgpt_proposer_config(proposer: &ProposerConfig) -> Result<()> {
+    let codex_home = proposer.codex_home.as_ref().ok_or_else(|| {
+        OptimizerError::Config(
+            "proposer.auth_mode = \"chatgpt\" requires proposer.codex_home pointing at the \
+             ChatGPT-authenticated Codex directory (for example ~/.codex after `codex auth login`)"
+                .to_string(),
+        )
+    })?;
+    if codex_home.as_os_str().is_empty() {
+        return Err(OptimizerError::Config(
+            "proposer.codex_home must be non-empty when proposer.auth_mode = \"chatgpt\""
+                .to_string(),
+        ));
+    }
+    let source = fs::canonicalize(codex_home).map_err(|source| {
+        OptimizerError::Config(format!(
+            "proposer.codex_home {codex_home:?} must exist when proposer.auth_mode = \"chatgpt\": \
+             {source}"
+        ))
+    })?;
+    if !source.is_dir() {
+        return Err(OptimizerError::Config(format!(
+            "proposer.codex_home {source:?} must be a directory when proposer.auth_mode = \"chatgpt\""
+        )));
+    }
+    let auth_json = source.join("auth.json");
+    if !auth_json.is_file() {
+        return Err(OptimizerError::Config(format!(
+            "proposer.codex_home {source:?} is missing auth.json; run `codex auth login` or fix \
+             proposer.codex_home"
+        )));
+    }
+    let model = proposer
+        .model
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            OptimizerError::Config(
+                "proposer.auth_mode = \"chatgpt\" requires proposer.model to be set".to_string(),
+            )
+        })?;
+    validate_chatgpt_proposer_model(model)
+}
+
+pub fn resolve_chatgpt_codex_home_source(proposer: &ProposerConfig) -> Result<PathBuf> {
+    validate_chatgpt_proposer_config(proposer)?;
+    let Some(codex_home) = proposer.codex_home.as_ref() else {
+        return Err(OptimizerError::Config(
+            "proposer.auth_mode = \"chatgpt\" requires proposer.codex_home".to_string(),
+        ));
+    };
+    fs::canonicalize(codex_home).map_err(|source| OptimizerError::io(codex_home, source))
+}
+
+fn validate_proposer_auth_config(proposer: &ProposerConfig) -> Result<()> {
+    let auth_mode = proposer_auth_mode_normalized(&proposer.auth_mode);
+    match auth_mode.as_str() {
+        "auto" | "host" | "api_key" | "chatgpt" => {}
+        mode => {
+            return Err(OptimizerError::Config(format!(
+                "unsupported proposer.auth_mode {mode:?}; expected auto, host, api_key, or chatgpt"
+            )));
+        }
+    }
+    if auth_mode == "api_key" && proposer.copy_host_auth {
+        return Err(OptimizerError::Config(
+            "proposer.auth_mode = \"api_key\" cannot be combined with proposer.copy_host_auth = true".to_string(),
+        ));
+    }
+    if proposer.copy_host_auth && auth_mode != "api_key" && proposer.codex_home.is_none() {
+        return Err(OptimizerError::Config(
+            "proposer.copy_host_auth requires proposer.codex_home".to_string(),
+        ));
+    }
+    if auth_mode == "chatgpt" {
+        if proposer.api_key_env.is_some() {
+            return Err(OptimizerError::Config(
+                "proposer.auth_mode = \"chatgpt\" cannot be combined with proposer.api_key_env"
+                    .to_string(),
+            ));
+        }
+        validate_chatgpt_proposer_config(proposer)?;
+    }
+    Ok(())
+}
+
+fn normalize_chatgpt_proposer_model_id(model: &str) -> String {
+    model.trim().to_ascii_lowercase()
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

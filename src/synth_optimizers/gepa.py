@@ -104,6 +104,7 @@ class ProposerTomlSection(BaseModel):
     auth_mode: str = "api_key"
     api_key_env: str | None = "OPENAI_API_KEY"
     copy_host_auth: bool = False
+    codex_home: str | Path | None = None
     timeout_seconds: int = 900
     sandbox_mode: str | None = "workspace-write"
     approval_policy: str | None = "never"
@@ -111,6 +112,10 @@ class ProposerTomlSection(BaseModel):
     prompt: ProposerPromptTomlSection = Field(default_factory=ProposerPromptTomlSection)
 
     def to_domain(self, base_dir: Path) -> "ProposerConfig":
+        codex_home = None
+        if self.codex_home is not None:
+            path = Path(self.codex_home)
+            codex_home = path if path.is_absolute() else base_dir / path
         return ProposerConfig(
             backend=self.backend,
             execution_mode=self.execution_mode,
@@ -121,6 +126,7 @@ class ProposerTomlSection(BaseModel):
             auth_mode=self.auth_mode,
             api_key_env=self.api_key_env,
             copy_host_auth=self.copy_host_auth,
+            codex_home=codex_home,
             timeout_seconds=self.timeout_seconds,
             sandbox_mode=self.sandbox_mode,
             approval_policy=self.approval_policy,
@@ -456,6 +462,7 @@ class ProposerConfig:
     auth_mode: str = "api_key"
     api_key_env: str | None = "OPENAI_API_KEY"
     copy_host_auth: bool = False
+    codex_home: str | Path | None = None
     timeout_seconds: int = 900
     sandbox_mode: str | None = "workspace-write"
     approval_policy: str | None = "never"
@@ -474,6 +481,7 @@ class ProposerConfig:
                 "auth_mode": self.auth_mode,
                 "api_key_env": self.api_key_env,
                 "copy_host_auth": bool(self.copy_host_auth),
+                "codex_home": str(self.codex_home) if self.codex_home is not None else None,
                 "timeout_seconds": int(self.timeout_seconds),
                 "sandbox_mode": self.sandbox_mode,
                 "approval_policy": self.approval_policy,

@@ -222,6 +222,8 @@ struct ServiceTimeoutsConfig {
 struct ServiceProposerIoConfig {
     #[serde(default)]
     timeout_seconds: Option<u64>,
+    #[serde(default)]
+    codex_home: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -2130,11 +2132,11 @@ fn run_request_to_optimizer_config(
     config.proposer.model = Some(request.proposer.model.clone());
     config.proposer.api_family = request.proposer.api_family.clone();
     apply_proposer_credentials(&mut config, &request.proposer.credentials)?;
-    // The codex app-server proposer authenticates with the HOST ChatGPT bundle
-    // (~/.codex), not a raw API key: api_key mode cannot drive ChatGPT-subscription
-    // models (e.g. gpt-5.4-mini). Force host auth regardless of the wire resolver.
-    config.proposer.auth_mode = "host".to_string();
+    // ChatGPT-subscription proposer models require the authenticated Codex bundle,
+    // not a raw API key. Service callers must supply advanced.proposer_io.codex_home.
+    config.proposer.auth_mode = "chatgpt".to_string();
     config.proposer.copy_host_auth = true;
+    config.proposer.api_key_env = None;
     // Headless codex proposer config (mirrors the proven go-ex proposer in
     // synth-go-ex/core/proposers.py): never wait for approvals (the app-server has
     // no one to answer them → would hang to the turn timeout), workspace-write
@@ -2398,6 +2400,14 @@ fn apply_advanced_config(
         if let Some(value) = proposer_io.timeout_seconds {
             require_positive_u64("advanced.proposer_io.timeout_seconds", value)?;
             config.proposer.timeout_seconds = value;
+        }
+        if let Some(path) = proposer_io
+            .codex_home
+            .as_ref()
+            .map(|path| path.trim())
+            .filter(|path| !path.is_empty())
+        {
+            config.proposer.codex_home = Some(PathBuf::from(path));
         }
     }
     if let Some(enabled) = advanced.adaptive_rollout_concurrency {

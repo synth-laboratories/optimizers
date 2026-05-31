@@ -12,7 +12,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Map, Value};
-use synth_optimizer_platform::{OptimizerError, PromptProgram, Result, SynthOptimizerConfig};
+use synth_optimizer_platform::{
+    proposer_auth_mode_normalized, proposer_uses_chatgpt_auth, resolve_chatgpt_codex_home_source,
+    OptimizerError, PromptProgram, Result, SynthOptimizerConfig,
+};
 
 use crate::CandidateRecord;
 
@@ -95,7 +98,8 @@ fn run_session(
     let manifest = read_manifest(&input.workspace_dir)?;
     let proposals = proposals_from_manifest(&manifest)?;
     let evidence_warnings = manifest_evidence_warnings(input, &manifest, &proposals);
-    let usage = usage_from_message(&final_turn)
+    let usage = usage_from_messages(&client.received_messages, &turn_id)
+        .or_else(|| usage_from_message(&final_turn))
         .unwrap_or_else(|| json!({"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}));
     let response = json!({
         "backend": "codex_app_server",
@@ -2638,7 +2642,7 @@ impl AppServerClient {
         } else {
             input.config.proposer.command.clone()
         };
-        let auth_mode = input.config.proposer.auth_mode.trim();
+        let auth_mode = proposer_auth_mode_normalized(&input.config.proposer.auth_mode);
         let mut env_map = env::vars().collect::<BTreeMap<_, _>>();
         let mut auth_home_to_cleanup = None;
         let proposer_api_key_env =
@@ -2651,9 +2655,6 @@ impl AppServerClient {
                 "proposer.auth_mode = \"api_key\" requires non-empty {proposer_api_key_env}"
             )));
         }
-        if let Some(api_key) = proposer_api_key.as_deref() {
-            env_map.insert("OPENAI_API_KEY".to_string(), api_key.to_string());
-        }
         if auth_mode == "api_key" {
             let codex_home = workspace_dir.join(".codex_api_key_home");
             prepare_api_key_codex_home(
@@ -2663,10 +2664,18 @@ impl AppServerClient {
             )?;
             env_map.insert("CODEX_HOME".to_string(), codex_home.display().to_string());
             auth_home_to_cleanup = Some(codex_home);
+        } else if proposer_uses_chatgpt_auth(&auth_mode) {
+            let source = resolve_chatgpt_codex_home_source(&input.config.proposer)?;
+            let codex_home = workspace_dir.join(".codex_home");
+            copy_codex_home(&source, &codex_home)?;
+            env_map.insert("CODEX_HOME".to_string(), codex_home.display().to_string());
         } else if input.config.proposer.copy_host_auth {
             let codex_home = workspace_dir.join(".codex_home");
-            copy_codex_home(&codex_home)?;
+            let source = resolve_legacy_host_codex_home_source(&input.config.proposer)?;
+            copy_codex_home(&source, &codex_home)?;
             env_map.insert("CODEX_HOME".to_string(), codex_home.display().to_string());
+        } else if let Some(api_key) = proposer_api_key.as_deref() {
+            env_map.insert("OPENAI_API_KEY".to_string(), api_key.to_string());
         }
         let mut cmd = Command::new(&command[0]);
         cmd.args(&command[1..])
@@ -3298,36 +3307,84 @@ fn message_turn_id(message: &Value) -> Option<String> {
     extract_turn_id(message)
 }
 
+fn usage_from_messages(messages: &[Value], turn_id: &str) -> Option<Value> {
+    messages.iter().rev().find_map(|message| {
+        let message_turn_id = extract_turn_id(message)?;
+        if message_turn_id != turn_id {
+            return None;
+        }
+        usage_from_message(message)
+    })
+}
+
 fn usage_from_message(message: &Value) -> Option<Value> {
     let usage = message
-        .pointer("/params/turn/usage")
+        .pointer("/params/tokenUsage/last")
+        .or_else(|| message.pointer("/params/token_usage/last"))
+        .or_else(|| message.pointer("/params/turn/usage"))
         .or_else(|| message.pointer("/params/usage"))
         .or_else(|| message.pointer("/result/usage"))?;
+    let prompt_tokens = usage_u64(
+        usage,
+        &[
+            "prompt_tokens",
+            "input_tokens",
+            "inputTokens",
+            "promptTokens",
+        ],
+    );
+    let completion_tokens = usage_u64(
+        usage,
+        &[
+            "completion_tokens",
+            "output_tokens",
+            "outputTokens",
+            "completionTokens",
+            "reasoning_output_tokens",
+            "reasoningOutputTokens",
+        ],
+    );
+    let total_tokens = usage_u64(usage, &["total_tokens", "totalTokens"])
+        .max(prompt_tokens.saturating_add(completion_tokens));
     Some(json!({
-        "prompt_tokens": usage
-            .get("prompt_tokens")
-            .or_else(|| usage.get("input_tokens"))
-            .and_then(Value::as_u64)
-            .unwrap_or(0),
-        "completion_tokens": usage
-            .get("completion_tokens")
-            .or_else(|| usage.get("output_tokens"))
-            .and_then(Value::as_u64)
-            .unwrap_or(0),
-        "total_tokens": usage.get("total_tokens").and_then(Value::as_u64).unwrap_or(0),
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
     }))
 }
 
-fn copy_codex_home(destination: &Path) -> Result<()> {
+fn usage_u64(usage: &Value, keys: &[&str]) -> u64 {
+    keys.iter()
+        .find_map(|key| usage.get(*key).and_then(Value::as_u64))
+        .unwrap_or(0)
+}
+
+fn resolve_legacy_host_codex_home_source(
+    proposer: &synth_optimizer_platform::ProposerConfig,
+) -> Result<PathBuf> {
+    if let Some(codex_home) = proposer.codex_home.as_ref() {
+        if codex_home.as_os_str().is_empty() {
+            return Err(OptimizerError::Proposer(
+                "proposer.codex_home must be non-empty when set".to_string(),
+            ));
+        }
+        let source = fs::canonicalize(codex_home)
+            .map_err(|source| OptimizerError::io(codex_home, source))?;
+        if !source.is_dir() {
+            return Err(OptimizerError::Proposer(format!(
+                "proposer.codex_home {source:?} must be a directory"
+            )));
+        }
+        return Ok(source);
+    }
+    Err(OptimizerError::Proposer(
+        "proposer.copy_host_auth requires proposer.codex_home".to_string(),
+    ))
+}
+
+fn copy_codex_home(source: &Path, destination: &Path) -> Result<()> {
     fs::create_dir_all(destination).map_err(|source| OptimizerError::io(destination, source))?;
-    let source = env::var("CODEX_HOME").map(PathBuf::from).ok().or_else(|| {
-        env::var("HOME")
-            .ok()
-            .map(|home| PathBuf::from(home).join(".codex"))
-    });
-    let Some(source) = source else {
-        return Ok(());
-    };
+    let mut copied_auth = false;
     for filename in [
         "auth.json",
         "installation_id",
@@ -3339,7 +3396,16 @@ fn copy_codex_home(destination: &Path) -> Result<()> {
             let destination_file = destination.join(filename);
             fs::copy(&source_file, &destination_file)
                 .map_err(|copy_error| OptimizerError::io(destination_file, copy_error))?;
+            if filename == "auth.json" {
+                copied_auth = true;
+            }
         }
+    }
+    if !copied_auth {
+        return Err(OptimizerError::Proposer(format!(
+            "Codex home {source:?} is missing auth.json; run `codex auth login` or fix \
+             proposer.codex_home"
+        )));
     }
     Ok(())
 }

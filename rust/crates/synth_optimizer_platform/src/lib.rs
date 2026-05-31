@@ -44,11 +44,13 @@ pub use candidates::{
 };
 pub use checkpoints::{CheckpointInput, CheckpointRecord};
 pub use config::{
-    CacheConfig, CandidateConfig, ContainerConfig, GepaAdaptiveRolloutConcurrencyConfig,
-    GepaBatchSamplerConfig, GepaCandidateSelectorConfig, GepaConfig, GepaObjectiveAcceptanceConfig,
-    GepaPipelineConfig, GepaPipelineMode, GepaPipelineWorkers, GepaStalenessPolicy,
-    GepaTaskPoolsConfig, PolicyConfig, ProposerConfig, ProposerPromptConfig, RunConfig,
-    SynthOptimizerConfig, TasksetConfig,
+    proposer_auth_mode_normalized, proposer_uses_chatgpt_auth, resolve_chatgpt_codex_home_source,
+    validate_chatgpt_proposer_config, validate_chatgpt_proposer_model, CacheConfig,
+    CandidateConfig, ContainerConfig, GepaAdaptiveRolloutConcurrencyConfig, GepaBatchSamplerConfig,
+    GepaCandidateSelectorConfig, GepaConfig, GepaObjectiveAcceptanceConfig, GepaPipelineConfig,
+    GepaPipelineMode, GepaPipelineWorkers, GepaStalenessPolicy, GepaTaskPoolsConfig, PolicyConfig,
+    ProposerConfig, ProposerPromptConfig, RunConfig, SynthOptimizerConfig, TasksetConfig,
+    CHATGPT_PROPOSER_MODELS,
 };
 pub use configured_limits::{
     ConfiguredGepaRunLimits, GepaRuntimeEffectBudgetEstimates, GEPA_LIMIT_STOP_POLICY,

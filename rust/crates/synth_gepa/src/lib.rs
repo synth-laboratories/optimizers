@@ -616,20 +616,11 @@ pub struct UsageTotals {
 
 impl UsageTotals {
     fn add_usage_payload(&mut self, usage: &Value) {
-        self.prompt_tokens += usage
-            .get("prompt_tokens")
-            .or_else(|| usage.get("input_tokens"))
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        self.completion_tokens += usage
-            .get("completion_tokens")
-            .or_else(|| usage.get("output_tokens"))
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        self.total_tokens += usage
-            .get("total_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
+        let prompt_tokens = usage_prompt_tokens(usage);
+        let completion_tokens = usage_completion_tokens(usage);
+        self.prompt_tokens += prompt_tokens;
+        self.completion_tokens += completion_tokens;
+        self.total_tokens += usage_total_tokens(usage, prompt_tokens, completion_tokens);
     }
 
     fn merge(&mut self, other: &UsageTotals) {
@@ -676,21 +667,11 @@ impl RuntimeUsageBucket {
                 .map(str::to_string);
         }
         let usage = fields.get("usage").unwrap_or(&Value::Null);
-        self.prompt_tokens += usage
-            .get("prompt_tokens")
-            .or_else(|| usage.get("input_tokens"))
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        self.completion_tokens += usage
-            .get("completion_tokens")
-            .or_else(|| usage.get("output_tokens"))
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        self.total_tokens += usage
-            .get("total_tokens")
-            .and_then(Value::as_u64)
-            .or_else(|| fields.get("total_tokens").and_then(Value::as_u64))
-            .unwrap_or(0);
+        let prompt_tokens = usage_prompt_tokens(usage);
+        let completion_tokens = usage_completion_tokens(usage);
+        self.prompt_tokens += prompt_tokens;
+        self.completion_tokens += completion_tokens;
+        self.total_tokens += runtime_total_tokens(fields, usage, prompt_tokens, completion_tokens);
         self.cost_usd += fields
             .get("cost_usd")
             .and_then(Value::as_f64)
@@ -724,9 +705,11 @@ impl RuntimeUsageBucket {
                 .and_then(Value::as_str)
                 .map(str::to_string);
         }
-        self.prompt_tokens += field_u64(fields, "prompt_tokens");
-        self.completion_tokens += field_u64(fields, "completion_tokens");
-        self.total_tokens += field_u64(fields, "total_tokens");
+        let prompt_tokens = usage_prompt_tokens(fields);
+        let completion_tokens = usage_completion_tokens(fields);
+        self.prompt_tokens += prompt_tokens;
+        self.completion_tokens += completion_tokens;
+        self.total_tokens += usage_total_tokens(fields, prompt_tokens, completion_tokens);
         self.calls = self.calls.saturating_add(field_u64(fields, "calls"));
         self.jobs = self.jobs.saturating_add(field_u64(fields, "jobs"));
         self.cost_usd += fields
@@ -773,6 +756,53 @@ fn runtime_usage_summary_from_events(records: &[EventStreamRecord]) -> RuntimeUs
         }
     }
     summary
+}
+
+fn runtime_total_tokens(
+    fields: &Value,
+    usage: &Value,
+    prompt_tokens: u64,
+    completion_tokens: u64,
+) -> u64 {
+    usage_total_tokens(usage, prompt_tokens, completion_tokens)
+        .max(field_u64(fields, "total_tokens"))
+}
+
+fn usage_total_tokens(usage: &Value, prompt_tokens: u64, completion_tokens: u64) -> u64 {
+    usage_u64(usage, &["total_tokens", "totalTokens"])
+        .max(prompt_tokens.saturating_add(completion_tokens))
+}
+
+fn usage_prompt_tokens(usage: &Value) -> u64 {
+    usage_u64(
+        usage,
+        &[
+            "prompt_tokens",
+            "input_tokens",
+            "inputTokens",
+            "promptTokens",
+        ],
+    )
+}
+
+fn usage_completion_tokens(usage: &Value) -> u64 {
+    usage_u64(
+        usage,
+        &[
+            "completion_tokens",
+            "output_tokens",
+            "outputTokens",
+            "completionTokens",
+            "reasoning_output_tokens",
+            "reasoningOutputTokens",
+        ],
+    )
+}
+
+fn usage_u64(usage: &Value, keys: &[&str]) -> u64 {
+    keys.iter()
+        .find_map(|key| usage.get(*key).and_then(Value::as_u64))
+        .unwrap_or(0)
 }
 
 fn field_u64(value: &Value, key: &str) -> u64 {

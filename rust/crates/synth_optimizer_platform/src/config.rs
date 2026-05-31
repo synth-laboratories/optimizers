@@ -767,11 +767,52 @@ pub const CHATGPT_PROPOSER_MODELS: &[&str] = &[
 ];
 
 pub fn proposer_auth_mode_normalized(auth_mode: &str) -> String {
-    normalize_enum_value(auth_mode)
+    let normalized = normalize_enum_value(auth_mode);
+    if normalized == "host" {
+        "chatgpt".to_string()
+    } else {
+        normalized
+    }
 }
 
 pub fn proposer_uses_chatgpt_auth(auth_mode: &str) -> bool {
     proposer_auth_mode_normalized(auth_mode) == "chatgpt"
+}
+
+/// Resolved proposer credential path for Codex app-server launch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProposerAuthLaunchMode {
+    ApiKey,
+    Chatgpt,
+}
+
+pub fn resolve_proposer_auth_launch_mode(
+    proposer: &ProposerConfig,
+    api_key_present: bool,
+) -> Result<ProposerAuthLaunchMode> {
+    let auth_mode = proposer_auth_mode_normalized(&proposer.auth_mode);
+    match auth_mode.as_str() {
+        "api_key" => Ok(ProposerAuthLaunchMode::ApiKey),
+        "chatgpt" => Ok(ProposerAuthLaunchMode::Chatgpt),
+        "auto" => {
+            if api_key_present {
+                Ok(ProposerAuthLaunchMode::ApiKey)
+            } else if proposer.codex_home.is_some() {
+                Ok(ProposerAuthLaunchMode::Chatgpt)
+            } else {
+                Err(OptimizerError::Config(
+                    "proposer.auth_mode = \"auto\" did not resolve: export an API key \
+                     (proposer.api_key_env, default OPENAI_API_KEY) or set proposer.codex_home \
+                     for ChatGPT subscription auth"
+                        .to_string(),
+                ))
+            }
+        }
+        mode => Err(OptimizerError::Config(format!(
+            "unsupported proposer.auth_mode {mode:?}; expected auto, api_key, or chatgpt \
+             (legacy host maps to chatgpt)"
+        ))),
+    }
 }
 
 pub fn validate_chatgpt_proposer_model(model: &str) -> Result<()> {
@@ -846,10 +887,11 @@ pub fn resolve_chatgpt_codex_home_source(proposer: &ProposerConfig) -> Result<Pa
 fn validate_proposer_auth_config(proposer: &ProposerConfig) -> Result<()> {
     let auth_mode = proposer_auth_mode_normalized(&proposer.auth_mode);
     match auth_mode.as_str() {
-        "auto" | "host" | "api_key" | "chatgpt" => {}
+        "auto" | "api_key" | "chatgpt" => {}
         mode => {
             return Err(OptimizerError::Config(format!(
-                "unsupported proposer.auth_mode {mode:?}; expected auto, host, api_key, or chatgpt"
+                "unsupported proposer.auth_mode {mode:?}; expected auto, api_key, or chatgpt \
+                 (legacy host maps to chatgpt)"
             )));
         }
     }

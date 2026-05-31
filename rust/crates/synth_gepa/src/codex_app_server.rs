@@ -1,23 +1,15 @@
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::env;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::{Duration, Instant};
-
-use serde_json::{json, Map, Value};
-use synth_optimizer_platform::{
-    proposer_auth_mode_normalized, proposer_uses_chatgpt_auth, resolve_chatgpt_codex_home_source,
-    OptimizerError, PromptProgram, Result, SynthOptimizerConfig,
-};
+use std::time::Duration;
 
 use crate::CandidateRecord;
+use serde_json::{json, Map, Value};
+use synth_optimizer_platform::{
+    ensure_turn_completed, extract_thread_id, usage_from_message, usage_from_messages,
+    CodexAppServerClient, CodexAppServerLaunch, OptimizerError, PromptProgram, Result,
+    SynthOptimizerConfig,
+};
 
 const GEPA_REFLECTIVE_FRAME_SCHEMA_VERSION: &str = "gepa_reflective_frame.v1";
 const CONTAINER_SENSOR_ADAPTER_ID: &str = "synth.container_sensor_frame_adapter";
@@ -52,7 +44,11 @@ pub(crate) fn run_codex_app_server_proposer(input: CodexProposerInput<'_>) -> Re
         .model
         .clone()
         .unwrap_or_else(|| "gpt-5.4-mini".to_string());
-    let mut client = AppServerClient::start(&input, &model)?;
+    let mut client = CodexAppServerClient::start(CodexAppServerLaunch {
+        proposer: &input.config.proposer,
+        workspace_dir: &input.workspace_dir,
+        model: &model,
+    })?;
     let result = run_session(&mut client, &input, &model);
     let terminate_result = client.terminate();
     let mut response = result?;
@@ -63,7 +59,7 @@ pub(crate) fn run_codex_app_server_proposer(input: CodexProposerInput<'_>) -> Re
 }
 
 fn run_session(
-    client: &mut AppServerClient,
+    client: &mut CodexAppServerClient,
     input: &CodexProposerInput<'_>,
     model: &str,
 ) -> Result<Value> {
@@ -97,9 +93,16 @@ fn run_session(
 
     let manifest = read_manifest(&input.workspace_dir)?;
     let proposals = proposals_from_manifest(&manifest)?;
-    let evidence_warnings = manifest_evidence_warnings(input, &manifest, &proposals);
-    let usage = usage_from_messages(&client.received_messages, &turn_id)
-        .or_else(|| usage_from_message(&final_turn))
+    let mut evidence_warnings = manifest_evidence_warnings(input, &manifest, &proposals);
+    let usage = usage_from_messages(client.received_messages(), &turn_id)
+        .or_else(|| usage_from_message(&final_turn));
+    if usage.is_none() {
+        evidence_warnings.push(
+            "proposer usage missing from codex turn payload; token counts may be incomplete"
+                .to_string(),
+        );
+    }
+    let usage = usage
         .unwrap_or_else(|| json!({"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}));
     let response = json!({
         "backend": "codex_app_server",
@@ -381,7 +384,7 @@ fn write_agent_artifacts(
     thread_response: &Value,
     final_turn: &Value,
     response: &Value,
-    client: &AppServerClient,
+    client: &CodexAppServerClient,
 ) -> Result<()> {
     let artifact_dir = input.workspace_dir.join(".agent_artifacts");
     fs::create_dir_all(&artifact_dir)
@@ -406,13 +409,13 @@ fn write_agent_artifacts(
         &artifact_dir.join("opencode_messages.json"),
         &json!({
             "schema_version": "gepa_codex_app_server_messages.v1",
-            "sent": client.sent_messages,
-            "received": client.received_messages,
+            "sent": client.sent_messages(),
+            "received": client.received_messages(),
         }),
     )?;
     write_json(&artifact_dir.join("opencode_response.json"), response)?;
     let mut events = String::new();
-    for message in &client.received_messages {
+    for message in client.received_messages() {
         events.push_str(&serde_json::to_string(message)?);
         events.push('\n');
     }
@@ -2622,383 +2625,6 @@ fn sandbox_policy_for_mode(mode: &str) -> Value {
     }
 }
 
-struct AppServerClient {
-    child: Child,
-    stdin: ChildStdin,
-    receiver: Receiver<Result<Value>>,
-    buffer: VecDeque<Value>,
-    stderr_tail: Arc<Mutex<VecDeque<String>>>,
-    auth_home_to_cleanup: Option<PathBuf>,
-    next_id: u64,
-    sent_messages: Vec<Value>,
-    received_messages: Vec<Value>,
-}
-
-impl AppServerClient {
-    fn start(input: &CodexProposerInput<'_>, model: &str) -> Result<Self> {
-        let workspace_dir = fs::canonicalize(&input.workspace_dir)
-            .map_err(|source| OptimizerError::io(&input.workspace_dir, source))?;
-        let command = if input.config.proposer.command.is_empty() {
-            vec!["codex".to_string(), "app-server".to_string()]
-        } else {
-            input.config.proposer.command.clone()
-        };
-        let auth_mode = proposer_auth_mode_normalized(&input.config.proposer.auth_mode);
-        let mut env_map = env::vars().collect::<BTreeMap<_, _>>();
-        let mut auth_home_to_cleanup = None;
-        let proposer_api_key_env =
-            non_empty(input.config.proposer.api_key_env.as_deref()).unwrap_or("OPENAI_API_KEY");
-        let proposer_api_key = env::var(proposer_api_key_env)
-            .ok()
-            .filter(|api_key| !api_key.trim().is_empty());
-        if auth_mode == "api_key" && proposer_api_key.is_none() {
-            return Err(OptimizerError::Proposer(format!(
-                "proposer.auth_mode = \"api_key\" requires non-empty {proposer_api_key_env}"
-            )));
-        }
-        if auth_mode == "api_key" {
-            let codex_home = workspace_dir.join(".codex_api_key_home");
-            prepare_api_key_codex_home(
-                &codex_home,
-                &input.config.proposer.provider,
-                input.config.proposer.base_url.as_deref(),
-                model,
-                proposer_api_key.as_deref().unwrap_or_default(),
-            )?;
-            env_map.insert("CODEX_HOME".to_string(), codex_home.display().to_string());
-            env_map.insert(
-                "OPENAI_API_KEY".to_string(),
-                proposer_api_key.as_deref().unwrap_or_default().to_string(),
-            );
-            auth_home_to_cleanup = Some(codex_home);
-        } else if proposer_uses_chatgpt_auth(&auth_mode) {
-            let source = resolve_chatgpt_codex_home_source(&input.config.proposer)?;
-            let codex_home = workspace_dir.join(".codex_home");
-            copy_codex_home(&source, &codex_home)?;
-            env_map.insert("CODEX_HOME".to_string(), codex_home.display().to_string());
-        } else if input.config.proposer.copy_host_auth {
-            let codex_home = workspace_dir.join(".codex_home");
-            let source = resolve_legacy_host_codex_home_source(&input.config.proposer)?;
-            copy_codex_home(&source, &codex_home)?;
-            env_map.insert("CODEX_HOME".to_string(), codex_home.display().to_string());
-        } else if let Some(api_key) = proposer_api_key.as_deref() {
-            env_map.insert("OPENAI_API_KEY".to_string(), api_key.to_string());
-        }
-        let mut cmd = Command::new(&command[0]);
-        cmd.args(&command[1..])
-            .current_dir(&workspace_dir)
-            .envs(env_map)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let mut child = cmd.spawn().map_err(|source| {
-            OptimizerError::Proposer(format!(
-                "failed to start codex app-server command {:?} for model {}: {}",
-                command, model, source
-            ))
-        })?;
-        let stdin = child.stdin.take().ok_or_else(|| {
-            OptimizerError::Proposer("codex app-server stdin unavailable".to_string())
-        })?;
-        let stdout = child.stdout.take().ok_or_else(|| {
-            OptimizerError::Proposer("codex app-server stdout unavailable".to_string())
-        })?;
-        let stderr = child.stderr.take();
-        let (sender, receiver) = mpsc::channel();
-        let stderr_tail = Arc::new(Mutex::new(VecDeque::new()));
-        thread::spawn(move || read_stdout(stdout, sender));
-        if let Some(stderr) = stderr {
-            let stderr_tail = Arc::clone(&stderr_tail);
-            thread::spawn(move || drain_stderr(stderr, stderr_tail));
-        }
-        Ok(Self {
-            child,
-            stdin,
-            receiver,
-            buffer: VecDeque::new(),
-            stderr_tail,
-            auth_home_to_cleanup,
-            next_id: 1,
-            sent_messages: Vec::new(),
-            received_messages: Vec::new(),
-        })
-    }
-
-    fn send_request(&mut self, method: &str, params: Value) -> Result<u64> {
-        let id = self.next_id;
-        self.next_id += 1;
-        self.send(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))?;
-        Ok(id)
-    }
-
-    fn send_notification(&mut self, method: &str, params: Value) -> Result<()> {
-        self.send(json!({"jsonrpc": "2.0", "method": method, "params": params}))
-    }
-
-    fn send(&mut self, payload: Value) -> Result<()> {
-        serde_json::to_writer(&mut self.stdin, &payload)?;
-        self.sent_messages.push(payload);
-        self.stdin
-            .write_all(b"\n")
-            .map_err(|source| OptimizerError::io("codex app-server stdin", source))?;
-        self.stdin
-            .flush()
-            .map_err(|source| OptimizerError::io("codex app-server stdin", source))
-    }
-
-    fn wait_for_response(&mut self, id: u64, timeout: Duration) -> Result<Value> {
-        let deadline = Instant::now() + timeout;
-        let mut deferred = Vec::new();
-        loop {
-            let message = self.read_next(deadline)?;
-            if message.get("id").and_then(Value::as_u64) == Some(id)
-                && message.get("method").is_none()
-            {
-                if let Some(error) = message.get("error") {
-                    return Err(OptimizerError::Proposer(format!(
-                        "codex app-server request {id} failed: {error}"
-                    )));
-                }
-                self.restore_deferred(deferred);
-                return Ok(message);
-            }
-            deferred.push(message);
-        }
-    }
-
-    fn wait_for_turn_started(&mut self, request_id: u64, timeout: Duration) -> Result<String> {
-        let deadline = Instant::now() + timeout;
-        let mut deferred = Vec::new();
-        loop {
-            let message = self.read_next(deadline)?;
-            if message.get("id").and_then(Value::as_u64) == Some(request_id)
-                && message.get("method").is_none()
-            {
-                if let Some(error) = message.get("error") {
-                    return Err(OptimizerError::Proposer(format!(
-                        "codex app-server turn/start request failed: {error}"
-                    )));
-                }
-                let turn_id = extract_turn_id(&message).ok_or_else(|| {
-                    OptimizerError::Proposer(format!(
-                        "codex app-server turn/start response missing turn id: {message}"
-                    ))
-                })?;
-                self.restore_deferred(deferred);
-                return Ok(turn_id);
-            }
-            if message.get("method").and_then(Value::as_str) == Some("turn/started") {
-                if let Some(turn_id) = extract_turn_id(&message) {
-                    self.restore_deferred(deferred);
-                    return Ok(turn_id);
-                }
-            }
-            deferred.push(message);
-        }
-    }
-
-    fn restore_deferred(&mut self, deferred: Vec<Value>) {
-        for message in deferred.into_iter().rev() {
-            self.buffer.push_front(message);
-        }
-    }
-
-    fn wait_for_turn(&mut self, turn_id: &str, timeout: Duration) -> Result<Value> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            let message = self.read_next(deadline)?;
-            let method = message
-                .get("method")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let matching_turn = match message_turn_id(&message) {
-                Some(observed) => observed == turn_id,
-                None => true,
-            };
-            if matches!(
-                method,
-                "turn/completed" | "turn/failed" | "turn/interrupted"
-            ) && matching_turn
-            {
-                return Ok(message);
-            }
-        }
-    }
-
-    fn read_next(&mut self, deadline: Instant) -> Result<Value> {
-        let now = Instant::now();
-        if now >= deadline {
-            return Err(OptimizerError::Proposer(format!(
-                "codex app-server timed out waiting for response{}",
-                self.stderr_tail_suffix()
-            )));
-        }
-        if let Some(message) = self.buffer.pop_front() {
-            return Ok(message);
-        }
-        match self.receiver.recv_timeout(deadline - now) {
-            Ok(result) => match result {
-                Ok(message) => {
-                    self.received_messages.push(message.clone());
-                    Ok(message)
-                }
-                Err(error) => Err(error),
-            },
-            Err(RecvTimeoutError::Timeout) => Err(OptimizerError::Proposer(format!(
-                "codex app-server timed out waiting for response{}",
-                self.stderr_tail_suffix()
-            ))),
-            Err(RecvTimeoutError::Disconnected) => Err(OptimizerError::Proposer(format!(
-                "codex app-server stdout closed{}",
-                self.stderr_tail_suffix()
-            ))),
-        }
-    }
-
-    fn stderr_tail_suffix(&self) -> String {
-        let Ok(tail) = self.stderr_tail.lock() else {
-            return String::new();
-        };
-        if tail.is_empty() {
-            return String::new();
-        }
-        format!(
-            "; stderr_tail={}",
-            tail.iter().cloned().collect::<Vec<_>>().join("").trim()
-        )
-    }
-
-    fn terminate(&mut self) -> Result<()> {
-        if self
-            .child
-            .try_wait()
-            .map_err(|source| {
-                OptimizerError::Proposer(format!("failed to inspect codex app-server: {source}"))
-            })?
-            .is_some()
-        {
-            self.cleanup_auth_home();
-            return Ok(());
-        }
-        self.child.kill().map_err(|source| {
-            OptimizerError::Proposer(format!("failed to stop codex app-server: {source}"))
-        })?;
-        let _ = self.child.wait();
-        self.cleanup_auth_home();
-        Ok(())
-    }
-
-    fn cleanup_auth_home(&mut self) {
-        if let Some(path) = self.auth_home_to_cleanup.take() {
-            let _ = fs::remove_dir_all(path);
-        }
-    }
-}
-
-fn read_stdout(stdout: impl Read, sender: mpsc::Sender<Result<Value>>) {
-    let mut reader = BufReader::new(stdout);
-    loop {
-        match read_jsonrpc_message(&mut reader) {
-            Ok(Some(value)) => {
-                if sender.send(Ok(value)).is_err() {
-                    return;
-                }
-            }
-            Ok(None) => return,
-            Err(error) => {
-                let _ = sender.send(Err(error));
-                return;
-            }
-        }
-    }
-}
-
-fn drain_stderr(stderr: impl Read, tail: Arc<Mutex<VecDeque<String>>>) {
-    let mut reader = BufReader::new(stderr);
-    let mut line = String::new();
-    while reader.read_line(&mut line).unwrap_or(0) > 0 {
-        if let Ok(mut tail) = tail.lock() {
-            if tail.len() >= 50 {
-                tail.pop_front();
-            }
-            tail.push_back(line.clone());
-        }
-        line.clear();
-    }
-}
-
-fn read_jsonrpc_message(reader: &mut BufReader<impl Read>) -> Result<Option<Value>> {
-    let mut line = String::new();
-    loop {
-        line.clear();
-        let bytes = reader
-            .read_line(&mut line)
-            .map_err(|source| OptimizerError::io("codex app-server stdout", source))?;
-        if bytes == 0 {
-            return Ok(None);
-        }
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if trimmed.starts_with('{') || trimmed.starts_with('[') {
-            return Ok(Some(serde_json::from_str(trimmed)?));
-        }
-        let mut headers = BTreeMap::new();
-        if let Some((key, value)) = trimmed.split_once(':') {
-            headers.insert(key.trim().to_ascii_lowercase(), value.trim().to_string());
-        }
-        loop {
-            line.clear();
-            let bytes = reader
-                .read_line(&mut line)
-                .map_err(|source| OptimizerError::io("codex app-server stdout", source))?;
-            if bytes == 0 {
-                return Ok(None);
-            }
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                break;
-            }
-            if let Some((key, value)) = trimmed.split_once(':') {
-                headers.insert(key.trim().to_ascii_lowercase(), value.trim().to_string());
-            }
-        }
-        let raw_len = headers.get("content-length").ok_or_else(|| {
-            OptimizerError::Proposer("codex app-server message missing Content-Length".to_string())
-        })?;
-        let len = raw_len.parse::<usize>().map_err(|source| {
-            OptimizerError::Proposer(format!(
-                "invalid codex app-server Content-Length {raw_len}: {source}"
-            ))
-        })?;
-        let mut payload = vec![0u8; len];
-        reader
-            .read_exact(&mut payload)
-            .map_err(|source| OptimizerError::io("codex app-server stdout", source))?;
-        return Ok(Some(serde_json::from_slice(&payload)?));
-    }
-}
-
-fn ensure_turn_completed(message: &Value) -> Result<()> {
-    let method = message
-        .get("method")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    if method == "turn/completed" {
-        let status = message
-            .pointer("/params/turn/status")
-            .and_then(Value::as_str)
-            .unwrap_or("completed");
-        if status == "completed" {
-            return Ok(());
-        }
-    }
-    Err(OptimizerError::Proposer(format!(
-        "codex app-server turn did not complete: {message}"
-    )))
-}
-
 fn read_manifest(workspace_dir: &Path) -> Result<Value> {
     let path = workspace_dir.join("proposal").join("manifest.json");
     let text = fs::read_to_string(&path).map_err(|source| OptimizerError::io(&path, source))?;
@@ -3287,201 +2913,6 @@ fn dominant_failure_label(failure_summary: &Value) -> Option<String> {
         None
     } else {
         Some(label)
-    }
-}
-
-fn extract_thread_id(message: &Value) -> Option<String> {
-    message
-        .pointer("/result/thread/id")
-        .or_else(|| message.pointer("/result/threadId"))
-        .or_else(|| message.pointer("/params/thread/id"))
-        .or_else(|| message.pointer("/params/threadId"))
-        .and_then(Value::as_str)
-        .map(str::to_string)
-}
-
-fn extract_turn_id(message: &Value) -> Option<String> {
-    message
-        .pointer("/result/turn/id")
-        .or_else(|| message.pointer("/result/turnId"))
-        .or_else(|| message.pointer("/params/turn/id"))
-        .or_else(|| message.pointer("/params/turnId"))
-        .and_then(Value::as_str)
-        .map(str::to_string)
-}
-
-fn message_turn_id(message: &Value) -> Option<String> {
-    extract_turn_id(message)
-}
-
-fn usage_from_messages(messages: &[Value], turn_id: &str) -> Option<Value> {
-    messages.iter().rev().find_map(|message| {
-        let message_turn_id = extract_turn_id(message)?;
-        if message_turn_id != turn_id {
-            return None;
-        }
-        usage_from_message(message)
-    })
-}
-
-fn usage_from_message(message: &Value) -> Option<Value> {
-    let usage = message
-        .pointer("/params/tokenUsage/last")
-        .or_else(|| message.pointer("/params/token_usage/last"))
-        .or_else(|| message.pointer("/params/turn/usage"))
-        .or_else(|| message.pointer("/params/usage"))
-        .or_else(|| message.pointer("/result/usage"))?;
-    let prompt_tokens = usage_u64(
-        usage,
-        &[
-            "prompt_tokens",
-            "input_tokens",
-            "inputTokens",
-            "promptTokens",
-        ],
-    );
-    let completion_tokens = usage_u64(
-        usage,
-        &[
-            "completion_tokens",
-            "output_tokens",
-            "outputTokens",
-            "completionTokens",
-            "reasoning_output_tokens",
-            "reasoningOutputTokens",
-        ],
-    );
-    let total_tokens = usage_u64(usage, &["total_tokens", "totalTokens"])
-        .max(prompt_tokens.saturating_add(completion_tokens));
-    Some(json!({
-        "prompt_tokens": prompt_tokens,
-        "completion_tokens": completion_tokens,
-        "total_tokens": total_tokens,
-    }))
-}
-
-fn usage_u64(usage: &Value, keys: &[&str]) -> u64 {
-    keys.iter()
-        .find_map(|key| usage.get(*key).and_then(Value::as_u64))
-        .unwrap_or(0)
-}
-
-fn resolve_legacy_host_codex_home_source(
-    proposer: &synth_optimizer_platform::ProposerConfig,
-) -> Result<PathBuf> {
-    if let Some(codex_home) = proposer.codex_home.as_ref() {
-        if codex_home.as_os_str().is_empty() {
-            return Err(OptimizerError::Proposer(
-                "proposer.codex_home must be non-empty when set".to_string(),
-            ));
-        }
-        let source = fs::canonicalize(codex_home)
-            .map_err(|source| OptimizerError::io(codex_home, source))?;
-        if !source.is_dir() {
-            return Err(OptimizerError::Proposer(format!(
-                "proposer.codex_home {source:?} must be a directory"
-            )));
-        }
-        return Ok(source);
-    }
-    Err(OptimizerError::Proposer(
-        "proposer.copy_host_auth requires proposer.codex_home".to_string(),
-    ))
-}
-
-fn copy_codex_home(source: &Path, destination: &Path) -> Result<()> {
-    fs::create_dir_all(destination).map_err(|source| OptimizerError::io(destination, source))?;
-    let mut copied_auth = false;
-    for filename in [
-        "auth.json",
-        "installation_id",
-        "version.json",
-        "models_cache.json",
-    ] {
-        let source_file = source.join(filename);
-        if source_file.is_file() {
-            let destination_file = destination.join(filename);
-            fs::copy(&source_file, &destination_file)
-                .map_err(|copy_error| OptimizerError::io(destination_file, copy_error))?;
-            if filename == "auth.json" {
-                copied_auth = true;
-            }
-        }
-    }
-    if !copied_auth {
-        return Err(OptimizerError::Proposer(format!(
-            "Codex home {source:?} is missing auth.json; run `codex auth login` or fix \
-             proposer.codex_home"
-        )));
-    }
-    Ok(())
-}
-
-fn prepare_api_key_codex_home(
-    destination: &Path,
-    provider: &str,
-    base_url: Option<&str>,
-    model: &str,
-    api_key: &str,
-) -> Result<()> {
-    if destination.exists() {
-        fs::remove_dir_all(destination)
-            .map_err(|source| OptimizerError::io(destination, source))?;
-    }
-    fs::create_dir_all(destination).map_err(|source| OptimizerError::io(destination, source))?;
-    let config_path = destination.join("config.toml");
-    let provider_base_url = base_url.or_else(|| proposer_provider_default_base_url(provider));
-    let provider_config = provider_base_url
-        .map(|url| {
-            format!(
-                "model_provider = \"gepa_proposer\"\n\
-                 \n\
-                 [model_providers.gepa_proposer]\n\
-                 name = \"GEPA proposer\"\n\
-                 base_url = {url:?}\n\
-                 env_key = \"OPENAI_API_KEY\"\n\
-                 wire_api = \"responses\"\n\
-                 \n"
-            )
-        })
-        .unwrap_or_default();
-    write_text(
-        &config_path,
-        &format!(
-            "model = {model:?}\n\
-             preferred_auth_method = \"apikey\"\n\
-             {provider_config}\
-             [features]\n\
-             apps = false\n\
-             browser_use = false\n\
-             browser_use_external = false\n\
-             computer_use = false\n\
-             image_generation = false\n\
-             in_app_browser = false\n\
-             multi_agent = false\n\
-             plugins = false\n\
-             skill_mcp_dependency_install = false\n\
-             tool_suggest = false\n\
-             workspace_dependencies = false\n"
-        ),
-    )?;
-    let auth_path = destination.join("auth.json");
-    let encoded_key = serde_json::to_string(api_key)?;
-    write_text(
-        &auth_path,
-        &format!("{{\"OPENAI_API_KEY\":{encoded_key}}}\n"),
-    )?;
-    #[cfg(unix)]
-    fs::set_permissions(&auth_path, fs::Permissions::from_mode(0o600))
-        .map_err(|source| OptimizerError::io(&auth_path, source))?;
-    Ok(())
-}
-
-fn proposer_provider_default_base_url(provider: &str) -> Option<&'static str> {
-    match provider.trim().to_ascii_lowercase().as_str() {
-        "openrouter" => Some("https://openrouter.ai/api/v1"),
-        "deepseek" => Some("https://api.deepseek.com"),
-        _ => None,
     }
 }
 

@@ -1,5 +1,22 @@
 # synth-optimizers changelog
 
+## 2026-05-31 — better-ai-auth (unreleased)
+
+### Proposer auth and live usage
+
+- **Provider-aware API-key proposers** — OpenRouter (and other non-OpenAI providers)
+  get a run-local Codex home with the correct `base_url` and key env wiring.
+- **ChatGPT subscription proposer** — `auth_mode = "chatgpt"` with explicit
+  `codex_home`, model allowlist validation, and OAuth bundle copy into the workspace.
+- **Live usage rollups** — terminal and event feed show running `usage total`,
+  policy vs proposer token splits, and cost while a run is in progress
+  (`SYNTH_OPTIMIZERS_TERMINAL=1`).
+- **README + skill** — authentication quickstarts for OpenAI API key, OpenRouter,
+  and ChatGPT subscription paths.
+- **SynthStyle alignment** — explicit proposer auth resolution (`proposer_codex_auth.rs`),
+  no silent host `~/.codex` fallback, legacy `host` → `chatgpt`, missing usage warns
+  in proposer evidence.
+
 ## 2026-05-31 — 0.2.0.dev20260531
 
 ### Typed Python SDK for GEPA

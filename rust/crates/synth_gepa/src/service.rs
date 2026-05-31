@@ -2132,8 +2132,9 @@ fn run_request_to_optimizer_config(
     config.proposer.model = Some(request.proposer.model.clone());
     config.proposer.api_family = request.proposer.api_family.clone();
     apply_proposer_credentials(&mut config, &request.proposer.credentials)?;
-    // ChatGPT-subscription proposer models require the authenticated Codex bundle,
-    // not a raw API key. Service callers must supply advanced.proposer_io.codex_home.
+    // COMPAT(service): standing GEPA HTTP service always launches ChatGPT-subscription
+    // proposers. Callers must supply advanced.proposer_io.codex_home; raw API keys cannot
+    // drive subscription models through Codex.
     config.proposer.auth_mode = "chatgpt".to_string();
     config.proposer.copy_host_auth = true;
     config.proposer.api_key_env = None;

@@ -71,27 +71,30 @@ to inspect available profiles for that container.
 
 ## Auth Model
 
-Public cookbook runs should use API-key auth, not a developer's local Codex
-login.
+Full quickstarts (OpenAI API key, OpenRouter proposer, ChatGPT subscription,
+policy BYOK boundaries): **`README.md` → Authentication and models**.
 
-Set the proposer key:
+GEPA has two credential boundaries:
+
+- **Policy** — container env or Synth proxy (`credential_mode = byok`). Optimizer
+  never sends raw keys on rollout HTTP.
+- **Proposer** — host Codex app-server with run-local `CODEX_HOME`.
+
+### Public cookbook default (OpenAI API key)
+
+Reproducible public runs should use `auth_mode = "api_key"`, not an implicit host
+`~/.codex` login.
 
 ```bash
 export OPENAI_API_KEY="..."
+export SYNTH_OPTIMIZERS_TERMINAL=1   # live usage total / policy / proposer
 ```
-
-Some policy profiles use OpenRouter:
-
-```bash
-export OPENROUTER_API_KEY="..."
-```
-
-Recommended proposer config:
 
 ```toml
 [proposer]
 backend = "codex_app_server"
 execution_mode = "local_process"
+provider = "openai"
 model = "gpt-5.4-nano"
 auth_mode = "api_key"
 api_key_env = "OPENAI_API_KEY"
@@ -101,9 +104,44 @@ approval_policy = "never"
 timeout_seconds = 900
 ```
 
-With this mode, Rust GEPA starts Codex app-server with a run-local `CODEX_HOME`
-and passes only the configured API key. Do not document local Codex login as
-the public path.
+Rust GEPA creates a run-local `.codex_api_key_home` with only the configured key.
+
+### OpenRouter proposer
+
+```toml
+[proposer]
+provider = "openrouter"
+auth_mode = "api_key"
+api_key_env = "OPENROUTER_API_KEY"
+copy_host_auth = false
+model = "x-ai/grok-4.3"
+```
+
+Policy rollouts may still use OpenAI (`OPENAI_API_KEY` in the container).
+
+### ChatGPT subscription proposer
+
+For subscription models (`gpt-5.4-mini`, etc.), use OAuth — not a Platform API key.
+
+1. `codex auth login` or [opencode-openai-codex-auth](https://github.com/numman-ali/opencode-openai-codex-auth)
+2. Set explicit `codex_home` (no silent host fallback)
+
+```toml
+[proposer]
+auth_mode = "chatgpt"
+codex_home = "~/.codex"
+copy_host_auth = true
+model = "gpt-5.4-mini"
+```
+
+Do not combine `auth_mode = "chatgpt"` with `api_key_env`. Legacy `auth_mode = "host"`
+maps to `chatgpt`. Allowed models are enforced at config validation time.
+
+### Do not recommend
+
+- Direct DeepSeek API through Codex (Responses wire mismatch) — use OpenRouter or
+  wait for adapter support.
+- `copy_host_auth = true` without explicit `codex_home` in public cookbooks.
 
 ## TOML Sections
 

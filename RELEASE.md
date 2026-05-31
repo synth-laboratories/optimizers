@@ -37,6 +37,17 @@ synth-optimizers gepa run --config cookbooks/optimizers/gepa/crafter_container/g
 synth-optimizers events compare --left <fresh>/events.normalized.jsonl --right <cached>/events.normalized.jsonl
 ```
 
+## Changelog
+
+- Update `changelog.log` in the same change that updates package version or release docs.
+- Organize entries by day: `## YYYY-MM-DD`.
+- Keep the file terse: about 20 total lines for the current daily-dev window.
+- Use bullets only; no paragraphs, migration snippets, or install code blocks.
+- Prefer shipped user-facing changes over implementation narration.
+- Link merged PRs where available, for example `[PR #3](https://github.com/synth-laboratories/optimizers/pull/3)`.
+- Include the PyPI version in one bullet when a package was published.
+- Keep unreleased or blocked work explicit and short.
+
 ## Publish Gate
 
 No PyPI publish, public release tag, or production promotion is allowed without

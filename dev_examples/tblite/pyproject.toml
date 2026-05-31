@@ -1,0 +1,13 @@
+[project]
+name = "tblite-gepa-container"
+version = "0.1.0"
+description = "Public GEPA cookbook container for Terminal-Bench-Lite (real pytest verifier, OpenAI agent)."
+requires-python = ">=3.11"
+dependencies = [
+  "synth-containers @ git+https://github.com/synth-laboratories/containers.git@78ec34f",
+  "fastapi>=0.110",
+  "pydantic>=2.0",
+  "uvicorn>=0.27",
+  "openai>=1.0",
+  "pytest>=8.0",
+]

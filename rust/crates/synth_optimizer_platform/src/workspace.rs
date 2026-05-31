@@ -39,9 +39,9 @@ use crate::projections::ProjectionFreshnessRecord;
 use crate::resources::{ResourceLeaseRecord, ResourceLeaseRecordInput};
 use crate::rollouts::{RolloutEventRecord, RolloutRecord, SensorRolloutRecords};
 use crate::runtime_records::{
-    runtime_record_json, ContainerContractSnapshotRecord, DatasetSnapshotRecord,
-    PromptProgramSnapshotRecord, RenderedOptimizerStateInput, RenderedOptimizerStateRecord,
-    ResolvedRunConfigRecord, RuntimeEffectRecord,
+    runtime_record_json, ContainerContractSnapshotRecord, PromptProgramSnapshotRecord,
+    RenderedOptimizerStateInput, RenderedOptimizerStateRecord, ResolvedRunConfigRecord,
+    RuntimeEffectRecord, TasksetSnapshotRecord,
 };
 use crate::scores::{
     ObjectiveSetRecord, ObjectiveSpec, ParetoComparisonRecord, ScoreRecord, ScoreVectorRecord,
@@ -166,7 +166,7 @@ pub struct WorkspaceEntityCounts {
     pub resolved_run_configs: u64,
     pub container_contract_snapshots: u64,
     pub prompt_program_snapshots: u64,
-    pub dataset_snapshots: u64,
+    pub taskset_snapshots: u64,
     pub run_limits: u64,
     pub rendered_optimizer_states: u64,
     pub runtime_effects: u64,
@@ -237,7 +237,7 @@ struct RunHealthCounts {
     resolved_run_configs: u64,
     container_contract_snapshots: u64,
     prompt_program_snapshots: u64,
-    dataset_snapshots: u64,
+    taskset_snapshots: u64,
     run_limits: u64,
     rendered_optimizer_states: u64,
     runtime_effects: u64,
@@ -1640,26 +1640,26 @@ impl WorkspaceStore {
         Ok(())
     }
 
-    pub fn record_dataset_snapshot(&self, record: &DatasetSnapshotRecord) -> Result<()> {
+    pub fn record_taskset_snapshot(&self, record: &TasksetSnapshotRecord) -> Result<()> {
         self.conn.execute(
             r#"
-            INSERT INTO dataset_snapshots(
-                run_id, dataset_snapshot_id, dataset_id, split, row_count,
-                seed_count, seeds_json, filters_json, rows_hash, rows_json,
-                dataset_metadata_json, rows_metadata_json, metadata_json,
+            INSERT INTO taskset_snapshots(
+                run_id, taskset_snapshot_id, taskset_id, split, task_count,
+                task_id_count, task_ids_json, filters_json, tasks_hash, tasks_json,
+                taskset_metadata_json, tasks_metadata_json, metadata_json,
                 record_json, recorded_at, updated_at
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, datetime('now'))
-            ON CONFLICT(run_id, dataset_snapshot_id) DO UPDATE SET
-                dataset_id = excluded.dataset_id,
+            ON CONFLICT(run_id, taskset_snapshot_id) DO UPDATE SET
+                taskset_id = excluded.taskset_id,
                 split = excluded.split,
-                row_count = excluded.row_count,
-                seed_count = excluded.seed_count,
-                seeds_json = excluded.seeds_json,
+                task_count = excluded.task_count,
+                task_id_count = excluded.task_id_count,
+                task_ids_json = excluded.task_ids_json,
                 filters_json = excluded.filters_json,
-                rows_hash = excluded.rows_hash,
-                rows_json = excluded.rows_json,
-                dataset_metadata_json = excluded.dataset_metadata_json,
-                rows_metadata_json = excluded.rows_metadata_json,
+                tasks_hash = excluded.tasks_hash,
+                tasks_json = excluded.tasks_json,
+                taskset_metadata_json = excluded.taskset_metadata_json,
+                tasks_metadata_json = excluded.tasks_metadata_json,
                 metadata_json = excluded.metadata_json,
                 record_json = excluded.record_json,
                 recorded_at = excluded.recorded_at,
@@ -1667,17 +1667,17 @@ impl WorkspaceStore {
             "#,
             params![
                 record.run_id,
-                record.dataset_snapshot_id,
-                record.dataset_id,
+                record.taskset_snapshot_id,
+                record.taskset_id,
                 record.split,
-                record.row_count as i64,
-                record.seed_count as i64,
-                stable_json(&serde_json::to_value(&record.seeds)?),
+                record.task_count as i64,
+                record.task_id_count as i64,
+                stable_json(&serde_json::to_value(&record.task_ids)?),
                 stable_json(&record.filters),
-                record.rows_hash,
-                stable_json(&record.rows),
-                stable_json(&record.dataset_metadata),
-                stable_json(&record.rows_metadata),
+                record.tasks_hash,
+                stable_json(&record.tasks),
+                stable_json(&record.taskset_metadata),
+                stable_json(&record.tasks_metadata),
                 stable_json(&Value::Object(record.metadata.clone())),
                 runtime_record_json(record),
                 record.recorded_at,
@@ -2891,22 +2891,21 @@ impl WorkspaceStore {
         self.conn.execute(
             r#"
             INSERT INTO materializations(
-                run_id, materialization_id, candidate_id, example_id, seed,
-                split, evaluation_stage, task_id, evaluator_id, algorithm_id,
+                run_id, materialization_id, candidate_id, example_id, task_id,
+                split, evaluation_stage, evaluator_id, algorithm_id,
                 materializer_id, lever_version, sensor_version,
                 objective_set_hash, candidate_hash, example_hash, request_hash,
                 cache_key, platform_cache_key, status, request_json,
-                candidate_payload_json, dataset_row_json, metadata_json,
+                candidate_payload_json, task_json, metadata_json,
                 record_json, created_at, updated_at
             ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24,
-                ?25, datetime('now'), datetime('now')
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22,
+                ?23, ?24, datetime('now'), datetime('now')
             )
             ON CONFLICT(run_id, materialization_id) DO UPDATE SET
                 candidate_id = excluded.candidate_id,
                 example_id = excluded.example_id,
-                seed = excluded.seed,
                 split = excluded.split,
                 evaluation_stage = excluded.evaluation_stage,
                 task_id = excluded.task_id,
@@ -2924,7 +2923,7 @@ impl WorkspaceStore {
                 status = excluded.status,
                 request_json = excluded.request_json,
                 candidate_payload_json = excluded.candidate_payload_json,
-                dataset_row_json = excluded.dataset_row_json,
+                task_json = excluded.task_json,
                 metadata_json = excluded.metadata_json,
                 record_json = excluded.record_json,
                 updated_at = datetime('now')
@@ -2934,10 +2933,9 @@ impl WorkspaceStore {
                 &record.materialization_id,
                 &record.candidate_id,
                 &record.example_id,
-                record.seed,
+                &record.task_id,
                 &record.split,
                 &record.evaluation_stage,
-                &record.task_id,
                 &record.evaluator_id,
                 &record.algorithm_id,
                 &record.materializer_id,
@@ -2952,7 +2950,7 @@ impl WorkspaceStore {
                 &record.status,
                 stable_json(&record.request),
                 stable_json(&record.candidate_payload),
-                stable_json(&record.dataset_row),
+                stable_json(&record.task),
                 stable_json(&Value::Object(record.metadata.clone())),
                 materialization_record_json(record),
             ],
@@ -3481,24 +3479,24 @@ impl WorkspaceStore {
                 FOREIGN KEY(run_id) REFERENCES optimization_runs(run_id) ON DELETE CASCADE
             );
 
-            CREATE TABLE IF NOT EXISTS dataset_snapshots (
+            CREATE TABLE IF NOT EXISTS taskset_snapshots (
                 run_id TEXT NOT NULL,
-                dataset_snapshot_id TEXT NOT NULL,
-                dataset_id TEXT NOT NULL,
+                taskset_snapshot_id TEXT NOT NULL,
+                taskset_id TEXT NOT NULL,
                 split TEXT NOT NULL,
-                row_count INTEGER NOT NULL,
-                seed_count INTEGER NOT NULL,
-                seeds_json TEXT NOT NULL,
+                task_count INTEGER NOT NULL,
+                task_id_count INTEGER NOT NULL,
+                task_ids_json TEXT NOT NULL,
                 filters_json TEXT NOT NULL,
-                rows_hash TEXT NOT NULL,
-                rows_json TEXT NOT NULL,
-                dataset_metadata_json TEXT NOT NULL,
-                rows_metadata_json TEXT NOT NULL,
+                tasks_hash TEXT NOT NULL,
+                tasks_json TEXT NOT NULL,
+                taskset_metadata_json TEXT NOT NULL,
+                tasks_metadata_json TEXT NOT NULL,
                 metadata_json TEXT NOT NULL,
                 record_json TEXT NOT NULL,
                 recorded_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                PRIMARY KEY(run_id, dataset_snapshot_id),
+                PRIMARY KEY(run_id, taskset_snapshot_id),
                 FOREIGN KEY(run_id) REFERENCES optimization_runs(run_id) ON DELETE CASCADE
             );
 
@@ -3781,10 +3779,9 @@ impl WorkspaceStore {
                 materialization_id TEXT NOT NULL,
                 candidate_id TEXT NOT NULL,
                 example_id TEXT NOT NULL,
-                seed INTEGER NOT NULL,
+                task_id TEXT NOT NULL,
                 split TEXT NOT NULL,
                 evaluation_stage TEXT NOT NULL,
-                task_id TEXT NOT NULL,
                 evaluator_id TEXT NOT NULL,
                 algorithm_id TEXT NOT NULL,
                 materializer_id TEXT NOT NULL,
@@ -3799,7 +3796,7 @@ impl WorkspaceStore {
                 status TEXT NOT NULL,
                 request_json TEXT NOT NULL,
                 candidate_payload_json TEXT NOT NULL,
-                dataset_row_json TEXT NOT NULL,
+                task_json TEXT NOT NULL,
                 metadata_json TEXT NOT NULL,
                 record_json TEXT NOT NULL,
                 created_at TEXT NOT NULL,
@@ -3958,7 +3955,7 @@ impl WorkspaceStore {
                 candidate_id TEXT NOT NULL,
                 sensor_frame_id TEXT NOT NULL,
                 example_id TEXT NOT NULL,
-                seed INTEGER NOT NULL,
+                task_id TEXT NOT NULL,
                 split TEXT NOT NULL,
                 evaluation_stage TEXT NOT NULL,
                 status TEXT NOT NULL,
@@ -3975,7 +3972,7 @@ impl WorkspaceStore {
                 candidate_id TEXT NOT NULL,
                 rollout_id TEXT,
                 example_id TEXT NOT NULL,
-                seed INTEGER NOT NULL,
+                task_id TEXT NOT NULL,
                 split TEXT NOT NULL,
                 evaluation_stage TEXT NOT NULL,
                 reward REAL NOT NULL,
@@ -3996,7 +3993,7 @@ impl WorkspaceStore {
                 candidate_id TEXT NOT NULL,
                 sensor_frame_id TEXT NOT NULL,
                 example_id TEXT NOT NULL,
-                seed INTEGER NOT NULL,
+                task_id TEXT NOT NULL,
                 split TEXT NOT NULL,
                 evaluation_stage TEXT NOT NULL,
                 status TEXT NOT NULL,
@@ -4068,7 +4065,7 @@ impl WorkspaceStore {
                 sensor_frame_id TEXT NOT NULL,
                 rollout_id TEXT,
                 example_id TEXT NOT NULL,
-                seed INTEGER NOT NULL,
+                task_id TEXT NOT NULL,
                 split TEXT NOT NULL,
                 evaluation_stage TEXT NOT NULL,
                 source TEXT NOT NULL,
@@ -4099,7 +4096,7 @@ impl WorkspaceStore {
                 covered_objectives_json TEXT NOT NULL,
                 missing_objectives_json TEXT NOT NULL,
                 example_ids_json TEXT NOT NULL,
-                seeds_json TEXT NOT NULL,
+                task_ids_json TEXT NOT NULL,
                 metadata_json TEXT NOT NULL,
                 score_vector_json TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -4295,8 +4292,8 @@ impl WorkspaceStore {
             CREATE INDEX IF NOT EXISTS idx_prompt_program_snapshots_run_program
             ON prompt_program_snapshots(run_id, program_id);
 
-            CREATE INDEX IF NOT EXISTS idx_dataset_snapshots_run_split
-            ON dataset_snapshots(run_id, split);
+            CREATE INDEX IF NOT EXISTS idx_taskset_snapshots_run_split
+            ON taskset_snapshots(run_id, split);
 
             CREATE INDEX IF NOT EXISTS idx_run_limits_run_policy
             ON run_limits(run_id, stop_policy);
@@ -4916,7 +4913,7 @@ impl WorkspaceStore {
                 run_id,
             )?,
             prompt_program_snapshots: self.count_where("prompt_program_snapshots", run_id)?,
-            dataset_snapshots: self.count_where("dataset_snapshots", run_id)?,
+            taskset_snapshots: self.count_where("taskset_snapshots", run_id)?,
             run_limits: self.count_where("run_limits", run_id)?,
             rendered_optimizer_states: self.count_where("rendered_optimizer_states", run_id)?,
             runtime_effects: self.count_where("runtime_effects", run_id)?,
@@ -5164,7 +5161,7 @@ impl WorkspaceStore {
             container_contract_snapshots: self
                 .count_where("container_contract_snapshots", run_id)?,
             prompt_program_snapshots: self.count_where("prompt_program_snapshots", run_id)?,
-            dataset_snapshots: self.count_where("dataset_snapshots", run_id)?,
+            taskset_snapshots: self.count_where("taskset_snapshots", run_id)?,
             run_limits: self.count_where("run_limits", run_id)?,
             rendered_optimizer_states: self.count_where("rendered_optimizer_states", run_id)?,
             runtime_effects: self.count_where("runtime_effects", run_id)?,
@@ -5592,14 +5589,14 @@ impl<'a> WorkspaceView<'a> {
         )
     }
 
-    pub fn dataset_snapshot_records(&self, run_id: &str) -> Result<Vec<DatasetSnapshotRecord>> {
+    pub fn taskset_snapshot_records(&self, run_id: &str) -> Result<Vec<TasksetSnapshotRecord>> {
         self.json_records(
             run_id,
             r#"
             SELECT record_json
-            FROM dataset_snapshots
+            FROM taskset_snapshots
             WHERE run_id = ?1
-            ORDER BY split, recorded_at, dataset_snapshot_id
+            ORDER BY split, recorded_at, taskset_snapshot_id
             "#,
         )
     }
@@ -7044,14 +7041,14 @@ fn upsert_sensor_frame_tx(
         r#"
         INSERT INTO sensor_frames(
             run_id, sensor_frame_id, candidate_id, rollout_id, example_id,
-            seed, split, evaluation_stage, reward, status, trace_digest_json,
+            task_id, split, evaluation_stage, reward, status, trace_digest_json,
             usage_json, failure_json, frame_json, updated_at
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, datetime('now'))
         ON CONFLICT(run_id, sensor_frame_id) DO UPDATE SET
             candidate_id = excluded.candidate_id,
             rollout_id = excluded.rollout_id,
             example_id = excluded.example_id,
-            seed = excluded.seed,
+            task_id = excluded.task_id,
             split = excluded.split,
             evaluation_stage = excluded.evaluation_stage,
             reward = excluded.reward,
@@ -7068,7 +7065,7 @@ fn upsert_sensor_frame_tx(
             frame.candidate_id,
             frame.rollout_id,
             frame.example_id,
-            frame.seed,
+            frame.task_id.clone(),
             frame.split,
             frame.evaluation_stage,
             frame.reward,
@@ -7112,13 +7109,13 @@ fn upsert_rollout_job_tx(
         r#"
         INSERT INTO rollout_jobs(
             run_id, job_id, candidate_id, sensor_frame_id, example_id,
-            seed, split, evaluation_stage, status, reward, failure_json, updated_at
+            task_id, split, evaluation_stage, status, reward, failure_json, updated_at
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, datetime('now'))
         ON CONFLICT(run_id, job_id) DO UPDATE SET
             candidate_id = excluded.candidate_id,
             sensor_frame_id = excluded.sensor_frame_id,
             example_id = excluded.example_id,
-            seed = excluded.seed,
+            task_id = excluded.task_id,
             split = excluded.split,
             evaluation_stage = excluded.evaluation_stage,
             status = excluded.status,
@@ -7132,7 +7129,7 @@ fn upsert_rollout_job_tx(
             frame.candidate_id,
             frame.sensor_frame_id,
             frame.example_id,
-            frame.seed,
+            frame.task_id.clone(),
             frame.split,
             frame.evaluation_stage,
             status,
@@ -7158,7 +7155,7 @@ fn upsert_rollout_record_tx(
         r#"
         INSERT INTO rollouts(
             run_id, rollout_record_id, rollout_id, candidate_id, sensor_frame_id,
-            example_id, seed, split, evaluation_stage, status, reward,
+            example_id, task_id, split, evaluation_stage, status, reward,
             trace_sha256, event_count, usage_json, failure_json, metadata_json,
             rollout_json, updated_at
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, datetime('now'))
@@ -7167,7 +7164,7 @@ fn upsert_rollout_record_tx(
             candidate_id = excluded.candidate_id,
             sensor_frame_id = excluded.sensor_frame_id,
             example_id = excluded.example_id,
-            seed = excluded.seed,
+            task_id = excluded.task_id,
             split = excluded.split,
             evaluation_stage = excluded.evaluation_stage,
             status = excluded.status,
@@ -7187,7 +7184,7 @@ fn upsert_rollout_record_tx(
             rollout.candidate_id,
             rollout.sensor_frame_id,
             rollout.example_id,
-            rollout.seed,
+            rollout.task_id.clone(),
             rollout.split,
             rollout.evaluation_stage,
             rollout.status,
@@ -7297,7 +7294,7 @@ fn upsert_score_tx(
         r#"
         INSERT INTO scores(
             run_id, score_id, objective_id, objective, candidate_id,
-            sensor_frame_id, rollout_id, example_id, seed, split,
+            sensor_frame_id, rollout_id, example_id, task_id, split,
             evaluation_stage, source, value, rationale, metadata_json,
             score_json, updated_at
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, datetime('now'))
@@ -7308,7 +7305,7 @@ fn upsert_score_tx(
             sensor_frame_id = excluded.sensor_frame_id,
             rollout_id = excluded.rollout_id,
             example_id = excluded.example_id,
-            seed = excluded.seed,
+            task_id = excluded.task_id,
             split = excluded.split,
             evaluation_stage = excluded.evaluation_stage,
             source = excluded.source,
@@ -7327,7 +7324,7 @@ fn upsert_score_tx(
             score.sensor_frame_id,
             score.rollout_id,
             score.example_id,
-            score.seed,
+            score.task_id.clone(),
             score.split,
             score.evaluation_stage,
             score.source,
@@ -7405,7 +7402,7 @@ fn upsert_score_vector_tx(
             candidate_id, split, evaluation_stage, status, selection_objective,
             selection_score, mean_reward, score_count, objective_values_json,
             covered_objectives_json, missing_objectives_json, example_ids_json,
-            seeds_json, metadata_json, score_vector_json, updated_at
+            task_ids_json, metadata_json, score_vector_json, updated_at
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, datetime('now'))
         ON CONFLICT(run_id, score_vector_id) DO UPDATE SET
             objective_set_id = excluded.objective_set_id,
@@ -7422,7 +7419,7 @@ fn upsert_score_vector_tx(
             covered_objectives_json = excluded.covered_objectives_json,
             missing_objectives_json = excluded.missing_objectives_json,
             example_ids_json = excluded.example_ids_json,
-            seeds_json = excluded.seeds_json,
+            task_ids_json = excluded.task_ids_json,
             metadata_json = excluded.metadata_json,
             score_vector_json = excluded.score_vector_json,
             updated_at = datetime('now')
@@ -7444,7 +7441,7 @@ fn upsert_score_vector_tx(
             stable_json(&serde_json::to_value(&record.covered_objectives)?),
             stable_json(&serde_json::to_value(&record.missing_objectives)?),
             stable_json(&serde_json::to_value(&record.example_ids)?),
-            stable_json(&serde_json::to_value(&record.seeds)?),
+            stable_json(&serde_json::to_value(&record.task_ids)?),
             stable_json(&serde_json::to_value(&record.metadata)?),
             stable_json(&serde_json::to_value(record)?),
         ],
@@ -7976,11 +7973,11 @@ fn run_projection_freshness(
         ));
         records.push(ProjectionFreshnessRecord::derived_count(
             run_id,
-            "dataset_snapshots_from_terminal_run",
+            "taskset_snapshots_from_terminal_run",
             "optimization_runs.terminal",
             2,
-            "dataset_snapshots",
-            counts.dataset_snapshots,
+            "taskset_snapshots",
+            counts.taskset_snapshots,
             checked_at,
         ));
         records.push(ProjectionFreshnessRecord::derived_count(
@@ -8323,19 +8320,20 @@ fn build_run_invariant_report(
                 }),
             }));
         }
-        if counts.dataset_snapshots < 2 {
+        if counts.taskset_snapshots < 2 {
             violations.push(InvariantViolation::new(InvariantViolationInput {
                 run_id,
-                invariant_id: "terminal_run_has_dataset_snapshots",
+                invariant_id: "terminal_run_has_taskset_snapshots",
                 severity: "error",
                 subject_type: "optimization_runs",
                 subject_id: run_id,
-                message: "terminal runs must record train and heldout dataset snapshots"
+                message: "terminal runs must record train and heldout taskset snapshots"
                     .to_string(),
                 repair_hint: Some(
-                    "rebuild dataset snapshots from requested splits, seeds, and rows".to_string(),
+                    "rebuild taskset snapshots from requested splits, task ids, and tasks"
+                        .to_string(),
                 ),
-                details: json!({"state": state, "dataset_snapshots": counts.dataset_snapshots}),
+                details: json!({"state": state, "taskset_snapshots": counts.taskset_snapshots}),
             }));
         }
         if counts.objective_sets == 0 {
@@ -8490,7 +8488,7 @@ fn build_run_invariant_report(
                 "resolved_run_configs": counts.resolved_run_configs,
                 "container_contract_snapshots": counts.container_contract_snapshots,
                 "prompt_program_snapshots": counts.prompt_program_snapshots,
-                "dataset_snapshots": counts.dataset_snapshots,
+                "taskset_snapshots": counts.taskset_snapshots,
                 "run_limits": counts.run_limits,
             },
             "runtime": {

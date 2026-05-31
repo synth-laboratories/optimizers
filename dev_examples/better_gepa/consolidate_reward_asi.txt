@@ -1,0 +1,98 @@
+Actionable side info (ASI)
+
+Reward/objective values decide selection. ASI explains what happened and what to
+try next. Keep these separate.
+
+Current reward compatibility inputs:
+
+- `/rollout.reward_info.outcome_reward`
+- `/rollout.reward_info.score`
+- `/rollout.summary.outcome_reward`
+- top-level `/rollout.reward`
+
+Current richer evidence channel:
+
+- GEPA reads top-level `/rollout.actionable_side_info` into `SensorFrame.actionable_side_info`.
+- Sensor frames flow into evaluation cache records.
+- Proposer workspaces already expose ASI through `state/rollouts.json`,
+  `state/evidence_frames.json`, and `state/reflective_frames.json`.
+- Reflective frames include `feedback`, `actionable_side_info`, `sensors`,
+  `refs`, and trace/artifact pointers.
+
+Crafter example shape:
+
+```json
+{
+  "reward_info": {
+    "outcome_reward": 4.0,
+    "details": {
+      "objective": "overall_achievement_count"
+    }
+  },
+  "actionable_side_info": {
+    "failed_crafts": [
+      {"recipe": "wooden_pickaxe", "missing": ["crafting_table"]}
+    ],
+    "achievements_all": ["collect_wood", "collect_wood", "place_table"],
+    "achievements_unique": ["collect_wood", "place_table"],
+    "last_blocker": "crafted table but did not return to stone/coal path"
+  }
+}
+```
+
+TBLite example shape:
+
+```json
+{
+  "reward_info": {
+    "outcome_reward": 0.75,
+    "details": {
+      "objective": "correctness",
+      "pytest_passed": 3,
+      "pytest_total": 4,
+      "completion_time_seconds": 2.41
+    }
+  },
+  "objective_scores": [
+    {
+      "objective": "correctness",
+      "value": 0.75,
+      "source": "pytest"
+    },
+    {
+      "objective": "completion_time_seconds",
+      "value": 2.41,
+      "source": "container.runtime"
+    }
+  ],
+  "actionable_side_info": {
+    "final_diff": "--- a/solution.py\n+++ b/solution.py\n...",
+    "pytest_stdout_tail": "1 failed, 3 passed in 2.41s",
+    "failing_tests": ["test_empty_input"],
+    "implementation_notes": "solution handles normal inputs but misses empty input guard"
+  }
+}
+```
+
+For TBLite, `correctness` is the primary objective and
+`completion_time_seconds` is a secondary lower-is-better objective. The final
+diff belongs in ASI because it helps the proposer understand what code was
+actually produced, but it should not decide selection unless a future optimizer
+turns diff quality into an explicit objective.
+
+Async rollout story:
+
+ASI can come from the final async rollout payload returned by
+`GET /rollouts/{rollout_id}`. It does not need a separate route for GEPA. The
+container submits immediately, GEPA polls until the rollout is terminal, then
+GEPA converts the returned payload into sensor/evidence frames.
+
+SDK gap:
+
+- Python SDK should expose `ActionableSideInfo` as an optional typed alias or
+  schema hook, while still allowing arbitrary JSON.
+- Container SDK should make it easy to attach ASI to an `ExecutionRecord` so
+  `execution_to_rollout_payload()` emits top-level `actionable_side_info`.
+- GEPA proposer context should document when to inspect ASI and, if needed,
+  add compact ASI summaries to `proposer_examples`/failure summaries so the
+  proposer sees them without digging into nested evidence.

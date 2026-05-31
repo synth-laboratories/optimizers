@@ -32,6 +32,10 @@ pub struct ContainerMetadataResponse {
 }
 
 impl ContainerMetadataResponse {
+    pub fn resolved_gepa_contract(&self) -> Result<GepaOptimizerContract> {
+        Ok(self.gepa_contract()?.clone())
+    }
+
     pub fn gepa_contract(&self) -> Result<&GepaOptimizerContract> {
         self.metadata
             .optimizer_contracts
@@ -45,15 +49,16 @@ impl ContainerMetadataResponse {
             })
     }
 
-    pub fn validate_gepa_contract(&self) -> Result<()> {
-        let contract = self.gepa_contract()?;
+    pub fn validate_gepa_contract(&self) -> Result<GepaOptimizerContract> {
+        let contract = self.resolved_gepa_contract()?;
         if contract.version != GEPA_OPTIMIZER_CONTRACT_VERSION {
             return Err(OptimizerError::Container(format!(
                 "container does not advertise metadata.optimizer_contracts.gepa.version={}",
                 GEPA_OPTIMIZER_CONTRACT_VERSION
             )));
         }
-        contract.validate_routes()
+        contract.validate_routes()?;
+        Ok(contract)
     }
 }
 
@@ -80,9 +85,9 @@ pub struct GepaOptimizerContract {
     #[serde(default)]
     pub program_route: String,
     #[serde(default)]
-    pub dataset_route: String,
+    pub taskset_route: String,
     #[serde(default)]
-    pub dataset_rows_route: String,
+    pub taskset_tasks_route: String,
     #[serde(default)]
     pub rollout_route: String,
     #[serde(default)]
@@ -95,8 +100,8 @@ impl GepaOptimizerContract {
     fn validate_routes(&self) -> Result<()> {
         for (name, route) in [
             ("program_route", self.program_route.as_str()),
-            ("dataset_route", self.dataset_route.as_str()),
-            ("dataset_rows_route", self.dataset_rows_route.as_str()),
+            ("taskset_route", self.taskset_route.as_str()),
+            ("taskset_tasks_route", self.taskset_tasks_route.as_str()),
             ("rollout_route", self.rollout_route.as_str()),
         ] {
             if !route.starts_with('/') {
@@ -110,9 +115,9 @@ impl GepaOptimizerContract {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct DatasetResponse {
+pub struct TasksetResponse {
     #[serde(default)]
-    pub dataset_id: Option<String>,
+    pub taskset_id: Option<String>,
     #[serde(default)]
     pub splits: JsonMap,
     #[serde(default)]
@@ -126,59 +131,59 @@ pub struct DatasetResponse {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct DatasetRowsRequest {
+pub struct TasksetTasksRequest {
     pub split: String,
     #[serde(default)]
-    pub seeds: Vec<i64>,
+    pub task_ids: Vec<String>,
     #[serde(default)]
     pub filters: Value,
 }
 
-impl DatasetRowsRequest {
-    pub fn new(split: impl Into<String>, seeds: &[i64], filters: Value) -> Self {
+impl TasksetTasksRequest {
+    pub fn new(split: impl Into<String>, task_ids: &[String], filters: Value) -> Self {
         Self {
             split: split.into(),
-            seeds: seeds.to_vec(),
+            task_ids: task_ids.to_vec(),
             filters,
         }
     }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct DatasetRowsResponse {
+pub struct TasksetTasksResponse {
     #[serde(default)]
-    pub rows: Vec<Value>,
+    pub tasks: Vec<Value>,
     #[serde(default)]
     pub metadata: JsonMap,
     #[serde(flatten)]
     pub extra: JsonMap,
 }
 
-impl DatasetRowsResponse {
-    pub fn validate_for_request(&self, request: &DatasetRowsRequest) -> Result<()> {
-        if self.rows.len() != request.seeds.len() {
+impl TasksetTasksResponse {
+    pub fn validate_for_request(&self, request: &TasksetTasksRequest) -> Result<()> {
+        if self.tasks.len() != request.task_ids.len() {
             return Err(OptimizerError::Container(format!(
-                "/dataset/rows returned {} rows for {} requested seeds on split {:?}",
-                self.rows.len(),
-                request.seeds.len(),
+                "/taskset/tasks returned {} tasks for {} requested task ids on split {:?}",
+                self.tasks.len(),
+                request.task_ids.len(),
                 request.split
             )));
         }
         let mut identities = BTreeSet::new();
-        for (index, row) in self.rows.iter().enumerate() {
-            if !row.is_object() {
+        for (index, task) in self.tasks.iter().enumerate() {
+            if !task.is_object() {
                 return Err(OptimizerError::Container(format!(
-                    "/dataset/rows row {index} must be an object"
+                    "/taskset/tasks task {index} must be an object"
                 )));
             }
-            let identity = dataset_row_identity(row).map_err(|_| {
+            let identity = task_identity(task).map_err(|_| {
                 OptimizerError::Container(format!(
-                    "/dataset/rows row {index} must include a stable row identity: example_id, id, task_instance_id, seed, or task_id+index"
+                    "/taskset/tasks task {index} must include stable task_id"
                 ))
             })?;
             if !identities.insert(identity.clone()) {
                 return Err(OptimizerError::Container(format!(
-                    "/dataset/rows row {index} has duplicate stable row identity {identity:?}"
+                    "/taskset/tasks task {index} has duplicate stable task identity {identity:?}"
                 )));
             }
         }
@@ -186,31 +191,17 @@ impl DatasetRowsResponse {
     }
 }
 
-pub fn dataset_row_identity(row: &Value) -> Result<String> {
-    let object = row
+pub fn task_identity(task: &Value) -> Result<String> {
+    let object = task
         .as_object()
-        .ok_or_else(|| OptimizerError::Container("dataset row must be an object".to_string()))?;
-    for key in ["example_id", "id", "task_instance_id"] {
+        .ok_or_else(|| OptimizerError::Container("task must be an object".to_string()))?;
+    for key in ["task_id", "task_instance_id", "example_id", "id"] {
         if let Some(identity) = identity_part(object.get(key)) {
             return Ok(identity);
         }
     }
-    if let Some(seed) = object.get("seed").and_then(Value::as_i64) {
-        let split = object
-            .get("split")
-            .and_then(Value::as_str)
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or("seed");
-        return Ok(format!("{split}:{seed}"));
-    }
-    if let (Some(task_id), Some(index)) = (
-        identity_part(object.get("task_id")),
-        object.get("index").and_then(Value::as_i64),
-    ) {
-        return Ok(format!("{task_id}:{index}"));
-    }
     Err(OptimizerError::Container(
-        "dataset row must include a stable row identity: example_id, id, task_instance_id, seed, or task_id+index".to_string(),
+        "task must include stable task_id".to_string(),
     ))
 }
 
@@ -261,9 +252,9 @@ pub struct RolloutRequest {
     #[serde(default)]
     pub candidate_overlay: JsonMap,
     #[serde(default)]
-    pub dataset_row: JsonMap,
+    pub task: JsonMap,
     #[serde(default)]
-    pub dataset: Value,
+    pub taskset: Value,
     #[serde(default)]
     pub long_horizon: JsonMap,
     #[serde(default)]
@@ -370,8 +361,6 @@ pub struct RolloutResponse {
     pub checkpoint_id: Option<String>,
     #[serde(default)]
     pub task_id: Option<String>,
-    #[serde(default)]
-    pub seed: Option<i64>,
     #[serde(default)]
     pub created_at: Option<String>,
     #[serde(default)]
@@ -596,13 +585,13 @@ pub fn decode_prompt_program(value: Value) -> Result<PromptProgram> {
     Ok(serde_json::from_value(value)?)
 }
 
-pub fn decode_dataset_rows(
+pub fn decode_taskset_tasks(
     value: Value,
-    request: &DatasetRowsRequest,
-) -> Result<DatasetRowsResponse> {
-    let rows: DatasetRowsResponse = serde_json::from_value(value)?;
-    rows.validate_for_request(request)?;
-    Ok(rows)
+    request: &TasksetTasksRequest,
+) -> Result<TasksetTasksResponse> {
+    let tasks: TasksetTasksResponse = serde_json::from_value(value)?;
+    tasks.validate_for_request(request)?;
+    Ok(tasks)
 }
 
 pub fn decode_rollout_response(value: Value) -> Result<RolloutResponse> {

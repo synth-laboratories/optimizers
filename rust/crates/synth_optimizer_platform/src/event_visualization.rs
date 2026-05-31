@@ -77,8 +77,8 @@ pub(crate) fn terminal_line_for_event(
                 }
             ))
         }
-        "dataset.rows.loaded" => Some(format!(
-            "  dataset: train={} heldout={}",
+        "taskset.tasks.loaded" => Some(format!(
+            "  taskset: train={} heldout={}",
             field_usize(fields, "train_rows").unwrap_or(0),
             field_usize(fields, "heldout_rows").unwrap_or(0)
         )),
@@ -482,7 +482,7 @@ fn frontier_summary(fields: &Value) -> FrontierSummary {
         ),
         frontier_seed_percent: fmt_percent(covered_seed_count, seed_count),
         best_seed_percent: fmt_percent(best_covered_seed_count, seed_count),
-        seed_list: compact_i64_list(&field_array_i64(fields, "covered_train_seeds")),
+        seed_list: compact_i64_list(&field_array_i64(fields, "covered_train_task_ids")),
     }
 }
 
@@ -532,7 +532,7 @@ fn terminal_state_transition_line(message: &str, fields: &Value) -> Option<Strin
     let details = fields.get("details").unwrap_or(&Value::Null);
     let rollouts_started = field_str(fields, "trigger") == Some("rollouts_started");
     match message {
-        "Container, program, and dataset ready" => Some("  container ready".to_string()),
+        "Container, program, and taskset ready" => Some("  container ready".to_string()),
         "Proposer started" | "Async proposer started" => {
             Some(terminal_proposer_started_line(details))
         }

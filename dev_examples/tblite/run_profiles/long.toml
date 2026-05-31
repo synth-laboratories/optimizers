@@ -1,0 +1,52 @@
+[profile]
+name = "long"
+description = "Longer TBLite GEPA run intended to improve general coding-agent prompt behavior over the small catalog."
+
+[base]
+config = "gepa.toml"
+run_id = "tblite_gepa_public"
+
+[policy]
+provider = "openai"
+model = "gpt-4.1-nano"
+api_key_env = "OPENAI_API_KEY"
+
+[proposer]
+model = "gpt-5.4-nano"
+auth_mode = "api_key"
+api_key_env = "OPENAI_API_KEY"
+copy_host_auth = false
+
+[task]
+test_timeout_seconds = 30
+
+[taskset]
+train_size = 3
+heldout_size = 2
+train_task_id_start = 0
+heldout_task_id_start = 100
+
+[pipeline]
+max_generations = 3
+proposals_per_generation = 6
+minibatch_size = 3
+max_in_flight_candidates = 6
+rollout_workers = 16
+rollout_chunk_size = "auto"
+
+[pipeline.adaptive_rollout_concurrency]
+enabled = true
+initial = 16
+min = 1
+max = 40
+increase_step = 8
+decrease_step = 8
+increase_after_successes = 20
+
+[budgets]
+train_rollouts = 220
+heldout_rollouts = 20
+
+[timeouts]
+container_http_seconds = 90
+rollout_http_retries = 0

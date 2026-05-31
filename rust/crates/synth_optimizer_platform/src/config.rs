@@ -30,6 +30,10 @@ fn default_policy_provider() -> String {
     "openai".to_string()
 }
 
+fn default_policy_enabled() -> bool {
+    true
+}
+
 fn default_policy_model() -> String {
     "gpt-4.1-nano".to_string()
 }
@@ -87,7 +91,7 @@ fn default_max_total_rollouts() -> usize {
 }
 
 fn default_rollout_submission_mode() -> String {
-    "sync".to_string()
+    "async".to_string()
 }
 
 fn default_rollout_poll_interval_ms() -> u64 {
@@ -118,8 +122,8 @@ fn default_batch_sampler_config() -> GepaBatchSamplerConfig {
     GepaBatchSamplerConfig::default()
 }
 
-fn default_seed_pools_config() -> GepaSeedPoolsConfig {
-    GepaSeedPoolsConfig::default()
+fn default_task_pools_config() -> GepaTaskPoolsConfig {
+    GepaTaskPoolsConfig::default()
 }
 
 fn default_acceptance_criterion() -> String {
@@ -194,7 +198,7 @@ pub struct SynthOptimizerConfig {
     #[serde(default)]
     pub container: ContainerConfig,
     #[serde(default)]
-    pub dataset: DatasetConfig,
+    pub taskset: TasksetConfig,
     #[serde(default)]
     pub candidate: CandidateConfig,
     #[serde(default)]
@@ -340,6 +344,9 @@ impl SynthOptimizerConfig {
         if let Some(cwd) = &self.container.cwd {
             self.container.cwd = Some(absolutize(base_dir, cwd));
         }
+        if let Some(path) = &self.proposer.prompt.best_practices_path {
+            self.proposer.prompt.best_practices_path = Some(absolutize(base_dir, path));
+        }
         if let Some(path) = &self.cache.path {
             self.cache.path = Some(absolutize(base_dir, path));
         }
@@ -362,20 +369,22 @@ impl SynthOptimizerConfig {
                 "container.url is required".to_string(),
             ));
         }
-        if self.dataset.train_seeds.is_empty() {
+        if self.taskset.train_ids.is_empty() {
             return Err(OptimizerError::Config(
-                "dataset.train_seeds must contain at least one seed".to_string(),
+                "taskset.train_ids must contain at least one task id".to_string(),
             ));
         }
-        if self.dataset.heldout_seeds.is_empty() {
+        if self.taskset.heldout_ids.is_empty() {
             return Err(OptimizerError::Config(
-                "dataset.heldout_seeds must contain at least one seed".to_string(),
+                "taskset.heldout_ids must contain at least one task id".to_string(),
             ));
         }
-        if self.candidate.target_modules.is_empty() {
-            return Err(OptimizerError::Config(
-                "candidate.target_modules must contain at least one module id".to_string(),
-            ));
+        for module_id in &self.candidate.target_modules {
+            if module_id.trim().is_empty() {
+                return Err(OptimizerError::Config(
+                    "candidate.target_modules entries must be non-empty".to_string(),
+                ));
+            }
         }
         if self.gepa.minibatch_size == 0 {
             return Err(OptimizerError::Config(
@@ -568,6 +577,7 @@ impl SynthOptimizerConfig {
                 "proposer.auth_mode = \"api_key\" cannot be combined with proposer.copy_host_auth = true".to_string(),
             ));
         }
+        validate_proposer_prompt_config(&self.proposer.prompt)?;
         Ok(())
     }
 }
@@ -612,26 +622,26 @@ pub struct ContainerConfig {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct DatasetConfig {
+pub struct TasksetConfig {
     #[serde(default = "default_train_split")]
     pub train_split: String,
     #[serde(default = "default_heldout_split")]
     pub heldout_split: String,
     #[serde(default)]
-    pub train_seeds: Vec<i64>,
+    pub train_ids: Vec<String>,
     #[serde(default)]
-    pub heldout_seeds: Vec<i64>,
+    pub heldout_ids: Vec<String>,
     #[serde(default)]
     pub filters: Map<String, Value>,
 }
 
-impl Default for DatasetConfig {
+impl Default for TasksetConfig {
     fn default() -> Self {
         Self {
             train_split: default_train_split(),
             heldout_split: default_heldout_split(),
-            train_seeds: Vec::new(),
-            heldout_seeds: Vec::new(),
+            train_ids: Vec::new(),
+            heldout_ids: Vec::new(),
             filters: Map::new(),
         }
     }
@@ -649,10 +659,14 @@ pub struct CandidateConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PolicyConfig {
+    #[serde(default = "default_policy_enabled")]
+    pub enabled: bool,
     #[serde(default = "default_policy_provider")]
     pub provider: String,
     #[serde(default = "default_policy_model")]
     pub model: String,
+    #[serde(default)]
+    pub policy_type: Option<String>,
     #[serde(default = "default_policy_api_family")]
     pub api_family: String,
     #[serde(default)]
@@ -678,8 +692,10 @@ pub struct PolicyConfig {
 impl Default for PolicyConfig {
     fn default() -> Self {
         Self {
+            enabled: default_policy_enabled(),
             provider: default_policy_provider(),
             model: default_policy_model(),
+            policy_type: None,
             api_family: default_policy_api_family(),
             base_url: None,
             inference_url: None,
@@ -723,6 +739,8 @@ pub struct ProposerConfig {
     pub timeout_seconds: u64,
     #[serde(default)]
     pub model: Option<String>,
+    #[serde(default)]
+    pub prompt: ProposerPromptConfig,
 }
 
 impl Default for ProposerConfig {
@@ -741,8 +759,18 @@ impl Default for ProposerConfig {
             api_key_env: None,
             timeout_seconds: default_timeout_seconds(),
             model: None,
+            prompt: ProposerPromptConfig::default(),
         }
     }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProposerPromptConfig {
+    #[serde(default)]
+    pub best_practices: Option<String>,
+    #[serde(default)]
+    pub best_practices_path: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -789,15 +817,15 @@ impl Default for GepaBatchSamplerConfig {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct GepaSeedPoolsConfig {
+pub struct GepaTaskPoolsConfig {
     #[serde(default)]
-    pub pareto_eval: Vec<i64>,
+    pub pareto_eval: Vec<String>,
     #[serde(default)]
-    pub minibatch: Vec<i64>,
+    pub minibatch: Vec<String>,
     #[serde(default)]
-    pub reflection: Vec<i64>,
+    pub reflection: Vec<String>,
     #[serde(default)]
-    pub validation: Vec<i64>,
+    pub validation: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -852,8 +880,8 @@ pub struct GepaConfig {
     pub candidate_selector: GepaCandidateSelectorConfig,
     #[serde(default = "default_batch_sampler_config")]
     pub batch_sampler: GepaBatchSamplerConfig,
-    #[serde(default = "default_seed_pools_config")]
-    pub seed_pools: GepaSeedPoolsConfig,
+    #[serde(default = "default_task_pools_config")]
+    pub task_pools: GepaTaskPoolsConfig,
     #[serde(default = "default_gepa_pipeline_config")]
     pub pipeline: GepaPipelineConfig,
     #[serde(default)]
@@ -916,7 +944,7 @@ impl Default for GepaConfig {
             objective_acceptance: default_objective_acceptance_config(),
             candidate_selector: default_candidate_selector_config(),
             batch_sampler: default_batch_sampler_config(),
-            seed_pools: default_seed_pools_config(),
+            task_pools: default_task_pools_config(),
             pipeline: default_gepa_pipeline_config(),
             max_cost_usd: 0.0,
             max_time_seconds: None,
@@ -1175,6 +1203,9 @@ fn validate_positive_f64_option(name: &str, value: Option<f64>) -> Result<()> {
 }
 
 fn validate_policy_config(config: &PolicyConfig) -> Result<()> {
+    if !config.enabled {
+        return Ok(());
+    }
     if config.provider.trim().is_empty() {
         return Err(OptimizerError::Config(
             "policy.provider must be non-empty".to_string(),
@@ -1184,6 +1215,14 @@ fn validate_policy_config(config: &PolicyConfig) -> Result<()> {
         return Err(OptimizerError::Config(
             "policy.model must be non-empty".to_string(),
         ));
+    }
+    if let Some(policy_type) = config.policy_type.as_deref() {
+        let normalized = normalize_enum_value(policy_type);
+        if !matches!(normalized.as_str(), "dag" | "react" | "codex") {
+            return Err(OptimizerError::Config(format!(
+                "policy.policy_type must be dag, react, or codex; got {policy_type:?}"
+            )));
+        }
     }
     validate_positive_option("policy.max_tokens", config.max_tokens)?;
     let api_family = normalize_enum_value(&config.api_family);
@@ -1257,6 +1296,34 @@ fn validate_policy_config(config: &PolicyConfig) -> Result<()> {
 
 fn normalize_enum_value(value: &str) -> String {
     value.trim().to_ascii_lowercase().replace('-', "_")
+}
+
+fn validate_proposer_prompt_config(config: &ProposerPromptConfig) -> Result<()> {
+    if config.best_practices.is_some() && config.best_practices_path.is_some() {
+        return Err(OptimizerError::Config(
+            "proposer.prompt must set at most one of best_practices or best_practices_path"
+                .to_string(),
+        ));
+    }
+    if config
+        .best_practices
+        .as_deref()
+        .is_some_and(|value| value.trim().is_empty())
+    {
+        return Err(OptimizerError::Config(
+            "proposer.prompt.best_practices must be non-empty when set".to_string(),
+        ));
+    }
+    if config
+        .best_practices_path
+        .as_ref()
+        .is_some_and(|path| path.as_os_str().is_empty())
+    {
+        return Err(OptimizerError::Config(
+            "proposer.prompt.best_practices_path must be non-empty when set".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_gepa_candidate_selector_config(config: &GepaCandidateSelectorConfig) -> Result<()> {

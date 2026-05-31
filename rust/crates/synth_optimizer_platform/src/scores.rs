@@ -43,7 +43,7 @@ pub struct ScoreRecord {
     #[serde(default)]
     pub rollout_id: Option<String>,
     pub example_id: String,
-    pub seed: i64,
+    pub task_id: String,
     pub split: String,
     pub evaluation_stage: String,
     pub source: String,
@@ -79,7 +79,7 @@ pub struct ScoreVectorRecord {
     #[serde(default)]
     pub example_ids: Vec<String>,
     #[serde(default)]
-    pub seeds: Vec<i64>,
+    pub task_ids: Vec<String>,
     #[serde(default)]
     pub metadata: Map<String, Value>,
 }
@@ -216,7 +216,7 @@ impl ScoreRecord {
             sensor_frame_id: frame.sensor_frame_id.clone(),
             rollout_id: frame.rollout_id.clone(),
             example_id: frame.example_id.clone(),
-            seed: frame.seed,
+            task_id: frame.task_id.clone(),
             split: frame.split.clone(),
             evaluation_stage: frame.evaluation_stage.clone(),
             source: score.source.clone(),
@@ -238,13 +238,13 @@ impl ScoreVectorRecord {
     ) -> Self {
         let mut totals = BTreeMap::<String, (f64, u64)>::new();
         let mut example_ids = BTreeSet::new();
-        let mut seeds = BTreeSet::new();
+        let mut task_ids = BTreeSet::new();
         for score in scores {
             let entry = totals.entry(score.objective.clone()).or_insert((0.0, 0));
             entry.0 += score.value;
             entry.1 += 1;
             example_ids.insert(score.example_id.clone());
-            seeds.insert(score.seed);
+            task_ids.insert(score.task_id.clone());
         }
 
         let mut objective_values = Map::new();
@@ -308,7 +308,7 @@ impl ScoreVectorRecord {
             covered_objectives,
             missing_objectives,
             example_ids: example_ids.into_iter().collect(),
-            seeds: seeds.into_iter().collect(),
+            task_ids: task_ids.into_iter().collect(),
             metadata,
         }
     }

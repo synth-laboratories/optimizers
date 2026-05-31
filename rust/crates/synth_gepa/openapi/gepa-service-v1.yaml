@@ -630,11 +630,11 @@ components:
 
     RolloutResult:
       type: object
-      required: [rollout_id, candidate_id, seed_id, score]
+      required: [rollout_id, candidate_id, task_id, score]
       properties:
         rollout_id: { type: string }
         candidate_id: { type: string }
-        seed_id: { type: integer }
+        task_id: { type: string }
         score: { type: number }
         tokens: { type: [integer, 'null'] }
         latency_ms: { type: [integer, 'null'] }
@@ -734,12 +734,12 @@ components:
     # ---- Submission body ---------------------------------------------------
     RunRequest:
       type: object
-      required: [container_url, policy, proposer, dataset]
+      required: [container_url, policy, proposer, taskset]
       properties:
         container_url: { type: string, format: uri }
         policy: { $ref: '#/components/schemas/PolicySpec' }
         proposer: { $ref: '#/components/schemas/ProposerSpec' }
-        dataset: { $ref: '#/components/schemas/DatasetSpec' }
+        taskset: { $ref: '#/components/schemas/TasksetSpec' }
         manual_step: { type: boolean, default: false }
         stop_conditions:
           type: array
@@ -790,22 +790,22 @@ components:
           then:
             required: [env_var]
 
-    DatasetSpec:
+    TasksetSpec:
       type: object
-      required: [train_seeds, heldout_seeds]
+      required: [train_ids, heldout_ids]
       description: |
         Explicit only in v1 — runs must be reproducible from the request alone.
-        ASSERTION: train_seeds and heldout_seeds MUST be disjoint (heldout leakage
+        ASSERTION: train_ids and heldout_ids MUST be disjoint (heldout leakage
         guard) and both non-empty → else 422 invalid_config.
       properties:
-        train_seeds:
+        train_ids:
           type: array
           minItems: 1
-          items: { type: integer }
-        heldout_seeds:
+          items: { type: string }
+        heldout_ids:
           type: array
           minItems: 1
-          items: { type: integer }
+          items: { type: string }
 
     StopCondition:
       type: object

@@ -1,0 +1,53 @@
+[profile]
+name = "concurrent"
+description = "Small-but-meaningful MiniGrid GEPA: navigable env (non-zero baseline), concurrency floored at 10."
+
+[base]
+config = "gepa.toml"
+run_id = "minigrid_gepa_concurrent"
+
+[policy]
+provider = "openai"
+model = "gpt-5.4-mini"          # solves some episodes -> non-zero baseline -> proposer has winning_patterns
+api_key_env = "OPENAI_API_KEY"
+
+[proposer]
+model = "gpt-5.4-nano"
+auth_mode = "api_key"
+api_key_env = "OPENAI_API_KEY"
+copy_host_auth = false
+
+[task]
+env_id = "MiniGrid-Empty-Random-6x6-v0"   # navigation-only: baseline >0 with headroom (DoorKey scores 0 zero-shot)
+max_steps = 24
+
+[taskset]
+train_size = 8
+heldout_size = 8
+train_task_id_start = "random"
+heldout_task_id_start = "random"
+
+[pipeline]
+max_generations = 1
+proposals_per_generation = 3
+minibatch_size = 4
+max_in_flight_candidates = 3
+rollout_workers = 10
+rollout_chunk_size = "auto"
+
+[pipeline.adaptive_rollout_concurrency]
+enabled = true
+initial = 10
+min = 10                        # <-- floor at 10 so it can't collapse to serial
+max = 30
+increase_step = 5
+decrease_step = 5
+increase_after_successes = 20
+
+[budgets]
+train_rollouts = 80
+heldout_rollouts = 16
+
+[timeouts]
+container_http_seconds = 600    # <-- 48->24 step episodes at conc 10 exceed the old 90s and triggered backoff
+rollout_http_retries = 0

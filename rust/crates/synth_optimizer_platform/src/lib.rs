@@ -44,21 +44,21 @@ pub use candidates::{
 };
 pub use checkpoints::{CheckpointInput, CheckpointRecord};
 pub use config::{
-    CacheConfig, CandidateConfig, ContainerConfig, DatasetConfig,
-    GepaAdaptiveRolloutConcurrencyConfig, GepaBatchSamplerConfig, GepaCandidateSelectorConfig,
-    GepaConfig, GepaObjectiveAcceptanceConfig, GepaPipelineConfig, GepaPipelineMode,
-    GepaPipelineWorkers, GepaSeedPoolsConfig, GepaStalenessPolicy, PolicyConfig, ProposerConfig,
-    RunConfig, SynthOptimizerConfig,
+    CacheConfig, CandidateConfig, ContainerConfig, GepaAdaptiveRolloutConcurrencyConfig,
+    GepaBatchSamplerConfig, GepaCandidateSelectorConfig, GepaConfig, GepaObjectiveAcceptanceConfig,
+    GepaPipelineConfig, GepaPipelineMode, GepaPipelineWorkers, GepaStalenessPolicy,
+    GepaTaskPoolsConfig, PolicyConfig, ProposerConfig, ProposerPromptConfig, RunConfig,
+    SynthOptimizerConfig, TasksetConfig,
 };
 pub use configured_limits::{
     ConfiguredGepaRunLimits, GepaRuntimeEffectBudgetEstimates, GEPA_LIMIT_STOP_POLICY,
 };
 pub use container_contract::{
-    dataset_row_identity, CanonicalChoice, CanonicalMessage, CanonicalRequest, CanonicalResponse,
-    CanonicalUsage, ContainerMetadata, ContainerMetadataResponse, DatasetResponse,
-    DatasetRowsRequest, DatasetRowsResponse, GepaOptimizerContract, HealthResponse,
-    OptimizerContracts, RewardInfo, RolloutActorSpec, RolloutRequest, RolloutResponse,
-    RolloutTraceSpanV4, RolloutTraceV4, TRACE_SCHEMA_VERSION, TRACE_SCHEMA_VERSION_NAME,
+    task_identity, CanonicalChoice, CanonicalMessage, CanonicalRequest, CanonicalResponse,
+    CanonicalUsage, ContainerMetadata, ContainerMetadataResponse, GepaOptimizerContract,
+    HealthResponse, OptimizerContracts, RewardInfo, RolloutActorSpec, RolloutRequest,
+    RolloutResponse, RolloutTraceSpanV4, RolloutTraceV4, TasksetResponse, TasksetTasksRequest,
+    TasksetTasksResponse, TRACE_SCHEMA_VERSION, TRACE_SCHEMA_VERSION_NAME,
 };
 pub use data_models::{
     evaluation_cache_key_fields, materialization_record_json, objective_set_hash,
@@ -103,12 +103,12 @@ pub use resources::{ResourceLeaseRecord, ResourceLeaseRecordInput};
 pub use rollouts::{RolloutEventRecord, RolloutRecord, SensorRolloutRecords};
 pub use runtime_records::{
     runtime_record_json, ContainerContractSnapshotInput, ContainerContractSnapshotRecord,
-    DatasetSnapshotInput, DatasetSnapshotRecord, PromptProgramSnapshotInput,
-    PromptProgramSnapshotRecord, RenderedOptimizerStateInput, RenderedOptimizerStateRecord,
-    ResolvedRunConfigInput, ResolvedRunConfigRecord, RuntimeEffectInput, RuntimeEffectRecord,
-    CONTAINER_CONTRACT_SNAPSHOT_SCHEMA_VERSION, DATASET_SNAPSHOT_SCHEMA_VERSION,
-    PROMPT_PROGRAM_SNAPSHOT_SCHEMA_VERSION, RENDERED_OPTIMIZER_STATE_SCHEMA_VERSION,
-    RESOLVED_RUN_CONFIG_SCHEMA_VERSION, RUNTIME_EFFECT_SCHEMA_VERSION,
+    PromptProgramSnapshotInput, PromptProgramSnapshotRecord, RenderedOptimizerStateInput,
+    RenderedOptimizerStateRecord, ResolvedRunConfigInput, ResolvedRunConfigRecord,
+    RuntimeEffectInput, RuntimeEffectRecord, TasksetSnapshotInput, TasksetSnapshotRecord,
+    CONTAINER_CONTRACT_SNAPSHOT_SCHEMA_VERSION, PROMPT_PROGRAM_SNAPSHOT_SCHEMA_VERSION,
+    RENDERED_OPTIMIZER_STATE_SCHEMA_VERSION, RESOLVED_RUN_CONFIG_SCHEMA_VERSION,
+    RUNTIME_EFFECT_SCHEMA_VERSION, TASKSET_SNAPSHOT_SCHEMA_VERSION,
 };
 pub use scores::{
     ObjectiveSetRecord, ObjectiveSpec, ParetoComparisonRecord, ScoreRecord, ScoreVectorRecord,

@@ -1,0 +1,74 @@
+[run]
+run_id = "tblite_gepa_public"
+output_dir = "runs"
+seed = 0
+
+[container]
+url = "http://127.0.0.1:8766"
+command = [
+  "/usr/bin/env",
+  "TBLITE_POLICY_MODEL=gpt-4.1-nano",
+  "TBLITE_TEST_TIMEOUT_SECONDS=30",
+  "uv", "run", "--project", ".",
+  "python", "synth_service_app.py",
+  "--host", "127.0.0.1", "--port", "8766",
+]
+cwd = "."
+startup_timeout_seconds = 60
+
+[taskset]
+train_split = "train"
+heldout_split = "test"
+train_ids = ["is_palindrome", "two_sum_indices", "rle_encode"]
+heldout_ids = ["balanced_brackets", "merge_sorted"]
+
+[candidate]
+target_modules = ["starting_prompt"]
+
+[seed_candidate]
+starting_prompt = "You are a Python coding agent. Implement the requested function so that all of its hidden tests pass. Output ONLY the function source code, no markdown fences, no surrounding prose, no example usage. Match the function signature exactly. Handle edge cases. Use the standard library."
+
+[policy]
+provider = "openai"
+model = "gpt-4.1-nano"
+api_key_env = "OPENAI_API_KEY"
+
+[proposer]
+backend = "codex_app_server"
+execution_mode = "local_process"
+timeout_seconds = 900
+model = "gpt-5.4-nano"
+reasoning_effort = "medium"
+auth_mode = "api_key"
+copy_host_auth = false
+api_key_env = "OPENAI_API_KEY"
+sandbox_mode = "workspace-write"
+approval_policy = "never"
+
+[gepa]
+max_generations = 1
+proposals_per_generation = 1
+minibatch_size = 3
+max_total_rollouts = 16
+max_cost_usd = 0.0
+
+[gepa.pipeline]
+mode = "async_pipelined"
+max_in_flight_candidates = 1
+
+[gepa.pipeline.workers]
+rollout = 10
+
+[gepa.pipeline.adaptive_rollout_concurrency]
+enabled = true
+initial = 10
+min = 1
+max = 30
+increase_step = 5
+decrease_step = 5
+increase_after_successes = 20
+
+[cache]
+mode = "readwrite"
+path = "runs/tblite_gepa_cache.sqlite"
+namespace = "tblite_gepa_public_live"

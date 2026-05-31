@@ -1,0 +1,53 @@
+[profile]
+name = "default"
+description = "Moderate MiniGrid GEPA run over fresh deterministic episode seeds."
+
+[base]
+config = "gepa.toml"
+run_id = "minigrid_gepa_public"
+
+[policy]
+provider = "openai"
+model = "gpt-4.1-nano"
+api_key_env = "OPENAI_API_KEY"
+
+[proposer]
+model = "gpt-5.4-nano"
+auth_mode = "api_key"
+api_key_env = "OPENAI_API_KEY"
+copy_host_auth = false
+
+[task]
+env_id = "MiniGrid-DoorKey-5x5-v0"
+max_steps = 48
+
+[taskset]
+train_size = 8
+heldout_size = 8
+train_task_id_start = "random"
+heldout_task_id_start = "random"
+
+[pipeline]
+max_generations = 2
+proposals_per_generation = 3
+minibatch_size = 4
+max_in_flight_candidates = 3
+rollout_workers = 10
+rollout_chunk_size = "auto"
+
+[pipeline.adaptive_rollout_concurrency]
+enabled = true
+initial = 10
+min = 1
+max = 30
+increase_step = 5
+decrease_step = 5
+increase_after_successes = 20
+
+[budgets]
+train_rollouts = 80
+heldout_rollouts = 16
+
+[timeouts]
+container_http_seconds = 90
+rollout_http_retries = 0

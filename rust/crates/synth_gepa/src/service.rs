@@ -96,7 +96,7 @@ struct GepaServiceRunRequest {
     container_url: String,
     policy: ServicePolicySpec,
     proposer: ServiceProposerSpec,
-    dataset: ServiceDatasetSpec,
+    taskset: ServiceTasksetSpec,
     #[serde(default)]
     manual_step: bool,
     #[serde(default)]
@@ -143,9 +143,9 @@ struct ServiceCredentials {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ServiceDatasetSpec {
-    train_seeds: Vec<i64>,
-    heldout_seeds: Vec<i64>,
+struct ServiceTasksetSpec {
+    train_ids: Vec<String>,
+    heldout_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1967,7 +1967,7 @@ fn list_rollouts(
     items.sort_by(|left, right| {
         value_string(left, "candidate_id")
             .cmp(&value_string(right, "candidate_id"))
-            .then_with(|| value_i64(left, "seed_id").cmp(&value_i64(right, "seed_id")))
+            .then_with(|| value_string(left, "task_id").cmp(&value_string(right, "task_id")))
     });
     Ok(paginate(items, query))
 }
@@ -2094,11 +2094,11 @@ fn run_request_to_optimizer_config(
     validate_provider("proposer.provider", &request.proposer.provider)?;
     validate_api_family("policy.api_family", &request.policy.api_family)?;
     validate_api_family("proposer.api_family", &request.proposer.api_family)?;
-    validate_dataset(&request.dataset)?;
+    validate_taskset(&request.taskset)?;
     let mut config = SynthOptimizerConfig::default();
     config.container.url = Some(request.container_url.clone());
-    config.dataset.train_seeds = request.dataset.train_seeds.clone();
-    config.dataset.heldout_seeds = request.dataset.heldout_seeds.clone();
+    config.taskset.train_ids = request.taskset.train_ids.clone();
+    config.taskset.heldout_ids = request.taskset.heldout_ids.clone();
     config.policy.provider = request.policy.provider.clone();
     config.policy.model = request.policy.model.clone();
     config.policy.api_family = request.policy.api_family.clone();
@@ -2195,27 +2195,23 @@ fn validate_api_family(name: &str, api_family: &str) -> Result<()> {
     }
 }
 
-fn validate_dataset(dataset: &ServiceDatasetSpec) -> Result<()> {
-    if dataset.train_seeds.is_empty() {
+fn validate_taskset(taskset: &ServiceTasksetSpec) -> Result<()> {
+    if taskset.train_ids.is_empty() {
         return Err(OptimizerError::Config(
-            "dataset.train_seeds must be non-empty".to_string(),
+            "taskset.train_ids must be non-empty".to_string(),
         ));
     }
-    if dataset.heldout_seeds.is_empty() {
+    if taskset.heldout_ids.is_empty() {
         return Err(OptimizerError::Config(
-            "dataset.heldout_seeds must be non-empty".to_string(),
+            "taskset.heldout_ids must be non-empty".to_string(),
         ));
     }
-    let train = dataset.train_seeds.iter().copied().collect::<BTreeSet<_>>();
-    let heldout = dataset
-        .heldout_seeds
-        .iter()
-        .copied()
-        .collect::<BTreeSet<_>>();
-    let overlap = train.intersection(&heldout).copied().collect::<Vec<_>>();
+    let train = taskset.train_ids.iter().cloned().collect::<BTreeSet<_>>();
+    let heldout = taskset.heldout_ids.iter().cloned().collect::<BTreeSet<_>>();
+    let overlap = train.intersection(&heldout).cloned().collect::<Vec<_>>();
     if !overlap.is_empty() {
         return Err(OptimizerError::Config(format!(
-            "dataset.train_seeds and dataset.heldout_seeds must be disjoint; overlapping seeds: {overlap:?}"
+            "taskset.train_ids and taskset.heldout_ids must be disjoint; overlapping task ids: {overlap:?}"
         )));
     }
     Ok(())
@@ -2495,9 +2491,9 @@ fn project_run_config(config: &SynthOptimizerConfig, manual_step: bool) -> Value
             "api_family": config.proposer.api_family,
             "credentials": credential_projection(config.proposer.api_key_env.clone()),
         },
-        "dataset": {
-            "train_seeds": config.dataset.train_seeds,
-            "heldout_seeds": config.dataset.heldout_seeds,
+        "taskset": {
+            "train_ids": config.taskset.train_ids,
+            "heldout_ids": config.taskset.heldout_ids,
         },
         "manual_step": manual_step,
         "stop_conditions": project_stop_conditions(config),
@@ -2677,7 +2673,7 @@ fn project_rollout(
     json!({
         "rollout_id": record.rollout_id.as_ref().unwrap_or(&record.rollout_record_id),
         "candidate_id": record.candidate_id,
-        "seed_id": record.seed,
+        "task_id": record.task_id,
         "score": record.reward,
         "tokens": tokens,
         "latency_ms": record

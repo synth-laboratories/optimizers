@@ -75,7 +75,7 @@ impl UsageLedgerRecord {
             "example_id".to_string(),
             Value::String(frame.example_id.clone()),
         );
-        metadata.insert("seed".to_string(), json!(frame.seed));
+        metadata.insert("task_id".to_string(), json!(frame.task_id));
         metadata.insert("split".to_string(), Value::String(frame.split.clone()));
         metadata.insert("status".to_string(), Value::String(frame.status.clone()));
         if let Some(rollout_id) = &frame.rollout_id {

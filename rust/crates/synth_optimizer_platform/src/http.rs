@@ -5,8 +5,8 @@ use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 
 use crate::container_contract::{
-    ContainerMetadataResponse, DatasetResponse, DatasetRowsRequest, DatasetRowsResponse,
-    HealthResponse, RolloutResponse,
+    ContainerMetadataResponse, HealthResponse, RolloutResponse, TasksetResponse,
+    TasksetTasksRequest, TasksetTasksResponse,
 };
 use crate::error::{OptimizerError, Result};
 use crate::prompt_program::PromptProgram;
@@ -64,20 +64,23 @@ impl ContainerClient {
         self.get("/task_info")
     }
 
-    pub fn dataset(&self) -> Result<Value> {
-        self.get("/dataset")
+    pub fn taskset(&self) -> Result<Value> {
+        self.get("/taskset")
     }
 
-    pub fn dataset_typed(&self) -> Result<DatasetResponse> {
-        self.get_typed("/dataset")
+    pub fn taskset_typed(&self) -> Result<TasksetResponse> {
+        self.get_typed("/taskset")
     }
 
-    pub fn dataset_rows(&self, request: &Value) -> Result<Value> {
-        self.post("/dataset/rows", request)
+    pub fn taskset_tasks(&self, request: &Value) -> Result<Value> {
+        self.post("/taskset/tasks", request)
     }
 
-    pub fn dataset_rows_typed(&self, request: &DatasetRowsRequest) -> Result<DatasetRowsResponse> {
-        let response: DatasetRowsResponse = self.post_typed("/dataset/rows", request)?;
+    pub fn taskset_tasks_typed(
+        &self,
+        request: &TasksetTasksRequest,
+    ) -> Result<TasksetTasksResponse> {
+        let response: TasksetTasksResponse = self.post_typed("/taskset/tasks", request)?;
         response.validate_for_request(request)?;
         Ok(response)
     }

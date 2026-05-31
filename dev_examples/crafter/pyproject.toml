@@ -1,0 +1,11 @@
+[project]
+name = "crafter-gepa-container"
+version = "0.1.0"
+description = "Public GEPA dev container for Crafter-style achievement policies."
+requires-python = ">=3.11"
+dependencies = [
+  "synth-containers @ git+https://github.com/synth-laboratories/containers.git@78ec34f",
+  "fastapi>=0.110",
+  "uvicorn>=0.27",
+  "openai>=1.0",
+]

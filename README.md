@@ -95,7 +95,8 @@ synth-optimizers events compare --left a.jsonl --right b.jsonl
 Runnable task examples: [GEPA cookbooks](https://github.com/synth-laboratories/synth-cookbooks-public/tree/main/cookbooks/optimizers/gepa)
 (Banking77, HotpotQA, MiniGrid, TBLite, Crafter).
 
-## Authentication and models
+<details>
+<summary><strong>Authentication and models</strong></summary>
 
 Policy models run inside your task container; the reflective proposer runs Codex on the
 host (or in Docker). Rollout requests never carry proposer keys.
@@ -128,6 +129,8 @@ timeout_seconds = 900
 
 OpenRouter proposer (`provider = "openrouter"`, `api_key_env = "OPENROUTER_API_KEY"`) —
 policy can stay on OpenAI. See [skills/gepa/SKILL.md](skills/gepa/SKILL.md) for full TOML.
+
+</details>
 
 ## Features
 

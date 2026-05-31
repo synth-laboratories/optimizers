@@ -1,74 +1,21 @@
 # synth-optimizers changelog
 
-## 2026-05-31 — 0.2.0.dev202605312141
+## 2026-05-31
 
-Install:
+* Published `0.2.0.dev202605312141` to PyPI.
+* Added typed GEPA SDK entrypoint: `OptimizerRun(GepaConfig(...)).execute()`.
+* Added URL-only `synth-containers` handoff via `ContainerConnection`.
+* Added container discovery for `program`, `objectives`, and `policy`.
+* Added multi-objective GEPA selection, protected objectives, and ASI evidence.
+* Added proposer prompt overrides and shipped best-practices export.
+* Added OpenAI, OpenRouter, and ChatGPT proposer auth modes.
+* Moved Codex auth, JSON-RPC, and usage normalization into platform agent runtime.
+* Added live terminal policy/proposer usage rollups.
+* Merged PR #3 `better-ai-auth`; PR #2 `better-sdk` remains the SDK base.
+* Direct DeepSeek is still blocked; use OpenRouter DeepSeek slugs.
 
-```bash
-pip install --pre synth-containers==0.2.0.dev202605312141 synth-optimizers==0.2.0.dev202605312141
-```
+## 2026-05-30
 
-This daily dev release moves GEPA from TOML-first experiments toward a typed SDK
-that can own real prompt-optimization runs: containers are URL handles, task
-contracts can be discovered, proposer auth is explicit, and Codex transport lives
-behind the platform runtime boundary.
-
-### Python SDK
-
-* Add `OptimizerRun(GepaConfig(...)).execute()` as the preferred GEPA entrypoint.
-* Add typed config sections for `run`, `taskset`, `candidate`, `seed_candidate`, `proposer`, `policy`, `objective`, `gepa`, `cache`, and `output`.
-* Accept `ContainerConnection` from `synth-containers`; GEPA receives a URL and never owns container startup or teardown.
-* Discover `program`, `objectives`, and `policy` from the container when those config fields are `None`.
-* Keep `GepaRun.from_toml()` and `synth-optimizers gepa run --config ...` working for existing TOML workflows.
-
-### GEPA Runtime
-
-* Default SDK examples to async-pipelined rollout transport.
-* Add multi-objective selection with objective directions, protected objectives, and a primary selection objective.
-* Pass `actionable_side_info` from rollout responses into proposer context without promoting it into the score vector.
-* Persist richer workspace evidence: candidate diffs, rollout traces, proposer artifacts, usage ledger rows, and result manifests.
-
-### Proposer
-
-* Add `ProposerPromptConfig` for inline or file-based best-practices overrides.
-* Expose `GepaDefaults.proposer_best_practices()` for inspecting the shipped proposer guidance.
-* Support OpenAI API-key proposers, OpenRouter API-key proposers, and ChatGPT subscription proposers.
-* Require explicit `codex_home` for `auth_mode = "chatgpt"`; no silent host `~/.codex` fallback.
-* Map legacy `auth_mode = "host"` to `chatgpt` during config validation.
-
-### Platform
-
-* Move Codex auth-home prep, app-server JSON-RPC, and turn usage normalization under `synth_optimizer_platform::agent_runtime`.
-* Keep GEPA-specific workspace materialization and `proposal/manifest.json` parsing in `synth_gepa`.
-* Add live terminal usage lines with policy/proposer token splits when `SYNTH_OPTIMIZERS_TERMINAL=1`.
-* Keep direct DeepSeek blocked: Codex app-server requires Responses wire format; use OpenRouter DeepSeek slugs until an adapter lands.
-
-### Compatibility
-
-* Requires `synth-containers==0.2.0.dev202605312141` for lockstep SDK examples.
-* PyPI artifacts published: source distribution plus macOS arm64 abi3 wheel.
-* Known limit: direct DeepSeek proposer profile fails before E2E because DeepSeek rejects `/responses`.
-
-### Migration
-
-```python
-from synth_containers import Container
-from synth_optimizers import GepaConfig, OptimizerRun, TasksetSelection
-
-with Container("my-task").serve() as handle:
-    result = OptimizerRun(
-        GepaConfig(
-            container=handle.connection(),
-            taskset=TasksetSelection(train_ids=["train:0"], heldout_ids=["test:100"]),
-            program=None,
-            objectives=None,
-            policy=None,
-        )
-    ).execute()
-```
-
-```python
-from synth_optimizers import GepaRun
-
-result = GepaRun.from_toml("gepa.toml").execute()
-```
+* No main-branch package release.
+* Better SDK and auth work stayed staged off main.
+* Next release target: shorter SDK examples, acceptance evidence, and daily dev packaging.

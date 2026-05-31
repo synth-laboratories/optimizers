@@ -25,12 +25,10 @@ pip install synth-optimizers
 uv add synth-optimizers
 ```
 
-## Local Better SDK Dev
+## Local development
 
-This branch pair expects:
-
-- `containers`: `better-sdk`, package `synth-containers==0.2.0.dev20260531`
-- `optimizers`: `better-sdk`, package `synth-optimizers==0.2.0.dev20260531`
+This repo pairs with [`synth-containers`](https://github.com/synth-laboratories/containers)
+at `synth-containers==0.2.0.dev20260531` / `synth-optimizers==0.2.0.dev20260531`.
 
 Install both editable checkouts with `uv` (sibling repos under your workspace):
 
@@ -39,6 +37,7 @@ cd optimizers
 uv sync --group dev
 uv pip install -e ../containers
 uv pip install -e .
+uv run maturin develop --manifest-path rust/crates/synth_optimizers_py/Cargo.toml
 ```
 
 Verify the installed paths and versions:
@@ -47,15 +46,18 @@ Verify the installed paths and versions:
 uv run python -c "import importlib.metadata as m, synth_containers, synth_optimizers; print(synth_containers.__file__); print(synth_optimizers.__file__); print(m.version('synth-containers')); print(synth_optimizers.__version__)"
 ```
 
-The SDK validation set lives in local `dev_examples/` (gitignored). After editable install:
+Most of `dev_examples/` stays local-only. The Better GEPA acceptance harness is
+tracked for merge validation:
 
 ```bash
-cd optimizers
-bash dev_examples/banking77/run_fresh_gepa.sh
-bash dev_examples/tblite/run_fresh_gepa.sh
-bash dev_examples/crafter/run_fresh_gepa.sh
-bash dev_examples/minigrid/run_fresh_gepa.sh
+cd dev_examples/better_gepa
+python run_acceptance.py --profile openai_baseline --mode cost_stop
+python run_acceptance.py --profile openai_baseline_docker --mode cost_stop
 ```
+
+See [dev_examples/better_gepa/acceptance_usage_termination.md](dev_examples/better_gepa/acceptance_usage_termination.md)
+for profile/env requirements. Other cookbook dev scripts (`dev_examples/banking77/`,
+etc.) remain on disk but are not committed.
 
 ## Quickstart
 
@@ -177,11 +179,11 @@ choice; use `runtime_substrate` for that.
 SDK equivalent:
 
 ```python
-from synth_optimizers import GepaConfig, ProposerConfig, PolicyConfig
+from synth_optimizers import GepaConfig, PolicyConfig, ProposerConfig
 
 GepaConfig(
     policy=PolicyConfig(provider="openai", model="gpt-4.1-nano", api_key_env="OPENAI_API_KEY"),
-    proposer=ProposerConfig(
+    proposer=ProposerConfig.local(
         provider="openai",
         auth_mode="api_key",
         api_key_env="OPENAI_API_KEY",
@@ -189,6 +191,18 @@ GepaConfig(
         model="gpt-5.4-nano",
     ),
     # container, taskset, …
+)
+
+# Docker proposer (api_key only in v1):
+GepaConfig(
+    proposer=ProposerConfig.docker_substrate(
+        image="ghcr.io/synth-laboratories/codex-gepa-proposer:2026-05-31",
+        provider="openai",
+        auth_mode="api_key",
+        api_key_env="OPENAI_API_KEY",
+        model="gpt-5.4-nano",
+    ),
+    # …
 )
 ```
 
@@ -311,7 +325,18 @@ container `SYS_ADMIN` with `seccomp=unconfined` so Codex can run its nested Linu
 sandbox (`bubblewrap`) inside the container. This preserves the explicit Codex
 sandbox policy instead of silently downgrading it.
 
+`auth_mode = "chatgpt"` with `runtime_substrate = "docker"` is rejected in v1.
+Use local substrate for subscription proposers.
+
+Build or pull the pinned image before running docker profiles:
+
+```bash
+docker build -t ghcr.io/synth-laboratories/codex-gepa-proposer:2026-05-31 \
+  docker/codex-gepa-proposer/
+```
+
 More detail for agents: [skills/gepa/SKILL.md](skills/gepa/SKILL.md).
+Cross-repo task-container boundary: [containers/skills/containers/SKILL.md](https://github.com/synth-laboratories/containers/blob/main/skills/containers/SKILL.md).
 
 ## Engineering style
 
@@ -327,6 +352,16 @@ Contributors should prefer:
 - One authoritative auth path per `proposer.auth_mode` (no silent `~/.codex` fallback).
 - Actionable config errors (missing key, missing `codex_home`, disallowed ChatGPT model).
 - Proposer Codex launch wiring in `rust/crates/synth_optimizer_platform/src/agent_runtime/`.
+- `runtime_substrate` for host vs docker proposer; `sandbox_mode` for Codex in-agent policy.
+
+Before merge on auth/substrate changes:
+
+```bash
+uv run ruff check src/synth_optimizers/gepa.py dev_examples/better_gepa/run_acceptance.py
+uv run ty check src/synth_optimizers/gepa.py
+cargo check -p synth_optimizer_platform -p synth_gepa -p synth_optimizers_py
+cd dev_examples/better_gepa && python run_acceptance.py --profile openai_baseline --mode cost_stop
+```
 
 ## Links
 

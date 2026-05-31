@@ -103,19 +103,41 @@ Run each profile in two modes (harness applies overrides to `_termination_limits
 - [ ] Cost stop reflects policy rollouts only
 - [ ] Token limits bind on proposer HIGH tokens
 
-## Harness (planned)
+## Harness
 
 ```bash
-cd optimizers
-python dev_examples/better_gepa/run_acceptance.py --profile openai_baseline --mode cost_stop --substrate local
-python dev_examples/better_gepa/run_acceptance.py --profile openai_baseline_docker --mode cost_stop
-python dev_examples/better_gepa/run_acceptance.py --profile openrouter_grok43 --mode cost_stop
-python dev_examples/better_gepa/run_acceptance.py --profile openrouter_grok43_docker --mode cost_stop
+cd optimizers/dev_examples/better_gepa
+python run_acceptance.py --profile openai_baseline --mode cost_stop
+python run_acceptance.py --profile openai_baseline_docker --mode cost_stop
+python run_acceptance.py --profile openrouter_grok43 --mode cost_stop
+python run_acceptance.py --profile openrouter_grok43_docker --mode cost_stop
 ```
 
 Use `SYNTH_GEPA_DOCKER_PROPOSER_IMAGE=<image>` to override the pinned Docker image
 for local image-build validation. If `docker info` fails, Docker acceptance exits
 with an explicit skip message.
+
+## Merge proof (better-ai-auth → dev)
+
+Branch: `better-ai-auth` (optimizers `5de4e2f`, containers skill `518abea`).
+
+| Gate | Status | Proof |
+|------|--------|-------|
+| openai_baseline cost_stop | ✅ | `acceptance_openai_baseline_cost_stop_20260531204020` — proposer 46654 / policy 4737 |
+| openai_baseline_docker cost_stop | ✅ | `acceptance_openai_baseline_docker_cost_stop_20260531203631` — staging cleaned |
+| openrouter_grok43_docker cost_stop | ✅ | `acceptance_openrouter_grok43_docker_cost_stop_20260531203227` |
+| chatgpt_mini cost_stop | ✅ | prior session (local only; docker deferred v1) |
+| openrouter_grok43 local | ✅ | prior session |
+| deepseek_v4_flash | ⏭️ | deferred — Codex `/responses` wire mismatch |
+| validate_credentials SDK | ⏭️ | follow-up |
+| usage_v2 / token_stop parity | ⏭️ | Phase 2–3 |
+| ruff + ty (changed Python) | ✅ | `gepa.py`, `run_acceptance.py` |
+| cargo check (changed Rust) | ✅ | platform + gepa + py |
+
+**Skipped in PR (document as follow-ups):** DeepSeek direct proposer, `non_western_provider`
+gate tests, usage_v2 billable lower bound, token_stop terminal reason parity.
+
+**Cross-repo:** merge containers `better-ai-auth` skill doc in same release train.
 
 ## Go-green phases
 

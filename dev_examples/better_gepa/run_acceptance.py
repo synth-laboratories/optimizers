@@ -118,9 +118,7 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     log_path.write_text(completed.stdout + completed.stderr)
     if completed.returncode != 0:
-        raise SystemExit(
-            f"acceptance run failed with exit {completed.returncode}; see {log_path}"
-        )
+        raise SystemExit(f"acceptance run failed with exit {completed.returncode}; see {log_path}")
 
     report = inspect_acceptance_run(
         profile=args.profile,
@@ -189,15 +187,9 @@ def inspect_acceptance_run(
     manifest_path = run_dir / "result_manifest.json"
     log_text = log_path.read_text()
     events = [json.loads(line) for line in event_path.read_text().splitlines() if line.strip()]
-    runtime_jobs = [
-        event
-        for event in events
-        if event.get("type") == "runtime.job.completed"
-    ]
+    runtime_jobs = [event for event in events if event.get("type") == "runtime.job.completed"]
     proposer_jobs = [
-        event
-        for event in runtime_jobs
-        if event.get("fields", {}).get("runtime_kind") == "proposer"
+        event for event in runtime_jobs if event.get("fields", {}).get("runtime_kind") == "proposer"
     ]
     if not proposer_jobs:
         raise SystemExit(f"{profile}/{mode} did not produce a proposer runtime job")
@@ -207,13 +199,17 @@ def inspect_acceptance_run(
     proposer_event = final_proposer_event(events)
     runtime_substrate = str(
         proposer_event.get("fields", {}).get("runtime_substrate")
-        or tomllib.loads(config_path.read_text()).get("proposer", {}).get("runtime_substrate", "local")
+        or tomllib.loads(config_path.read_text())
+        .get("proposer", {})
+        .get("runtime_substrate", "local")
     )
     proposal_manifest_path = proposer_manifest_path(run_dir, proposer_event)
     proposal_manifest = json.loads(proposal_manifest_path.read_text())
     proposals = proposal_manifest.get("proposals")
     if not isinstance(proposals, list) or not proposals:
-        raise SystemExit(f"{profile}/{mode} proposal manifest has no proposals: {proposal_manifest_path}")
+        raise SystemExit(
+            f"{profile}/{mode} proposal manifest has no proposals: {proposal_manifest_path}"
+        )
     proposer_tokens = int(runtime_summary["proposer"]["total_tokens"])
     policy_tokens = int(runtime_summary["policy"]["total_tokens"])
     total_tokens = proposer_tokens + policy_tokens
@@ -250,11 +246,7 @@ def inspect_acceptance_run(
 
 
 def final_runtime_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
-    finished = [
-        event
-        for event in events
-        if event.get("type") == "gepa.run.finished"
-    ]
+    finished = [event for event in events if event.get("type") == "gepa.run.finished"]
     if not finished:
         raise SystemExit("run did not emit gepa.run.finished")
     summary = finished[-1].get("fields", {}).get("runtime_summary")

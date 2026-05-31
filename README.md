@@ -152,7 +152,7 @@ policy can stay on OpenAI. See [skills/gepa/SKILL.md](skills/gepa/SKILL.md) for 
 - **Live usage** — `SYNTH_OPTIMIZERS_TERMINAL=1` prints running token and cost splits (`usage total=… policy=… proposer=…`).
 - **Docker proposer** — `runtime_substrate = "docker"` with `[proposer.docker].image`; workspaces stage under `~/.cache/synth-gepa-docker-workspaces/`, sync back, then cleanup; image: `docker/codex-gepa-proposer/Dockerfile`.
 - **Gemini and other policy providers** — supported on the policy side via `[policy].provider`, `base_url`, and container env keys; proposer stays Codex.
-- **DeepSeek direct** — not supported through Codex (`/responses` mismatch); use an OpenRouter DeepSeek slug instead.
+- **DeepSeek direct** — `provider = "deepseek"` with `backend = "deepseek_chat"` runs the proposer through DeepSeek Chat Completions; OpenRouter DeepSeek slugs remain supported through `provider = "openrouter"`.
 - **Preflight validation** — missing keys, missing `codex_home`/`auth.json`, or disallowed ChatGPT models fail before rollouts start.
 
 Agent docs: [skills/gepa/SKILL.md](skills/gepa/SKILL.md).

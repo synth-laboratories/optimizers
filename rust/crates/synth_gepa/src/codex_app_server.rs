@@ -1,9 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::CandidateRecord;
+use reqwest::blocking::Client;
 use serde_json::{json, Map, Value};
 use synth_optimizer_platform::{
     run_turn, AgentTurnOutcome, CodexTurnRequest, OptimizerError, PromptProgram, Result,
@@ -57,6 +59,195 @@ pub(crate) fn run_codex_app_server_proposer(input: CodexProposerInput<'_>) -> Re
         timeout,
     })?;
     build_response_from_outcome(&input, &model, outcome)
+}
+
+pub(crate) fn run_deepseek_chat_proposer(input: CodexProposerInput<'_>) -> Result<Value> {
+    if !input
+        .config
+        .proposer
+        .provider
+        .eq_ignore_ascii_case("deepseek")
+    {
+        return Err(OptimizerError::Config(
+            "proposer.backend = \"deepseek_chat\" requires proposer.provider = \"deepseek\""
+                .to_string(),
+        ));
+    }
+    materialize_workspace(&input)?;
+    let model = input
+        .config
+        .proposer
+        .model
+        .clone()
+        .unwrap_or_else(|| "deepseek-v4-flash".to_string());
+    let api_key_env =
+        non_empty(input.config.proposer.api_key_env.as_deref()).unwrap_or("DEEPSEEK_API_KEY");
+    let api_key = env::var(api_key_env)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            OptimizerError::Proposer(format!(
+                "proposer.backend = \"deepseek_chat\" requires non-empty {api_key_env}"
+            ))
+        })?;
+    let base_url = input
+        .config
+        .proposer
+        .base_url
+        .as_deref()
+        .unwrap_or("https://api.deepseek.com")
+        .trim_end_matches('/')
+        .to_string();
+    let request = json!({
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are the GEPA workspace proposer. Return only a JSON object that matches the requested manifest schema."
+            },
+            {
+                "role": "user",
+                "content": deepseek_chat_prompt(&input)?
+            }
+        ],
+        "response_format": {"type": "json_object"},
+        "thinking": {"type": "disabled"},
+        "max_tokens": 4096,
+        "stream": false
+    });
+    let client = Client::builder()
+        .timeout(Duration::from_secs(
+            input.config.proposer.timeout_seconds.max(1),
+        ))
+        .build()?;
+    let chat_response = post_deepseek_chat_completion(&client, &base_url, &api_key, &request, 4)?;
+    let content = chat_response
+        .pointer("/choices/0/message/content")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            OptimizerError::Proposer(
+                "DeepSeek chat proposer response missing choices[0].message.content".to_string(),
+            )
+        })?;
+    let manifest = serde_json::from_str(content.trim())?;
+    let manifest_path = input.workspace_dir.join("proposal").join("manifest.json");
+    write_json(&manifest_path, &manifest)?;
+    let manifest = read_manifest(&input.workspace_dir)?;
+    let proposals = proposals_from_manifest(&manifest)?;
+    let evidence_warnings = manifest_evidence_warnings(&input, &manifest, &proposals);
+    let usage = chat_response.get("usage").cloned().ok_or_else(|| {
+        OptimizerError::Proposer("DeepSeek chat proposer response missing usage".to_string())
+    })?;
+    write_deepseek_chat_artifacts(&input, &request, &chat_response)?;
+    write_workspace_pack_manifest(&input.workspace_dir)?;
+    Ok(json!({
+        "backend": "deepseek_chat",
+        "runtime_substrate": "local",
+        "workspace": input.workspace_dir,
+        "manifest": manifest,
+        "proposals": proposals,
+        "usage": usage,
+        "evidence_warnings": evidence_warnings,
+    }))
+}
+
+fn deepseek_chat_prompt(input: &CodexProposerInput<'_>) -> Result<String> {
+    let best_practices = resolved_prompting_best_practices(input)?;
+    let mut prompt = String::new();
+    prompt.push_str(&proposer_prompt_context(input));
+    prompt.push_str("\n\nPrompting best practices:\n");
+    prompt.push_str(best_practices.trim());
+    prompt.push_str("\n\nManifest schema:\n");
+    prompt.push_str(&proposal_schema(input));
+    prompt.push_str("\n\nUse these workspace files as the complete evidence packet.\n");
+    for path in [
+        "state/proposer_metadata.json",
+        "state/task_info.json",
+        "state/program_contract.json",
+        "state/parent_payload.json",
+        "state/candidate_deltas.json",
+        "state/proposer_failure_summary.json",
+        "state/proposer_repair_hints.json",
+        "state/proposer_examples.json",
+        "state/rollouts.json",
+        "state/scores.json",
+        "state/proposal_request.json",
+    ] {
+        let file_path = input.workspace_dir.join(path);
+        let text = fs::read_to_string(&file_path)
+            .map_err(|source| OptimizerError::io(&file_path, source))?;
+        prompt.push_str("\n\n--- ");
+        prompt.push_str(path);
+        prompt.push_str(" ---\n");
+        prompt.push_str(&text);
+    }
+    prompt.push_str(
+        "\n\nReturn strict JSON only. Do not wrap it in Markdown. The JSON object must have \
+         schema_version, critique, evidence, rationale, and proposals. Each proposed_payload \
+         must contain full replacement text for every target module.",
+    );
+    Ok(prompt)
+}
+
+fn post_deepseek_chat_completion(
+    client: &Client,
+    base_url: &str,
+    api_key: &str,
+    request: &Value,
+    max_attempts: usize,
+) -> Result<Value> {
+    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+    for attempt in 1..=max_attempts {
+        let response = client
+            .post(&url)
+            .bearer_auth(api_key)
+            .json(request)
+            .send()?;
+        let status = response.status();
+        let text = response.text()?;
+        if status.is_success() {
+            return Ok(serde_json::from_str(&text)?);
+        }
+        if attempt < max_attempts && matches!(status.as_u16(), 429 | 500 | 502 | 503 | 504) {
+            let delay = match attempt {
+                1 => Duration::from_secs(2),
+                2 => Duration::from_secs(5),
+                _ => Duration::from_secs(10),
+            };
+            std::thread::sleep(delay);
+            continue;
+        }
+        return Err(OptimizerError::Proposer(format!(
+            "DeepSeek chat proposer failed after {attempt}/{max_attempts} attempts with status \
+             {}: {}",
+            status,
+            text.chars().take(1000).collect::<String>()
+        )));
+    }
+    Err(OptimizerError::Proposer(
+        "DeepSeek chat proposer retry loop exited unexpectedly".to_string(),
+    ))
+}
+
+fn write_deepseek_chat_artifacts(
+    input: &CodexProposerInput<'_>,
+    request: &Value,
+    response: &Value,
+) -> Result<()> {
+    let artifact_dir = input.workspace_dir.join(".agent_artifacts");
+    fs::create_dir_all(&artifact_dir)
+        .map_err(|source| OptimizerError::io(&artifact_dir, source))?;
+    write_json(
+        &artifact_dir.join("deepseek_chat_request.json"),
+        &json!({
+            "model": request.get("model"),
+            "message_count": request.get("messages").and_then(Value::as_array).map(Vec::len),
+            "max_tokens": request.get("max_tokens"),
+            "response_format": request.get("response_format"),
+            "thinking": request.get("thinking"),
+        }),
+    )?;
+    write_json(&artifact_dir.join("deepseek_chat_response.json"), response)
 }
 
 fn build_response_from_outcome(

@@ -207,8 +207,9 @@ Override image: `SYNTH_GEPA_DOCKER_PROPOSER_IMAGE=<tag> python run_acceptance.py
 
 ### Do not recommend
 
-- Direct DeepSeek API through Codex (Responses wire mismatch) — use OpenRouter or
-  wait for adapter support.
+- Direct DeepSeek through `codex_app_server`; use `backend = "deepseek_chat"`
+  for direct DeepSeek proposer runs, or OpenRouter DeepSeek slugs through
+  `provider = "openrouter"`.
 - `copy_host_auth = true` without explicit `codex_home` in public cookbooks.
 
 ## TOML Sections

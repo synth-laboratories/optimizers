@@ -10,7 +10,7 @@ profiles — not merely that a run completes.
 External guides (see [better-ai-auth.txt](./better-ai-auth.txt) References):
 
 - **Codex OAuth / ChatGPT proposer:** [opencode-openai-codex-auth](https://github.com/numman-ali/opencode-openai-codex-auth)
-- **DeepSeek direct + Codex (gated):** [antenore gist](https://gist.github.com/antenore/c529e055e45559579b08b4961b517f8c)
+- **DeepSeek direct:** `backend = "deepseek_chat"` with `DEEPSEEK_API_KEY`.
 
 - Banking77 container: `dev_examples/banking77/banking77_synth_gepa_dev.py --serve`
 - Optimizers built with `synth-optimizers` CLI or Python `OptimizerRun`
@@ -92,8 +92,9 @@ Run each profile in two modes (harness applies overrides to `_termination_limits
 
 ### `deepseek_v4_flash`
 
-- [ ] Config validation **rejects** run without `[run] non_western_provider = "OK"`
-- [ ] Proposer provider `deepseek`, model `deepseek-v4-flash`
+- [x] Direct proposer provider `deepseek`, backend `deepseek_chat`, model `deepseek-v4-flash`
+- [x] Banking77 cost-stop example finishes and writes a parseable proposal manifest
+- [ ] Config validation **rejects** run without `[run] non_western_provider = "OK"` (policy gate follow-up)
 - [ ] Proposer billing_class `non_western_api` in usage summary (post usage_v2)
 - [ ] Cost stop driven primarily by OpenAI policy spend until DeepSeek pricing wired
 
@@ -111,6 +112,7 @@ python run_acceptance.py --profile openai_baseline --mode cost_stop
 python run_acceptance.py --profile openai_baseline_docker --mode cost_stop
 python run_acceptance.py --profile openrouter_grok43 --mode cost_stop
 python run_acceptance.py --profile openrouter_grok43_docker --mode cost_stop
+python run_acceptance.py --profile deepseek_v4_flash --mode cost_stop
 ```
 
 Use `SYNTH_GEPA_DOCKER_PROPOSER_IMAGE=<image>` to override the pinned Docker image
@@ -128,14 +130,14 @@ Branch: `better-ai-auth` (optimizers `5de4e2f`, containers skill `518abea`).
 | openrouter_grok43_docker cost_stop | ✅ | `acceptance_openrouter_grok43_docker_cost_stop_20260531203227` |
 | chatgpt_mini cost_stop | ✅ | prior session (local only; docker deferred v1) |
 | openrouter_grok43 local | ✅ | prior session |
-| deepseek_v4_flash | ⏭️ | deferred — Codex `/responses` wire mismatch |
+| deepseek_v4_flash cost_stop | ✅ | `acceptance_deepseek_v4_flash_cost_stop_20260531223243` — direct `deepseek_chat`, proposer 19782 / policy 5556 |
 | validate_credentials SDK | ⏭️ | follow-up |
 | usage_v2 / token_stop parity | ⏭️ | Phase 2–3 |
 | ruff + ty (changed Python) | ✅ | `gepa.py`, `run_acceptance.py` |
 | cargo check (changed Rust) | ✅ | platform + gepa + py |
 
-**Skipped in PR (document as follow-ups):** DeepSeek direct proposer, `non_western_provider`
-gate tests, usage_v2 billable lower bound, token_stop terminal reason parity.
+**Skipped in PR (document as follow-ups):** `non_western_provider` gate tests,
+usage_v2 billable lower bound, token_stop terminal reason parity.
 
 **Cross-repo:** merge containers `better-ai-auth` skill doc in same release train.
 

@@ -7,37 +7,5 @@ __pycache__/
 .ruff_cache/
 .env
 
-# Local dev examples — track scripts, ignore generated run artifacts.
-dev_examples/*
-!dev_examples/banking77/
-!dev_examples/banking77/README.md
-!dev_examples/banking77/banking77_synth_gepa_dev.py
-!dev_examples/banking77/banking77_gepa_ai_dev.py
-!dev_examples/banking77/banking77_compare_gepa_dev.py
-!dev_examples/banking77/run_fresh_gepa.sh
-dev_examples/banking77/gepa.toml
-dev_examples/banking77/gepa.*.toml
-dev_examples/banking77/runs/
-!dev_examples/tblite/
-!dev_examples/tblite/**
-dev_examples/tblite/gepa.*.toml
-dev_examples/tblite/runs/
-dev_examples/*/__pycache__/
-!dev_examples/minigrid/
-!dev_examples/minigrid/**
-dev_examples/minigrid/__pycache__/
-dev_examples/minigrid/gepa.*.toml
-dev_examples/minigrid/runs/
-!dev_examples/better_containers/
-!dev_examples/better_containers/plan.md
-!dev_examples/better_gepa/
-!dev_examples/better_gepa/**
-!dev_examples/crafter/
-!dev_examples/crafter/README.md
-!dev_examples/crafter/gepa.toml
-!dev_examples/crafter/pyproject.toml
-!dev_examples/crafter/run_gepa_sdk.py
-!dev_examples/crafter/synth_service_app.py
-!dev_examples/crafter/uv.lock
-dev_examples/crafter/gepa.*.toml
-dev_examples/crafter/runs/
+# Local dev examples — not committed; keep scripts and runs on disk only.
+dev_examples/

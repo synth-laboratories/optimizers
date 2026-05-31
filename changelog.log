@@ -31,20 +31,17 @@ Dense release notes. Newest first.
 - `synth_optimizer_platform`: `ProposerPromptConfig` in config; container contract/objective/ASI sensor paths aligned with SDK vocabulary.
 - Service OpenAPI touch-up for container-url-first runs.
 
-### Example migrations (SDK validation set)
-- **Banking77** (`dev_examples/banking77/`): golden paired example — `Container` facade, `OptimizerRun(GepaConfig(...))`, container-owned policy/program/objectives, task IDs, async rollout.
-- **TBLite** (`dev_examples/tblite/run_gepa_sdk.py`): multi-objective + ASI with final diff in rollout payload.
-- **Crafter** (`dev_examples/crafter/run_gepa_sdk.py`): in-process `Container`, two objectives, ASI, `ProposerPromptConfig.from_defaults()` + Crafter-specific append.
-- **MiniGrid** (`dev_examples/minigrid/run_gepa_sdk.py`): profile-driven typed config, task IDs, objective scores.
-- Shell runners (`run_fresh_gepa.sh`) dispatch to Python SDK scripts instead of shell-mutating TOML.
+### Example migrations (SDK validation set, local `dev_examples/` only)
+- Examples live under local `dev_examples/` (gitignored): Banking77, TBLite, Crafter, MiniGrid SDK runners.
+- Shell runners dispatch to Python SDK scripts instead of shell-mutating TOML.
 
-### Planning docs (committed under `dev_examples/better_gepa/`)
-- `better_sdk_plan.md`, `api.txt`, `multi_objective_sdk.md`, `proposer_prompt_sdk.md`, `consolidate_reward_asi.txt`, `plan.md`.
-- `dev_examples/better_containers/plan.md` for container-side architecture.
+### Planning docs (local `dev_examples/better_gepa/`, gitignored)
+- `better_sdk_plan.md`, `api.txt`, and related design notes kept locally, not in repo.
 
 ### Packaging + README
 - Version bump: **`0.2.0.dev20260531`**; depends on **`synth-containers>=0.2.0.dev20260531`** (editable sibling path in `pyproject.toml`).
 - README: **Local Better SDK Dev** block with branch pair, `uv` install, version verify, validation commands.
+- **`dev_examples/` fully gitignored** — validation scripts and planning docs stay local only.
 
 ### Pre-merge validation evidence (2026-05-31, no re-run)
 Packages: `synth-containers==0.2.0.dev20260531`, `synth-optimizers==0.2.0.dev20260531` (editable local checkouts on `better-sdk`).

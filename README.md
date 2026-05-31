@@ -47,7 +47,7 @@ Verify the installed paths and versions:
 uv run --project /Users/joshpurtell/Documents/GitHub/optimizers python -c "import importlib.metadata as m, synth_containers, synth_optimizers; print(synth_containers.__file__); print(synth_optimizers.__file__); print(m.version('synth-containers')); print(synth_optimizers.__version__)"
 ```
 
-The SDK validation set is:
+The SDK validation set lives in local `dev_examples/` (gitignored). After editable install:
 
 ```bash
 cd /Users/joshpurtell/Documents/GitHub/optimizers

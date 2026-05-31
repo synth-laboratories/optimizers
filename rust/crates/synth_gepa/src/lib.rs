@@ -87,6 +87,7 @@ pub struct ProposerOutcome {
     pub usage: UsageTotals,
     pub cost_usd: f64,
     pub backend: String,
+    pub runtime_substrate: String,
     pub workspace: Option<String>,
     #[serde(default)]
     pub evidence_warnings: Vec<String>,
@@ -4851,6 +4852,11 @@ fn consume_proposer_outcome(
         usage: usage.clone(),
         cost_usd,
         backend: backend.clone(),
+        runtime_substrate: response
+            .get("runtime_substrate")
+            .and_then(Value::as_str)
+            .unwrap_or(context.config.proposer.runtime_substrate.as_str())
+            .to_string(),
         workspace: workspace.clone(),
         evidence_warnings: response
             .get("evidence_warnings")
@@ -4884,6 +4890,10 @@ fn consume_proposer_outcome(
     metadata.insert("proposal_count".to_string(), json!(proposals.len()));
     metadata.insert("backend".to_string(), Value::String(backend.clone()));
     metadata.insert(
+        "runtime_substrate".to_string(),
+        Value::String(outcome.runtime_substrate.clone()),
+    );
+    metadata.insert(
         "warning_count".to_string(),
         json!(outcome.evidence_warnings.len()),
     );
@@ -4909,6 +4919,7 @@ fn consume_proposer_outcome(
             "generation": active.generation,
             "proposal_count": proposals.len(),
             "backend": backend,
+            "runtime_substrate": outcome.runtime_substrate.clone(),
             "workspace": workspace,
             "warning_count": outcome.evidence_warnings.len(),
             "warnings": outcome.evidence_warnings,
@@ -7169,6 +7180,7 @@ fn plan_proposer_runtime_job(
     let request = json!({
         "backend": context.config.proposer.backend,
         "execution_mode": context.config.proposer.execution_mode,
+        "runtime_substrate": context.config.proposer.runtime_substrate.as_str(),
         "model": context.config.proposer.model,
         "generation": state.cursor.generation,
         "parent": parent,
@@ -7199,6 +7211,10 @@ fn plan_proposer_runtime_job(
     cache_metadata.insert(
         "backend".to_string(),
         json!(&context.config.proposer.backend),
+    );
+    cache_metadata.insert(
+        "runtime_substrate".to_string(),
+        json!(context.config.proposer.runtime_substrate.as_str()),
     );
     cache_metadata.insert("generation".to_string(), json!(state.cursor.generation));
     cache_metadata.insert(
@@ -7240,6 +7256,7 @@ fn plan_proposer_runtime_job(
                 "generation": state.cursor.generation,
                 "parent_candidate_id": parent.candidate_id,
                 "backend": context.config.proposer.backend,
+                "runtime_substrate": context.config.proposer.runtime_substrate.as_str(),
             }),
             dispatch_payload,
             metadata: effect_metadata,
@@ -9218,6 +9235,10 @@ fn execute_gepa_monolithic_with_options(
             Value::String(proposer_outcome.backend.clone()),
         );
         metadata.insert(
+            "runtime_substrate".to_string(),
+            Value::String(proposer_outcome.runtime_substrate.clone()),
+        );
+        metadata.insert(
             "warning_count".to_string(),
             json!(proposer_outcome.evidence_warnings.len()),
         );
@@ -9243,6 +9264,7 @@ fn execute_gepa_monolithic_with_options(
                 "generation": generation,
                 "proposal_count": proposer_outcome.proposals.len(),
                 "backend": proposer_outcome.backend,
+                "runtime_substrate": proposer_outcome.runtime_substrate,
                 "workspace": proposer_outcome.workspace,
                 "warning_count": proposer_outcome.evidence_warnings.len(),
                 "warnings": proposer_outcome.evidence_warnings,
@@ -13424,6 +13446,10 @@ fn proposer_usage_record(
         Value::String(outcome.backend.clone()),
     );
     metadata.insert(
+        "runtime_substrate".to_string(),
+        Value::String(outcome.runtime_substrate.clone()),
+    );
+    metadata.insert(
         "warning_count".to_string(),
         json!(outcome.evidence_warnings.len()),
     );
@@ -14246,6 +14272,7 @@ fn propose_candidates(call: ProposerCall<'_>) -> Result<ProposerOutcome> {
     let request = json!({
         "backend": call.config.proposer.backend,
         "execution_mode": call.config.proposer.execution_mode,
+        "runtime_substrate": call.config.proposer.runtime_substrate.as_str(),
         "model": call.config.proposer.model,
         "generation": call.generation,
         "parent": call.parent,
@@ -14274,6 +14301,10 @@ fn propose_candidates(call: ProposerCall<'_>) -> Result<ProposerOutcome> {
     });
     let mut cache_metadata = Map::new();
     cache_metadata.insert("backend".to_string(), json!(&call.config.proposer.backend));
+    cache_metadata.insert(
+        "runtime_substrate".to_string(),
+        json!(call.config.proposer.runtime_substrate.as_str()),
+    );
     cache_metadata.insert("generation".to_string(), json!(call.generation));
     cache_metadata.insert(
         "parent_candidate_id".to_string(),
@@ -14314,6 +14345,7 @@ fn propose_candidates(call: ProposerCall<'_>) -> Result<ProposerOutcome> {
                 "generation": call.generation,
                 "parent_candidate_id": call.parent.candidate_id,
                 "backend": call.config.proposer.backend,
+                "runtime_substrate": call.config.proposer.runtime_substrate.as_str(),
             }),
             dispatch_payload,
             metadata: effect_metadata,
@@ -14349,6 +14381,7 @@ fn propose_candidates(call: ProposerCall<'_>) -> Result<ProposerOutcome> {
         usage: proposer_runtime_outcome.usage,
         cost_usd: proposer_runtime_outcome.cost_usd,
         backend: proposer_runtime_outcome.backend,
+        runtime_substrate: proposer_runtime_outcome.runtime_substrate,
         workspace: proposer_runtime_outcome.workspace,
         evidence_warnings: proposer_runtime_outcome.evidence_warnings,
     })

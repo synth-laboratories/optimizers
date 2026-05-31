@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::agent_runtime::{validate_execution_mode_compat, ExecutionSubstrate};
 use crate::configured_limits::validate_gepa_limit_config;
 use crate::disk_budget::DiskBudgetConfig;
 use crate::error::{OptimizerError, Result};
@@ -64,6 +65,18 @@ fn default_proposer_backend() -> String {
 
 fn default_execution_mode() -> String {
     "local_process".to_string()
+}
+
+fn default_runtime_substrate() -> ExecutionSubstrate {
+    ExecutionSubstrate::Local
+}
+
+fn default_docker_workspace_mount_path() -> String {
+    crate::agent_runtime::limits::DOCKER_WORKSPACE_MOUNT_PATH.to_string()
+}
+
+fn default_docker_network() -> String {
+    crate::agent_runtime::limits::DOCKER_NETWORK.to_string()
 }
 
 fn default_proposer_auth_mode() -> String {
@@ -548,12 +561,8 @@ impl SynthOptimizerConfig {
                 )));
             }
         }
-        if self.proposer.execution_mode.trim() != "local_process" {
-            return Err(OptimizerError::Config(format!(
-                "unsupported proposer.execution_mode {:?}; expected local_process",
-                self.proposer.execution_mode
-            )));
-        }
+        validate_execution_mode_compat(&self.proposer.execution_mode)?;
+        validate_proposer_runtime_substrate_config(&self.proposer)?;
         let proposer_api_family = normalize_enum_value(&self.proposer.api_family);
         if !matches!(
             proposer_api_family.as_str(),
@@ -703,6 +712,8 @@ impl Default for PolicyConfig {
 pub struct ProposerConfig {
     #[serde(default = "default_proposer_backend")]
     pub backend: String,
+    #[serde(default = "default_runtime_substrate")]
+    pub runtime_substrate: ExecutionSubstrate,
     #[serde(default = "default_execution_mode")]
     pub execution_mode: String,
     #[serde(default = "default_policy_provider")]
@@ -733,12 +744,15 @@ pub struct ProposerConfig {
     pub model: Option<String>,
     #[serde(default)]
     pub prompt: ProposerPromptConfig,
+    #[serde(default)]
+    pub docker: Option<ProposerDockerConfig>,
 }
 
 impl Default for ProposerConfig {
     fn default() -> Self {
         Self {
             backend: default_proposer_backend(),
+            runtime_substrate: default_runtime_substrate(),
             execution_mode: default_execution_mode(),
             provider: default_policy_provider(),
             api_family: default_policy_api_family(),
@@ -754,6 +768,31 @@ impl Default for ProposerConfig {
             timeout_seconds: default_timeout_seconds(),
             model: None,
             prompt: ProposerPromptConfig::default(),
+            docker: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProposerDockerConfig {
+    #[serde(default)]
+    pub image: Option<String>,
+    #[serde(default = "default_docker_workspace_mount_path")]
+    pub workspace_mount_path: String,
+    #[serde(default = "default_docker_network")]
+    pub network: String,
+    #[serde(default)]
+    pub extra_env: BTreeMap<String, String>,
+}
+
+impl Default for ProposerDockerConfig {
+    fn default() -> Self {
+        Self {
+            image: None,
+            workspace_mount_path: default_docker_workspace_mount_path(),
+            network: default_docker_network(),
+            extra_env: BTreeMap::new(),
         }
     }
 }
@@ -913,6 +952,58 @@ fn validate_proposer_auth_config(proposer: &ProposerConfig) -> Result<()> {
             ));
         }
         validate_chatgpt_proposer_config(proposer)?;
+    }
+    Ok(())
+}
+
+fn validate_proposer_runtime_substrate_config(proposer: &ProposerConfig) -> Result<()> {
+    match proposer.runtime_substrate {
+        ExecutionSubstrate::Local => Ok(()),
+        ExecutionSubstrate::Docker => validate_proposer_docker_config(proposer),
+    }
+}
+
+fn validate_proposer_docker_config(proposer: &ProposerConfig) -> Result<()> {
+    let docker = proposer.docker.as_ref().ok_or_else(|| {
+        OptimizerError::Config(
+            "proposer.runtime_substrate = \"docker\" requires [proposer.docker]".to_string(),
+        )
+    })?;
+    let image = docker.image.as_deref().unwrap_or_default().trim();
+    if image.is_empty() {
+        return Err(OptimizerError::Config(
+            "proposer.runtime_substrate = \"docker\" requires [proposer.docker].image; pin a tag or digest, do not rely on latest".to_string(),
+        ));
+    }
+    if image.ends_with(":latest") || image == "latest" {
+        return Err(OptimizerError::Config(
+            "proposer.docker.image must be pinned to a non-latest tag or digest".to_string(),
+        ));
+    }
+    if !docker.workspace_mount_path.starts_with('/') {
+        return Err(OptimizerError::Config(format!(
+            "proposer.docker.workspace_mount_path must be an absolute container path; got {:?}",
+            docker.workspace_mount_path
+        )));
+    }
+    if !matches!(docker.network.as_str(), "bridge" | "host" | "none") {
+        return Err(OptimizerError::Config(format!(
+            "proposer.docker.network must be bridge, host, or none; got {:?}",
+            docker.network
+        )));
+    }
+    if proposer_uses_chatgpt_auth(&proposer.auth_mode) {
+        return Err(OptimizerError::Config(
+            "proposer.runtime_substrate = \"docker\" does not support auth_mode = \"chatgpt\" in v1; use runtime_substrate = \"local\" or api_key proposer auth"
+                .to_string(),
+        ));
+    }
+    for (container_key, host_key) in &docker.extra_env {
+        if container_key.trim().is_empty() || host_key.trim().is_empty() {
+            return Err(OptimizerError::Config(
+                "proposer.docker.extra_env entries must map non-empty container env names to non-empty host env names".to_string(),
+            ));
+        }
     }
     Ok(())
 }

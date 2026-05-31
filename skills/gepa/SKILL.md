@@ -1,6 +1,6 @@
 ---
 name: gepa
-description: Use when running, configuring, debugging, extending, or adapting public Rust GEPA in synth-optimizers, including GEPA TOML profiles, Codex app-server proposer auth, proposer workspace manifests, task_info-guided prompt optimization, rollout budgets, frontier/heldout interpretation, and GEPA-compatible cookbook containers.
+description: Use when running, configuring, debugging, extending, or adapting public Rust GEPA in synth-optimizers, including GEPA TOML profiles, Codex app-server proposer auth, runtime_substrate (local vs docker proposer), proposer workspace manifests, task_info-guided prompt optimization, rollout budgets, frontier/heldout interpretation, and GEPA-compatible cookbook containers.
 ---
 
 # Rust GEPA Skill
@@ -78,7 +78,21 @@ GEPA has two credential boundaries:
 
 - **Policy** — container env or Synth proxy (`credential_mode = byok`). Optimizer
   never sends raw keys on rollout HTTP.
-- **Proposer** — host Codex app-server with run-local `CODEX_HOME`.
+- **Proposer** — Codex app-server with run-local `CODEX_HOME`; use
+  `runtime_substrate = "local"` or `"docker"` to choose where the process runs.
+
+### Runtime substrate vs Codex sandbox
+
+Two independent knobs — do not overload one field for both:
+
+| Field | Meaning |
+|-------|---------|
+| `runtime_substrate` | Where the Codex app-server **process** runs: host (`local`) or `docker run` |
+| `sandbox_mode` | Codex CLI **in-agent** filesystem policy (`workspace-write`, `danger-full-access`, …) |
+| `execution_mode` | Legacy compat shim (`local_process`); substrate is canonical |
+
+Task containers (`[container] command = …`) stay local HTTP unless you explicitly
+dockerize the task server. That is separate from `[proposer.docker]`.
 
 ### Public cookbook default (OpenAI API key)
 
@@ -93,6 +107,7 @@ export SYNTH_OPTIMIZERS_TERMINAL=1   # live usage total / policy / proposer
 ```toml
 [proposer]
 backend = "codex_app_server"
+runtime_substrate = "local"
 execution_mode = "local_process"
 provider = "openai"
 model = "gpt-5.4-nano"
@@ -110,6 +125,7 @@ Rust GEPA creates a run-local `.codex_api_key_home` with only the configured key
 
 ```toml
 [proposer]
+runtime_substrate = "local"
 provider = "openrouter"
 auth_mode = "api_key"
 api_key_env = "OPENROUTER_API_KEY"
@@ -128,6 +144,7 @@ For subscription models (`gpt-5.4-mini`, etc.), use OAuth — not a Platform API
 
 ```toml
 [proposer]
+runtime_substrate = "local"
 auth_mode = "chatgpt"
 codex_home = "~/.codex"
 copy_host_auth = true
@@ -136,6 +153,57 @@ model = "gpt-5.4-mini"
 
 Do not combine `auth_mode = "chatgpt"` with `api_key_env`. Legacy `auth_mode = "host"`
 maps to `chatgpt`. Allowed models are enforced at config validation time.
+
+### Docker proposer
+
+```toml
+[proposer]
+backend = "codex_app_server"
+runtime_substrate = "docker"
+execution_mode = "local_process"
+auth_mode = "api_key"
+api_key_env = "OPENAI_API_KEY"
+model = "gpt-5.4-nano"
+
+[proposer.docker]
+image = "ghcr.io/synth-laboratories/codex-gepa-proposer:2026-05-31"
+workspace_mount_path = "/workspace"
+network = "bridge"
+extra_env = {}
+```
+
+Docker unavailable is a preflight error. Do not fall back to host proposer execution.
+
+Prereqs: Docker/OrbStack running, pinned image pulled (or build from
+`optimizers/docker/codex-gepa-proposer/Dockerfile`). Workspaces stage under
+`~/.cache/synth-gepa-docker-workspaces/` and are removed after sync-back.
+
+`auth_mode = "chatgpt"` with `runtime_substrate = "docker"` is rejected in v1.
+
+**Debugging docker proposer failures:**
+
+- Preflight: `docker info` must succeed before rollouts start.
+- Image: missing tag → pull/build the pinned `[proposer.docker].image`.
+- Entrypoint: `.codex_app_server_entrypoint.sh` is materialized in the staged
+  workspace; "No such file" in logs usually means mount or staging failure.
+- Bind mount: staged dir must exist and sync back to the run workspace.
+- Auth: api_key proposer uses staged `.codex_api_key_home`; OpenRouter uses
+  `OPENROUTER_API_KEY` on the host (mapped into container as `OPENAI_API_KEY`).
+
+### Acceptance (local + docker)
+
+From `optimizers/dev_examples/better_gepa/` (requires keys in env or `.env`):
+
+```bash
+python run_acceptance.py --profile openai_baseline --mode cost_stop
+python run_acceptance.py --profile openai_baseline_docker --mode cost_stop
+python run_acceptance.py --profile openrouter_grok43_docker --mode cost_stop
+```
+
+Pass: exit 0, `gepa.run.finished`, nonzero proposer tokens, `proposal/manifest.json`.
+Docker runs also assert staging dir cleanup via `supervisor_receipt`.
+
+Override image: `SYNTH_GEPA_DOCKER_PROPOSER_IMAGE=<tag> python run_acceptance.py …`
 
 ### Do not recommend
 
@@ -359,4 +427,3 @@ requires it.
 - Every public container should use a real verifier or real environment.
 - Keep container-specific heuristics in container metadata and task prompts,
   not hard-coded into the GEPA algorithm.
-

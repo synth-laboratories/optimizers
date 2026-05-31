@@ -92,10 +92,30 @@ class ProposerPromptTomlSection(BaseModel):
         )
 
 
+class ProposerDockerTomlSection(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    image: str | None = None
+    workspace_mount_path: str = "/workspace"
+    network: str = "bridge"
+    extra_env: dict[str, str] = Field(default_factory=dict)
+
+    def to_domain(self) -> "ProposerDockerConfig | None":
+        if self.image is None:
+            return None
+        return ProposerDockerConfig(
+            image=self.image,
+            workspace_mount_path=self.workspace_mount_path,
+            network=self.network,
+            extra_env=dict(self.extra_env),
+        )
+
+
 class ProposerTomlSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     backend: str = "codex_app_server"
+    runtime_substrate: str = "local"
     execution_mode: str = "local_process"
     provider: str = "openai"
     api_family: str = "chat_completions"
@@ -110,6 +130,7 @@ class ProposerTomlSection(BaseModel):
     approval_policy: str | None = "never"
     command: list[str] = Field(default_factory=list)
     prompt: ProposerPromptTomlSection = Field(default_factory=ProposerPromptTomlSection)
+    docker: ProposerDockerTomlSection | None = None
 
     def to_domain(self, base_dir: Path) -> "ProposerConfig":
         codex_home = None
@@ -118,6 +139,7 @@ class ProposerTomlSection(BaseModel):
             codex_home = path if path.is_absolute() else base_dir / path
         return ProposerConfig(
             backend=self.backend,
+            runtime_substrate=self.runtime_substrate,
             execution_mode=self.execution_mode,
             provider=self.provider,
             api_family=self.api_family,
@@ -132,6 +154,7 @@ class ProposerTomlSection(BaseModel):
             approval_policy=self.approval_policy,
             command=list(self.command),
             prompt=self.prompt.to_domain(base_dir),
+            docker=self.docker.to_domain() if self.docker is not None else None,
         )
 
 
@@ -452,8 +475,27 @@ class GepaDefaults:
 
 
 @dataclass(slots=True)
+class ProposerDockerConfig:
+    image: str
+    workspace_mount_path: str = "/workspace"
+    network: str = "bridge"
+    extra_env: dict[str, str] = field(default_factory=dict)
+
+    def to_toml(self) -> dict[str, Any]:
+        return _drop_none(
+            {
+                "image": self.image,
+                "workspace_mount_path": self.workspace_mount_path,
+                "network": self.network,
+                "extra_env": dict(self.extra_env),
+            }
+        )
+
+
+@dataclass(slots=True)
 class ProposerConfig:
     backend: str = "codex_app_server"
+    runtime_substrate: str = "local"
     execution_mode: str = "local_process"
     provider: str = "openai"
     api_family: str = "chat_completions"
@@ -469,11 +511,25 @@ class ProposerConfig:
     approval_policy: str | None = "never"
     command: list[str] = field(default_factory=list)
     prompt: ProposerPromptConfig | None = None
+    docker: ProposerDockerConfig | None = None
+
+    @classmethod
+    def local(cls, **kwargs: Any) -> "ProposerConfig":
+        return cls(runtime_substrate="local", **kwargs)
+
+    @classmethod
+    def docker_substrate(cls, *, image: str, **kwargs: Any) -> "ProposerConfig":
+        return cls(
+            runtime_substrate="docker",
+            docker=ProposerDockerConfig(image=image),
+            **kwargs,
+        )
 
     def to_toml(self) -> dict[str, Any]:
         payload = _drop_none(
             {
                 "backend": self.backend,
+                "runtime_substrate": self.runtime_substrate,
                 "execution_mode": self.execution_mode,
                 "provider": self.provider,
                 "api_family": self.api_family,
@@ -494,6 +550,8 @@ class ProposerConfig:
             prompt = self.prompt.to_toml()
             if prompt:
                 payload["prompt"] = prompt
+        if self.docker is not None:
+            payload["docker"] = self.docker.to_toml()
         return payload
 
 

@@ -133,7 +133,7 @@ run-local Codex `CODEX_HOME` bundle started by Rust GEPA.
 | Boundary | Who calls the model | Where secrets live |
 |----------|---------------------|--------------------|
 | **Policy** (rollouts) | Your task container | Container env or proxy (`credential_mode = byok`) |
-| **Proposer** (prompt edits) | Codex app-server subprocess | Host env + run-local `CODEX_HOME` |
+| **Proposer** (prompt edits) | Codex app-server (`runtime_substrate = "local"` or `"docker"`) | Host env + run-local `CODEX_HOME` |
 
 The optimizer never embeds API keys in rollout HTTP requests. Proposer keys never
 leave the host process.
@@ -159,6 +159,7 @@ api_key_env = "OPENAI_API_KEY"
 
 [proposer]
 backend = "codex_app_server"
+runtime_substrate = "local"
 execution_mode = "local_process"
 provider = "openai"
 auth_mode = "api_key"
@@ -169,6 +170,9 @@ sandbox_mode = "workspace-write"
 approval_policy = "never"
 timeout_seconds = 900
 ```
+
+`sandbox_mode` is the Codex in-agent sandbox policy. It is not the host-vs-Docker
+choice; use `runtime_substrate` for that.
 
 SDK equivalent:
 
@@ -206,6 +210,7 @@ model = "gpt-4.1-nano"
 api_key_env = "OPENAI_API_KEY"
 
 [proposer]
+runtime_substrate = "local"
 provider = "openrouter"
 auth_mode = "api_key"
 api_key_env = "OPENROUTER_API_KEY"
@@ -239,6 +244,7 @@ model = "gpt-4.1-nano"
 api_key_env = "OPENAI_API_KEY"
 
 [proposer]
+runtime_substrate = "local"
 auth_mode = "chatgpt"
 codex_home = "~/.codex"
 copy_host_auth = true
@@ -271,6 +277,39 @@ See the [DeepSeek + Codex workaround notes](https://gist.github.com/antenore/c52
 Preflight errors are intentional: missing `OPENAI_API_KEY` for `auth_mode = "api_key"`,
 missing `codex_home` / `auth.json` for `auth_mode = "chatgpt"`, or a disallowed
 ChatGPT model id fail before rollouts start.
+
+### Docker proposer substrate
+
+Use Docker when the proposer should run isolated from the host process:
+
+```toml
+[proposer]
+backend = "codex_app_server"
+runtime_substrate = "docker"
+execution_mode = "local_process"   # compatibility shim during migration
+provider = "openai"
+auth_mode = "api_key"
+api_key_env = "OPENAI_API_KEY"
+model = "gpt-5.4-nano"
+sandbox_mode = "workspace-write"
+approval_policy = "never"
+
+[proposer.docker]
+image = "ghcr.io/synth-laboratories/codex-gepa-proposer:2026-05-31"
+workspace_mount_path = "/workspace"
+network = "bridge"
+extra_env = {}
+```
+
+Docker proposer workspaces are staged under
+`~/.cache/synth-gepa-docker-workspaces/<run_id>-*/`, mounted into the container,
+synced back to the run workspace, then removed. Docker unavailable is a preflight
+error; GEPA does not retry on the local substrate.
+
+When `sandbox_mode` is not `danger-full-access`, the Docker substrate grants the
+container `SYS_ADMIN` with `seccomp=unconfined` so Codex can run its nested Linux
+sandbox (`bubblewrap`) inside the container. This preserves the explicit Codex
+sandbox policy instead of silently downgrading it.
 
 More detail for agents: [skills/gepa/SKILL.md](skills/gepa/SKILL.md).
 

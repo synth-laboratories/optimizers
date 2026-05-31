@@ -6,8 +6,7 @@ use std::time::Duration;
 use crate::CandidateRecord;
 use serde_json::{json, Map, Value};
 use synth_optimizer_platform::{
-    ensure_turn_completed, extract_thread_id, usage_from_message, usage_from_messages,
-    CodexAppServerClient, CodexAppServerLaunch, OptimizerError, PromptProgram, Result,
+    run_turn, AgentTurnOutcome, CodexTurnRequest, OptimizerError, PromptProgram, Result,
     SynthOptimizerConfig,
 };
 
@@ -44,83 +43,87 @@ pub(crate) fn run_codex_app_server_proposer(input: CodexProposerInput<'_>) -> Re
         .model
         .clone()
         .unwrap_or_else(|| "gpt-5.4-mini".to_string());
-    let mut client = CodexAppServerClient::start(CodexAppServerLaunch {
+    let timeout = Duration::from_secs(input.config.proposer.timeout_seconds.max(1));
+    let outcome = run_turn(CodexTurnRequest {
+        run_id: &input.config.run.run_id,
         proposer: &input.config.proposer,
         workspace_dir: &input.workspace_dir,
         model: &model,
+        client_name: "synth-optimizers-gepa",
+        client_title: "synth-optimizers GEPA",
+        client_version: env!("CARGO_PKG_VERSION"),
+        thread_start_params: thread_start_params(&input, &model),
+        turn_start_params: turn_start_params(&input, &model)?,
+        timeout,
     })?;
-    let result = run_session(&mut client, &input, &model);
-    let terminate_result = client.terminate();
-    let mut response = result?;
-    if let Err(error) = terminate_result {
-        response["shutdown_warning"] = Value::String(error.to_string());
-    }
-    Ok(response)
+    build_response_from_outcome(&input, &model, outcome)
 }
 
-fn run_session(
-    client: &mut CodexAppServerClient,
+fn build_response_from_outcome(
     input: &CodexProposerInput<'_>,
     model: &str,
+    outcome: AgentTurnOutcome,
 ) -> Result<Value> {
-    let timeout = Duration::from_secs(input.config.proposer.timeout_seconds.max(1));
-    let initialize_id = client.send_request(
-        "initialize",
-        json!({
-            "clientInfo": {
-                "name": "synth-optimizers-gepa",
-                "title": "synth-optimizers GEPA",
-                "version": env!("CARGO_PKG_VERSION"),
-            }
-        }),
+    let usage = outcome
+        .usage
+        .clone()
+        .unwrap_or_else(|| json!({"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}));
+    let mut prevalidation_response = json!({
+        "backend": "codex_app_server",
+        "runtime_substrate": input.config.proposer.runtime_substrate.as_str(),
+        "workspace": input.workspace_dir,
+        "usage": usage.clone(),
+        "manifest_validation": "pending",
+    });
+    if let Some(receipt) = outcome.supervisor_receipt.as_ref() {
+        prevalidation_response["supervisor_receipt"] = serde_json::to_value(receipt)?;
+    }
+    if let Some(shutdown_warning) = outcome.shutdown_warning.as_ref() {
+        prevalidation_response["shutdown_warning"] = Value::String(shutdown_warning.clone());
+    }
+    write_agent_artifacts(
+        input,
+        model,
+        &outcome.thread_id,
+        &outcome.turn_id,
+        &outcome.thread_response,
+        &outcome.final_turn,
+        &prevalidation_response,
+        &outcome,
     )?;
-    client.wait_for_response(initialize_id, Duration::from_secs(60))?;
-    client.send_notification("initialized", Value::Null)?;
-
-    let thread_id = client.send_request("thread/start", thread_start_params(input, model))?;
-    let thread_response = client.wait_for_response(thread_id, Duration::from_secs(60))?;
-    let thread_id = extract_thread_id(&thread_response).ok_or_else(|| {
-        OptimizerError::Proposer(format!(
-            "codex app-server thread/start response missing thread id: {thread_response}"
-        ))
-    })?;
-
-    let turn_id =
-        client.send_request("turn/start", turn_start_params(input, model, &thread_id)?)?;
-    let turn_id = client.wait_for_turn_started(turn_id, Duration::from_secs(60))?;
-    let final_turn = client.wait_for_turn(&turn_id, timeout)?;
-    ensure_turn_completed(&final_turn)?;
-
     let manifest = read_manifest(&input.workspace_dir)?;
     let proposals = proposals_from_manifest(&manifest)?;
     let mut evidence_warnings = manifest_evidence_warnings(input, &manifest, &proposals);
-    let usage = usage_from_messages(client.received_messages(), &turn_id)
-        .or_else(|| usage_from_message(&final_turn));
-    if usage.is_none() {
+    if outcome.usage.is_none() {
         evidence_warnings.push(
             "proposer usage missing from codex turn payload; token counts may be incomplete"
                 .to_string(),
         );
     }
-    let usage = usage
-        .unwrap_or_else(|| json!({"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}));
-    let response = json!({
+    let mut response = json!({
         "backend": "codex_app_server",
+        "runtime_substrate": input.config.proposer.runtime_substrate.as_str(),
         "workspace": input.workspace_dir,
         "manifest": manifest,
         "proposals": proposals,
         "usage": usage,
         "evidence_warnings": evidence_warnings,
     });
+    if let Some(receipt) = outcome.supervisor_receipt.as_ref() {
+        response["supervisor_receipt"] = serde_json::to_value(receipt)?;
+    }
+    if let Some(shutdown_warning) = outcome.shutdown_warning.as_ref() {
+        response["shutdown_warning"] = Value::String(shutdown_warning.clone());
+    }
     write_agent_artifacts(
         input,
         model,
-        &thread_id,
-        &turn_id,
-        &thread_response,
-        &final_turn,
+        &outcome.thread_id,
+        &outcome.turn_id,
+        &outcome.thread_response,
+        &outcome.final_turn,
         &response,
-        client,
+        &outcome,
     )?;
     write_workspace_pack_manifest(&input.workspace_dir)?;
     Ok(response)
@@ -384,7 +387,7 @@ fn write_agent_artifacts(
     thread_response: &Value,
     final_turn: &Value,
     response: &Value,
-    client: &CodexAppServerClient,
+    outcome: &AgentTurnOutcome,
 ) -> Result<()> {
     let artifact_dir = input.workspace_dir.join(".agent_artifacts");
     fs::create_dir_all(&artifact_dir)
@@ -401,6 +404,8 @@ fn write_agent_artifacts(
             "sandbox_mode": input.config.proposer.sandbox_mode,
             "approval_policy": input.config.proposer.approval_policy,
             "auth_mode": input.config.proposer.auth_mode,
+            "runtime_substrate": input.config.proposer.runtime_substrate.as_str(),
+            "supervisor_receipt": &outcome.supervisor_receipt,
             "thread_response": thread_response,
             "final_turn": final_turn,
         }),
@@ -409,13 +414,13 @@ fn write_agent_artifacts(
         &artifact_dir.join("opencode_messages.json"),
         &json!({
             "schema_version": "gepa_codex_app_server_messages.v1",
-            "sent": client.sent_messages(),
-            "received": client.received_messages(),
+            "sent": &outcome.sent_messages,
+            "received": &outcome.received_messages,
         }),
     )?;
     write_json(&artifact_dir.join("opencode_response.json"), response)?;
     let mut events = String::new();
-    for message in client.received_messages() {
+    for message in &outcome.received_messages {
         events.push_str(&serde_json::to_string(message)?);
         events.push('\n');
     }
@@ -2438,13 +2443,8 @@ fn thread_start_params(input: &CodexProposerInput<'_>, model: &str) -> Value {
     Value::Object(params)
 }
 
-fn turn_start_params(
-    input: &CodexProposerInput<'_>,
-    model: &str,
-    thread_id: &str,
-) -> Result<Value> {
+fn turn_start_params(input: &CodexProposerInput<'_>, model: &str) -> Result<Value> {
     let mut params = Map::new();
-    params.insert("threadId".to_string(), Value::String(thread_id.to_string()));
     params.insert("model".to_string(), Value::String(model.to_string()));
     params.insert(
         "input".to_string(),

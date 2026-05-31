@@ -14412,11 +14412,26 @@ fn run_proposer(
                 error
             })
         }
+        "deepseek_chat" => {
+            codex_app_server::run_deepseek_chat_proposer(codex_app_server::CodexProposerInput {
+                config,
+                program,
+                parent,
+                candidates,
+                generation,
+                task_pool_rows,
+                workspace_dir,
+            })
+            .map_err(|error| {
+                eprintln!("[gepa-proposer] deepseek_chat proposer failed: {error}");
+                error
+            })
+        }
         "local_process_json" => Err(OptimizerError::Config(
             "unsupported proposer.backend \"local_process_json\"; GEPA proposer work must use codex_app_server workspace-backed proposing".to_string(),
         )),
         backend => Err(OptimizerError::Config(format!(
-            "unsupported proposer.backend {backend:?}; expected codex_app_server"
+            "unsupported proposer.backend {backend:?}; expected codex_app_server or deepseek_chat"
         ))),
     }
 }

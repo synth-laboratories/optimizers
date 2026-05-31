@@ -92,10 +92,30 @@ class ProposerPromptTomlSection(BaseModel):
         )
 
 
+class ProposerDockerTomlSection(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    image: str | None = None
+    workspace_mount_path: str = "/workspace"
+    network: str = "bridge"
+    extra_env: dict[str, str] = Field(default_factory=dict)
+
+    def to_domain(self) -> "ProposerDockerConfig | None":
+        if self.image is None:
+            return None
+        return ProposerDockerConfig(
+            image=self.image,
+            workspace_mount_path=self.workspace_mount_path,
+            network=self.network,
+            extra_env=dict(self.extra_env),
+        )
+
+
 class ProposerTomlSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     backend: str = "codex_app_server"
+    runtime_substrate: str = "local"
     execution_mode: str = "local_process"
     provider: str = "openai"
     api_family: str = "chat_completions"
@@ -104,15 +124,22 @@ class ProposerTomlSection(BaseModel):
     auth_mode: str = "api_key"
     api_key_env: str | None = "OPENAI_API_KEY"
     copy_host_auth: bool = False
+    codex_home: str | Path | None = None
     timeout_seconds: int = 900
     sandbox_mode: str | None = "workspace-write"
     approval_policy: str | None = "never"
     command: list[str] = Field(default_factory=list)
     prompt: ProposerPromptTomlSection = Field(default_factory=ProposerPromptTomlSection)
+    docker: ProposerDockerTomlSection | None = None
 
     def to_domain(self, base_dir: Path) -> "ProposerConfig":
+        codex_home = None
+        if self.codex_home is not None:
+            path = Path(self.codex_home)
+            codex_home = path if path.is_absolute() else base_dir / path
         return ProposerConfig(
             backend=self.backend,
+            runtime_substrate=self.runtime_substrate,
             execution_mode=self.execution_mode,
             provider=self.provider,
             api_family=self.api_family,
@@ -121,11 +148,13 @@ class ProposerTomlSection(BaseModel):
             auth_mode=self.auth_mode,
             api_key_env=self.api_key_env,
             copy_host_auth=self.copy_host_auth,
+            codex_home=codex_home,
             timeout_seconds=self.timeout_seconds,
             sandbox_mode=self.sandbox_mode,
             approval_policy=self.approval_policy,
             command=list(self.command),
             prompt=self.prompt.to_domain(base_dir),
+            docker=self.docker.to_domain() if self.docker is not None else None,
         )
 
 
@@ -446,34 +475,71 @@ class GepaDefaults:
 
 
 @dataclass(slots=True)
+class ProposerDockerConfig:
+    image: str
+    workspace_mount_path: str = "/workspace"
+    network: str = "bridge"
+    extra_env: dict[str, str] = field(default_factory=dict)
+
+    def to_toml(self) -> dict[str, Any]:
+        return _drop_none(
+            {
+                "image": self.image,
+                "workspace_mount_path": self.workspace_mount_path,
+                "network": self.network,
+                "extra_env": dict(self.extra_env),
+            }
+        )
+
+
+@dataclass(slots=True)
 class ProposerConfig:
     backend: str = "codex_app_server"
+    runtime_substrate: str = "local"
     execution_mode: str = "local_process"
     provider: str = "openai"
     api_family: str = "chat_completions"
+    base_url: str | None = None
     model: str | None = "gpt-5.4-nano"
     reasoning_effort: str | None = "medium"
     auth_mode: str = "api_key"
     api_key_env: str | None = "OPENAI_API_KEY"
     copy_host_auth: bool = False
+    codex_home: str | Path | None = None
     timeout_seconds: int = 900
     sandbox_mode: str | None = "workspace-write"
     approval_policy: str | None = "never"
     command: list[str] = field(default_factory=list)
     prompt: ProposerPromptConfig | None = None
+    docker: ProposerDockerConfig | None = None
+
+    @classmethod
+    def local(cls, **kwargs: Any) -> "ProposerConfig":
+        return cls(runtime_substrate="local", **kwargs)
+
+    @classmethod
+    def docker_substrate(cls, *, image: str, **kwargs: Any) -> "ProposerConfig":
+        return cls(
+            runtime_substrate="docker",
+            docker=ProposerDockerConfig(image=image),
+            **kwargs,
+        )
 
     def to_toml(self) -> dict[str, Any]:
         payload = _drop_none(
             {
                 "backend": self.backend,
+                "runtime_substrate": self.runtime_substrate,
                 "execution_mode": self.execution_mode,
                 "provider": self.provider,
                 "api_family": self.api_family,
+                "base_url": self.base_url,
                 "model": self.model,
                 "reasoning_effort": self.reasoning_effort,
                 "auth_mode": self.auth_mode,
                 "api_key_env": self.api_key_env,
                 "copy_host_auth": bool(self.copy_host_auth),
+                "codex_home": str(self.codex_home) if self.codex_home is not None else None,
                 "timeout_seconds": int(self.timeout_seconds),
                 "sandbox_mode": self.sandbox_mode,
                 "approval_policy": self.approval_policy,
@@ -484,6 +550,8 @@ class ProposerConfig:
             prompt = self.prompt.to_toml()
             if prompt:
                 payload["prompt"] = prompt
+        if self.docker is not None:
+            payload["docker"] = self.docker.to_toml()
         return payload
 
 

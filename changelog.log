@@ -1,5 +1,36 @@
 # synth-optimizers changelog
 
+## 2026-05-31 — better-ai-auth (unreleased)
+
+### Proposer auth and live usage
+
+- **Provider-aware API-key proposers** — OpenRouter (and other non-OpenAI providers)
+  get a run-local Codex home with the correct `base_url` and key env wiring.
+- **ChatGPT subscription proposer** — `auth_mode = "chatgpt"` with explicit
+  `codex_home`, model allowlist validation, and OAuth bundle copy into the workspace.
+- **Live usage rollups** — terminal and event feed show running `usage total`,
+  policy vs proposer token splits, and cost while a run is in progress
+  (`SYNTH_OPTIMIZERS_TERMINAL=1`).
+- **README + skill** — authentication quickstarts for OpenAI API key, OpenRouter,
+  and ChatGPT subscription paths.
+- **SynthStyle alignment** — explicit proposer auth resolution in
+  `agent_runtime/codex_home`, no silent host `~/.codex` fallback, legacy
+  `host` → `chatgpt`, missing usage warns in proposer evidence.
+
+### Proposer runtime substrate (local + Docker)
+
+- **`runtime_substrate`** — `local` (default) or `docker` for Codex app-server
+  launch; `[proposer.docker]` pins image, mount path, network, and optional
+  `extra_env`.
+- **Docker substrate** — stage workspace under
+  `~/.cache/synth-gepa-docker-workspaces/`, bind mount, entrypoint, sync-back,
+  staging cleanup; preflight fails if Docker unavailable (no local fallback).
+- **v1 limits** — `auth_mode = "chatgpt"` rejected for docker substrate.
+- **Image** — `docker/codex-gepa-proposer/Dockerfile`; pinned tag in profiles and
+  README.
+- **Skills** — `skills/gepa/SKILL.md` and `containers/skills/containers/SKILL.md`
+  clarify task container vs proposer substrate boundaries.
+
 ## 2026-05-31 — 0.2.0.dev20260531
 
 ### Typed Python SDK for GEPA

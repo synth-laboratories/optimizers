@@ -25,37 +25,39 @@ pip install synth-optimizers
 uv add synth-optimizers
 ```
 
-## Local Better SDK Dev
+## Local development
 
-This branch pair expects:
+This repo pairs with [`synth-containers`](https://github.com/synth-laboratories/containers)
+at `synth-containers==0.2.0.dev20260531` / `synth-optimizers==0.2.0.dev20260531`.
 
-- `containers`: `better-sdk`, package `synth-containers==0.2.0.dev20260531`
-- `optimizers`: `better-sdk`, package `synth-optimizers==0.2.0.dev20260531`
-
-Install both editable checkouts with `uv`:
+Install both editable checkouts with `uv` (sibling repos under your workspace):
 
 ```bash
-cd /Users/joshpurtell/Documents/GitHub/optimizers
+cd optimizers
 uv sync --group dev
-uv pip install -e /Users/joshpurtell/Documents/GitHub/containers
-uv pip install -e /Users/joshpurtell/Documents/GitHub/optimizers
+uv pip install -e ../containers
+uv pip install -e .
+uv run maturin develop --manifest-path rust/crates/synth_optimizers_py/Cargo.toml
 ```
 
 Verify the installed paths and versions:
 
 ```bash
-uv run --project /Users/joshpurtell/Documents/GitHub/optimizers python -c "import importlib.metadata as m, synth_containers, synth_optimizers; print(synth_containers.__file__); print(synth_optimizers.__file__); print(m.version('synth-containers')); print(synth_optimizers.__version__)"
+uv run python -c "import importlib.metadata as m, synth_containers, synth_optimizers; print(synth_containers.__file__); print(synth_optimizers.__file__); print(m.version('synth-containers')); print(synth_optimizers.__version__)"
 ```
 
-The SDK validation set lives in local `dev_examples/` (gitignored). After editable install:
+Most of `dev_examples/` stays local-only. The Better GEPA acceptance harness is
+tracked for merge validation:
 
 ```bash
-cd /Users/joshpurtell/Documents/GitHub/optimizers
-bash dev_examples/banking77/run_fresh_gepa.sh
-bash dev_examples/tblite/run_fresh_gepa.sh
-bash dev_examples/crafter/run_fresh_gepa.sh
-bash dev_examples/minigrid/run_fresh_gepa.sh
+cd dev_examples/better_gepa
+python run_acceptance.py --profile openai_baseline --mode cost_stop
+python run_acceptance.py --profile openai_baseline_docker --mode cost_stop
 ```
+
+See [dev_examples/better_gepa/acceptance_usage_termination.md](dev_examples/better_gepa/acceptance_usage_termination.md)
+for profile/env requirements. Other cookbook dev scripts (`dev_examples/banking77/`,
+etc.) remain on disk but are not committed.
 
 ## Quickstart
 
@@ -123,6 +125,243 @@ synth-optimizers events compare --left a.jsonl --right b.jsonl
 A run needs a container URL and a TOML config. The
 [GEPA cookbooks](https://github.com/synth-laboratories/synth-cookbooks-public/tree/main/cookbooks/optimizers/gepa)
 have runnable examples across task shapes: Banking77, HotpotQA, MiniGrid, TBLite, and Crafter.
+
+## Authentication and models
+
+GEPA has **two independent inference boundaries**. Policy credentials stay in the
+container (or Synth inference proxy). Proposer credentials stay on the host in a
+run-local Codex `CODEX_HOME` bundle started by Rust GEPA.
+
+| Boundary | Who calls the model | Where secrets live |
+|----------|---------------------|--------------------|
+| **Policy** (rollouts) | Your task container | Container env or proxy (`credential_mode = byok`) |
+| **Proposer** (prompt edits) | Codex app-server (`runtime_substrate = "local"` or `"docker"`) | Host env + run-local `CODEX_HOME` |
+
+The optimizer never embeds API keys in rollout HTTP requests. Proposer keys never
+leave the host process.
+
+Set `SYNTH_OPTIMIZERS_TERMINAL=1` to print live usage during a run
+(`usage total=… policy=… proposer=… cost=$…`).
+
+### OpenAI API key (default — cookbooks and CI)
+
+Use the same key for policy rollouts and the Codex proposer. GEPA builds an isolated
+run-local Codex home and does **not** read your host `~/.codex` login.
+
+```bash
+export OPENAI_API_KEY="sk-..."
+export SYNTH_OPTIMIZERS_TERMINAL=1
+```
+
+```toml
+[policy]
+provider = "openai"
+model = "gpt-4.1-nano"
+api_key_env = "OPENAI_API_KEY"
+
+[proposer]
+backend = "codex_app_server"
+runtime_substrate = "local"
+execution_mode = "local_process"
+provider = "openai"
+auth_mode = "api_key"
+api_key_env = "OPENAI_API_KEY"
+copy_host_auth = false
+model = "gpt-5.4-nano"
+sandbox_mode = "workspace-write"
+approval_policy = "never"
+timeout_seconds = 900
+```
+
+`sandbox_mode` is the Codex in-agent sandbox policy. It is not the host-vs-Docker
+choice; use `runtime_substrate` for that.
+
+SDK equivalent:
+
+```python
+from synth_optimizers import GepaConfig, PolicyConfig, ProposerConfig
+
+GepaConfig(
+    policy=PolicyConfig(provider="openai", model="gpt-4.1-nano", api_key_env="OPENAI_API_KEY"),
+    proposer=ProposerConfig.local(
+        provider="openai",
+        auth_mode="api_key",
+        api_key_env="OPENAI_API_KEY",
+        copy_host_auth=False,
+        model="gpt-5.4-nano",
+    ),
+    # container, taskset, …
+)
+
+# Docker proposer (api_key only in v1):
+GepaConfig(
+    proposer=ProposerConfig.docker_substrate(
+        image="ghcr.io/synth-laboratories/codex-gepa-proposer:2026-05-31",
+        provider="openai",
+        auth_mode="api_key",
+        api_key_env="OPENAI_API_KEY",
+        model="gpt-5.4-nano",
+    ),
+    # …
+)
+```
+
+### OpenRouter proposer
+
+Policy can stay on OpenAI while the proposer uses an OpenRouter model. Set
+`provider = "openrouter"` and point `api_key_env` at your OpenRouter key.
+GEPA writes a provider-aware Codex config with the OpenRouter base URL.
+
+```bash
+export OPENAI_API_KEY="sk-..."          # policy rollouts (container)
+export OPENROUTER_API_KEY="sk-or-..."   # proposer
+```
+
+```toml
+[policy]
+provider = "openai"
+model = "gpt-4.1-nano"
+api_key_env = "OPENAI_API_KEY"
+
+[proposer]
+runtime_substrate = "local"
+provider = "openrouter"
+auth_mode = "api_key"
+api_key_env = "OPENROUTER_API_KEY"
+copy_host_auth = false
+model = "x-ai/grok-4.3"
+sandbox_mode = "workspace-write"
+approval_policy = "never"
+timeout_seconds = 900
+```
+
+OpenRouter also works for **policy** rollouts: set `[policy].provider = "openrouter"`
+and ensure the container process has `OPENROUTER_API_KEY` in its environment.
+
+### ChatGPT subscription proposer
+
+Subscription models (for example `gpt-5.4-mini`) cannot be driven by a raw Platform
+API key through Codex. Use ChatGPT OAuth and point GEPA at your authenticated Codex
+home.
+
+1. Install the [Codex CLI](https://github.com/openai/codex) and log in, **or** follow
+   [opencode-openai-codex-auth](https://github.com/numman-ali/opencode-openai-codex-auth)
+   to build a `~/.codex` OAuth bundle.
+2. Confirm `~/.codex/auth.json` exists (`codex auth login`).
+3. Configure the proposer — `codex_home` is **required**; GEPA does not silently fall
+   back to your host home without it.
+
+```toml
+[policy]
+provider = "openai"
+model = "gpt-4.1-nano"
+api_key_env = "OPENAI_API_KEY"
+
+[proposer]
+runtime_substrate = "local"
+auth_mode = "chatgpt"
+codex_home = "~/.codex"
+copy_host_auth = true
+model = "gpt-5.4-mini"
+sandbox_mode = "workspace-write"
+approval_policy = "never"
+timeout_seconds = 900
+```
+
+Allowed proposer models for `auth_mode = "chatgpt"`: `gpt-5.4-mini`, `gpt-5.3-codex`,
+`gpt-5.3-codex-spark`, `gpt-5.5`. Do **not** set `api_key_env` in this mode.
+
+Subscription proposer turns are **billable $0** in usage totals; policy rollouts still
+accrued against your API key spend normally.
+
+### Gemini and other policy providers
+
+Gemini and other OpenAI-compatible providers are supported on the **policy** side
+only today. Configure `[policy].provider`, `base_url`, and the matching key env var
+in the container environment. The reflective proposer remains Codex app-server
+(OpenAI API key, OpenRouter, or ChatGPT subscription as above).
+
+### Not supported yet: direct DeepSeek via Codex
+
+Direct DeepSeek API keys through Codex app-server are **not** supported in this release.
+Codex requires the Responses wire API; DeepSeek rejects `/responses`. Use an
+OpenRouter DeepSeek slug for the proposer instead, or wait for a dedicated adapter.
+See the [DeepSeek + Codex workaround notes](https://gist.github.com/antenore/c529e055e45559579b08b4961b517f8c).
+
+Preflight errors are intentional: missing `OPENAI_API_KEY` for `auth_mode = "api_key"`,
+missing `codex_home` / `auth.json` for `auth_mode = "chatgpt"`, or a disallowed
+ChatGPT model id fail before rollouts start.
+
+### Docker proposer substrate
+
+Use Docker when the proposer should run isolated from the host process:
+
+```toml
+[proposer]
+backend = "codex_app_server"
+runtime_substrate = "docker"
+execution_mode = "local_process"   # compatibility shim during migration
+provider = "openai"
+auth_mode = "api_key"
+api_key_env = "OPENAI_API_KEY"
+model = "gpt-5.4-nano"
+sandbox_mode = "workspace-write"
+approval_policy = "never"
+
+[proposer.docker]
+image = "ghcr.io/synth-laboratories/codex-gepa-proposer:2026-05-31"
+workspace_mount_path = "/workspace"
+network = "bridge"
+extra_env = {}
+```
+
+Docker proposer workspaces are staged under
+`~/.cache/synth-gepa-docker-workspaces/<run_id>-*/`, mounted into the container,
+synced back to the run workspace, then removed. Docker unavailable is a preflight
+error; GEPA does not retry on the local substrate.
+
+When `sandbox_mode` is not `danger-full-access`, the Docker substrate grants the
+container `SYS_ADMIN` with `seccomp=unconfined` so Codex can run its nested Linux
+sandbox (`bubblewrap`) inside the container. This preserves the explicit Codex
+sandbox policy instead of silently downgrading it.
+
+`auth_mode = "chatgpt"` with `runtime_substrate = "docker"` is rejected in v1.
+Use local substrate for subscription proposers.
+
+Build or pull the pinned image before running docker profiles:
+
+```bash
+docker build -t ghcr.io/synth-laboratories/codex-gepa-proposer:2026-05-31 \
+  docker/codex-gepa-proposer/
+```
+
+More detail for agents: [skills/gepa/SKILL.md](skills/gepa/SKILL.md).
+Cross-repo task-container boundary: [containers/skills/containers/SKILL.md](https://github.com/synth-laboratories/containers/blob/main/skills/containers/SKILL.md).
+
+## Engineering style
+
+**Reliability tier:** 2 — Rust GEPA core and platform config are typed at boundaries;
+Python SDK mirrors TOML contracts. Ruff + ty on changed Python; `cargo check` on
+changed Rust crates before merge.
+
+**Style source:** [SynthStyle](https://github.com/synth-laboratories/backend/blob/main/specifications/tanha/references/synthstyle.md)
+(org rules also indexed under `Jstack/.jstack/style/synth_style.md`).
+
+Contributors should prefer:
+
+- One authoritative auth path per `proposer.auth_mode` (no silent `~/.codex` fallback).
+- Actionable config errors (missing key, missing `codex_home`, disallowed ChatGPT model).
+- Proposer Codex launch wiring in `rust/crates/synth_optimizer_platform/src/agent_runtime/`.
+- `runtime_substrate` for host vs docker proposer; `sandbox_mode` for Codex in-agent policy.
+
+Before merge on auth/substrate changes:
+
+```bash
+uv run ruff check src/synth_optimizers/gepa.py dev_examples/better_gepa/run_acceptance.py
+uv run ty check src/synth_optimizers/gepa.py
+cargo check -p synth_optimizer_platform -p synth_gepa -p synth_optimizers_py
+cd dev_examples/better_gepa && python run_acceptance.py --profile openai_baseline --mode cost_stop
+```
 
 ## Links
 

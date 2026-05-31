@@ -11,5 +11,17 @@ __pycache__/
 *.code-workspace
 .cursor/
 
-# Local dev examples — not committed; keep scripts and runs on disk only.
+# Local dev examples — keep bulky runs on disk, but track Better GEPA acceptance replay.
 dev_examples/
+!dev_examples/
+dev_examples/*
+!dev_examples/better_gepa/
+dev_examples/better_gepa/*
+!dev_examples/better_gepa/run_acceptance.py
+!dev_examples/better_gepa/acceptance_usage_termination.md
+!dev_examples/better_gepa/profiles/
+dev_examples/better_gepa/profiles/*
+!dev_examples/better_gepa/profiles/banking77_openai_baseline.toml
+!dev_examples/better_gepa/profiles/banking77_openai_baseline_docker.toml
+!dev_examples/better_gepa/profiles/banking77_openrouter_grok43.toml
+!dev_examples/better_gepa/profiles/banking77_openrouter_grok43_docker.toml

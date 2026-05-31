@@ -1,0 +1,23 @@
+# Banking77 acceptance profile — OpenRouter Grok 4.3 proposer via Codex.
+# Requires: OPENROUTER_API_KEY (proposer), OPENAI_API_KEY (policy rollouts)
+# Ref: better-ai-auth.txt §5.8, §10.3 openrouter_grok43
+
+[policy]
+provider = "openai"
+model = "gpt-4.1-nano"
+api_key_env = "OPENAI_API_KEY"
+
+[proposer]
+backend = "codex_app_server"
+runtime_substrate = "local"
+execution_mode = "local_process"
+provider = "openrouter"
+auth_mode = "api_key"
+api_key_env = "OPENROUTER_API_KEY"
+copy_host_auth = false
+model = "x-ai/grok-4.3"
+reasoning_effort = "medium"
+timeout_seconds = 900
+sandbox_mode = "workspace-write"
+approval_policy = "never"
+# platform: prepare_openrouter_codex_home → OpenRouter-compatible run-local CODEX_HOME

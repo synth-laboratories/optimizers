@@ -50,6 +50,15 @@ except through `synth_optimizer_platform` traits and structs.
   `state/candidates.json`, `state/rollouts.json`, evidence frames, links, and
   the parent payload so the proposer can inspect actual search evidence.
 
+Proposer credentials and substrate are configured in `[proposer]` and launched
+through `synth_optimizer_platform::agent_runtime` (run-local `CODEX_HOME`, no
+silent host fallback). `runtime_substrate` chooses `local` or `docker`;
+`sandbox_mode` remains the Codex in-agent policy.
+Supported modes: `api_key`, `chatgpt`, and `auto` (resolves to api_key when the
+configured env var is set, otherwise chatgpt when `codex_home` is set). Legacy
+`host` maps to `chatgpt`. Public quickstarts: repo `README.md` → Authentication
+and models.
+
 ### Frontier And Selection
 
 - `ParetoFront`: per-example or aggregate candidate frontier.

@@ -257,6 +257,7 @@ pub struct RuntimeProposerOutcome {
     pub usage: UsageTotals,
     pub cost_usd: f64,
     pub backend: String,
+    pub runtime_substrate: String,
     pub workspace: Option<String>,
     pub evidence_warnings: Vec<String>,
     pub cache_key: String,
@@ -590,6 +591,11 @@ impl<'a> GepaRuntimeExecutor<'a> {
             .and_then(Value::as_str)
             .unwrap_or(self.config.proposer.backend.as_str())
             .to_string();
+        let runtime_substrate = response
+            .get("runtime_substrate")
+            .and_then(Value::as_str)
+            .unwrap_or(self.config.proposer.runtime_substrate.as_str())
+            .to_string();
         let workspace = response
             .get("workspace")
             .and_then(Value::as_str)
@@ -609,6 +615,7 @@ impl<'a> GepaRuntimeExecutor<'a> {
                 usage,
                 cost_usd,
                 backend,
+                runtime_substrate,
                 workspace,
                 evidence_warnings,
                 cache_key: call.cache_key,

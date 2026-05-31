@@ -42,14 +42,29 @@ pub(crate) fn render_terminal_event(event_type: &str, message: &str, fields: &Va
 
 fn terminal_lines_for_event(event_type: &str, message: &str, fields: &Value) -> Vec<String> {
     let mut lines = Vec::new();
+    if event_type == "gepa.run.started" {
+        reset_running_usage_summary();
+        reset_rollout_section_summary();
+    }
     if let Some(summary) = maybe_rollout_section_summary_before_event(event_type, fields) {
         lines.push(summary);
+        if let Some(line) = current_running_usage_line() {
+            lines.push(line);
+        }
     }
     if let Some(line) = terminal_line_for_event(event_type, message, fields) {
         lines.push(line);
     }
     if let Some(summary) = maybe_rollout_section_summary_after_event(event_type) {
         lines.push(summary);
+        if let Some(line) = current_running_usage_line() {
+            lines.push(line);
+        }
+    }
+    if event_type == "runtime.job.completed" {
+        if let Some(line) = running_usage_line_after_job(fields) {
+            lines.push(line);
+        }
     }
     lines
 }
@@ -709,7 +724,7 @@ fn terminal_runtime_job_completed_line(fields: &Value) -> String {
                 fmt_seconds(field_f64(fields, "wall_seconds").unwrap_or(0.0)),
                 fmt_cache_bool(field_bool(fields, "cache_hit").unwrap_or(false)),
                 field_usize(fields, "proposal_count").unwrap_or(0),
-                fmt_tokens_millions(field_u64(fields, "total_tokens").unwrap_or(0))
+                fmt_tokens_millions(tokens_from_runtime_fields(fields))
             )
         }
         "rollout" | "rollout_batch" => {
@@ -732,7 +747,7 @@ fn terminal_runtime_job_completed_line(fields: &Value) -> String {
                     cache_hits + cache_misses,
                     fmt_seconds(field_f64(fields, "wall_seconds").unwrap_or(0.0)),
                     avg,
-                    fmt_tokens_millions(field_u64(fields, "total_tokens").unwrap_or(0)),
+                    fmt_tokens_millions(tokens_from_runtime_fields(fields)),
                     diagnostics,
                 )
             } else {
@@ -747,7 +762,7 @@ fn terminal_runtime_job_completed_line(fields: &Value) -> String {
                     cache_hits,
                     cache_hits + cache_misses,
                     fmt_seconds(field_f64(fields, "wall_seconds").unwrap_or(0.0)),
-                    fmt_tokens_millions(field_u64(fields, "total_tokens").unwrap_or(0)),
+                    fmt_tokens_millions(tokens_from_runtime_fields(fields)),
                     diagnostics,
                 )
             }
@@ -801,7 +816,7 @@ impl RolloutSectionSummary {
         self.wall_seconds += field_f64(fields, "wall_seconds").unwrap_or(0.0);
         self.total_tokens = self
             .total_tokens
-            .saturating_add(field_u64(fields, "total_tokens").unwrap_or(0));
+            .saturating_add(tokens_from_runtime_fields(fields));
         self.jobs = self.jobs.saturating_add(1);
     }
 
@@ -829,6 +844,12 @@ static ROLLOUT_SECTION_SUMMARY: OnceLock<Mutex<Option<RolloutSectionSummary>>> =
 
 fn rollout_section_summary_state() -> &'static Mutex<Option<RolloutSectionSummary>> {
     ROLLOUT_SECTION_SUMMARY.get_or_init(|| Mutex::new(None))
+}
+
+fn reset_rollout_section_summary() {
+    if let Ok(mut guard) = rollout_section_summary_state().lock() {
+        *guard = None;
+    }
 }
 
 fn maybe_rollout_section_summary_before_event(event_type: &str, fields: &Value) -> Option<String> {
@@ -904,6 +925,143 @@ fn rollout_section_boundary_event(event_type: &str) -> bool {
             | "gepa.run.finished"
             | "gepa.stop"
     )
+}
+
+#[derive(Clone, Debug, Default)]
+struct RunningUsageSummary {
+    policy: RunningUsageBucket,
+    proposer: RunningUsageBucket,
+}
+
+impl RunningUsageSummary {
+    fn add_runtime_job(&mut self, fields: &Value) -> bool {
+        match field_str(fields, "runtime_kind") {
+            Some("proposer") => {
+                self.proposer.add_job(fields, 0);
+                true
+            }
+            Some("rollout" | "rollout_batch") => {
+                self.policy
+                    .add_job(fields, field_u64(fields, "rollout_count").unwrap_or(1));
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn has_usage(&self) -> bool {
+        self.policy.jobs > 0 || self.proposer.jobs > 0
+    }
+
+    fn line(&self) -> String {
+        let total_tokens = self
+            .policy
+            .total_tokens
+            .saturating_add(self.proposer.total_tokens);
+        let cost_usd = self.policy.cost_usd + self.proposer.cost_usd;
+        let policy_unit = if self.policy.calls == 1 {
+            "rollout"
+        } else {
+            "rollouts"
+        };
+        let proposer_unit = if self.proposer.jobs == 1 {
+            "job"
+        } else {
+            "jobs"
+        };
+        format!(
+            "  usage total={}  policy={} ({} {})  proposer={} ({} {})  cost=${cost_usd:.2}",
+            fmt_tokens_millions(total_tokens),
+            fmt_tokens_millions(self.policy.total_tokens),
+            self.policy.calls,
+            policy_unit,
+            fmt_tokens_millions(self.proposer.total_tokens),
+            self.proposer.jobs,
+            proposer_unit,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct RunningUsageBucket {
+    total_tokens: u64,
+    calls: u64,
+    jobs: u64,
+    cost_usd: f64,
+}
+
+impl RunningUsageBucket {
+    fn add_job(&mut self, fields: &Value, calls: u64) {
+        self.total_tokens = self
+            .total_tokens
+            .saturating_add(tokens_from_runtime_fields(fields));
+        self.calls = self.calls.saturating_add(calls);
+        self.jobs = self.jobs.saturating_add(1);
+        self.cost_usd += field_f64(fields, "cost_usd").unwrap_or(0.0);
+    }
+}
+
+static RUNNING_USAGE_SUMMARY: OnceLock<Mutex<RunningUsageSummary>> = OnceLock::new();
+
+fn running_usage_summary_state() -> &'static Mutex<RunningUsageSummary> {
+    RUNNING_USAGE_SUMMARY.get_or_init(|| Mutex::new(RunningUsageSummary::default()))
+}
+
+fn reset_running_usage_summary() {
+    if let Ok(mut guard) = running_usage_summary_state().lock() {
+        *guard = RunningUsageSummary::default();
+    }
+}
+
+fn running_usage_line_after_job(fields: &Value) -> Option<String> {
+    let mut guard = running_usage_summary_state().lock().ok()?;
+    if !guard.add_runtime_job(fields) {
+        return None;
+    }
+    Some(guard.line())
+}
+
+fn current_running_usage_line() -> Option<String> {
+    let guard = running_usage_summary_state().lock().ok()?;
+    guard.has_usage().then(|| guard.line())
+}
+
+fn tokens_from_runtime_fields(fields: &Value) -> u64 {
+    fields
+        .get("usage")
+        .map(tokens_from_usage)
+        .unwrap_or(0)
+        .max(field_u64(fields, "total_tokens").unwrap_or(0))
+}
+
+fn tokens_from_usage(usage: &Value) -> u64 {
+    let prompt = usage_u64(
+        usage,
+        &[
+            "prompt_tokens",
+            "input_tokens",
+            "inputTokens",
+            "promptTokens",
+        ],
+    );
+    let completion = usage_u64(
+        usage,
+        &[
+            "completion_tokens",
+            "output_tokens",
+            "outputTokens",
+            "completionTokens",
+            "reasoning_output_tokens",
+            "reasoningOutputTokens",
+        ],
+    );
+    usage_u64(usage, &["total_tokens", "totalTokens"]).max(prompt.saturating_add(completion))
+}
+
+fn usage_u64(usage: &Value, keys: &[&str]) -> u64 {
+    keys.iter()
+        .find_map(|key| usage.get(*key).and_then(Value::as_u64))
+        .unwrap_or(0)
 }
 
 fn runtime_rollout_diagnostics_suffix(fields: &Value) -> String {

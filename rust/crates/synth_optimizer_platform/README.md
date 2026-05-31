@@ -43,7 +43,11 @@ for config, containers, cache, events, manifests, usage, and artifacts.
 - `DatasetConfig`: split names, seed pools, filters.
 - `CandidateConfig`: target module declarations and candidate shape.
 - `PolicyConfig`: student policy model route.
-- `ProposerConfig`: Codex local-process proposer settings.
+- `ProposerConfig`: Codex proposer settings, including
+  `runtime_substrate = "local" | "docker"`. `sandbox_mode` remains the Codex
+  in-agent sandbox policy. Docker runs add the Linux namespace capability needed
+  by Codex's nested sandbox unless the operator explicitly chooses
+  `danger-full-access`.
 - `CacheConfig`: mode, path, namespace, size profile.
 
 ### Container

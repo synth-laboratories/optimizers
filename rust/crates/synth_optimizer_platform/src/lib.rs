@@ -1,3 +1,4 @@
+pub mod agent_runtime;
 pub mod artifacts;
 pub mod cache;
 pub mod candidates;
@@ -32,6 +33,12 @@ pub mod stopper;
 pub mod usage;
 pub mod workspace;
 
+pub use agent_runtime::{
+    ensure_turn_completed, extract_thread_id, prepare_proposer_codex_launch, run_turn,
+    usage_from_message, usage_from_messages, AgentRuntimeSubstrate, AgentTurnOutcome,
+    CodexAppServerClient, CodexAppServerLaunch, CodexAppServerProcessLaunch, CodexTurnRequest,
+    ExecutionSubstrate, ProposerCodexLaunch, SupervisorReceipt,
+};
 pub use artifacts::{ArtifactPaths, ArtifactRef, GepaRunResult};
 pub use cache::{
     normalize_for_cache_profile, stable_json_hash, CacheAccessRecord, CacheEntry, CacheMode,
@@ -44,11 +51,14 @@ pub use candidates::{
 };
 pub use checkpoints::{CheckpointInput, CheckpointRecord};
 pub use config::{
-    CacheConfig, CandidateConfig, ContainerConfig, GepaAdaptiveRolloutConcurrencyConfig,
-    GepaBatchSamplerConfig, GepaCandidateSelectorConfig, GepaConfig, GepaObjectiveAcceptanceConfig,
-    GepaPipelineConfig, GepaPipelineMode, GepaPipelineWorkers, GepaStalenessPolicy,
-    GepaTaskPoolsConfig, PolicyConfig, ProposerConfig, ProposerPromptConfig, RunConfig,
-    SynthOptimizerConfig, TasksetConfig,
+    proposer_auth_mode_normalized, proposer_uses_chatgpt_auth, resolve_chatgpt_codex_home_source,
+    resolve_proposer_auth_launch_mode, validate_chatgpt_proposer_config,
+    validate_chatgpt_proposer_model, CacheConfig, CandidateConfig, ContainerConfig,
+    GepaAdaptiveRolloutConcurrencyConfig, GepaBatchSamplerConfig, GepaCandidateSelectorConfig,
+    GepaConfig, GepaObjectiveAcceptanceConfig, GepaPipelineConfig, GepaPipelineMode,
+    GepaPipelineWorkers, GepaStalenessPolicy, GepaTaskPoolsConfig, PolicyConfig,
+    ProposerAuthLaunchMode, ProposerConfig, ProposerDockerConfig, ProposerPromptConfig, RunConfig,
+    SynthOptimizerConfig, TasksetConfig, CHATGPT_PROPOSER_MODELS,
 };
 pub use configured_limits::{
     ConfiguredGepaRunLimits, GepaRuntimeEffectBudgetEstimates, GEPA_LIMIT_STOP_POLICY,

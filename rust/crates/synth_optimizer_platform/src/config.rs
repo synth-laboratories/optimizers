@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::agent_runtime::{validate_execution_mode_compat, ExecutionSubstrate};
 use crate::configured_limits::validate_gepa_limit_config;
 use crate::disk_budget::DiskBudgetConfig;
 use crate::error::{OptimizerError, Result};
@@ -64,6 +65,18 @@ fn default_proposer_backend() -> String {
 
 fn default_execution_mode() -> String {
     "local_process".to_string()
+}
+
+fn default_runtime_substrate() -> ExecutionSubstrate {
+    ExecutionSubstrate::Local
+}
+
+fn default_docker_workspace_mount_path() -> String {
+    crate::agent_runtime::limits::DOCKER_WORKSPACE_MOUNT_PATH.to_string()
+}
+
+fn default_docker_network() -> String {
+    crate::agent_runtime::limits::DOCKER_NETWORK.to_string()
 }
 
 fn default_proposer_auth_mode() -> String {
@@ -548,12 +561,8 @@ impl SynthOptimizerConfig {
                 )));
             }
         }
-        if self.proposer.execution_mode.trim() != "local_process" {
-            return Err(OptimizerError::Config(format!(
-                "unsupported proposer.execution_mode {:?}; expected local_process",
-                self.proposer.execution_mode
-            )));
-        }
+        validate_execution_mode_compat(&self.proposer.execution_mode)?;
+        validate_proposer_runtime_substrate_config(&self.proposer)?;
         let proposer_api_family = normalize_enum_value(&self.proposer.api_family);
         if !matches!(
             proposer_api_family.as_str(),
@@ -564,19 +573,7 @@ impl SynthOptimizerConfig {
                 self.proposer.api_family
             )));
         }
-        match self.proposer.auth_mode.trim() {
-            "auto" | "host" | "api_key" => {}
-            mode => {
-                return Err(OptimizerError::Config(format!(
-                    "unsupported proposer.auth_mode {mode:?}; expected auto, host, or api_key"
-                )));
-            }
-        }
-        if self.proposer.auth_mode.trim() == "api_key" && self.proposer.copy_host_auth {
-            return Err(OptimizerError::Config(
-                "proposer.auth_mode = \"api_key\" cannot be combined with proposer.copy_host_auth = true".to_string(),
-            ));
-        }
+        validate_proposer_auth_config(&self.proposer)?;
         validate_proposer_prompt_config(&self.proposer.prompt)?;
         Ok(())
     }
@@ -715,12 +712,16 @@ impl Default for PolicyConfig {
 pub struct ProposerConfig {
     #[serde(default = "default_proposer_backend")]
     pub backend: String,
+    #[serde(default = "default_runtime_substrate")]
+    pub runtime_substrate: ExecutionSubstrate,
     #[serde(default = "default_execution_mode")]
     pub execution_mode: String,
     #[serde(default = "default_policy_provider")]
     pub provider: String,
     #[serde(default = "default_policy_api_family")]
     pub api_family: String,
+    #[serde(default)]
+    pub base_url: Option<String>,
     #[serde(default)]
     pub command: Vec<String>,
     #[serde(default)]
@@ -734,6 +735,8 @@ pub struct ProposerConfig {
     #[serde(default)]
     pub copy_host_auth: bool,
     #[serde(default)]
+    pub codex_home: Option<PathBuf>,
+    #[serde(default)]
     pub api_key_env: Option<String>,
     #[serde(default = "default_timeout_seconds")]
     pub timeout_seconds: u64,
@@ -741,27 +744,272 @@ pub struct ProposerConfig {
     pub model: Option<String>,
     #[serde(default)]
     pub prompt: ProposerPromptConfig,
+    #[serde(default)]
+    pub docker: Option<ProposerDockerConfig>,
 }
 
 impl Default for ProposerConfig {
     fn default() -> Self {
         Self {
             backend: default_proposer_backend(),
+            runtime_substrate: default_runtime_substrate(),
             execution_mode: default_execution_mode(),
             provider: default_policy_provider(),
             api_family: default_policy_api_family(),
+            base_url: None,
             command: Vec::new(),
             sandbox_mode: None,
             approval_policy: None,
             reasoning_effort: None,
             auth_mode: default_proposer_auth_mode(),
             copy_host_auth: false,
+            codex_home: None,
             api_key_env: None,
             timeout_seconds: default_timeout_seconds(),
             model: None,
             prompt: ProposerPromptConfig::default(),
+            docker: None,
         }
     }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProposerDockerConfig {
+    #[serde(default)]
+    pub image: Option<String>,
+    #[serde(default = "default_docker_workspace_mount_path")]
+    pub workspace_mount_path: String,
+    #[serde(default = "default_docker_network")]
+    pub network: String,
+    #[serde(default)]
+    pub extra_env: BTreeMap<String, String>,
+}
+
+impl Default for ProposerDockerConfig {
+    fn default() -> Self {
+        Self {
+            image: None,
+            workspace_mount_path: default_docker_workspace_mount_path(),
+            network: default_docker_network(),
+            extra_env: BTreeMap::new(),
+        }
+    }
+}
+
+/// Proposer models allowed when using ChatGPT subscription auth (`auth_mode = chatgpt`).
+pub const CHATGPT_PROPOSER_MODELS: &[&str] = &[
+    "gpt-5.4-mini",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.5",
+];
+
+pub fn proposer_auth_mode_normalized(auth_mode: &str) -> String {
+    let normalized = normalize_enum_value(auth_mode);
+    if normalized == "host" {
+        "chatgpt".to_string()
+    } else {
+        normalized
+    }
+}
+
+pub fn proposer_uses_chatgpt_auth(auth_mode: &str) -> bool {
+    proposer_auth_mode_normalized(auth_mode) == "chatgpt"
+}
+
+/// Resolved proposer credential path for Codex app-server launch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProposerAuthLaunchMode {
+    ApiKey,
+    Chatgpt,
+}
+
+pub fn resolve_proposer_auth_launch_mode(
+    proposer: &ProposerConfig,
+    api_key_present: bool,
+) -> Result<ProposerAuthLaunchMode> {
+    let auth_mode = proposer_auth_mode_normalized(&proposer.auth_mode);
+    match auth_mode.as_str() {
+        "api_key" => Ok(ProposerAuthLaunchMode::ApiKey),
+        "chatgpt" => Ok(ProposerAuthLaunchMode::Chatgpt),
+        "auto" => {
+            if api_key_present {
+                Ok(ProposerAuthLaunchMode::ApiKey)
+            } else if proposer.codex_home.is_some() {
+                Ok(ProposerAuthLaunchMode::Chatgpt)
+            } else {
+                Err(OptimizerError::Config(
+                    "proposer.auth_mode = \"auto\" did not resolve: export an API key \
+                     (proposer.api_key_env, default OPENAI_API_KEY) or set proposer.codex_home \
+                     for ChatGPT subscription auth"
+                        .to_string(),
+                ))
+            }
+        }
+        mode => Err(OptimizerError::Config(format!(
+            "unsupported proposer.auth_mode {mode:?}; expected auto, api_key, or chatgpt \
+             (legacy host maps to chatgpt)"
+        ))),
+    }
+}
+
+pub fn validate_chatgpt_proposer_model(model: &str) -> Result<()> {
+    let normalized = normalize_chatgpt_proposer_model_id(model);
+    if CHATGPT_PROPOSER_MODELS
+        .iter()
+        .any(|allowed| *allowed == normalized.as_str())
+    {
+        return Ok(());
+    }
+    Err(OptimizerError::Config(format!(
+        "proposer.model {model:?} is not allowed for proposer.auth_mode = \"chatgpt\"; \
+         allowed models: {}",
+        CHATGPT_PROPOSER_MODELS.join(", ")
+    )))
+}
+
+pub fn validate_chatgpt_proposer_config(proposer: &ProposerConfig) -> Result<()> {
+    let codex_home = proposer.codex_home.as_ref().ok_or_else(|| {
+        OptimizerError::Config(
+            "proposer.auth_mode = \"chatgpt\" requires proposer.codex_home pointing at the \
+             ChatGPT-authenticated Codex directory (for example ~/.codex after `codex auth login`)"
+                .to_string(),
+        )
+    })?;
+    if codex_home.as_os_str().is_empty() {
+        return Err(OptimizerError::Config(
+            "proposer.codex_home must be non-empty when proposer.auth_mode = \"chatgpt\""
+                .to_string(),
+        ));
+    }
+    let source = fs::canonicalize(codex_home).map_err(|source| {
+        OptimizerError::Config(format!(
+            "proposer.codex_home {codex_home:?} must exist when proposer.auth_mode = \"chatgpt\": \
+             {source}"
+        ))
+    })?;
+    if !source.is_dir() {
+        return Err(OptimizerError::Config(format!(
+            "proposer.codex_home {source:?} must be a directory when proposer.auth_mode = \"chatgpt\""
+        )));
+    }
+    let auth_json = source.join("auth.json");
+    if !auth_json.is_file() {
+        return Err(OptimizerError::Config(format!(
+            "proposer.codex_home {source:?} is missing auth.json; run `codex auth login` or fix \
+             proposer.codex_home"
+        )));
+    }
+    let model = proposer
+        .model
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            OptimizerError::Config(
+                "proposer.auth_mode = \"chatgpt\" requires proposer.model to be set".to_string(),
+            )
+        })?;
+    validate_chatgpt_proposer_model(model)
+}
+
+pub fn resolve_chatgpt_codex_home_source(proposer: &ProposerConfig) -> Result<PathBuf> {
+    validate_chatgpt_proposer_config(proposer)?;
+    let Some(codex_home) = proposer.codex_home.as_ref() else {
+        return Err(OptimizerError::Config(
+            "proposer.auth_mode = \"chatgpt\" requires proposer.codex_home".to_string(),
+        ));
+    };
+    fs::canonicalize(codex_home).map_err(|source| OptimizerError::io(codex_home, source))
+}
+
+fn validate_proposer_auth_config(proposer: &ProposerConfig) -> Result<()> {
+    let auth_mode = proposer_auth_mode_normalized(&proposer.auth_mode);
+    match auth_mode.as_str() {
+        "auto" | "api_key" | "chatgpt" => {}
+        mode => {
+            return Err(OptimizerError::Config(format!(
+                "unsupported proposer.auth_mode {mode:?}; expected auto, api_key, or chatgpt \
+                 (legacy host maps to chatgpt)"
+            )));
+        }
+    }
+    if auth_mode == "api_key" && proposer.copy_host_auth {
+        return Err(OptimizerError::Config(
+            "proposer.auth_mode = \"api_key\" cannot be combined with proposer.copy_host_auth = true".to_string(),
+        ));
+    }
+    if proposer.copy_host_auth && auth_mode != "api_key" && proposer.codex_home.is_none() {
+        return Err(OptimizerError::Config(
+            "proposer.copy_host_auth requires proposer.codex_home".to_string(),
+        ));
+    }
+    if auth_mode == "chatgpt" {
+        if proposer.api_key_env.is_some() {
+            return Err(OptimizerError::Config(
+                "proposer.auth_mode = \"chatgpt\" cannot be combined with proposer.api_key_env"
+                    .to_string(),
+            ));
+        }
+        validate_chatgpt_proposer_config(proposer)?;
+    }
+    Ok(())
+}
+
+fn validate_proposer_runtime_substrate_config(proposer: &ProposerConfig) -> Result<()> {
+    match proposer.runtime_substrate {
+        ExecutionSubstrate::Local => Ok(()),
+        ExecutionSubstrate::Docker => validate_proposer_docker_config(proposer),
+    }
+}
+
+fn validate_proposer_docker_config(proposer: &ProposerConfig) -> Result<()> {
+    let docker = proposer.docker.as_ref().ok_or_else(|| {
+        OptimizerError::Config(
+            "proposer.runtime_substrate = \"docker\" requires [proposer.docker]".to_string(),
+        )
+    })?;
+    let image = docker.image.as_deref().unwrap_or_default().trim();
+    if image.is_empty() {
+        return Err(OptimizerError::Config(
+            "proposer.runtime_substrate = \"docker\" requires [proposer.docker].image; pin a tag or digest, do not rely on latest".to_string(),
+        ));
+    }
+    if image.ends_with(":latest") || image == "latest" {
+        return Err(OptimizerError::Config(
+            "proposer.docker.image must be pinned to a non-latest tag or digest".to_string(),
+        ));
+    }
+    if !docker.workspace_mount_path.starts_with('/') {
+        return Err(OptimizerError::Config(format!(
+            "proposer.docker.workspace_mount_path must be an absolute container path; got {:?}",
+            docker.workspace_mount_path
+        )));
+    }
+    if !matches!(docker.network.as_str(), "bridge" | "host" | "none") {
+        return Err(OptimizerError::Config(format!(
+            "proposer.docker.network must be bridge, host, or none; got {:?}",
+            docker.network
+        )));
+    }
+    if proposer_uses_chatgpt_auth(&proposer.auth_mode) {
+        return Err(OptimizerError::Config(
+            "proposer.runtime_substrate = \"docker\" does not support auth_mode = \"chatgpt\" in v1; use runtime_substrate = \"local\" or api_key proposer auth"
+                .to_string(),
+        ));
+    }
+    for (container_key, host_key) in &docker.extra_env {
+        if container_key.trim().is_empty() || host_key.trim().is_empty() {
+            return Err(OptimizerError::Config(
+                "proposer.docker.extra_env entries must map non-empty container env names to non-empty host env names".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn normalize_chatgpt_proposer_model_id(model: &str) -> String {
+    model.trim().to_ascii_lowercase()
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

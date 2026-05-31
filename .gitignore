@@ -7,5 +7,9 @@ __pycache__/
 .ruff_cache/
 .env
 
+# Editor / IDE — local workspace files only.
+*.code-workspace
+.cursor/
+
 # Local dev examples — not committed; keep scripts and runs on disk only.
 dev_examples/

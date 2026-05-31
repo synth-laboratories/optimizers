@@ -4,73 +4,34 @@ from typing import Any
 
 __version__: str
 
-
 class SynthOptimizerError(RuntimeError):
     error_code: str
 
-
 class ConfigError(SynthOptimizerError): ...
-
-
 class ContainerContractError(SynthOptimizerError): ...
-
-
 class ProposerError(SynthOptimizerError): ...
-
-
 class CacheMissError(SynthOptimizerError): ...
-
-
 class CacheFullError(SynthOptimizerError): ...
-
-
 class CacheCorruptError(SynthOptimizerError): ...
-
-
 class BudgetExceededError(SynthOptimizerError): ...
-
-
 class OptimizerDiskBudgetError(SynthOptimizerError): ...
-
-
 class CancelledError(SynthOptimizerError): ...
-
-
 class RunFailedError(SynthOptimizerError): ...
-
-
 class InvariantError(SynthOptimizerError): ...
-
-
 class EventCompareError(SynthOptimizerError): ...
-
-
 class StateTransitionError(SynthOptimizerError): ...
-
-
 class OptimizerIoError(SynthOptimizerError): ...
-
-
 class OptimizerJsonError(SynthOptimizerError): ...
-
-
 class OptimizerTomlDecodeError(SynthOptimizerError): ...
-
-
 class OptimizerHttpError(SynthOptimizerError): ...
-
-
 class OptimizerSqliteError(SynthOptimizerError): ...
-
 
 class GepaRun:
     config_path: str
 
     @staticmethod
     def from_toml(path: str) -> GepaRun: ...
-
     def execute(self) -> GepaRunResult: ...
-
 
 class GepaRunResult:
     best_candidate: dict[str, Any]
@@ -90,12 +51,9 @@ class GepaRunResult:
 
     def to_dict(self) -> dict[str, Any]: ...
 
-
 def events_replay(path: str) -> str: ...
-
-
 def events_compare(left: str, right: str) -> bool: ...
-
+def default_proposer_best_practices() -> str: ...
 
 # The standing HTTP service is the public worker/workspace surface. Queue
 # submission, claiming, run lifecycle control, and workspace status are driven

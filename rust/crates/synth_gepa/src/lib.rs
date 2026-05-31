@@ -14,23 +14,23 @@ use synth_optimizer_platform::limits::{
     RuntimeEffectAdmissionInput, RuntimeEffectAdmissionRecord, RuntimeEffectBudgetEstimate,
 };
 use synth_optimizer_platform::{
-    dataset_row_identity, normalize_event_feed, ArtifactPaths, ArtifactRef, CacheMode,
-    CacheProfileRecord, CandidateOverlay, CheckpointInput, CheckpointRecord,
-    ConfiguredGepaRunLimits, ContainerClient, ContainerContractSnapshotInput,
-    ContainerContractSnapshotRecord, DatasetResponse, DatasetRowsRequest, DatasetRowsResponse,
-    DatasetSnapshotInput, DatasetSnapshotRecord, DiskBudget, EvaluationCacheRecord,
-    EvaluationCacheRecordInput, EventStreamRecord, EventWriter, EvidenceFrame, FailurePayload,
-    GepaBatchSamplerConfig, GepaCandidateSelectorConfig, GepaObjectiveAcceptanceConfig,
-    GepaPipelineMode, GepaRunResult, LeverBundle, LeverKind, LeverManifest,
-    ManagedContainerProcess, MaterializationRecord, MaterializationRecordInput, ObjectiveScore,
-    ObjectiveSetRecord, ObjectiveSpec, OptimizerError, OptimizerJob, OptimizerJobKind,
-    OptimizerJobStatus, OptimizerRunState, OptimizerStateMachine, OptimizerTransition,
-    OptimizerTransitionTrigger, ParetoComparisonRecord, PlanLinkInput, PlanLinkRecord,
-    PromptCandidatePayload, PromptProgram, PromptProgramSnapshotInput, PromptProgramSnapshotRecord,
-    RequestCache, ResolvedRunConfigInput, ResolvedRunConfigRecord, Result, RetryPolicy,
-    RolloutMaterializationIdentity, RunRegistry, RunRegistryEntry, RuntimeEffectInput,
-    RuntimeEffectRecord, ScoreVectorRecord, SensorFrame, SensorScoreRecords, StopperStateInput,
-    StopperStateRecord, SynthOptimizerConfig, UsageLedgerInput, UsageLedgerRecord, WorkspaceStore,
+    normalize_event_feed, task_identity, ArtifactPaths, ArtifactRef, CacheMode, CacheProfileRecord,
+    CandidateOverlay, CheckpointInput, CheckpointRecord, ConfiguredGepaRunLimits, ContainerClient,
+    ContainerContractSnapshotInput, ContainerContractSnapshotRecord, DiskBudget,
+    EvaluationCacheRecord, EvaluationCacheRecordInput, EventStreamRecord, EventWriter,
+    EvidenceFrame, FailurePayload, GepaBatchSamplerConfig, GepaCandidateSelectorConfig,
+    GepaObjectiveAcceptanceConfig, GepaPipelineMode, GepaRunResult, LeverBundle, LeverKind,
+    LeverManifest, ManagedContainerProcess, MaterializationRecord, MaterializationRecordInput,
+    ObjectiveScore, ObjectiveSetRecord, ObjectiveSpec, OptimizerError, OptimizerJob,
+    OptimizerJobKind, OptimizerJobStatus, OptimizerRunState, OptimizerStateMachine,
+    OptimizerTransition, OptimizerTransitionTrigger, ParetoComparisonRecord, PlanLinkInput,
+    PlanLinkRecord, PromptCandidatePayload, PromptProgram, PromptProgramSnapshotInput,
+    PromptProgramSnapshotRecord, RequestCache, ResolvedRunConfigInput, ResolvedRunConfigRecord,
+    Result, RetryPolicy, RolloutMaterializationIdentity, RunRegistry, RunRegistryEntry,
+    RuntimeEffectInput, RuntimeEffectRecord, ScoreVectorRecord, SensorFrame, SensorScoreRecords,
+    StopperStateInput, StopperStateRecord, SynthOptimizerConfig, TasksetResponse,
+    TasksetSnapshotInput, TasksetSnapshotRecord, TasksetTasksRequest, TasksetTasksResponse,
+    UsageLedgerInput, UsageLedgerRecord, WorkspaceStore,
 };
 
 mod codex_app_server;
@@ -38,6 +38,10 @@ pub mod pipeline;
 pub mod planner;
 pub mod runtime;
 pub mod service;
+
+pub fn default_proposer_best_practices() -> &'static str {
+    include_str!("prompting_best_practices.md")
+}
 
 use pipeline::{GepaAsyncPipelinedPlan, GepaPipelineRuntimePlan};
 use planner::{
@@ -161,7 +165,7 @@ impl ProposedCandidate {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RolloutScore {
     pub example_id: String,
-    pub seed: i64,
+    pub task_id: String,
     pub reward: f64,
 }
 
@@ -206,7 +210,7 @@ struct ProposerCall<'a> {
     parent: &'a CandidateRecord,
     candidates: &'a [CandidateRecord],
     generation: usize,
-    seed_pool_rows: Value,
+    task_pool_rows: Value,
     paths: &'a ArtifactPaths,
 }
 
@@ -893,7 +897,7 @@ fn ensure_container_inputs(context: &mut GepaRunContext) -> Result<GepaContainer
         .ok_or_else(|| OptimizerError::Config("container.url is required".to_string()))?;
     let client = ContainerClient::new(container_url.clone())?;
     let metadata = client.verify_gepa_contract()?;
-    let gepa_contract = metadata.gepa_contract()?;
+    let gepa_contract = metadata.resolved_gepa_contract()?;
     context.workspace.record_container_contract_snapshot(
         &ContainerContractSnapshotRecord::from_input(ContainerContractSnapshotInput {
             run_id: &context.config.run.run_id,
@@ -975,120 +979,120 @@ fn ensure_container_inputs(context: &mut GepaRunContext) -> Result<GepaContainer
         }),
     )?;
 
-    let dataset_value = cached_call(
+    let taskset_value = cached_call(
         &mut context.cache,
-        &format!("{}:container.dataset", context.cache_namespace),
-        &json!({"url": container_url, "route": "/dataset"}),
+        &format!("{}:container.taskset", context.cache_namespace),
+        &json!({"url": container_url, "route": "/taskset"}),
         || {
-            let response = client.dataset_typed()?;
+            let response = client.taskset_typed()?;
             Ok(serde_json::to_value(response)?)
         },
     )?;
-    let dataset_response: DatasetResponse = serde_json::from_value(dataset_value.clone())?;
-    let dataset_id = dataset_response
-        .dataset_id
+    let taskset_response: TasksetResponse = serde_json::from_value(taskset_value.clone())?;
+    let taskset_id = taskset_response
+        .taskset_id
         .clone()
-        .unwrap_or_else(|| "container_dataset".to_string());
-    let seed_pool_seeds = effective_gepa_seed_pool_seeds(&context.config);
-    let pareto_eval_seeds = seed_pool_seeds
+        .unwrap_or_else(|| "container_taskset".to_string());
+    let task_pool_ids = effective_gepa_task_pool_ids(&context.config);
+    let pareto_eval_ids = task_pool_ids
         .get("pareto_eval")
         .cloned()
-        .unwrap_or_else(|| context.config.dataset.train_seeds.clone());
-    let minibatch_seeds = seed_pool_seeds
+        .unwrap_or_else(|| context.config.taskset.train_ids.clone());
+    let minibatch_ids = task_pool_ids
         .get("minibatch")
         .cloned()
-        .unwrap_or_else(|| pareto_eval_seeds.clone());
-    let reflection_seeds = seed_pool_seeds
+        .unwrap_or_else(|| pareto_eval_ids.clone());
+    let reflection_ids = task_pool_ids
         .get("reflection")
         .cloned()
-        .unwrap_or_else(|| pareto_eval_seeds.clone());
-    let validation_seeds = seed_pool_seeds
+        .unwrap_or_else(|| pareto_eval_ids.clone());
+    let validation_ids = task_pool_ids
         .get("validation")
         .cloned()
-        .unwrap_or_else(|| context.config.dataset.heldout_seeds.clone());
+        .unwrap_or_else(|| context.config.taskset.heldout_ids.clone());
     let train_response = load_rows(
         &client,
         &mut context.cache,
         &context.cache_namespace,
-        &context.config.dataset.train_split,
-        &pareto_eval_seeds,
-        Value::Object(context.config.dataset.filters.clone()),
+        &context.config.taskset.train_split,
+        &pareto_eval_ids,
+        Value::Object(context.config.taskset.filters.clone()),
     )?;
     let heldout_response = load_rows(
         &client,
         &mut context.cache,
         &context.cache_namespace,
-        &context.config.dataset.heldout_split,
-        &validation_seeds,
-        Value::Object(context.config.dataset.filters.clone()),
+        &context.config.taskset.heldout_split,
+        &validation_ids,
+        Value::Object(context.config.taskset.filters.clone()),
     )?;
-    let train_rows = train_response.rows.clone();
-    let heldout_rows = heldout_response.rows.clone();
-    let minibatch_rows = if minibatch_seeds == pareto_eval_seeds {
+    let train_rows = train_response.tasks.clone();
+    let heldout_rows = heldout_response.tasks.clone();
+    let minibatch_rows = if minibatch_ids == pareto_eval_ids {
         train_rows.clone()
     } else {
         load_rows(
             &client,
             &mut context.cache,
             &context.cache_namespace,
-            &context.config.dataset.train_split,
-            &minibatch_seeds,
-            Value::Object(context.config.dataset.filters.clone()),
+            &context.config.taskset.train_split,
+            &minibatch_ids,
+            Value::Object(context.config.taskset.filters.clone()),
         )?
-        .rows
+        .tasks
     };
-    let reflection_rows = if reflection_seeds == pareto_eval_seeds {
+    let reflection_rows = if reflection_ids == pareto_eval_ids {
         train_rows.clone()
-    } else if reflection_seeds == minibatch_seeds {
+    } else if reflection_ids == minibatch_ids {
         minibatch_rows.clone()
     } else {
         load_rows(
             &client,
             &mut context.cache,
             &context.cache_namespace,
-            &context.config.dataset.train_split,
-            &reflection_seeds,
-            Value::Object(context.config.dataset.filters.clone()),
+            &context.config.taskset.train_split,
+            &reflection_ids,
+            Value::Object(context.config.taskset.filters.clone()),
         )?
-        .rows
+        .tasks
     };
-    record_dataset_snapshot(
+    record_taskset_snapshot(
         &context.workspace,
-        DatasetSnapshotCall {
+        TasksetSnapshotCall {
             run_id: &context.config.run.run_id,
-            dataset_id: &dataset_id,
-            split: &context.config.dataset.train_split,
-            seeds: &pareto_eval_seeds,
-            filters: &Value::Object(context.config.dataset.filters.clone()),
+            taskset_id: &taskset_id,
+            split: &context.config.taskset.train_split,
+            task_ids: &pareto_eval_ids,
+            filters: &Value::Object(context.config.taskset.filters.clone()),
             response: &train_response,
-            dataset_metadata: &dataset_value,
+            taskset_metadata: &taskset_value,
         },
     )?;
-    record_dataset_snapshot(
+    record_taskset_snapshot(
         &context.workspace,
-        DatasetSnapshotCall {
+        TasksetSnapshotCall {
             run_id: &context.config.run.run_id,
-            dataset_id: &dataset_id,
-            split: &context.config.dataset.heldout_split,
-            seeds: &validation_seeds,
-            filters: &Value::Object(context.config.dataset.filters.clone()),
+            taskset_id: &taskset_id,
+            split: &context.config.taskset.heldout_split,
+            task_ids: &validation_ids,
+            filters: &Value::Object(context.config.taskset.filters.clone()),
             response: &heldout_response,
-            dataset_metadata: &dataset_value,
+            taskset_metadata: &taskset_value,
         },
     )?;
     context.events.emit(
-        "dataset.rows.loaded",
-        "Dataset rows loaded",
+        "taskset.tasks.loaded",
+        "Taskset tasks loaded",
         json!({
             "train_rows": train_rows.len(),
             "minibatch_rows": minibatch_rows.len(),
             "reflection_rows": reflection_rows.len(),
             "heldout_rows": heldout_rows.len(),
-            "seed_pools": {
-                "pareto_eval": pareto_eval_seeds,
-                "minibatch": minibatch_seeds,
-                "reflection": reflection_seeds,
-                "validation": validation_seeds,
+            "task_pools": {
+                "pareto_eval": pareto_eval_ids,
+                "minibatch": minibatch_ids,
+                "reflection": reflection_ids,
+                "validation": validation_ids,
             },
         }),
     )?;
@@ -1118,7 +1122,7 @@ fn ensure_container_inputs(context: &mut GepaRunContext) -> Result<GepaContainer
             &mut context.state_machine,
             OptimizerRunState::Ready,
             OptimizerTransitionTrigger::ContainerReady,
-            "Container, program, and dataset ready",
+            "Container, program, and taskset ready",
             json!({
                 "train_rows": train_rows.len(),
                 "minibatch_rows": minibatch_rows.len(),
@@ -2476,7 +2480,7 @@ fn schedule_async_proposer_job(
     if let Some(train_best_idx) = select_best_train_candidate(
         &state.candidates,
         &resources.objective_set,
-        &context.config.dataset.train_split,
+        &context.config.taskset.train_split,
         &resources.train_rows,
     )? {
         state.best_idx = Some(train_best_idx);
@@ -4561,8 +4565,8 @@ fn plan_rollout_runtime_batch_job_for_candidates(
                 "task_id": resources.rollout_task_id,
                 "candidate": overlay.candidate.to_value(),
                 "candidate_overlay": overlay,
-                "policy": context.config.policy,
-                "dataset_row": row,
+                "policy": rollout_policy_for_request(&context.config),
+                "task": row,
                 "metadata": {
                     "candidate_id": group.candidate.candidate_id,
                     "seed": seed,
@@ -4672,6 +4676,14 @@ fn rollout_submission_mode_for_request(config: &SynthOptimizerConfig) -> String 
         "sync".to_string()
     } else {
         mode
+    }
+}
+
+fn rollout_policy_for_request(config: &SynthOptimizerConfig) -> Value {
+    if config.policy.enabled {
+        json!(&config.policy)
+    } else {
+        Value::Null
     }
 }
 
@@ -5156,10 +5168,10 @@ fn consume_rollout_outcome(
     active.rollout_count += 1;
     active.usage.merge(&usage);
     active.cost_usd += cost_usd;
-    let seed = row.get("seed").and_then(Value::as_i64).unwrap_or(0);
+    let task_id = row_task_id(row);
     active.scores.push(RolloutScore {
         example_id,
-        seed,
+        task_id,
         reward,
     });
     active.sensor_frames.push(sensor_frame);
@@ -5269,10 +5281,10 @@ fn consume_group_rollout_outcome(
     candidate_eval.rollout_count += 1;
     candidate_eval.usage.merge(&usage);
     candidate_eval.cost_usd += cost_usd;
-    let seed = row.get("seed").and_then(Value::as_i64).unwrap_or(0);
+    let task_id = row_task_id(row);
     candidate_eval.scores.push(RolloutScore {
         example_id,
-        seed,
+        task_id,
         reward,
     });
     candidate_eval.sensor_frames.push(sensor_frame);
@@ -5293,7 +5305,7 @@ fn record_rollout_materialization_from_outcome(
     cache_key: &str,
     cache_hit: bool,
 ) -> Result<()> {
-    let seed = row.get("seed").and_then(Value::as_i64).unwrap_or(0);
+    let task_id = row_task_id(row);
     let overlay = CandidateOverlay {
         candidate: PromptCandidatePayload::from_map(candidate.payload.clone()),
         metadata: Map::new(),
@@ -5303,12 +5315,12 @@ fn record_rollout_materialization_from_outcome(
         "task_id": resources.rollout_task_id,
         "candidate": overlay.candidate.to_value(),
         "candidate_overlay": overlay,
-        "policy": context.config.policy,
-        "dataset_row": row,
-        "metadata": {
-            "candidate_id": candidate.candidate_id,
-            "seed": seed,
-        },
+        "policy": rollout_policy_for_request(&context.config),
+        "task": row,
+            "metadata": {
+                "candidate_id": candidate.candidate_id,
+                "task_id": task_id,
+            },
     });
     let objective_scores = serde_json::to_value(&sensor_frame.objective_scores)?;
     let materialization =
@@ -5337,10 +5349,9 @@ fn record_rollout_materialization_from_outcome(
             example: row,
             request: &request,
             example_id: &example_id,
-            seed,
+            task_id: &task_id,
             split: &sensor_frame.split,
             evaluation_stage: stage,
-            task_id: &resources.rollout_task_id,
             materialization: materialization.clone(),
             status: "materialized",
             platform_cache_key: Some(cache_key.to_string()),
@@ -6192,7 +6203,7 @@ fn finalize_candidate_minibatch(
     let parent_minibatch_reward = parent_minibatch_reward_for_rows(
         &state.candidates[parent_idx],
         &minibatch_rows,
-        &context.config.dataset.train_split,
+        &context.config.taskset.train_split,
     )?
     .ok_or_else(|| {
         OptimizerError::Invariant(format!(
@@ -6215,7 +6226,7 @@ fn finalize_candidate_minibatch(
         objective_set: &resources.objective_set,
         candidate: &state.candidates[candidate_idx],
         rows: &minibatch_rows,
-        split: &context.config.dataset.train_split,
+        split: &context.config.taskset.train_split,
         source_stages: &["candidate_minibatch"],
         evaluation_stage: "candidate_minibatch",
     })?;
@@ -6223,13 +6234,13 @@ fn finalize_candidate_minibatch(
         objective_set: &resources.objective_set,
         candidate: &state.candidates[parent_idx],
         rows: &minibatch_rows,
-        split: &context.config.dataset.train_split,
+        split: &context.config.taskset.train_split,
         source_stages: parent_minibatch_reference_source_stages(),
         evaluation_stage: "parent_minibatch_reference",
     })?;
     let minibatch_preference = compare_score_vectors(ScoreVectorPreferenceInput {
         objective_set: &resources.objective_set,
-        split: &context.config.dataset.train_split,
+        split: &context.config.taskset.train_split,
         evaluation_stage: "candidate_minibatch",
         challenger: &candidate_minibatch_vector,
         incumbent: &parent_minibatch_vector,
@@ -6435,7 +6446,7 @@ fn finalize_candidate_minibatch_group(
         let parent_minibatch_reward = parent_minibatch_reward_for_rows(
             &state.candidates[parent_idx],
             &minibatch_rows,
-            &context.config.dataset.train_split,
+            &context.config.taskset.train_split,
         )?
         .ok_or_else(|| {
             OptimizerError::Invariant(format!(
@@ -6458,7 +6469,7 @@ fn finalize_candidate_minibatch_group(
             objective_set: &resources.objective_set,
             candidate: &state.candidates[candidate_idx],
             rows: &minibatch_rows,
-            split: &context.config.dataset.train_split,
+            split: &context.config.taskset.train_split,
             source_stages: &["candidate_minibatch"],
             evaluation_stage: "candidate_minibatch",
         })?;
@@ -6466,13 +6477,13 @@ fn finalize_candidate_minibatch_group(
             objective_set: &resources.objective_set,
             candidate: &state.candidates[parent_idx],
             rows: &minibatch_rows,
-            split: &context.config.dataset.train_split,
+            split: &context.config.taskset.train_split,
             source_stages: parent_minibatch_reference_source_stages(),
             evaluation_stage: "parent_minibatch_reference",
         })?;
         let minibatch_preference = compare_score_vectors(ScoreVectorPreferenceInput {
             objective_set: &resources.objective_set,
-            split: &context.config.dataset.train_split,
+            split: &context.config.taskset.train_split,
             evaluation_stage: "candidate_minibatch",
             challenger: &candidate_minibatch_vector,
             incumbent: &parent_minibatch_vector,
@@ -6693,7 +6704,7 @@ fn finalize_candidate_full_train(
         objective_set: &resources.objective_set,
         candidate: &state.candidates[candidate_idx],
         rows: &resources.train_rows,
-        split: &context.config.dataset.train_split,
+        split: &context.config.taskset.train_split,
         source_stages: &["candidate_full_train"],
         evaluation_stage: "candidate_full_train",
     })?;
@@ -6701,13 +6712,13 @@ fn finalize_candidate_full_train(
         objective_set: &resources.objective_set,
         candidate: &state.candidates[best_idx],
         rows: &resources.train_rows,
-        split: &context.config.dataset.train_split,
+        split: &context.config.taskset.train_split,
         source_stages: &["seed_full_train", "candidate_full_train"],
         evaluation_stage: "best_full_train_reference",
     })?;
     let train_preference = compare_score_vectors(ScoreVectorPreferenceInput {
         objective_set: &resources.objective_set,
-        split: &context.config.dataset.train_split,
+        split: &context.config.taskset.train_split,
         evaluation_stage: "candidate_full_train",
         challenger: &candidate_train_vector,
         incumbent: &best_train_vector,
@@ -6856,7 +6867,7 @@ fn finalize_candidate_full_train_group(
             objective_set: &resources.objective_set,
             candidate: &state.candidates[candidate_idx],
             rows: &resources.train_rows,
-            split: &context.config.dataset.train_split,
+            split: &context.config.taskset.train_split,
             source_stages: &["candidate_full_train"],
             evaluation_stage: "candidate_full_train",
         })?;
@@ -6864,13 +6875,13 @@ fn finalize_candidate_full_train_group(
             objective_set: &resources.objective_set,
             candidate: &state.candidates[best_idx],
             rows: &resources.train_rows,
-            split: &context.config.dataset.train_split,
+            split: &context.config.taskset.train_split,
             source_stages: &["seed_full_train", "candidate_full_train"],
             evaluation_stage: "best_full_train_reference",
         })?;
         let train_preference = compare_score_vectors(ScoreVectorPreferenceInput {
             objective_set: &resources.objective_set,
-            split: &context.config.dataset.train_split,
+            split: &context.config.taskset.train_split,
             evaluation_stage: "candidate_full_train",
             challenger: &candidate_train_vector,
             incumbent: &best_train_vector,
@@ -7016,7 +7027,7 @@ fn advance_generation_start(
     if let Some(train_best_idx) = select_best_train_candidate(
         &state.candidates,
         &resources.objective_set,
-        &context.config.dataset.train_split,
+        &context.config.taskset.train_split,
         &resources.train_rows,
     )? {
         state.best_idx = Some(train_best_idx);
@@ -7133,7 +7144,7 @@ fn plan_proposer_runtime_job(
         "parent": parent,
         "candidates": state.candidates,
         "program": resources.program,
-        "seed_pool_rows": seed_pool_rows_value(
+        "task_pool_rows": task_pool_rows_value(
             &resources.train_rows,
             &resources.minibatch_rows,
             &resources.reflection_rows,
@@ -7335,7 +7346,7 @@ fn advance_proposer_waiting(
         if parent_minibatch_reward_for_rows(
             &proposal_parent,
             &minibatch_rows,
-            &context.config.dataset.train_split,
+            &context.config.taskset.train_split,
         )?
         .is_none()
         {
@@ -7762,9 +7773,9 @@ fn advance_heldout(
             candidates: &state.candidates,
             evaluated_indices: &heldout_indices,
             objective_set: &resources.objective_set,
-            heldout_split: &context.config.dataset.heldout_split,
+            heldout_split: &context.config.taskset.heldout_split,
             heldout_rows: &resources.heldout_rows,
-            train_split: &context.config.dataset.train_split,
+            train_split: &context.config.taskset.train_split,
             train_rows: &resources.train_rows,
             incumbent_idx: state.best_idx,
         })? {
@@ -9050,7 +9061,7 @@ fn execute_gepa_monolithic_with_options(
         if let Some(train_best_idx) = select_best_train_candidate(
             &candidates,
             &objective_set,
-            &config.dataset.train_split,
+            &config.taskset.train_split,
             &train_rows,
         )? {
             best_idx = train_best_idx;
@@ -9120,7 +9131,7 @@ fn execute_gepa_monolithic_with_options(
             parent: &parent,
             candidates: &candidates,
             generation,
-            seed_pool_rows: seed_pool_rows_value(
+            task_pool_rows: task_pool_rows_value(
                 &train_rows,
                 &minibatch_pool_rows,
                 &reflection_rows,
@@ -9312,7 +9323,7 @@ fn execute_gepa_monolithic_with_options(
             if parent_minibatch_reward_for_rows(
                 &proposal_parent,
                 &minibatch_rows,
-                &config.dataset.train_split,
+                &config.taskset.train_split,
             )?
             .is_none()
             {
@@ -9404,7 +9415,7 @@ fn execute_gepa_monolithic_with_options(
             let parent_minibatch_reward = parent_minibatch_reward_for_rows(
                 &proposal_parent,
                 &minibatch_rows,
-                &config.dataset.train_split,
+                &config.taskset.train_split,
             )?
             .ok_or_else(|| {
                 OptimizerError::Invariant(format!(
@@ -9650,7 +9661,7 @@ fn execute_gepa_monolithic_with_options(
                     objective_set: &objective_set,
                     candidate: &candidate,
                     rows: &minibatch_rows,
-                    split: &config.dataset.train_split,
+                    split: &config.taskset.train_split,
                     source_stages: &["candidate_minibatch"],
                     evaluation_stage: "candidate_minibatch",
                 })?;
@@ -9658,13 +9669,13 @@ fn execute_gepa_monolithic_with_options(
                 objective_set: &objective_set,
                 candidate: &proposal_parent,
                 rows: &minibatch_rows,
-                split: &config.dataset.train_split,
+                split: &config.taskset.train_split,
                 source_stages: parent_minibatch_reference_source_stages(),
                 evaluation_stage: "parent_minibatch_reference",
             })?;
             let minibatch_preference = compare_score_vectors(ScoreVectorPreferenceInput {
                 objective_set: &objective_set,
-                split: &config.dataset.train_split,
+                split: &config.taskset.train_split,
                 evaluation_stage: "candidate_minibatch",
                 challenger: &candidate_minibatch_vector,
                 incumbent: &parent_minibatch_vector,
@@ -9941,7 +9952,7 @@ fn execute_gepa_monolithic_with_options(
                 objective_set: &objective_set,
                 candidate: &candidate,
                 rows: &train_rows,
-                split: &config.dataset.train_split,
+                split: &config.taskset.train_split,
                 source_stages: &["candidate_full_train"],
                 evaluation_stage: "candidate_full_train",
             })?;
@@ -9949,13 +9960,13 @@ fn execute_gepa_monolithic_with_options(
                 objective_set: &objective_set,
                 candidate: &candidates[best_idx],
                 rows: &train_rows,
-                split: &config.dataset.train_split,
+                split: &config.taskset.train_split,
                 source_stages: &["seed_full_train", "candidate_full_train"],
                 evaluation_stage: "best_full_train_reference",
             })?;
             let train_preference = compare_score_vectors(ScoreVectorPreferenceInput {
                 objective_set: &objective_set,
-                split: &config.dataset.train_split,
+                split: &config.taskset.train_split,
                 evaluation_stage: "candidate_full_train",
                 challenger: &candidate_train_vector,
                 incumbent: &best_train_vector,
@@ -10364,9 +10375,9 @@ fn execute_gepa_monolithic_with_options(
             candidates: &candidates,
             evaluated_indices: &heldout_indices,
             objective_set: &objective_set,
-            heldout_split: &config.dataset.heldout_split,
+            heldout_split: &config.taskset.heldout_split,
             heldout_rows: &heldout_rows,
-            train_split: &config.dataset.train_split,
+            train_split: &config.taskset.train_split,
             train_rows: &train_rows,
             incumbent_idx: Some(best_idx),
         })?
@@ -10652,21 +10663,21 @@ fn load_rows(
     cache: &mut RequestCache,
     cache_namespace: &str,
     split: &str,
-    seeds: &[i64],
+    task_ids: &[String],
     filters: Value,
-) -> Result<DatasetRowsResponse> {
-    let request_model = DatasetRowsRequest::new(split, seeds, filters);
+) -> Result<TasksetTasksResponse> {
+    let request_model = TasksetTasksRequest::new(split, task_ids, filters);
     let request = serde_json::to_value(&request_model)?;
     let response = cached_call(
         cache,
-        &format!("{cache_namespace}:container.dataset_rows"),
+        &format!("{cache_namespace}:container.taskset_tasks"),
         &request,
         || {
-            let response = client.dataset_rows_typed(&request_model)?;
+            let response = client.taskset_tasks_typed(&request_model)?;
             Ok(serde_json::to_value(response)?)
         },
     )?;
-    let response: DatasetRowsResponse = serde_json::from_value(response)?;
+    let response: TasksetTasksResponse = serde_json::from_value(response)?;
     response.validate_for_request(&request_model)?;
     Ok(response)
 }
@@ -10725,7 +10736,7 @@ fn declared_objective_set(
                 continue;
             };
             if seen.insert(name.to_string()) {
-                objectives.push((name.to_string(), "dataset_rows.objective".to_string()));
+                objectives.push((name.to_string(), "tasks.objective".to_string()));
             }
         }
     }
@@ -11523,33 +11534,33 @@ fn objective_direction_multiplier(direction: &str) -> f64 {
 }
 
 fn row_example_id(row: &Value) -> Result<String> {
-    dataset_row_identity(row)
+    task_identity(row)
 }
 
-fn row_seed(row: &Value) -> i64 {
-    row.get("seed").and_then(Value::as_i64).unwrap_or(0)
+fn row_task_id(row: &Value) -> String {
+    task_identity(row).unwrap_or_else(|_| "unknown".to_string())
 }
 
-fn effective_gepa_seed_pool_seeds(config: &SynthOptimizerConfig) -> BTreeMap<String, Vec<i64>> {
-    let pareto_eval = if config.gepa.seed_pools.pareto_eval.is_empty() {
-        config.dataset.train_seeds.clone()
+fn effective_gepa_task_pool_ids(config: &SynthOptimizerConfig) -> BTreeMap<String, Vec<String>> {
+    let pareto_eval = if config.gepa.task_pools.pareto_eval.is_empty() {
+        config.taskset.train_ids.clone()
     } else {
-        config.gepa.seed_pools.pareto_eval.clone()
+        config.gepa.task_pools.pareto_eval.clone()
     };
-    let minibatch = if config.gepa.seed_pools.minibatch.is_empty() {
+    let minibatch = if config.gepa.task_pools.minibatch.is_empty() {
         pareto_eval.clone()
     } else {
-        config.gepa.seed_pools.minibatch.clone()
+        config.gepa.task_pools.minibatch.clone()
     };
-    let reflection = if config.gepa.seed_pools.reflection.is_empty() {
+    let reflection = if config.gepa.task_pools.reflection.is_empty() {
         pareto_eval.clone()
     } else {
-        config.gepa.seed_pools.reflection.clone()
+        config.gepa.task_pools.reflection.clone()
     };
-    let validation = if config.gepa.seed_pools.validation.is_empty() {
-        config.dataset.heldout_seeds.clone()
+    let validation = if config.gepa.task_pools.validation.is_empty() {
+        config.taskset.heldout_ids.clone()
     } else {
-        config.gepa.seed_pools.validation.clone()
+        config.gepa.task_pools.validation.clone()
     };
     BTreeMap::from([
         ("pareto_eval".to_string(), pareto_eval),
@@ -11559,32 +11570,32 @@ fn effective_gepa_seed_pool_seeds(config: &SynthOptimizerConfig) -> BTreeMap<Str
     ])
 }
 
-fn seed_pool_rows_value(
+fn task_pool_rows_value(
     pareto_eval_rows: &[Value],
     minibatch_rows: &[Value],
     reflection_rows: &[Value],
     validation_rows: &[Value],
 ) -> Value {
     json!({
-        "schema_version": "gepa_seed_pools.v1",
+        "schema_version": "gepa_task_pools.v1",
         "pareto_eval": {
             "row_count": pareto_eval_rows.len(),
-            "seeds": pareto_eval_rows.iter().map(row_seed).collect::<Vec<_>>(),
+            "task_ids": pareto_eval_rows.iter().map(row_task_id).collect::<Vec<_>>(),
             "rows": pareto_eval_rows,
         },
         "minibatch": {
             "row_count": minibatch_rows.len(),
-            "seeds": minibatch_rows.iter().map(row_seed).collect::<Vec<_>>(),
+            "task_ids": minibatch_rows.iter().map(row_task_id).collect::<Vec<_>>(),
             "rows": minibatch_rows,
         },
         "reflection": {
             "row_count": reflection_rows.len(),
-            "seeds": reflection_rows.iter().map(row_seed).collect::<Vec<_>>(),
+            "task_ids": reflection_rows.iter().map(row_task_id).collect::<Vec<_>>(),
             "rows": reflection_rows,
         },
         "validation": {
             "row_count": validation_rows.len(),
-            "seeds": validation_rows.iter().map(row_seed).collect::<Vec<_>>(),
+            "task_ids": validation_rows.iter().map(row_task_id).collect::<Vec<_>>(),
             "rows": validation_rows,
         },
     })
@@ -12396,7 +12407,7 @@ fn frontier_snapshot_value(
             ),
             None => (Vec::new(), Vec::new()),
         };
-    let train_seeds = train_rows.iter().map(row_seed).collect::<BTreeSet<_>>();
+    let train_task_ids = train_rows.iter().map(row_task_id).collect::<BTreeSet<_>>();
     let train_example_ids = train_rows
         .iter()
         .map(row_example_id)
@@ -12408,19 +12419,19 @@ fn frontier_snapshot_value(
     let best_solved_examples = best_candidate
         .map(|candidate| solved_examples(&candidate.train_scores))
         .unwrap_or_default();
-    let best_seed_count = best_candidate
+    let best_task_count = best_candidate
         .map(|candidate| {
             candidate
                 .train_scores
                 .iter()
                 .filter(|score| score_is_solved(score.reward))
-                .map(|score| score.seed)
+                .map(|score| score.task_id.clone())
                 .collect::<BTreeSet<_>>()
                 .len()
         })
         .unwrap_or(0);
 
-    let mut covered_frontier_seeds = BTreeSet::new();
+    let mut covered_frontier_task_ids = BTreeSet::new();
     let mut covered_frontier_examples = BTreeSet::new();
     let mut member_rows = Vec::new();
     for member in &frontier {
@@ -12430,23 +12441,23 @@ fn frontier_snapshot_value(
         else {
             continue;
         };
-        let evaluated_seed_set = candidate
+        let evaluated_task_id_set = candidate
             .train_scores
             .iter()
-            .map(|score| score.seed)
+            .map(|score| score.task_id.clone())
             .collect::<BTreeSet<_>>();
-        let solved_seed_set = candidate_solved_seeds(&candidate.train_scores);
+        let solved_task_id_set = candidate_solved_task_ids(&candidate.train_scores);
         let example_scores = scores_by_example(&candidate.train_scores);
         let solved_example_scores = solved_examples(&candidate.train_scores);
-        let covered_seeds = train_seeds
+        let covered_task_ids = train_task_ids
             .iter()
-            .copied()
-            .filter(|seed| solved_seed_set.contains(seed))
+            .filter(|task_id| solved_task_id_set.contains(*task_id))
+            .cloned()
             .collect::<Vec<_>>();
-        let missing_seeds = train_seeds
+        let missing_task_ids = train_task_ids
             .iter()
-            .copied()
-            .filter(|seed| !solved_seed_set.contains(seed))
+            .filter(|task_id| !solved_task_id_set.contains(*task_id))
+            .cloned()
             .collect::<Vec<_>>();
         let covered_examples = train_example_ids
             .iter()
@@ -12463,7 +12474,7 @@ fn frontier_snapshot_value(
             .filter(|example_id| example_scores.contains_key(*example_id))
             .cloned()
             .collect::<Vec<_>>();
-        covered_frontier_seeds.extend(covered_seeds.iter().copied());
+        covered_frontier_task_ids.extend(covered_task_ids.iter().cloned());
         covered_frontier_examples.extend(covered_examples.iter().cloned());
 
         let mut wins_vs_best = 0usize;
@@ -12492,15 +12503,15 @@ fn frontier_snapshot_value(
             "status": candidate.status.clone(),
             "train_reward": candidate.train_reward,
             "heldout_reward": candidate.heldout_reward,
-            "covered_seed_count": covered_seeds.len(),
-            "missing_seed_count": missing_seeds.len(),
-            "covered_seeds": covered_seeds,
-            "missing_seeds": missing_seeds,
+            "covered_task_id_count": covered_task_ids.len(),
+            "missing_task_id_count": missing_task_ids.len(),
+            "covered_task_ids": covered_task_ids,
+            "missing_task_ids": missing_task_ids,
             "covered_example_count": covered_examples.len(),
             "missing_example_count": missing_examples.len(),
             "covered_examples": covered_examples,
             "missing_examples": missing_examples,
-            "evaluated_seed_count": evaluated_seed_set.len(),
+            "evaluated_task_id_count": evaluated_task_id_set.len(),
             "evaluated_example_count": evaluated_examples.len(),
             "coverage_semantics": "solved_reward_positive",
             "wins_vs_best": wins_vs_best,
@@ -12530,14 +12541,14 @@ fn frontier_snapshot_value(
         "frontier_added_candidate_ids": frontier_added_candidate_ids,
         "frontier_removed_candidate_ids": frontier_removed_candidate_ids,
         "train_row_count": train_rows.len(),
-        "train_seed_count": train_seeds.len(),
-        "train_seeds": train_seeds.iter().copied().collect::<Vec<_>>(),
-        "covered_train_seed_count": covered_frontier_seeds.len(),
-        "covered_train_seed_percent": coverage_percent(covered_frontier_seeds.len(), train_seeds.len()),
-        "covered_train_seeds": covered_frontier_seeds.iter().copied().collect::<Vec<_>>(),
+        "train_task_id_count": train_task_ids.len(),
+        "train_task_ids": train_task_ids.iter().cloned().collect::<Vec<_>>(),
+        "covered_train_task_id_count": covered_frontier_task_ids.len(),
+        "covered_train_task_id_percent": coverage_percent(covered_frontier_task_ids.len(), train_task_ids.len()),
+        "covered_train_task_ids": covered_frontier_task_ids.iter().cloned().collect::<Vec<_>>(),
         "covered_train_example_count": covered_frontier_examples.len(),
         "covered_train_example_percent": coverage_percent(covered_frontier_examples.len(), train_example_ids.len()),
-        "best_candidate_seed_coverage_percent": coverage_percent(best_seed_count, train_seeds.len()),
+        "best_candidate_task_id_coverage_percent": coverage_percent(best_task_count, train_task_ids.len()),
         "best_candidate_example_count": best_solved_examples.len(),
         "best_candidate_example_coverage_percent": coverage_percent(best_solved_examples.len(), train_example_ids.len()),
         "coverage_semantics": "solved_reward_positive",
@@ -12545,12 +12556,12 @@ fn frontier_snapshot_value(
         "members": member_rows,
         "coverage": {
             "train_row_count": train_rows.len(),
-            "train_seed_count": train_seeds.len(),
+            "train_task_id_count": train_task_ids.len(),
             "train_example_count": train_example_ids.len(),
-            "covered_train_seed_count": covered_frontier_seeds.len(),
-            "covered_train_seed_percent": coverage_percent(covered_frontier_seeds.len(), train_seeds.len()),
-            "best_candidate_seed_count": best_seed_count,
-            "best_candidate_seed_coverage_percent": coverage_percent(best_seed_count, train_seeds.len()),
+            "covered_train_task_id_count": covered_frontier_task_ids.len(),
+            "covered_train_task_id_percent": coverage_percent(covered_frontier_task_ids.len(), train_task_ids.len()),
+            "best_candidate_task_id_count": best_task_count,
+            "best_candidate_task_id_coverage_percent": coverage_percent(best_task_count, train_task_ids.len()),
             "best_candidate_example_count": best_solved_examples.len(),
             "best_candidate_example_coverage_percent": coverage_percent(best_solved_examples.len(), train_example_ids.len()),
             "covered_train_example_count": covered_frontier_examples.len(),
@@ -12564,11 +12575,11 @@ fn score_is_solved(reward: f64) -> bool {
     reward > 0.0
 }
 
-fn candidate_solved_seeds(scores: &[RolloutScore]) -> BTreeSet<i64> {
+fn candidate_solved_task_ids(scores: &[RolloutScore]) -> BTreeSet<String> {
     scores
         .iter()
         .filter(|score| score_is_solved(score.reward))
-        .map(|score| score.seed)
+        .map(|score| score.task_id.clone())
         .collect()
 }
 
@@ -13455,31 +13466,31 @@ fn record_initial_platform_snapshots(
     Ok(())
 }
 
-struct DatasetSnapshotCall<'a> {
+struct TasksetSnapshotCall<'a> {
     run_id: &'a str,
-    dataset_id: &'a str,
+    taskset_id: &'a str,
     split: &'a str,
-    seeds: &'a [i64],
+    task_ids: &'a [String],
     filters: &'a Value,
-    response: &'a DatasetRowsResponse,
-    dataset_metadata: &'a Value,
+    response: &'a TasksetTasksResponse,
+    taskset_metadata: &'a Value,
 }
 
-fn record_dataset_snapshot(
+fn record_taskset_snapshot(
     workspace: &WorkspaceStore,
-    call: DatasetSnapshotCall<'_>,
+    call: TasksetSnapshotCall<'_>,
 ) -> Result<()> {
     let mut metadata = Map::new();
-    metadata.insert("source".to_string(), json!("container.dataset_rows"));
-    workspace.record_dataset_snapshot(&DatasetSnapshotRecord::from_input(DatasetSnapshotInput {
+    metadata.insert("source".to_string(), json!("container.taskset_tasks"));
+    workspace.record_taskset_snapshot(&TasksetSnapshotRecord::from_input(TasksetSnapshotInput {
         run_id: call.run_id,
-        dataset_id: call.dataset_id,
+        taskset_id: call.taskset_id,
         split: call.split,
-        seeds: call.seeds,
+        task_ids: call.task_ids,
         filters: call.filters,
-        rows: &call.response.rows,
-        dataset_metadata: call.dataset_metadata.clone(),
-        rows_metadata: Value::Object(call.response.metadata.clone()),
+        tasks: &call.response.tasks,
+        taskset_metadata: call.taskset_metadata.clone(),
+        tasks_metadata: Value::Object(call.response.metadata.clone()),
         metadata,
     }))
 }
@@ -13997,7 +14008,7 @@ fn evaluate_candidate(call: EvaluationCall<'_>) -> Result<CandidateEvaluation> {
     let mut sensor_frames = Vec::new();
     for row in call.rows {
         check_cancelled(call.cancellation)?;
-        let seed = row.get("seed").and_then(Value::as_i64).unwrap_or(0);
+        let task_id = row_task_id(row);
         let overlay = CandidateOverlay {
             candidate: PromptCandidatePayload::from_map(call.candidate.payload.clone()),
             metadata: Map::new(),
@@ -14005,12 +14016,12 @@ fn evaluate_candidate(call: EvaluationCall<'_>) -> Result<CandidateEvaluation> {
         let request = json!({
             "submission_mode": rollout_submission_mode_for_request(call.config),
             "task_id": call.task_id,
-            "seed": seed,
+            "task_id": task_id,
             "candidate_id": call.candidate.candidate_id,
             "candidate": overlay.candidate.to_value(),
             "candidate_overlay": overlay,
-            "policy": call.config.policy,
-            "dataset_row": row,
+            "policy": rollout_policy_for_request(call.config),
+            "task": row,
         });
         let mut cache_metadata = Map::new();
         cache_metadata.insert(
@@ -14132,10 +14143,9 @@ fn evaluate_candidate(call: EvaluationCall<'_>) -> Result<CandidateEvaluation> {
                 example: row,
                 request: &request,
                 example_id: &example_id,
-                seed,
+                task_id: &task_id,
                 split: &sensor_frame.split,
                 evaluation_stage: call.stage,
-                task_id: call.task_id,
                 materialization: materialization.clone(),
                 status: "materialized",
                 platform_cache_key: platform_cache_key.clone(),
@@ -14174,7 +14184,7 @@ fn evaluate_candidate(call: EvaluationCall<'_>) -> Result<CandidateEvaluation> {
         )?;
         scores.push(RolloutScore {
             example_id,
-            seed,
+            task_id,
             reward,
         });
         sensor_frames.push(sensor_frame);
@@ -14211,14 +14221,14 @@ fn propose_candidates(call: ProposerCall<'_>) -> Result<ProposerOutcome> {
         "parent": call.parent,
         "candidates": call.candidates,
         "program": call.program,
-        "seed_pool_rows": call.seed_pool_rows,
+        "task_pool_rows": call.task_pool_rows,
         "workspace_root": call.paths.run_dir,
         "run_artifact_dir": call.paths.run_dir,
         "proposal_artifact_dir": workspace_dir,
         "lever_manifest": LeverManifest::from_prompt_program(call.program),
         "frontier_summary": proposer_frontier_summary(
             call.candidates,
-            &call.seed_pool_rows
+            &call.task_pool_rows
                 .get("pareto_eval")
                 .and_then(|value| value.get("rows"))
                 .and_then(Value::as_array)
@@ -14320,7 +14330,7 @@ fn run_proposer(
     parent: &CandidateRecord,
     candidates: &[CandidateRecord],
     generation: usize,
-    seed_pool_rows: Value,
+    task_pool_rows: Value,
     workspace_dir: std::path::PathBuf,
 ) -> Result<Value> {
     match config.proposer.backend.as_str() {
@@ -14331,7 +14341,7 @@ fn run_proposer(
                 parent,
                 candidates,
                 generation,
-                seed_pool_rows,
+                task_pool_rows,
                 workspace_dir,
             })
             .map_err(|error| {

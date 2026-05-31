@@ -5,3 +5,7 @@ __pycache__/
 *.pyc
 *.abi3.so
 .ruff_cache/
+.env
+
+# Local dev examples — not committed; keep scripts and runs on disk only.
+dev_examples/

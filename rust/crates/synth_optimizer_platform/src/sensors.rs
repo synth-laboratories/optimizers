@@ -4,8 +4,8 @@ use sha2::{Digest, Sha256};
 
 use crate::artifacts::ArtifactRef;
 use crate::cache::stable_json;
-use crate::container_contract::{dataset_row_identity, RolloutResponse};
-use crate::error::Result;
+use crate::container_contract::{task_identity, RolloutResponse};
+use crate::error::{OptimizerError, Result};
 use crate::failures::{FailurePayload, OptimizerFailureType};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -37,7 +37,7 @@ pub struct SensorFrame {
     #[serde(default)]
     pub rollout_id: Option<String>,
     pub example_id: String,
-    pub seed: i64,
+    pub task_id: String,
     pub split: String,
     pub evaluation_stage: String,
     pub reward: f64,
@@ -69,19 +69,12 @@ impl SensorFrame {
     ) -> Result<Self> {
         let rollout_response = RolloutResponse::from_value(response.clone())?;
         rollout_response.validate_for_gepa()?;
-        let example_id = dataset_row_identity(row)?;
-        let seed = row
-            .get("seed")
-            .or_else(|| response.get("seed"))
-            .and_then(Value::as_i64)
-            .unwrap_or(0);
+        let task_id = task_identity(row)?;
+        let example_id = task_id.clone();
         let split = row
             .get("split")
             .or_else(|| row.get("example").and_then(|example| example.get("split")))
-            .or_else(|| {
-                row.get("dataset_row")
-                    .and_then(|dataset_row| dataset_row.get("split"))
-            })
+            .or_else(|| row.get("task").and_then(|task| task.get("split")))
             .and_then(Value::as_str)
             .unwrap_or("unknown")
             .to_string();
@@ -89,7 +82,7 @@ impl SensorFrame {
         let status = rollout_response.status.clone();
         let success_status = rollout_response.success_status.clone();
         let rollout_id = rollout_response.rollout_id.clone();
-        let sensor_frame_id = sensor_frame_id(candidate_id, evaluation_stage, &example_id, seed);
+        let sensor_frame_id = sensor_frame_id(candidate_id, evaluation_stage, &task_id);
         let mut metadata = Map::new();
         if let Some(details) = rollout_response
             .reward_info
@@ -124,19 +117,14 @@ impl SensorFrame {
                 .with_detail("status", Value::String(status.clone())),
             )
         };
-        Ok(Self {
-            schema_version: "sensor_frame.v1".to_string(),
-            sensor_frame_id,
-            candidate_id: candidate_id.to_string(),
-            rollout_id,
-            example_id,
-            seed,
-            split,
-            evaluation_stage: evaluation_stage.to_string(),
-            reward,
-            status,
-            success_status,
-            objective_scores: vec![ObjectiveScore {
+        let objective_scores = if let Some(raw_scores) = response.get("objective_scores") {
+            serde_json::from_value::<Vec<ObjectiveScore>>(raw_scores.clone()).map_err(|source| {
+                OptimizerError::Container(format!(
+                    "rollout response objective_scores must be a list of objective score objects: {source}"
+                ))
+            })?
+        } else {
+            vec![ObjectiveScore {
                 objective,
                 value: reward,
                 source: "container.reward_info".to_string(),
@@ -148,7 +136,21 @@ impl SensorFrame {
                     .and_then(Value::as_str)
                     .map(str::to_string),
                 metadata: Map::new(),
-            }],
+            }]
+        };
+        Ok(Self {
+            schema_version: "sensor_frame.v1".to_string(),
+            sensor_frame_id,
+            candidate_id: candidate_id.to_string(),
+            rollout_id,
+            example_id,
+            task_id,
+            split,
+            evaluation_stage: evaluation_stage.to_string(),
+            reward,
+            status,
+            success_status,
+            objective_scores,
             usage: if rollout_response.usage.is_empty() {
                 json!({})
             } else {
@@ -163,17 +165,11 @@ impl SensorFrame {
     }
 }
 
-fn sensor_frame_id(
-    candidate_id: &str,
-    evaluation_stage: &str,
-    example_id: &str,
-    seed: i64,
-) -> String {
+fn sensor_frame_id(candidate_id: &str, evaluation_stage: &str, task_id: &str) -> String {
     let mut digest = Sha256::new();
     digest.update(candidate_id.as_bytes());
     digest.update(evaluation_stage.as_bytes());
-    digest.update(example_id.as_bytes());
-    digest.update(seed.to_string().as_bytes());
+    digest.update(task_id.as_bytes());
     let hex = format!("{:x}", digest.finalize());
     format!("sensor_{}", &hex[..12])
 }

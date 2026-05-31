@@ -549,8 +549,8 @@ impl<'a> GepaRuntimeExecutor<'a> {
                 let parent: CandidateRecord = required_request_value(&request, "parent")?;
                 let candidates: Vec<CandidateRecord> =
                     required_request_value(&request, "candidates")?;
-                let seed_pool_rows = request
-                    .get("seed_pool_rows")
+                let task_pool_rows = request
+                    .get("task_pool_rows")
                     .cloned()
                     .unwrap_or_else(|| json!({}));
                 run_proposer(
@@ -559,7 +559,7 @@ impl<'a> GepaRuntimeExecutor<'a> {
                     &parent,
                     &candidates,
                     generation,
-                    seed_pool_rows,
+                    task_pool_rows,
                     workspace_dir.clone(),
                 )
             },

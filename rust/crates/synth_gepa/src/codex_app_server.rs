@@ -22,7 +22,6 @@ const CONTAINER_SENSOR_ADAPTER_VERSION: &str = "v1";
 const GEPA_ADAPTER_SOURCE: &str = "https://gepa-ai.github.io/gepa/guides/adapters/";
 const GEPA_ALGORITHM_ID: &str = "synth_gepa.v1";
 const GEPA_WORKSPACE_PROPOSAL_SCHEMA_VERSION: &str = "gepa_workspace_proposal_v3";
-const PROMPTING_BEST_PRACTICES: &str = include_str!("prompting_best_practices.md");
 
 pub(crate) struct CodexProposerInput<'a> {
     pub config: &'a SynthOptimizerConfig,
@@ -30,7 +29,7 @@ pub(crate) struct CodexProposerInput<'a> {
     pub parent: &'a CandidateRecord,
     pub candidates: &'a [CandidateRecord],
     pub generation: usize,
-    pub seed_pool_rows: Value,
+    pub task_pool_rows: Value,
     pub workspace_dir: PathBuf,
 }
 
@@ -87,7 +86,8 @@ fn run_session(
         ))
     })?;
 
-    let turn_id = client.send_request("turn/start", turn_start_params(input, model, &thread_id))?;
+    let turn_id =
+        client.send_request("turn/start", turn_start_params(input, model, &thread_id)?)?;
     let turn_id = client.wait_for_turn_started(turn_id, Duration::from_secs(60))?;
     let final_turn = client.wait_for_turn(&turn_id, timeout)?;
     ensure_turn_completed(&final_turn)?;
@@ -130,9 +130,10 @@ fn materialize_workspace(input: &CodexProposerInput<'_>) -> Result<()> {
         &input.workspace_dir.join("README.md"),
         &workspace_readme(input),
     )?;
+    let prompting_best_practices = resolved_prompting_best_practices(input)?;
     write_text(
         &input.workspace_dir.join("prompting_best_practices.md"),
-        PROMPTING_BEST_PRACTICES,
+        &prompting_best_practices,
     )?;
     write_text(
         &proposal_dir.join("PROPOSAL_SCHEMA.md"),
@@ -155,7 +156,7 @@ fn materialize_workspace(input: &CodexProposerInput<'_>) -> Result<()> {
         }),
     )?;
     let parent_payload = json!(&input.parent.payload);
-    let proposal_request = proposal_request(input);
+    let proposal_request = proposal_request(input, &prompting_best_practices);
     let candidates = candidates_read_model(input);
     let candidate_deltas = candidate_deltas_read_model(input);
     let rollouts = rollouts_read_model(input);
@@ -178,7 +179,7 @@ fn materialize_workspace(input: &CodexProposerInput<'_>) -> Result<()> {
     let candidate_selector = candidate_selector_read_model(input);
     let batch_sampler = batch_sampler_read_model(input);
     let acceptance = acceptance_read_model(input);
-    let seed_pools = seed_pools_read_model(input);
+    let task_pools = task_pools_read_model(input);
     let algorithm_read_model = json!({
         "schema_version": "gepa_algorithm_read_model_v1",
         "generation": input.generation,
@@ -188,7 +189,7 @@ fn materialize_workspace(input: &CodexProposerInput<'_>) -> Result<()> {
         "candidate_selector": candidate_selector,
         "batch_sampler": batch_sampler,
         "acceptance": acceptance.clone(),
-        "seed_pools": seed_pools,
+        "task_pools": task_pools,
         "reflection_examples": reflection_examples_read_model(input),
         "parent_payload": parent_payload,
         "candidates": candidates,
@@ -219,7 +220,7 @@ fn materialize_workspace(input: &CodexProposerInput<'_>) -> Result<()> {
             "proposals_per_round": input.config.gepa.proposals_per_generation,
             "parent_candidate_id": input.parent.candidate_id,
             "acceptance": acceptance,
-            "seed_pool_counts": seed_pool_counts(input),
+            "task_pool_counts": task_pool_counts(input),
         }),
     )?;
     write_json(
@@ -284,8 +285,8 @@ fn materialize_workspace(input: &CodexProposerInput<'_>) -> Result<()> {
     )?;
     write_json(&state_dir.join("links.json"), &links_read_model(input))?;
     write_json(
-        &state_dir.join("seed_pools.json"),
-        &seed_pools_read_model(input),
+        &state_dir.join("task_pools.json"),
+        &task_pools_read_model(input),
     )?;
     write_json(
         &state_dir.join("algorithm_read_model.json"),
@@ -300,10 +301,21 @@ fn materialize_workspace(input: &CodexProposerInput<'_>) -> Result<()> {
     write_json(&state_dir.join("proposal_request.json"), &proposal_request)?;
     write_json(
         &state_dir.join("reflector_input.json"),
-        &reflector_input_read_model(input),
+        &reflector_input_read_model(input, &prompting_best_practices),
     )?;
     write_workspace_pack_manifest(&input.workspace_dir)?;
     Ok(())
+}
+
+fn resolved_prompting_best_practices(input: &CodexProposerInput<'_>) -> Result<String> {
+    let prompt = &input.config.proposer.prompt;
+    if let Some(text) = prompt.best_practices.as_deref() {
+        return Ok(text.to_string());
+    }
+    if let Some(path) = &prompt.best_practices_path {
+        return fs::read_to_string(path).map_err(|source| OptimizerError::io(path, source));
+    }
+    Ok(crate::default_proposer_best_practices().to_string())
 }
 
 fn write_workspace_pack_manifest(workspace_dir: &Path) -> Result<()> {
@@ -427,7 +439,7 @@ Read:
 12. `state/candidate_deltas.json` for payload differences from the selected parent.
 13. `state/rollouts.json` and `state/scores.json` for per-example rollouts and score summaries. Sensor-backed rows in `state/rollouts.json` include summaries, outcomes, expected outputs, predictions, text, rationale, and trace refs.
 14. `state/evidence_frames.json`, `state/reflective_frames.json`, and `state/links.json` for durable nested rollout evidence. `state/reflective_frames.json` is an object; inspect `.frames[]`.
-15. `state/seed_pools.json` for pareto-eval, minibatch, reflection, and validation row pools.
+15. `state/task_pools.json` for pareto-eval, minibatch, reflection, and validation row pools.
 16. `state/algorithm_read_model.json` for the complete GEPA read model.
 17. `state/pareto_front.json`, `state/gepa_sidecar.json`, and `state/gepa_summary.json` for GEPA-specific mirrors.
 18. `state/parent_payload.json` and `state/reflector_input.json` for the parent prompt and sampled wins/losses.
@@ -480,7 +492,7 @@ Write `proposal/manifest.json` as strict JSON using this schema:
       "state/scores.json",
       "state/evidence_frames.json",
       "state/reflective_frames.json",
-      "state/seed_pools.json",
+      "state/task_pools.json",
       "state/links.json"
     ],
     "candidate_comparison": "Short comparison of parent, Pareto members, and recent candidates.",
@@ -535,7 +547,7 @@ Rules:
     )
 }
 
-fn proposal_request(input: &CodexProposerInput<'_>) -> Value {
+fn proposal_request(input: &CodexProposerInput<'_>, prompting_best_practices: &str) -> Value {
     let proposal_count = input.config.gepa.proposals_per_generation;
     let pareto_front = compute_pareto_front(input);
     let members = sorted_pareto_member_ids(input, &pareto_front);
@@ -569,9 +581,9 @@ fn proposal_request(input: &CodexProposerInput<'_>) -> Value {
         "candidate_selector": candidate_selector_read_model(input),
         "batch_sampler": batch_sampler_read_model(input),
         "acceptance": acceptance_read_model(input),
-        "seed_pool_counts": seed_pool_counts(input),
+        "task_pool_counts": task_pool_counts(input),
         "literal_example_policy": proposer_literal_policy_json(input),
-        "prompting_best_practices": PROMPTING_BEST_PRACTICES,
+        "prompting_best_practices": prompting_best_practices,
         "ambition_contract": [
             "At most one proposal may be conservative.",
             "Every other proposal must be a very ambitious, task-specific prompt update that names the top failure cluster it is meant to fix and could plausibly produce substantially better task performance than the parent.",
@@ -704,16 +716,16 @@ fn normalize_acceptance_criterion(criterion: &str) -> String {
     }
 }
 
-fn seed_pools_read_model(input: &CodexProposerInput<'_>) -> Value {
-    if input.seed_pool_rows.is_null() {
+fn task_pools_read_model(input: &CodexProposerInput<'_>) -> Value {
+    if input.task_pool_rows.is_null() {
         return json!({});
     }
-    input.seed_pool_rows.clone()
+    input.task_pool_rows.clone()
 }
 
-fn seed_pool_counts(input: &CodexProposerInput<'_>) -> Value {
+fn task_pool_counts(input: &CodexProposerInput<'_>) -> Value {
     let mut counts = Map::new();
-    if let Some(pools) = input.seed_pool_rows.as_object() {
+    if let Some(pools) = input.task_pool_rows.as_object() {
         for (name, pool) in pools {
             if name == "schema_version" {
                 continue;
@@ -735,7 +747,7 @@ fn seed_pool_counts(input: &CodexProposerInput<'_>) -> Value {
 
 fn reflection_examples_read_model(input: &CodexProposerInput<'_>) -> Value {
     input
-        .seed_pool_rows
+        .task_pool_rows
         .get("reflection")
         .and_then(|pool| pool.get("rows"))
         .and_then(Value::as_array)
@@ -825,7 +837,7 @@ fn rollouts_read_model(input: &CodexProposerInput<'_>) -> Value {
                 "candidate_id": candidate.candidate_id,
                 "evaluation_stage": "candidate_minibatch",
                 "example_id": score.example_id,
-                "seed": score.seed,
+                "task_id": score.task_id,
                 "reward": score.reward,
             }));
         }
@@ -834,7 +846,7 @@ fn rollouts_read_model(input: &CodexProposerInput<'_>) -> Value {
                 "candidate_id": candidate.candidate_id,
                 "evaluation_stage": "candidate_full_train",
                 "example_id": score.example_id,
-                "seed": score.seed,
+                "task_id": score.task_id,
                 "reward": score.reward,
             }));
         }
@@ -857,7 +869,7 @@ fn rollouts_read_model(input: &CodexProposerInput<'_>) -> Value {
                 .unwrap_or_else(|| {
                     json!({
                         "example_id": frame.example_id,
-                        "seed": frame.seed,
+                        "task_id": frame.task_id,
                         "split": frame.split,
                     })
                 });
@@ -898,7 +910,7 @@ fn rollouts_read_model(input: &CodexProposerInput<'_>) -> Value {
                 "candidate_id": frame.candidate_id,
                 "evaluation_stage": frame.evaluation_stage,
                 "example_id": frame.example_id,
-                "seed": frame.seed,
+                "task_id": frame.task_id,
                 "split": frame.split,
                 "reward": frame.reward,
                 "status": frame.status,
@@ -960,7 +972,7 @@ fn proposer_example_row(
         .unwrap_or_else(|| {
             json!({
                 "example_id": frame.example_id,
-                "seed": frame.seed,
+                "task_id": frame.task_id,
                 "split": frame.split,
             })
         });
@@ -1018,7 +1030,7 @@ fn proposer_example_row(
         "is_pareto_front": pareto_front.members.contains(&candidate.candidate_id),
         "evaluation_stage": frame.evaluation_stage,
         "example_id": frame.example_id,
-        "seed": frame.seed,
+        "task_id": frame.task_id,
         "split": frame.split,
         "reward": frame.reward,
         "status": frame.status,
@@ -1357,7 +1369,7 @@ fn proposer_metadata_read_model(
             "max_heldout_rollouts": input.config.gepa.heldout_rollout_limit(),
             "max_cost_usd": input.config.gepa.max_cost_usd,
         },
-        "seed_pool_counts": seed_pool_counts(input),
+        "task_pool_counts": task_pool_counts(input),
         "read_first": [
             "state/proposer_metadata.json",
             "state/task_info.json",
@@ -1818,7 +1830,7 @@ fn reflective_frame_value(
         .unwrap_or_else(|| {
             json!({
                 "example_id": frame.example_id,
-                "seed": frame.seed,
+                "task_id": frame.task_id,
                 "split": frame.split,
             })
         });
@@ -2349,7 +2361,10 @@ fn legacy_frontier_read_model(input: &CodexProposerInput<'_>) -> Value {
     )
 }
 
-fn reflector_input_read_model(input: &CodexProposerInput<'_>) -> Value {
+fn reflector_input_read_model(
+    input: &CodexProposerInput<'_>,
+    prompting_best_practices: &str,
+) -> Value {
     let mut wins = Vec::new();
     let mut losses = Vec::new();
     let proposer_examples = proposer_examples_read_model(input);
@@ -2371,7 +2386,7 @@ fn reflector_input_read_model(input: &CodexProposerInput<'_>) -> Value {
         "sample_losing_traces": losses,
         "wins": wins,
         "losses": losses,
-        "prompting_best_practices": PROMPTING_BEST_PRACTICES,
+        "prompting_best_practices": prompting_best_practices,
         "instructions": [
             "Read prompting_best_practices.md before diagnosing prompt changes.",
             "Classify likely edits using the shared typology: premise, context, task_priority, core_task_description, heuristics, constraints, rules, input_description, output_description.",
@@ -2415,7 +2430,11 @@ fn thread_start_params(input: &CodexProposerInput<'_>, model: &str) -> Value {
     Value::Object(params)
 }
 
-fn turn_start_params(input: &CodexProposerInput<'_>, model: &str, thread_id: &str) -> Value {
+fn turn_start_params(
+    input: &CodexProposerInput<'_>,
+    model: &str,
+    thread_id: &str,
+) -> Result<Value> {
     let mut params = Map::new();
     params.insert("threadId".to_string(), Value::String(thread_id.to_string()));
     params.insert("model".to_string(), Value::String(model.to_string()));
@@ -2423,7 +2442,7 @@ fn turn_start_params(input: &CodexProposerInput<'_>, model: &str, thread_id: &st
         "input".to_string(),
         Value::Array(vec![json!({
             "type": "text",
-            "text": proposer_instructions(input),
+            "text": proposer_instructions(input)?,
             "textElements": [],
         })]),
     );
@@ -2445,14 +2464,15 @@ fn turn_start_params(input: &CodexProposerInput<'_>, model: &str, thread_id: &st
             sandbox_policy_for_mode(sandbox_mode),
         );
     }
-    Value::Object(params)
+    Ok(Value::Object(params))
 }
 
-fn proposer_instructions(input: &CodexProposerInput<'_>) -> String {
+fn proposer_instructions(input: &CodexProposerInput<'_>) -> Result<String> {
     let context = proposer_prompt_context(input);
     let proposal_policy = proposer_policy_text(input);
-    let best_practices = PROMPTING_BEST_PRACTICES.trim();
-    format!(
+    let best_practices = resolved_prompting_best_practices(input)?;
+    let best_practices = best_practices.trim();
+    Ok(format!(
         "{context}\n\n\
          Prompting best practices:\n\
          {best_practices}\n\n\
@@ -2473,7 +2493,7 @@ fn proposer_instructions(input: &CodexProposerInput<'_>) -> String {
         input.config.gepa.proposals_per_generation,
         input.generation,
         input.config.candidate.target_modules.join(", ")
-    )
+    ))
 }
 
 fn proposer_prompt_context(input: &CodexProposerInput<'_>) -> String {
@@ -3099,11 +3119,11 @@ fn validate_manifest_contract(manifest: &Value) -> Result<()> {
                 "codex app-server proposer evidence missing {field}"
             )));
         };
-        // `winning_patterns` may legitimately be empty: on sparse-reward,
-        // long-horizon tasks (e.g. Crafter ReAct) the seed candidate can score
-        // zero, so there are no winning rollouts to ground a pattern in. Require
-        // the field to be present, but do not force content for it.
-        if field == "winning_patterns" {
+        // Pattern fields may legitimately be empty when the observed evidence is
+        // one-sided: all losses have no winning pattern, and all wins have no
+        // failure pattern. Require the fields to be present, but do not force
+        // content that the rollouts cannot ground.
+        if matches!(field, "failure_patterns" | "winning_patterns") {
             continue;
         }
         let has_content = match value {

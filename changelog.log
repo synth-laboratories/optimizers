@@ -1,0 +1,78 @@
+# synth-optimizers changelog
+
+Dense release notes. Newest first.
+
+## 2026-05-31 — better-sdk (`f3daf0c` + merge-packet docs)
+
+### Python GEPA SDK (new primary authoring path)
+- **`OptimizerRun`** + **`OptimizerConfig`** protocol (`src/synth_optimizers/sdk.py`).
+- **`GepaConfig`** (`src/synth_optimizers/gepa.py`, ~840 lines): typed hierarchical config projecting to legacy TOML for Rust execution.
+- Typed sections: `RunSettings`, `TasksetSelection`, `ProposerConfig`, `ProposerPromptConfig`, `PolicyConfig`, `ObjectiveConfig`, `BudgetConfig`, `GepaBudgetConfig`, `GepaPipeline`, `CacheConfig`, `OutputConfig`, `PolicyType`.
+- **`GepaConfig.execute()`**: writes TOML under run output, preflights container capabilities, invokes native `GepaRun`.
+- **`GepaRun.from_toml()`** retained as compatibility shim; CLI unchanged.
+
+### Container boundary
+- **`GepaConfig.container: ContainerConnection` only** — no `ContainerHandle` or launch commands in optimizer config.
+- Preflight when `policy=None` / `program=None`: validates container `/metadata` and `/program` before run.
+- Container lifecycle (`Container.serve()`, `ContainerRunner`) lives in `synth-containers`; examples normalize `handle.connection()` before config construction.
+
+### Objectives, ASI, multi-objective
+- **`ObjectiveConfig`**: named objectives, directions, protected objectives, selection objective — projects to Rust objective/scoring config.
+- ASI (`actionable_side_info`) treated as rollout evidence, not selection input; ingested from terminal async rollout payloads through existing Rust sensor → proposer workspace path.
+- TBLite: correctness (protected) + completion time. Crafter: achievement rate + core path turns.
+
+### Proposer prompt override
+- **`GepaDefaults.proposer_best_practices()`** + **`ProposerPromptConfig`** (inline or path-backed).
+- Rust: `prompting_best_practices.md` via `include_str!`; TOML `[proposer.prompt]`; resolved guidance written into each proposer workspace and Codex turn prompt.
+- PyO3: `default_proposer_best_practices()` exposed.
+
+### Rust / platform (execution path)
+- `synth_gepa`: proposer workspace materialization, turn instructions, manifest schema for custom best-practices.
+- `synth_optimizer_platform`: `ProposerPromptConfig` in config; container contract/objective/ASI sensor paths aligned with SDK vocabulary.
+- Service OpenAPI touch-up for container-url-first runs.
+
+### Example migrations (SDK validation set, local `dev_examples/` only)
+- Examples live under local `dev_examples/` (gitignored): Banking77, TBLite, Crafter, MiniGrid SDK runners.
+- Shell runners dispatch to Python SDK scripts instead of shell-mutating TOML.
+
+### Planning docs (local `dev_examples/better_gepa/`, gitignored)
+- `better_sdk_plan.md`, `api.txt`, and related design notes kept locally, not in repo.
+
+### Packaging + README
+- Version bump: **`0.2.0.dev20260531`**; depends on **`synth-containers>=0.2.0.dev20260531`** (editable sibling path in `pyproject.toml`).
+- README: **Local Better SDK Dev** block with branch pair, `uv` install, version verify, validation commands.
+- **`dev_examples/` fully gitignored** — validation scripts and planning docs stay local only.
+
+### Pre-merge validation evidence (2026-05-31, no re-run)
+Packages: `synth-containers==0.2.0.dev20260531`, `synth-optimizers==0.2.0.dev20260531` (editable local checkouts on `better-sdk`).
+
+| Example | Command | Run ID | Artifact path | Outcome | Train / heldout | Lifecycle API | Rollout transport |
+|---------|---------|--------|---------------|---------|-----------------|---------------|-------------------|
+| Banking77 | `bash dev_examples/banking77/run_fresh_gepa.sh` | `banking77_dev_20260531175216_synth` | `dev_examples/banking77/runs/banking77_dev_20260531175216_synth/` | **Pass** | train 0.583 / heldout 0.500 | `Container` + SDK runner | async |
+| Crafter | `bash dev_examples/crafter/run_fresh_gepa.sh` | `crafter_gepa_sdk_20260531043041` | `dev_examples/crafter/runs/crafter_gepa_sdk_20260531043041/` | **Pass** | train 0.667 / heldout 0.333 | in-process `Container.serve()` | async |
+| TBLite | `bash dev_examples/tblite/run_fresh_gepa.sh` | `tblite_gepa_public_0c961acf` | `dev_examples/tblite/runs/tblite_gepa_public_0c961acf/` | **Fail (proposer)** | seed rollouts OK; proposer died | SDK runner | async |
+| MiniGrid | `bash dev_examples/minigrid/run_fresh_gepa.sh` (profile `deepseek_v4_flash`) | `minigrid_deepseek_v4_flash_c9dcf209` | `dev_examples/minigrid/runs/minigrid_deepseek_v4_flash_c9dcf209/` | **Partial** | best_train 0.784 after seed eval; no final manifest | in-process `Container` | sync (profile) |
+
+**TBLite failure (not SDK-specific):** `codex app-server proposer evidence field failure_patterns is empty` — proposer backend validation after seed rollouts succeeded.
+
+**MiniGrid partial:** run reached seed evaluation and proposer gen 0 start; interrupted before heldout/completion manifest. Second attempt (`minigrid_deepseek_v4_flash_2ab5a9e5`) stopped mid seed rollouts. SDK path and nonzero seed reward validated; full generational run not recorded.
+
+**Banking77 papercut:** multiprocessing semaphore leak warning at shutdown (LOW, not blocking).
+
+### Python SDK gates
+- Optimizers `src/`: `ruff format --check`, `ruff check`, `ty check` — **all pass**.
+- Containers SDK delta (`sdk.py`, `__init__.py`): pass (see containers changelog for repo-wide format debt).
+
+### Synth Style scan (2026-05-31)
+- **Pass — boundary naming:** container nouns in `synth-containers`; GEPA config/proposer/objectives in `synth-optimizers`.
+- **Pass — interconnect sparsity:** `ContainerConnection` is the sole cross-repo optimizer handoff; lifecycle stays in containers.
+- **Pass — config minimalism:** user-facing SDK fields map to user intent; algorithm internals still project to TOML for Rust.
+- **Pass — noun hierarchy:** `OptimizerRun` → `GepaConfig` → typed sections; `Container` → `ContainerHandle` → `ContainerConnection`.
+- **Follow-up — docs drift:** README Quickstart still TOML-first; validation list omits MiniGrid and uses mixed Crafter entrypoint. Address before public release; not blocking dev branch merge.
+
+### Customer-facing impact summary
+- **Additive (primary path):** `OptimizerRun`, `GepaConfig`, typed sections, `GepaDefaults` / `ProposerPromptConfig`, container lifecycle SDK in sibling package.
+- **Unchanged (compat):** `GepaRun.from_toml()`, `synth-optimizers` CLI, raw TOML + `[container.command]` Rust path for legacy local runs.
+- **New requirements:** paired dev versions when using SDK examples; optimizers preflights container capabilities for container-owned policy/program.
+- **Non-breaking for existing TOML users:** TOML execution path preserved; SDK is opt-in authoring layer.
+- **Known gaps:** TBLite proposer failure; MiniGrid full-run evidence incomplete — tracked in validation table above.

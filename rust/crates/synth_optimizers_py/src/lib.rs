@@ -68,8 +68,8 @@ impl GepaRun {
         }
     }
 
-    pub fn execute(&self) -> PyResult<GepaRunResult> {
-        synth_gepa::execute_gepa_from_toml(&self.config_path)
+    pub fn execute(&self, py: Python<'_>) -> PyResult<GepaRunResult> {
+        py.allow_threads(|| synth_gepa::execute_gepa_from_toml(&self.config_path))
             .map(GepaRunResult::from)
             .map_err(py_error)
     }
@@ -474,6 +474,11 @@ pub fn gepa_service_recover(py: Python<'_>, db_path: &str) -> PyResult<PyObject>
     value_to_py(py, &value)
 }
 
+#[pyfunction]
+pub fn default_proposer_best_practices() -> &'static str {
+    synth_gepa::default_proposer_best_practices()
+}
+
 #[pymodule]
 fn _synth_optimizers(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<GepaRun>()?;
@@ -584,6 +589,7 @@ fn _synth_optimizers(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<(
     )?;
     module.add_function(wrap_pyfunction!(events_replay, module)?)?;
     module.add_function(wrap_pyfunction!(events_compare, module)?)?;
+    module.add_function(wrap_pyfunction!(default_proposer_best_practices, module)?)?;
     module.add_function(wrap_pyfunction!(gepa_serve, module)?)?;
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())

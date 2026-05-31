@@ -7,7 +7,7 @@ use crate::cache::{stable_json, stable_value_hash};
 pub const RESOLVED_RUN_CONFIG_SCHEMA_VERSION: &str = "resolved_run_config.v1";
 pub const CONTAINER_CONTRACT_SNAPSHOT_SCHEMA_VERSION: &str = "container_contract_snapshot.v1";
 pub const PROMPT_PROGRAM_SNAPSHOT_SCHEMA_VERSION: &str = "prompt_program_snapshot.v1";
-pub const DATASET_SNAPSHOT_SCHEMA_VERSION: &str = "dataset_snapshot.v1";
+pub const TASKSET_SNAPSHOT_SCHEMA_VERSION: &str = "taskset_snapshot.v1";
 pub const RENDERED_OPTIMIZER_STATE_SCHEMA_VERSION: &str = "rendered_optimizer_state.v1";
 pub const RUNTIME_EFFECT_SCHEMA_VERSION: &str = "runtime_effect.v1";
 
@@ -95,38 +95,38 @@ pub struct PromptProgramSnapshotInput<'a> {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct DatasetSnapshotRecord {
+pub struct TasksetSnapshotRecord {
     pub schema_version: String,
-    pub dataset_snapshot_id: String,
+    pub taskset_snapshot_id: String,
     pub run_id: String,
-    pub dataset_id: String,
+    pub taskset_id: String,
     pub split: String,
-    pub row_count: u64,
-    pub seed_count: u64,
+    pub task_count: u64,
+    pub task_id_count: u64,
     #[serde(default)]
-    pub seeds: Vec<i64>,
+    pub task_ids: Vec<String>,
     #[serde(default)]
     pub filters: Value,
-    pub rows_hash: String,
-    pub rows: Value,
+    pub tasks_hash: String,
+    pub tasks: Value,
     #[serde(default)]
-    pub dataset_metadata: Value,
+    pub taskset_metadata: Value,
     #[serde(default)]
-    pub rows_metadata: Value,
+    pub tasks_metadata: Value,
     #[serde(default)]
     pub metadata: Map<String, Value>,
     pub recorded_at: String,
 }
 
-pub struct DatasetSnapshotInput<'a> {
+pub struct TasksetSnapshotInput<'a> {
     pub run_id: &'a str,
-    pub dataset_id: &'a str,
+    pub taskset_id: &'a str,
     pub split: &'a str,
-    pub seeds: &'a [i64],
+    pub task_ids: &'a [String],
     pub filters: &'a Value,
-    pub rows: &'a [Value],
-    pub dataset_metadata: Value,
-    pub rows_metadata: Value,
+    pub tasks: &'a [Value],
+    pub taskset_metadata: Value,
+    pub tasks_metadata: Value,
     pub metadata: Map<String, Value>,
 }
 
@@ -301,32 +301,32 @@ impl PromptProgramSnapshotRecord {
     }
 }
 
-impl DatasetSnapshotRecord {
-    pub fn from_input(input: DatasetSnapshotInput<'_>) -> Self {
-        let rows = Value::Array(input.rows.to_vec());
-        let rows_hash = stable_value_hash(&rows);
+impl TasksetSnapshotRecord {
+    pub fn from_input(input: TasksetSnapshotInput<'_>) -> Self {
+        let tasks = Value::Array(input.tasks.to_vec());
+        let tasks_hash = stable_value_hash(&tasks);
         let identity = json!({
             "run_id": input.run_id,
-            "dataset_id": input.dataset_id,
+            "taskset_id": input.taskset_id,
             "split": input.split,
-            "seeds": input.seeds,
+            "task_ids": input.task_ids,
             "filters": input.filters,
-            "rows_hash": rows_hash,
+            "tasks_hash": tasks_hash,
         });
         Self {
-            schema_version: DATASET_SNAPSHOT_SCHEMA_VERSION.to_string(),
-            dataset_snapshot_id: prefixed_hash_id("dataset", &identity),
+            schema_version: TASKSET_SNAPSHOT_SCHEMA_VERSION.to_string(),
+            taskset_snapshot_id: prefixed_hash_id("taskset", &identity),
             run_id: input.run_id.to_string(),
-            dataset_id: input.dataset_id.to_string(),
+            taskset_id: input.taskset_id.to_string(),
             split: input.split.to_string(),
-            row_count: input.rows.len() as u64,
-            seed_count: input.seeds.len() as u64,
-            seeds: input.seeds.to_vec(),
+            task_count: input.tasks.len() as u64,
+            task_id_count: input.task_ids.len() as u64,
+            task_ids: input.task_ids.to_vec(),
             filters: input.filters.clone(),
-            rows_hash,
-            rows,
-            dataset_metadata: input.dataset_metadata,
-            rows_metadata: input.rows_metadata,
+            tasks_hash,
+            tasks,
+            taskset_metadata: input.taskset_metadata,
+            tasks_metadata: input.tasks_metadata,
             metadata: input.metadata,
             recorded_at: now_rfc3339(),
         }

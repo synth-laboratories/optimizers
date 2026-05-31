@@ -53,7 +53,8 @@ The SDK validation set is:
 cd /Users/joshpurtell/Documents/GitHub/optimizers
 bash dev_examples/banking77/run_fresh_gepa.sh
 bash dev_examples/tblite/run_fresh_gepa.sh
-uv run --project . python dev_examples/crafter/run_gepa_sdk.py
+bash dev_examples/crafter/run_fresh_gepa.sh
+bash dev_examples/minigrid/run_fresh_gepa.sh
 ```
 
 ## Quickstart

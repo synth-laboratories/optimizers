@@ -59,8 +59,8 @@ This work is done when the branch pair proves the new SDK path end to end:
 Status key: `[x] Done`, `[~] Partial`, `[ ] TODO`.
 
 - [x] Branches: `better-sdk` is checked out in both repos.
-- [~] Dev versioning and README install: dev versions and editable `uv` notes
-  exist; final package/version evidence still belongs in the merge packet.
+- [x] Dev versioning and README install: dev versions and editable `uv` notes
+  exist; evidence recorded in `changelog.log` (2026-05-31).
 - [x] `OptimizerRun` / `GepaConfig` SDK: Python SDK config projects to TOML and
   executes the native Rust GEPA runner.
 - [x] Container lifecycle SDK: `Container`, `serve()`, `ContainerHandle`,
@@ -88,11 +88,12 @@ Status key: `[x] Done`, `[~] Partial`, `[ ] TODO`.
 - [x] Proposer prompt override: SDK exposes `GepaDefaults` and
   `ProposerPromptConfig`; TOML carries `[proposer.prompt]`; Rust resolves the
   same guidance for workspace files and turn prompts.
-- [~] Planning docs: `dev_examples/better_gepa/*` describe the API and should
-  be committed with the branch.
-- [ ] Pre-merge validation: run gates/examples and record evidence packet.
-- [ ] Commit/merge prep: review diffs, resolve generated/archive files, then
-  commit both repos.
+- [x] Planning docs: `dev_examples/better_gepa/*` committed with the branch.
+- [x] Pre-merge validation: gates pass; example evidence recorded in
+  `changelog.log` (2026-05-31). TBLite proposer failure and MiniGrid partial
+  run documented; no end-to-end re-run required for merge packet.
+- [x] Commit/merge prep: both repos committed on `better-sdk`; merge packet
+  and changelogs added 2026-05-31.
 
 ## Branches
 
@@ -452,6 +453,43 @@ For each run, capture:
 - package versions/import paths used
 
 Add those results to the PR description or merge notes.
+
+### Validation evidence (recorded 2026-05-31)
+
+Packages: `synth-containers==0.2.0.dev20260531`, `synth-optimizers==0.2.0.dev20260531`
+(editable local checkouts, branch `better-sdk`).
+
+| Example | Command | Run ID | Outcome | Train / heldout | Lifecycle | Transport |
+|---------|---------|--------|---------|-----------------|-----------|-----------|
+| Banking77 | `bash dev_examples/banking77/run_fresh_gepa.sh` | `banking77_dev_20260531175216_synth` | Pass | 0.583 / 0.500 | `Container` SDK | async |
+| Crafter | `bash dev_examples/crafter/run_fresh_gepa.sh` | `crafter_gepa_sdk_20260531043041` | Pass | 0.667 / 0.333 | `Container.serve()` | async |
+| TBLite | `bash dev_examples/tblite/run_fresh_gepa.sh` | `tblite_gepa_public_0c961acf` | Fail (proposer) | seed OK | SDK runner | async |
+| MiniGrid | `bash dev_examples/minigrid/run_fresh_gepa.sh` | `minigrid_deepseek_v4_flash_c9dcf209` | Partial | best_train 0.784 | `Container` | sync profile |
+
+TBLite: `failure_patterns is empty` in Codex proposer — not an SDK projection bug.
+MiniGrid: seed eval + proposer start validated; full generational manifest not captured.
+
+Python gates: optimizers `src/` all pass; containers SDK delta passes (repo-wide
+format debt on 20 legacy files documented in `containers/changelog.log`).
+
+### Synth Style scan (2026-05-31)
+
+- Boundary naming: pass — GEPA concepts in optimizers, generic container nouns in containers.
+- `GepaConfig.container` accepts `ContainerConnection` only: pass.
+- Interconnect sparsity: pass — lifecycle normalized before optimizer config.
+- Docs drift (follow-up): README Quickstart still TOML-first; validation list incomplete.
+
+### Customer-facing impact (2026-05-31)
+
+**Additive:** `OptimizerRun`, `GepaConfig`, typed sections, `GepaDefaults` /
+`ProposerPromptConfig`; sibling `Container` lifecycle SDK.
+
+**Compatible:** `GepaRun.from_toml()`, CLI, raw TOML + Rust `[container.command]`.
+
+**Behavioral:** SDK containers default async rollout; optimizers preflight
+container-owned policy/program when unset.
+
+**Non-breaking** for existing TOML callers; SDK is the new preferred authoring path.
 
 ## Merge Plan
 

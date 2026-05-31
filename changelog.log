@@ -1,76 +1,55 @@
 # synth-optimizers changelog
 
-## 2026-05-31 — better-ai-auth (unreleased)
+## 2026-05-31 — 0.2.0.dev202605312141
 
-### Proposer auth and live usage
+Install:
 
-- **Provider-aware API-key proposers** — OpenRouter (and other non-OpenAI providers)
-  get a run-local Codex home with the correct `base_url` and key env wiring.
-- **ChatGPT subscription proposer** — `auth_mode = "chatgpt"` with explicit
-  `codex_home`, model allowlist validation, and OAuth bundle copy into the workspace.
-- **Live usage rollups** — terminal and event feed show running `usage total`,
-  policy vs proposer token splits, and cost while a run is in progress
-  (`SYNTH_OPTIMIZERS_TERMINAL=1`).
-- **README + skill** — authentication quickstarts for OpenAI API key, OpenRouter,
-  and ChatGPT subscription paths.
-- **SynthStyle alignment** — explicit proposer auth resolution in
-  `agent_runtime/codex_home`, no silent host `~/.codex` fallback, legacy
-  `host` → `chatgpt`, missing usage warns in proposer evidence.
+```bash
+pip install --pre synth-containers==0.2.0.dev202605312141 synth-optimizers==0.2.0.dev202605312141
+```
 
-### Proposer runtime substrate (local + Docker)
+This daily dev release moves GEPA from TOML-first experiments toward a typed SDK
+that can own real prompt-optimization runs: containers are URL handles, task
+contracts can be discovered, proposer auth is explicit, and Codex transport lives
+behind the platform runtime boundary.
 
-- **`runtime_substrate`** — `local` (default) or `docker` for Codex app-server
-  launch; `[proposer.docker]` pins image, mount path, network, and optional
-  `extra_env`.
-- **Docker substrate** — stage workspace under
-  `~/.cache/synth-gepa-docker-workspaces/`, bind mount, entrypoint, sync-back,
-  staging cleanup; preflight fails if Docker unavailable (no local fallback).
-- **v1 limits** — `auth_mode = "chatgpt"` rejected for docker substrate.
-- **Image** — `docker/codex-gepa-proposer/Dockerfile`; pinned tag in profiles and
-  README.
-- **Skills** — `skills/gepa/SKILL.md` and `containers/skills/containers/SKILL.md`
-  clarify task container vs proposer substrate boundaries.
+### Python SDK
 
-## 2026-05-31 — 0.2.0.dev20260531
+* Add `OptimizerRun(GepaConfig(...)).execute()` as the preferred GEPA entrypoint.
+* Add typed config sections for `run`, `taskset`, `candidate`, `seed_candidate`, `proposer`, `policy`, `objective`, `gepa`, `cache`, and `output`.
+* Accept `ContainerConnection` from `synth-containers`; GEPA receives a URL and never owns container startup or teardown.
+* Discover `program`, `objectives`, and `policy` from the container when those config fields are `None`.
+* Keep `GepaRun.from_toml()` and `synth-optimizers gepa run --config ...` working for existing TOML workflows.
 
-### Typed Python SDK for GEPA
+### GEPA Runtime
 
-The recommended way to configure and run GEPA is now a typed Python SDK.
+* Default SDK examples to async-pipelined rollout transport.
+* Add multi-objective selection with objective directions, protected objectives, and a primary selection objective.
+* Pass `actionable_side_info` from rollout responses into proposer context without promoting it into the score vector.
+* Persist richer workspace evidence: candidate diffs, rollout traces, proposer artifacts, usage ledger rows, and result manifests.
 
-- **`OptimizerRun`** runs any optimizer configuration that implements the `OptimizerConfig` protocol.
-- **`GepaConfig`** provides typed sections for run settings, task selection, proposer, policy, objectives, budgets, pipeline, cache, and output.
-- **`GepaConfig.execute()`** validates your configuration, prepares the runtime, and executes the optimization.
+### Proposer
 
-**`GepaRun.from_toml()`** and the **`synth-optimizers` CLI** remain available for existing TOML-based workflows.
+* Add `ProposerPromptConfig` for inline or file-based best-practices overrides.
+* Expose `GepaDefaults.proposer_best_practices()` for inspecting the shipped proposer guidance.
+* Support OpenAI API-key proposers, OpenRouter API-key proposers, and ChatGPT subscription proposers.
+* Require explicit `codex_home` for `auth_mode = "chatgpt"`; no silent host `~/.codex` fallback.
+* Map legacy `auth_mode = "host"` to `chatgpt` during config validation.
 
-### Container integration
+### Platform
 
-GEPA connects to your task through a **`ContainerConnection`** URL from `synth-containers`. Start and stop the container separately—via `Container.serve()` or `ContainerRunner`—then pass `handle.connection()` into `GepaConfig`.
+* Move Codex auth-home prep, app-server JSON-RPC, and turn usage normalization under `synth_optimizer_platform::agent_runtime`.
+* Keep GEPA-specific workspace materialization and `proposal/manifest.json` parsing in `synth_gepa`.
+* Add live terminal usage lines with policy/proposer token splits when `SYNTH_OPTIMIZERS_TERMINAL=1`.
+* Keep direct DeepSeek blocked: Codex app-server requires Responses wire format; use OpenRouter DeepSeek slugs until an adapter lands.
 
-When `policy=None` or `program=None`, GEPA reads those surfaces from the container and checks that the container exposes the required capabilities before the run begins.
+### Compatibility
 
-### Multi-objective optimization
-
-**`ObjectiveConfig`** lets you name objectives, set optimization direction, designate protected objectives, and choose which objective drives candidate selection.
-
-### Actionable side information
-
-Rollouts may include **`actionable_side_info`**: structured evidence about why a rollout received its scores (for example, verifier output, diffs, or failure details). GEPA passes this to the proposer as context for prompt improvements. It does not participate in objective selection or Pareto comparison unless you promote it to an explicit objective.
-
-### Proposer guidance
-
-Customize the reflective proposer's guidance for a run:
-
-- **`GepaDefaults.proposer_best_practices()`** returns the default best-practices text shipped with GEPA.
-- **`ProposerPromptConfig`** accepts inline text or a file path to override that default.
-
-### Requirements
-
-Requires **`synth-containers>=0.2.0.dev20260531`**. Install both packages at matching versions when developing locally.
+* Requires `synth-containers==0.2.0.dev202605312141` for lockstep SDK examples.
+* PyPI artifacts published: source distribution plus macOS arm64 abi3 wheel.
+* Known limit: direct DeepSeek proposer profile fails before E2E because DeepSeek rejects `/responses`.
 
 ### Migration
-
-TOML-based runs continue to work. For new integrations, prefer the SDK:
 
 ```python
 from synth_containers import Container
@@ -87,8 +66,6 @@ with Container("my-task").serve() as handle:
         )
     ).execute()
 ```
-
-Legacy equivalent:
 
 ```python
 from synth_optimizers import GepaRun

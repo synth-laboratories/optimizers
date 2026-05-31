@@ -25,6 +25,18 @@ pip install synth-optimizers
 uv add synth-optimizers
 ```
 
+Latest daily dev build:
+
+```bash
+pip install --pre \
+  synth-containers==0.2.0.dev202605312141 \
+  synth-optimizers==0.2.0.dev202605312141
+
+uv add --prerelease allow \
+  synth-containers==0.2.0.dev202605312141 \
+  synth-optimizers==0.2.0.dev202605312141
+```
+
 Install [`uv`](https://github.com/astral-sh/uv) for local development and editable installs.
 
 ## Local development

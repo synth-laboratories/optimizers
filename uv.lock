@@ -303,7 +303,7 @@ wheels = [
 
 [[package]]
 name = "synth-containers"
-version = "0.2.0.dev20260531"
+version = "0.2.0.dev202605312141"
 source = { editable = "../containers" }
 dependencies = [
     { name = "fastapi" },
@@ -335,7 +335,7 @@ dev = [
 
 [[package]]
 name = "synth-optimizers"
-version = "0.2.0.dev20260531"
+version = "0.2.0.dev202605312141"
 source = { editable = "." }
 dependencies = [
     { name = "pydantic" },

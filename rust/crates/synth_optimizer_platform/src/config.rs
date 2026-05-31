@@ -710,6 +710,8 @@ pub struct ProposerConfig {
     #[serde(default = "default_policy_api_family")]
     pub api_family: String,
     #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
     pub command: Vec<String>,
     #[serde(default)]
     pub sandbox_mode: Option<String>,
@@ -740,6 +742,7 @@ impl Default for ProposerConfig {
             execution_mode: default_execution_mode(),
             provider: default_policy_provider(),
             api_family: default_policy_api_family(),
+            base_url: None,
             command: Vec::new(),
             sandbox_mode: None,
             approval_policy: None,

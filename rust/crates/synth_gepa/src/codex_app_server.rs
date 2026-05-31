@@ -529,6 +529,7 @@ Write `proposal/manifest.json` as strict JSON using this schema:
 Rules:
 
 - Read `prompting_best_practices.md`, `state/proposer_metadata.json`, `state/proposer_readme.json`, `state/run_context.json`, `state/task_info.json`, `state/program_contract.json`, `state/algorithm_read_model.json`, `state/candidates.json`, `state/candidate_deltas.json`, `state/proposer_failure_summary.json`, `state/proposer_repair_hints.json`, `state/proposer_examples.json`, `state/rollouts.json`, `state/scores.json`, `state/evidence_frames.json`, `state/reflective_frames.json`, `state/links.json`, `state/parent_payload.json`, and `state/reflector_input.json`.
+- Preserve the exact top-level and evidence field names from the JSON schema. In particular, use `evidence.reviewed_files` and `evidence.example_ids_used`; do not rename them to `files_reviewed`, `example_ids`, or any other alias.
 - Use shell/Python/JQ inspection to summarize the workspace before writing the manifest. Do not jump straight to editing `proposal/manifest.json`.
 - Minimum review workflow: inspect `state/proposer_metadata.json`, inspect `state/task_info.json`, inspect candidate scores/payloads, inspect Pareto membership, inspect rollout wins/losses and trace refs, inspect parent payload, then write the manifest.
 - Use `state/proposer_failure_summary.json`, `state/proposer_repair_hints.json`, and `state/proposer_examples.json` as the primary source for rollout rewards, failures, wins, expected outputs, predictions, and example text. Use nested evidence frames when task semantics or trace-level behavior are unclear.
@@ -2659,10 +2660,16 @@ impl AppServerClient {
             let codex_home = workspace_dir.join(".codex_api_key_home");
             prepare_api_key_codex_home(
                 &codex_home,
+                &input.config.proposer.provider,
+                input.config.proposer.base_url.as_deref(),
                 model,
                 proposer_api_key.as_deref().unwrap_or_default(),
             )?;
             env_map.insert("CODEX_HOME".to_string(), codex_home.display().to_string());
+            env_map.insert(
+                "OPENAI_API_KEY".to_string(),
+                proposer_api_key.as_deref().unwrap_or_default().to_string(),
+            );
             auth_home_to_cleanup = Some(codex_home);
         } else if proposer_uses_chatgpt_auth(&auth_mode) {
             let source = resolve_chatgpt_codex_home_source(&input.config.proposer)?;
@@ -3410,19 +3417,40 @@ fn copy_codex_home(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-fn prepare_api_key_codex_home(destination: &Path, model: &str, api_key: &str) -> Result<()> {
+fn prepare_api_key_codex_home(
+    destination: &Path,
+    provider: &str,
+    base_url: Option<&str>,
+    model: &str,
+    api_key: &str,
+) -> Result<()> {
     if destination.exists() {
         fs::remove_dir_all(destination)
             .map_err(|source| OptimizerError::io(destination, source))?;
     }
     fs::create_dir_all(destination).map_err(|source| OptimizerError::io(destination, source))?;
     let config_path = destination.join("config.toml");
+    let provider_base_url = base_url.or_else(|| proposer_provider_default_base_url(provider));
+    let provider_config = provider_base_url
+        .map(|url| {
+            format!(
+                "model_provider = \"gepa_proposer\"\n\
+                 \n\
+                 [model_providers.gepa_proposer]\n\
+                 name = \"GEPA proposer\"\n\
+                 base_url = {url:?}\n\
+                 env_key = \"OPENAI_API_KEY\"\n\
+                 wire_api = \"responses\"\n\
+                 \n"
+            )
+        })
+        .unwrap_or_default();
     write_text(
         &config_path,
         &format!(
             "model = {model:?}\n\
              preferred_auth_method = \"apikey\"\n\
-             \n\
+             {provider_config}\
              [features]\n\
              apps = false\n\
              browser_use = false\n\
@@ -3447,6 +3475,14 @@ fn prepare_api_key_codex_home(destination: &Path, model: &str, api_key: &str) ->
     fs::set_permissions(&auth_path, fs::Permissions::from_mode(0o600))
         .map_err(|source| OptimizerError::io(&auth_path, source))?;
     Ok(())
+}
+
+fn proposer_provider_default_base_url(provider: &str) -> Option<&'static str> {
+    match provider.trim().to_ascii_lowercase().as_str() {
+        "openrouter" => Some("https://openrouter.ai/api/v1"),
+        "deepseek" => Some("https://api.deepseek.com"),
+        _ => None,
+    }
 }
 
 fn write_json(path: &Path, value: &Value) -> Result<()> {

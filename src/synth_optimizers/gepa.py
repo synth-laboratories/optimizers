@@ -457,6 +457,7 @@ class ProposerConfig:
     execution_mode: str = "local_process"
     provider: str = "openai"
     api_family: str = "chat_completions"
+    base_url: str | None = None
     model: str | None = "gpt-5.4-nano"
     reasoning_effort: str | None = "medium"
     auth_mode: str = "api_key"
@@ -476,6 +477,7 @@ class ProposerConfig:
                 "execution_mode": self.execution_mode,
                 "provider": self.provider,
                 "api_family": self.api_family,
+                "base_url": self.base_url,
                 "model": self.model,
                 "reasoning_effort": self.reasoning_effort,
                 "auth_mode": self.auth_mode,

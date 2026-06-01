@@ -115,6 +115,10 @@ fn default_rollout_async_timeout_seconds() -> u64 {
     600
 }
 
+fn default_rollout_failure_rate_tolerance() -> f64 {
+    0.25
+}
+
 fn default_frontier_type() -> String {
     "per_example".to_string()
 }
@@ -334,6 +338,12 @@ impl SynthOptimizerConfig {
                 &rollout_chunk_size,
             )?);
         }
+        if let Some(raw) =
+            read_env_override(&["SYNTH_OPTIMIZERS_GEPA_ROLLOUT_FAILURE_RATE_TOLERANCE"])
+        {
+            self.gepa.rollout_failure_rate_tolerance =
+                parse_f64_override("SYNTH_OPTIMIZERS_GEPA_ROLLOUT_FAILURE_RATE_TOLERANCE", &raw)?;
+        }
         if let Some(raw) = read_env_override(&["SYNTH_OPTIMIZERS_DISK_BUDGET_ENABLED"]) {
             self.disk_budget.enabled =
                 parse_bool_override("SYNTH_OPTIMIZERS_DISK_BUDGET_ENABLED", &raw)?;
@@ -438,6 +448,11 @@ impl SynthOptimizerConfig {
         if self.gepa.rollout_async_timeout_seconds == 0 {
             return Err(OptimizerError::Config(
                 "gepa.rollout_async_timeout_seconds must be positive".to_string(),
+            ));
+        }
+        if !(0.0..=1.0).contains(&self.gepa.rollout_failure_rate_tolerance) {
+            return Err(OptimizerError::Config(
+                "gepa.rollout_failure_rate_tolerance must be between 0.0 and 1.0".to_string(),
             ));
         }
         let frontier_type = self
@@ -1134,6 +1149,8 @@ pub struct GepaConfig {
     pub rollout_async_timeout_seconds: u64,
     #[serde(default)]
     pub rollout_chunk_size: Option<usize>,
+    #[serde(default = "default_rollout_failure_rate_tolerance")]
+    pub rollout_failure_rate_tolerance: f64,
     #[serde(default = "default_frontier_type")]
     pub frontier_type: String,
     #[serde(default)]
@@ -1206,6 +1223,7 @@ impl Default for GepaConfig {
             rollout_poll_interval_ms: default_rollout_poll_interval_ms(),
             rollout_async_timeout_seconds: default_rollout_async_timeout_seconds(),
             rollout_chunk_size: None,
+            rollout_failure_rate_tolerance: default_rollout_failure_rate_tolerance(),
             frontier_type: default_frontier_type(),
             selection_objective: None,
             objective_keys: Vec::new(),

@@ -137,6 +137,23 @@ impl FailurePayload {
                     retryable_container_message(message),
                 )
             }
+            OptimizerError::ContainerHttpStatus {
+                path,
+                status_code,
+                body,
+            } => {
+                let failure_type = classify_http_status(*status_code);
+                let reason_code = failure_type.as_str();
+                Self::new(
+                    failure_type,
+                    reason_code,
+                    error.to_string(),
+                    retryable_http_status(*status_code),
+                )
+                .with_detail("path", json!(path))
+                .with_detail("status", json!(status_code))
+                .with_detail("body", json!(body))
+            }
             OptimizerError::Proposer(message) => {
                 let failure_type = if contains_any(message, &["timeout", "timed out", "deadline"]) {
                     OptimizerFailureType::Timeout
@@ -275,6 +292,21 @@ impl FailurePayload {
             ),
         }
     }
+}
+
+fn classify_http_status(status_code: u16) -> OptimizerFailureType {
+    match status_code {
+        401 | 403 => OptimizerFailureType::Auth,
+        408 => OptimizerFailureType::Timeout,
+        409 | 425 | 429 => OptimizerFailureType::Backpressure,
+        402 => OptimizerFailureType::Quota,
+        500..=599 => OptimizerFailureType::Upstream,
+        _ => OptimizerFailureType::Http,
+    }
+}
+
+fn retryable_http_status(status_code: u16) -> bool {
+    matches!(status_code, 408 | 409 | 425 | 429 | 500..=599)
 }
 
 fn classify_container_message(message: &str) -> OptimizerFailureType {

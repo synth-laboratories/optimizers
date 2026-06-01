@@ -166,6 +166,20 @@ pub(crate) fn terminal_line_for_event(
         )),
         "runtime.job.completed" => Some(terminal_runtime_job_completed_line(fields)),
         "runtime.throughput.warning" => Some(terminal_runtime_throughput_warning_line(fields)),
+        "rollout.degraded" => Some(format!(
+            "  rollout degraded stage={} example_id={} reward=0.0 failure={} rolling_fail_rate={} tolerance={}",
+            field_str(fields, "stage").unwrap_or("-"),
+            field_str(fields, "example_id").unwrap_or("-"),
+            field_str(fields, "failure_class").unwrap_or("-"),
+            fmt_score(field_f64(fields, "rolling_failure_rate")),
+            fmt_score(field_f64(fields, "tolerance")),
+        )),
+        "rollout.circuit_breaker.tripped" => Some(format!(
+            "  run aborted: rollout infra failure rate {} exceeds tolerance {} (window={} rollouts)",
+            fmt_score(field_f64(fields, "rolling_failure_rate")),
+            fmt_score(field_f64(fields, "tolerance")),
+            field_usize(fields, "sample_count").unwrap_or(0),
+        )),
         "rollout.concurrency.adjusted" => Some(format!(
             "  adaptive rollout concurrency {} old={} new={} completed={} reason={}",
             field_str(fields, "direction").unwrap_or("-"),

@@ -148,12 +148,11 @@ impl ContainerClient {
         let status = response.status();
         let text = response.text()?;
         if !status.is_success() {
-            return Err(OptimizerError::Container(format!(
-                "{} failed with status {}: {}",
-                path,
-                status,
-                text.chars().take(1000).collect::<String>()
-            )));
+            return Err(OptimizerError::ContainerHttpStatus {
+                path: path.to_string(),
+                status_code: status.as_u16(),
+                body: text.chars().take(1000).collect::<String>(),
+            });
         }
         if text.trim().is_empty() {
             return Ok(Value::Object(Default::default()));

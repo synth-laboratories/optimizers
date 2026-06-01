@@ -2,7 +2,12 @@
 
 ## 2026-05-31
 
+* Published `0.2.0.dev202606010003` to PyPI with GEPA rollout resilience.
 * Published `0.2.0.dev202605312141` to PyPI.
+* Added typed 429 and container HTTP status handling for rollout failures.
+* Added degraded rollout accounting, failure-rate breaker events, and terminal job retries.
+* Added adaptive rollout concurrency backoff for provider overload.
+* Pinned the matching daily-dev `synth-containers` package for clean wheel installs.
 * Added typed GEPA SDK entrypoint: `OptimizerRun(GepaConfig(...)).execute()`.
 * Added URL-only `synth-containers` handoff via `ContainerConnection`.
 * Added container discovery for `program`, `objectives`, and `policy`.

@@ -10,6 +10,12 @@ pub enum OptimizerError {
     Config(String),
     #[error("container error: {0}")]
     Container(String),
+    #[error("container request {path} failed with status {status_code}: {body}")]
+    ContainerHttpStatus {
+        path: String,
+        status_code: u16,
+        body: String,
+    },
     #[error("proposer error: {0}")]
     Proposer(String),
     #[error("cache miss namespace={namespace} key={cache_key}")]
@@ -89,6 +95,7 @@ impl OptimizerError {
         match self {
             Self::Config(_) => "synth_optimizer_config_error",
             Self::Container(_) => "synth_optimizer_container_error",
+            Self::ContainerHttpStatus { .. } => "synth_optimizer_container_http_status",
             Self::Proposer(_) => "synth_optimizer_proposer_error",
             Self::CacheMiss { .. } => "synth_optimizer_cache_miss",
             Self::CacheFull { .. } => "synth_optimizer_cache_full",

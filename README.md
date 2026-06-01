@@ -9,21 +9,11 @@
 `synth-optimizers` provides a shared Rust optimizer core for running search
 algorithms against any task exposed through the
 [`synth-containers`](https://github.com/synth-laboratories/containers) HTTP
-contract. The platform owns the common machinery: container I/O, workspaces,
-cache profiles, budgets, telemetry, failure handling, and replayable evidence.
+contract.
 
-Algorithms build on that platform. The first public algorithm is
-[GEPA](https://gepa-ai.github.io/gepa/) — reflective prompt evolution
-([paper](https://arxiv.org/abs/2507.19457)). Point GEPA at a container and a
-TOML or `GepaConfig`; it proposes prompt changes, rolls them out, scores them,
-keeps a Pareto frontier, and returns a deployable candidate with replayable
-evidence.
-
-- **Shared platform core** — algorithm implementations reuse the same runtime, cache, event, budget, and failure-handling substrate.
-- **Algorithm layer** — GEPA is the first public optimizer; additional algorithms can plug into the same platform contract.
-- **Container boundary** — optimizers only speak HTTP. They never import your task code or see your model credentials.
-- **Inspectable runs** — every candidate carries its prompt diff, per-seed scores, rollout traces, cache profile, and usage.
-- **Rust core, thin Python** — the shared platform and GEPA engine are Rust (PyO3); configure runs with `GepaConfig` or TOML.
+- **Shared platform core** — reusable Rust machinery for container I/O, workspaces, cache profiles, budgets, telemetry, failure handling, and replayable evidence.
+- **Algorithm layer** — [GEPA](https://gepa-ai.github.io/gepa/) is the first public optimizer; future algorithms can plug into the same platform contract.
+- **GEPA runs today** — configure GEPA with TOML or `GepaConfig`; it proposes prompt changes, rolls them out, scores them, keeps a Pareto frontier, and emits inspectable run evidence.
 
 ## Supported algorithms
 

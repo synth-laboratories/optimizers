@@ -614,6 +614,7 @@ fn py_error(error: OptimizerError) -> PyErr {
     match error {
         OptimizerError::Config(_) => ConfigError::new_err(message),
         OptimizerError::Container(_) => ContainerContractError::new_err(message),
+        OptimizerError::ContainerHttpStatus { .. } => ContainerContractError::new_err(message),
         OptimizerError::Proposer(_) => ProposerError::new_err(message),
         OptimizerError::CacheMiss { .. } => CacheMissError::new_err(message),
         OptimizerError::CacheFull { .. } => CacheFullError::new_err(message),

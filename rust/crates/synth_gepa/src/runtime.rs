@@ -449,10 +449,7 @@ impl<'a> GepaRuntimeExecutor<'a> {
         lease_id: &str,
         error: &OptimizerError,
     ) -> Result<Option<OptimizerError>> {
-        if !matches!(
-            self.config.gepa.pipeline.mode,
-            GepaPipelineMode::AsyncPipelined
-        ) || !matches!(job.kind, OptimizerJobKind::Rollout)
+        if !matches!(job.kind, OptimizerJobKind::Rollout)
             || !is_retryable_rollout_runtime_error(error)
             || job.attempt >= job.retry_policy.max_attempts
         {
@@ -873,7 +870,14 @@ fn is_retryable_rollout_dispatch_error(error: &OptimizerError) -> bool {
 fn is_retryable_rollout_runtime_error(error: &OptimizerError) -> bool {
     matches!(
         error,
-        OptimizerError::Http(_) | OptimizerError::Container(_) | OptimizerError::Failed(_)
+        OptimizerError::Http(_)
+            | OptimizerError::Container(_)
+            | OptimizerError::ContainerHttpStatus {
+                status_code: 408 | 409 | 425 | 429 | 500..=599,
+                ..
+            }
+            | OptimizerError::Failed(_)
+            | OptimizerError::Json(_)
     )
 }
 

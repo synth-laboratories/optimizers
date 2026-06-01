@@ -47,6 +47,7 @@ use pipeline::{GepaAsyncPipelinedPlan, GepaPipelineRuntimePlan};
 use planner::{
     GepaAdaptiveRolloutConcurrencyAdjustment, GepaAsyncCandidatePartial, GepaAsyncLaneLease,
     GepaAsyncLaneWorkItem, GepaCursor, GepaCursorPhase, GepaRolloutChunkPartial,
+    GepaRolloutCircuitBreaker, GepaRolloutFailureSample, GepaRolloutResilienceState,
     GEPA_CURSOR_CHECKPOINT_KIND,
 };
 
@@ -220,6 +221,8 @@ struct EvaluationCall<'a> {
     workspace: &'a WorkspaceStore,
     paths: &'a ArtifactPaths,
     cache: &'a mut RequestCache,
+    events: &'a mut EventWriter,
+    rollout_resilience: &'a mut GepaRolloutResilienceState,
     cache_namespace: &'a str,
     config: &'a SynthOptimizerConfig,
     program: &'a PromptProgram,
@@ -563,6 +566,26 @@ struct StoredRolloutOutcome {
     dispatch_chunk_index: Option<usize>,
     #[serde(default)]
     dispatch_chunk_size: Option<usize>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct ProviderSignal {
+    #[serde(default)]
+    status_code: Option<u16>,
+    #[serde(default)]
+    provider_error_code: Option<String>,
+    #[serde(default)]
+    overload: bool,
+    #[serde(default)]
+    retryable: bool,
+}
+
+#[derive(Clone, Debug)]
+struct RolloutExecutionRecord {
+    outcome: runtime::RuntimeRolloutOutcome,
+    degraded: bool,
+    failure: Option<FailurePayload>,
+    provider_signal: ProviderSignal,
 }
 
 #[derive(Clone, Debug)]
@@ -2075,6 +2098,122 @@ fn consume_async_lane_work(
             OptimizerJobStatus::Failed
             | OptimizerJobStatus::Cancelled
             | OptimizerJobStatus::Expired => {
+                if let Some(outcome) =
+                    schedule_failed_rollout_retry_if_allowed(context, state, resources, &job)?
+                {
+                    if let Some(updated) =
+                        state.cursor.pipeline_state.lane_leases.get_mut(&lease_key)
+                    {
+                        updated.status = "retry_scheduled".to_string();
+                    }
+                    return Ok(Some(outcome));
+                }
+                if lease.lane == "rollout" {
+                    restore_async_partial_as_active(state, lease.partial_id.as_deref())?;
+                    state.cursor.pending_job_id = Some(job_id.clone());
+                    state.cursor.pending_effect_id = lease.effect_id.clone();
+                    state.cursor.pending_reservation_ids = lease.reservation_ids.clone();
+                    if consume_failed_rollout_job_as_degraded(context, state, resources, &job)? {
+                        state.cursor.pipeline_state.lane_leases.remove(&lease_key);
+                        state.cursor.pending_job_id = None;
+                        state.cursor.pending_effect_id = None;
+                        state.cursor.pending_reservation_ids.clear();
+                        if let Some(active) = state.active_evaluation.clone() {
+                            let partial_id = lease.partial_id.clone().unwrap_or_else(|| {
+                                async_partial_id(&active.stage, active.generation)
+                            });
+                            let chunk_id = lease
+                                .metadata
+                                .get("chunk_id")
+                                .and_then(Value::as_str)
+                                .map(str::to_string);
+                            let chunk_rows = lease
+                                .metadata
+                                .get("chunk_rows")
+                                .and_then(Value::as_u64)
+                                .unwrap_or(0);
+                            if let Some(chunk_id) =
+                                lease.metadata.get("chunk_id").and_then(Value::as_str)
+                            {
+                                if let Some(partial) = state
+                                    .cursor
+                                    .pipeline_state
+                                    .candidate_partials
+                                    .get_mut(&partial_id)
+                                {
+                                    if let Some(chunk) = partial.rollout_chunks.get_mut(chunk_id) {
+                                        chunk.status = "folded".to_string();
+                                        chunk.folded = true;
+                                    }
+                                }
+                            }
+                            context.events.emit(
+                                "rollout.chunk.finished",
+                                "Rollout chunk finished",
+                                json!({
+                                    "chunk_id": chunk_id,
+                                    "job_id": job_id,
+                                    "stage": active.stage,
+                                    "rows": chunk_rows,
+                                    "completed_rows": active_rollout_completed_rows(&active),
+                                    "total_rows": active_rollout_total_rows(&active),
+                                    "active_rollout_workers": async_lane_lease_count(state, "rollout").saturating_sub(1),
+                                    "degraded": true,
+                                }),
+                            )?;
+                            if active_rollout_evaluation_complete(&active) {
+                                upsert_async_partial_from_active(
+                                    state,
+                                    &partial_id,
+                                    "evaluate",
+                                    lease.parent_pool_version,
+                                )?;
+                                let item = async_work_item_from_active(
+                                    &active,
+                                    "evaluate",
+                                    lease.parent_pool_version,
+                                    Some(partial_id),
+                                )?;
+                                state.cursor.pipeline_state.evaluate_queue.push(item);
+                            } else {
+                                upsert_async_partial_from_active(
+                                    state,
+                                    &partial_id,
+                                    "rollout",
+                                    lease.parent_pool_version,
+                                )?;
+                                let item = async_work_item_from_active(
+                                    &active,
+                                    "rollout",
+                                    lease.parent_pool_version,
+                                    Some(partial_id),
+                                )?;
+                                state.cursor.pipeline_state.rollout_queue.push(item);
+                            }
+                        }
+                        state.active_evaluation = None;
+                        refresh_async_pipeline_cursor_state(context, state, plan);
+                        persist_gepa_run_state(
+                            context,
+                            state,
+                            resources,
+                            state.cursor.phase.clone(),
+                            "completed",
+                            "degraded async rollout runtime outcome",
+                            Map::new(),
+                        )?;
+                        return Ok(Some(GepaAdvanceOutcome {
+                            action: planner::GepaTickAction::ConsumeRuntimeOutcome {
+                                run_id: context.config.run.run_id.clone(),
+                                job_id,
+                            },
+                            terminal: false,
+                            result: None,
+                            message: "async-pipelined rollout: degraded failed runtime job"
+                                .to_string(),
+                        }));
+                    }
+                }
                 state.cursor.pipeline_state.lane_leases.clear();
                 state.cursor.pipeline_state.propose_queue.clear();
                 state.cursor.pipeline_state.rollout_queue.clear();
@@ -2816,6 +2955,15 @@ fn async_lane_lease_count(state: &GepaRunState, lane: &str) -> usize {
         .count()
 }
 
+fn async_job_has_lane_lease(state: &GepaRunState, job_id: &str) -> bool {
+    state
+        .cursor
+        .pipeline_state
+        .lane_leases
+        .values()
+        .any(|lease| lease.job_id.as_deref() == Some(job_id))
+}
+
 fn ensure_adaptive_rollout_concurrency_state(
     state: &mut GepaRunState,
     plan: &GepaAsyncPipelinedPlan,
@@ -2881,6 +3029,264 @@ fn runtime_rollout_success_count(outcome: &runtime::RuntimeEffectOutcome) -> usi
     }
 }
 
+fn provider_signal_from_error(
+    config: &SynthOptimizerConfig,
+    error: &OptimizerError,
+) -> ProviderSignal {
+    let status_code = match error {
+        OptimizerError::ContainerHttpStatus { status_code, .. } => Some(*status_code),
+        OptimizerError::Http(error) => error.status().map(|status| status.as_u16()),
+        _ => http_status_from_error_text(&error.to_string()),
+    };
+    let overload = status_code.is_some_and(|status| {
+        config
+            .gepa
+            .pipeline
+            .adaptive_rollout_concurrency
+            .overload_status_codes
+            .contains(&status)
+    }) || fallback_error_text_is_overload(error);
+    ProviderSignal {
+        status_code,
+        provider_error_code: None,
+        overload,
+        retryable: rollout_error_is_retryable(error),
+    }
+}
+
+fn provider_signal_from_failure(
+    config: &SynthOptimizerConfig,
+    failure: Option<&FailurePayload>,
+) -> ProviderSignal {
+    let status_code = failure
+        .and_then(|failure| failure.details.get("status"))
+        .and_then(Value::as_u64)
+        .and_then(|status| u16::try_from(status).ok())
+        .or_else(|| failure.and_then(|failure| http_status_from_error_text(&failure.message)));
+    let overload = status_code.is_some_and(|status| {
+        config
+            .gepa
+            .pipeline
+            .adaptive_rollout_concurrency
+            .overload_status_codes
+            .contains(&status)
+    });
+    ProviderSignal {
+        status_code,
+        provider_error_code: failure.map(|failure| failure.reason_code.clone()),
+        overload,
+        retryable: failure.is_some_and(|failure| failure.retryable),
+    }
+}
+
+fn fallback_error_text_is_overload(error: &OptimizerError) -> bool {
+    let lowered = error.to_string().to_ascii_lowercase();
+    [
+        "429",
+        "rate limit",
+        "rate_limit",
+        "overload",
+        "overloaded",
+        "too many requests",
+        "temporarily unavailable",
+    ]
+    .iter()
+    .any(|needle| lowered.contains(needle))
+}
+
+fn http_status_from_error_text(text: &str) -> Option<u16> {
+    let lowered = text.to_ascii_lowercase();
+    for marker in ["httpexception", "http status", "status_code", "status"] {
+        let Some(index) = lowered.find(marker) else {
+            continue;
+        };
+        let tail = &lowered[index + marker.len()..];
+        for token in tail.split(|ch: char| !ch.is_ascii_digit()) {
+            if token.len() != 3 {
+                continue;
+            }
+            let Ok(status) = token.parse::<u16>() else {
+                continue;
+            };
+            if (400..=599).contains(&status) {
+                return Some(status);
+            }
+        }
+    }
+    None
+}
+
+fn rollout_error_is_retryable(error: &OptimizerError) -> bool {
+    matches!(
+        error,
+        OptimizerError::Http(_)
+            | OptimizerError::Container(_)
+            | OptimizerError::ContainerHttpStatus {
+                status_code: 408 | 409 | 425 | 429 | 500..=599,
+                ..
+            }
+            | OptimizerError::Failed(_)
+            | OptimizerError::Json(_)
+    )
+}
+
+fn rollout_error_is_degradable(error: &OptimizerError) -> bool {
+    rollout_error_is_retryable(error)
+}
+
+fn emit_rollout_failure_rate(
+    config: &SynthOptimizerConfig,
+    events: &mut Option<&mut EventWriter>,
+    sample: &GepaRolloutFailureSample,
+    resilience: &GepaRolloutResilienceState,
+) -> Result<()> {
+    if let Some(events) = events.as_deref_mut() {
+        events.emit(
+            "rollout.failure_rate.updated",
+            "Rollout failure rate updated",
+            json!({
+                "stage": sample.stage,
+                "example_id": sample.example_id,
+                "infra_failed": sample.infra_failed,
+                "failure_class": sample.failure_class,
+                "provider_status_code": sample.provider_status_code,
+                "rolling_failure_rate": resilience.last_failure_rate,
+                "sample_count": resilience.rolling_samples.len(),
+                "tolerance": config.gepa.rollout_failure_rate_tolerance,
+                "degraded_rollouts": resilience.degraded_rollouts,
+                "scored_rollouts": resilience.scored_rollouts,
+            }),
+        )?;
+    }
+    Ok(())
+}
+
+struct RolloutResilienceObservation<'a> {
+    stage: &'a str,
+    example_id: &'a str,
+    degraded: bool,
+    failure: Option<&'a FailurePayload>,
+    provider_signal: &'a ProviderSignal,
+}
+
+fn record_rollout_resilience_sample(
+    config: &SynthOptimizerConfig,
+    mut events: Option<&mut EventWriter>,
+    resilience: &mut GepaRolloutResilienceState,
+    observation: RolloutResilienceObservation<'_>,
+) -> Result<()> {
+    let sample = GepaRolloutFailureSample {
+        infra_failed: observation.degraded,
+        stage: observation.stage.to_string(),
+        example_id: observation.example_id.to_string(),
+        failure_class: observation
+            .failure
+            .map(|failure| failure.failure_class().to_string()),
+        provider_status_code: observation.provider_signal.status_code,
+    };
+    resilience.rolling_samples.push(sample.clone());
+    if resilience.rolling_samples.len() > 32 {
+        resilience.rolling_samples.remove(0);
+    }
+    if observation.degraded {
+        resilience.degraded_rollouts = resilience.degraded_rollouts.saturating_add(1);
+    } else {
+        resilience.scored_rollouts = resilience.scored_rollouts.saturating_add(1);
+    }
+    let failed = resilience
+        .rolling_samples
+        .iter()
+        .filter(|sample| sample.infra_failed)
+        .count();
+    resilience.last_failure_rate = if resilience.rolling_samples.is_empty() {
+        0.0
+    } else {
+        failed as f64 / resilience.rolling_samples.len() as f64
+    };
+    emit_rollout_failure_rate(config, &mut events, &sample, resilience)?;
+    if observation.degraded {
+        if let Some(events) = &mut events {
+            events.emit(
+                "rollout.degraded",
+                "Rollout degraded",
+                json!({
+                    "stage": observation.stage,
+                    "example_id": observation.example_id,
+                    "reward": 0.0,
+                    "failure_class": observation.failure.map(FailurePayload::failure_class),
+                    "provider_status_code": observation.provider_signal.status_code,
+                    "rolling_failure_rate": resilience.last_failure_rate,
+                    "tolerance": config.gepa.rollout_failure_rate_tolerance,
+                }),
+            )?;
+        }
+    }
+    let tolerance = config.gepa.rollout_failure_rate_tolerance;
+    if resilience.rolling_samples.len() >= 8 && resilience.last_failure_rate > tolerance {
+        let breaker = GepaRolloutCircuitBreaker {
+            rolling_rate: resilience.last_failure_rate,
+            tolerance,
+            sample_count: resilience.rolling_samples.len(),
+            reason: "rolling_failure_rate_exceeded".to_string(),
+        };
+        resilience.last_circuit_breaker = Some(breaker.clone());
+        if let Some(events) = &mut events {
+            events.emit(
+                "rollout.circuit_breaker.tripped",
+                "Rollout circuit breaker tripped",
+                json!({
+                    "rolling_failure_rate": breaker.rolling_rate,
+                    "tolerance": breaker.tolerance,
+                    "sample_count": breaker.sample_count,
+                    "reason": breaker.reason,
+                }),
+            )?;
+        }
+        return Err(OptimizerError::Failed(format!(
+            "rollout infra failure rate {:.2} exceeds tolerance {:.2} (window={} rollouts)",
+            breaker.rolling_rate, breaker.tolerance, breaker.sample_count
+        )));
+    }
+    Ok(())
+}
+
+fn check_rollout_section_breaker(
+    config: &SynthOptimizerConfig,
+    events: Option<&mut EventWriter>,
+    resilience: &mut GepaRolloutResilienceState,
+    stage: &str,
+    scored_count: usize,
+    degraded_count: usize,
+) -> Result<()> {
+    if scored_count == 0 && degraded_count >= 2 {
+        let breaker = GepaRolloutCircuitBreaker {
+            rolling_rate: resilience.last_failure_rate,
+            tolerance: config.gepa.rollout_failure_rate_tolerance,
+            sample_count: resilience.rolling_samples.len(),
+            reason: "section_zero_scored_rollouts".to_string(),
+        };
+        resilience.last_circuit_breaker = Some(breaker.clone());
+        if let Some(events) = events {
+            events.emit(
+                "rollout.circuit_breaker.tripped",
+                "Rollout circuit breaker tripped",
+                json!({
+                    "stage": stage,
+                    "rolling_failure_rate": breaker.rolling_rate,
+                    "tolerance": breaker.tolerance,
+                    "sample_count": breaker.sample_count,
+                    "reason": breaker.reason,
+                    "degraded_count": degraded_count,
+                }),
+            )?;
+        }
+        return Err(OptimizerError::Failed(format!(
+            "rollout section {stage} produced zero scored rollouts ({degraded_count} degraded)"
+        )));
+    }
+    Ok(())
+}
+
 fn record_adaptive_rollout_success(
     context: &mut GepaRunContext,
     state: &mut GepaRunState,
@@ -2903,8 +3309,9 @@ fn record_adaptive_rollout_success(
         return Ok(());
     }
     let old_limit = adaptive_state.current_limit;
-    let new_limit = old_limit
-        .saturating_add(adaptive.increase_step)
+    let new_limit = ((old_limit as f64) * 1.10).ceil() as usize;
+    let new_limit = new_limit
+        .max(old_limit.saturating_add(1))
         .clamp(adaptive.min, adaptive.max);
     adaptive_state.successes_since_adjustment = 0;
     if new_limit == old_limit {
@@ -2916,7 +3323,7 @@ fn record_adaptive_rollout_success(
         old_limit,
         new_limit,
         reason: format!(
-            "healthy_after_{}_rollout_successes",
+            "multiplicative_healthy_after_{}_rollout_successes",
             adaptive.increase_after_successes
         ),
         completed_rollouts: adaptive_state.completed_rollouts,
@@ -2934,40 +3341,20 @@ fn record_adaptive_rollout_success(
             "old_limit": adjustment.old_limit,
             "new_limit": adjustment.new_limit,
             "reason": adjustment.reason,
+            "adjustment_mode": "multiplicative",
             "completed_rollouts": adjustment.completed_rollouts,
         }),
     )?;
     Ok(())
 }
 
-fn adaptive_error_is_overload(error_text: &str, plan: &GepaAsyncPipelinedPlan) -> bool {
-    let lowered = error_text.to_ascii_lowercase();
-    plan.adaptive_rollout_concurrency
-        .overload_status_codes
-        .iter()
-        .any(|status| lowered.contains(&status.to_string()))
-        || [
-            "rate limit",
-            "rate_limit",
-            "overload",
-            "overloaded",
-            "too many requests",
-            "temporarily unavailable",
-            "gateway timeout",
-            "timed out",
-            "timeout",
-        ]
-        .iter()
-        .any(|needle| lowered.contains(needle))
-}
-
 fn record_adaptive_rollout_overload(
     context: &mut GepaRunContext,
     state: &mut GepaRunState,
     plan: &GepaAsyncPipelinedPlan,
-    error_text: &str,
+    provider_signal: &ProviderSignal,
 ) -> Result<()> {
-    if !plan.adaptive_rollout_concurrency.enabled || !adaptive_error_is_overload(error_text, plan) {
+    if !plan.adaptive_rollout_concurrency.enabled || !provider_signal.overload {
         return Ok(());
     }
     ensure_adaptive_rollout_concurrency_state(state, plan);
@@ -2976,9 +3363,8 @@ fn record_adaptive_rollout_overload(
     adaptive_state.overload_count = adaptive_state.overload_count.saturating_add(1);
     adaptive_state.successes_since_adjustment = 0;
     let old_limit = adaptive_state.current_limit;
-    let new_limit = old_limit
-        .saturating_sub(adaptive.decrease_step)
-        .clamp(adaptive.min, adaptive.max);
+    let new_limit = ((old_limit as f64) * 0.50).floor() as usize;
+    let new_limit = new_limit.clamp(adaptive.min, adaptive.max);
     if new_limit == old_limit {
         return Ok(());
     }
@@ -2987,7 +3373,7 @@ fn record_adaptive_rollout_overload(
         direction: "down".to_string(),
         old_limit,
         new_limit,
-        reason: "provider_overload_or_timeout".to_string(),
+        reason: "provider_overload".to_string(),
         completed_rollouts: adaptive_state.completed_rollouts,
     };
     adaptive_state.last_adjustment = Some(adjustment.clone());
@@ -3004,7 +3390,9 @@ fn record_adaptive_rollout_overload(
             "new_limit": adjustment.new_limit,
             "reason": adjustment.reason,
             "completed_rollouts": adjustment.completed_rollouts,
-            "error": error_text.chars().take(240).collect::<String>(),
+            "adjustment_mode": "multiplicative",
+            "provider_status_code": provider_signal.status_code,
+            "provider_error_code": provider_signal.provider_error_code,
         }),
     )?;
     Ok(())
@@ -3352,6 +3740,18 @@ fn advance_pending_runtime_job(
         .optimizer_job(&context.config.run.run_id, job_id)?;
     match job.status {
         OptimizerJobStatus::Pending | OptimizerJobStatus::RetryScheduled => {
+            if matches!(job.status, OptimizerJobStatus::RetryScheduled)
+                && !context
+                    .workspace
+                    .optimizer_job_claimable(&context.config.run.run_id, job_id)?
+            {
+                return Ok(GepaAdvanceOutcome {
+                    action: planner::GepaTickAction::Noop,
+                    terminal: false,
+                    result: None,
+                    message: format!("GEPA runtime job retry not ready: {job_id}"),
+                });
+            }
             let runtime_started = Instant::now();
             let outcome = match runtime::execute_one_pending_optimizer_job_from_run_workspace(
                 &context.workspace,
@@ -3366,11 +3766,13 @@ fn advance_pending_runtime_job(
                 Err(error) => {
                     if let Some(plan) = async_plan {
                         if job.payload.get("lane").and_then(Value::as_str) == Some("rollout") {
+                            let provider_signal =
+                                provider_signal_from_error(&context.config, &error);
                             record_adaptive_rollout_overload(
                                 context,
                                 state,
                                 plan,
-                                &error.to_string(),
+                                &provider_signal,
                             )?;
                         }
                     }
@@ -3399,6 +3801,69 @@ fn advance_pending_runtime_job(
                             });
                         }
                         if updated_job.status.is_terminal() {
+                            if let Some(outcome) = schedule_failed_rollout_retry_if_allowed(
+                                context,
+                                state,
+                                resources,
+                                &updated_job,
+                            )? {
+                                return Ok(outcome);
+                            }
+                            if async_plan.is_some()
+                                && async_job_has_lane_lease(state, &updated_job.job_id)
+                                && matches!(updated_job.kind, OptimizerJobKind::Rollout)
+                            {
+                                persist_gepa_run_state(
+                                    context,
+                                    state,
+                                    resources,
+                                    state.cursor.phase.clone(),
+                                    "runtime_job_failed_pending_degrade",
+                                    "rollout runtime job failed and is pending degradation",
+                                    Map::new(),
+                                )?;
+                                return Ok(GepaAdvanceOutcome {
+                                    action: planner::GepaTickAction::ExecuteRuntimeJob {
+                                        run_id: context.config.run.run_id.clone(),
+                                        job_id: updated_job.job_id,
+                                    },
+                                    terminal: false,
+                                    result: None,
+                                    message:
+                                        "rollout runtime job failed and is pending degradation"
+                                            .to_string(),
+                                });
+                            }
+                            if matches!(updated_job.kind, OptimizerJobKind::Rollout)
+                                && consume_failed_rollout_job_as_degraded(
+                                    context,
+                                    state,
+                                    resources,
+                                    &updated_job,
+                                )?
+                            {
+                                state.cursor.pending_job_id = None;
+                                state.cursor.pending_effect_id = None;
+                                state.cursor.pending_reservation_ids.clear();
+                                persist_gepa_run_state(
+                                    context,
+                                    state,
+                                    resources,
+                                    state.cursor.phase.clone(),
+                                    "completed",
+                                    "degraded failed rollout runtime job",
+                                    Map::new(),
+                                )?;
+                                return Ok(GepaAdvanceOutcome {
+                                    action: planner::GepaTickAction::ConsumeRuntimeOutcome {
+                                        run_id: context.config.run.run_id.clone(),
+                                        job_id: updated_job.job_id,
+                                    },
+                                    terminal: false,
+                                    result: None,
+                                    message: "degraded failed rollout runtime job".to_string(),
+                                });
+                            }
                             return consume_failed_runtime_job(
                                 context,
                                 state,
@@ -3456,7 +3921,40 @@ fn advance_pending_runtime_job(
         }
         OptimizerJobStatus::Failed
         | OptimizerJobStatus::Cancelled
-        | OptimizerJobStatus::Expired => consume_failed_runtime_job(context, state, resources, job),
+        | OptimizerJobStatus::Expired => {
+            if let Some(outcome) =
+                schedule_failed_rollout_retry_if_allowed(context, state, resources, &job)?
+            {
+                return Ok(outcome);
+            }
+            if matches!(job.kind, OptimizerJobKind::Rollout)
+                && consume_failed_rollout_job_as_degraded(context, state, resources, &job)?
+            {
+                state.cursor.pending_job_id = None;
+                state.cursor.pending_effect_id = None;
+                state.cursor.pending_reservation_ids.clear();
+                persist_gepa_run_state(
+                    context,
+                    state,
+                    resources,
+                    state.cursor.phase.clone(),
+                    "completed",
+                    "degraded failed rollout runtime job",
+                    Map::new(),
+                )?;
+                Ok(GepaAdvanceOutcome {
+                    action: planner::GepaTickAction::ConsumeRuntimeOutcome {
+                        run_id: context.config.run.run_id.clone(),
+                        job_id: job.job_id,
+                    },
+                    terminal: false,
+                    result: None,
+                    message: "degraded failed rollout runtime job".to_string(),
+                })
+            } else {
+                consume_failed_runtime_job(context, state, resources, job)
+            }
+        }
         _ => Ok(GepaAdvanceOutcome {
             action: planner::GepaTickAction::Noop,
             terminal: false,
@@ -4759,12 +5257,36 @@ fn consume_completed_runtime_job(
             ..
         } => {
             consume_rollout_outcome(
-                context, state, resources, None, response, reward, usage, cost_usd, cache_key,
-                cache_hit, stage, example_id,
+                context,
+                state,
+                resources,
+                None,
+                response,
+                reward,
+                usage,
+                cost_usd,
+                cache_key,
+                cache_hit,
+                stage.clone(),
+                example_id.clone(),
+            )?;
+            record_rollout_resilience_sample(
+                &context.config,
+                Some(&mut context.events),
+                &mut state.cursor.pipeline_state.rollout_resilience,
+                RolloutResilienceObservation {
+                    stage: &stage,
+                    example_id: &example_id,
+                    degraded: false,
+                    failure: None,
+                    provider_signal: &ProviderSignal::default(),
+                },
             )?;
         }
         StoredRuntimeOutcome::RolloutBatch { outcomes } => {
             for outcome in outcomes {
+                let stage = outcome.stage.clone();
+                let example_id = outcome.example_id.clone();
                 consume_rollout_outcome(
                     context,
                     state,
@@ -4778,6 +5300,18 @@ fn consume_completed_runtime_job(
                     outcome.cache_hit,
                     outcome.stage,
                     outcome.example_id,
+                )?;
+                record_rollout_resilience_sample(
+                    &context.config,
+                    Some(&mut context.events),
+                    &mut state.cursor.pipeline_state.rollout_resilience,
+                    RolloutResilienceObservation {
+                        stage: &stage,
+                        example_id: &example_id,
+                        degraded: false,
+                        failure: None,
+                        provider_signal: &ProviderSignal::default(),
+                    },
                 )?;
             }
         }
@@ -4809,6 +5343,178 @@ fn consume_completed_runtime_job(
         result: None,
         message: "consumed GEPA runtime outcome".to_string(),
     })
+}
+
+fn consume_failed_rollout_job_as_degraded(
+    context: &mut GepaRunContext,
+    state: &mut GepaRunState,
+    resources: &GepaStepResources,
+    job: &OptimizerJob,
+) -> Result<bool> {
+    if !matches!(job.kind, OptimizerJobKind::Rollout)
+        || matches!(job.status, OptimizerJobStatus::Cancelled)
+    {
+        return Ok(false);
+    }
+    let failure = job.failure.clone().unwrap_or_else(|| {
+        FailurePayload::from_optimizer_error(&OptimizerError::Failed(format!(
+            "GEPA runtime job {} {}",
+            job.job_id,
+            job.status.as_str()
+        )))
+    });
+    if !failure.retryable {
+        return Ok(false);
+    }
+    let provider_signal = provider_signal_from_failure(&context.config, Some(&failure));
+    let dispatch = runtime::RuntimeEffectDispatchPayload::from_job(job)?;
+    match dispatch.dispatch {
+        runtime::RuntimeEffectDispatchKind::Rollout {
+            candidate_id,
+            stage,
+            example_id,
+            ..
+        } => {
+            let cache_key = job
+                .payload
+                .get("cache_key")
+                .and_then(Value::as_str)
+                .unwrap_or(&job.job_id)
+                .to_string();
+            let outcome = degraded_runtime_rollout_outcome_for_cache_key(
+                &candidate_id,
+                &stage,
+                &example_id,
+                &cache_key,
+                &failure,
+                &provider_signal,
+            )?;
+            consume_rollout_outcome(
+                context,
+                state,
+                resources,
+                None,
+                outcome.response,
+                outcome.reward,
+                outcome.usage,
+                outcome.cost_usd,
+                outcome.cache_key,
+                outcome.cache_hit,
+                outcome.stage.clone(),
+                outcome.example_id.clone(),
+            )?;
+            record_rollout_resilience_sample(
+                &context.config,
+                Some(&mut context.events),
+                &mut state.cursor.pipeline_state.rollout_resilience,
+                RolloutResilienceObservation {
+                    stage: &stage,
+                    example_id: &example_id,
+                    degraded: true,
+                    failure: Some(&failure),
+                    provider_signal: &provider_signal,
+                },
+            )?;
+        }
+        runtime::RuntimeEffectDispatchKind::RolloutBatch {
+            cache_profile,
+            rollouts,
+            ..
+        } => {
+            for (idx, rollout) in rollouts.into_iter().enumerate() {
+                let cache_key = format!("{}:{}:{}", job.job_id, cache_profile, idx);
+                let outcome = degraded_runtime_rollout_outcome_for_cache_key(
+                    &rollout.candidate_id,
+                    &rollout.stage,
+                    &rollout.example_id,
+                    &cache_key,
+                    &failure,
+                    &provider_signal,
+                )?;
+                consume_rollout_outcome(
+                    context,
+                    state,
+                    resources,
+                    Some(outcome.candidate_id.clone()),
+                    outcome.response,
+                    outcome.reward,
+                    outcome.usage,
+                    outcome.cost_usd,
+                    outcome.cache_key,
+                    outcome.cache_hit,
+                    outcome.stage.clone(),
+                    outcome.example_id.clone(),
+                )?;
+                record_rollout_resilience_sample(
+                    &context.config,
+                    Some(&mut context.events),
+                    &mut state.cursor.pipeline_state.rollout_resilience,
+                    RolloutResilienceObservation {
+                        stage: &rollout.stage,
+                        example_id: &rollout.example_id,
+                        degraded: true,
+                        failure: Some(&failure),
+                        provider_signal: &provider_signal,
+                    },
+                )?;
+            }
+        }
+        runtime::RuntimeEffectDispatchKind::Proposer { .. } => return Ok(false),
+    }
+    Ok(true)
+}
+
+fn schedule_failed_rollout_retry_if_allowed(
+    context: &mut GepaRunContext,
+    state: &mut GepaRunState,
+    resources: &GepaStepResources,
+    job: &OptimizerJob,
+) -> Result<Option<GepaAdvanceOutcome>> {
+    if !matches!(job.kind, OptimizerJobKind::Rollout)
+        || matches!(job.status, OptimizerJobStatus::Cancelled)
+    {
+        return Ok(None);
+    }
+    let failure = job.failure.clone().unwrap_or_else(|| {
+        FailurePayload::from_optimizer_error(&OptimizerError::Failed(format!(
+            "GEPA runtime job {} {}",
+            job.job_id,
+            job.status.as_str()
+        )))
+    });
+    if !failure.retryable || job.attempt >= job.retry_policy.max_attempts {
+        return Ok(None);
+    }
+    let backoff_seconds = rollout_retry_backoff_seconds(job);
+    let Some(updated) = context.workspace.schedule_terminal_optimizer_job_retry(
+        &job.run_id,
+        &job.job_id,
+        backoff_seconds,
+        &failure,
+    )?
+    else {
+        return Ok(None);
+    };
+    persist_gepa_run_state(
+        context,
+        state,
+        resources,
+        state.cursor.phase.clone(),
+        "retry_scheduled",
+        "scheduled GEPA failed rollout job retry",
+        Map::new(),
+    )?;
+    Ok(Some(GepaAdvanceOutcome {
+        action: planner::GepaTickAction::Noop,
+        terminal: false,
+        result: None,
+        message: format!(
+            "scheduled GEPA failed rollout job retry: {} attempt={}/{}",
+            updated.job_id,
+            updated.attempt.saturating_add(1),
+            updated.retry_policy.max_attempts
+        ),
+    }))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -8649,6 +9355,7 @@ fn execute_gepa_monolithic_with_options(
     let mut stopper_states = Vec::new();
     let mut stopper_sequence = restored_cursor.stopper_sequence;
     let mut checkpoint_sequence = restored_cursor.checkpoint_sequence;
+    let mut rollout_resilience = GepaRolloutResilienceState::default();
     if !seed_restored {
         let mut metadata = Map::new();
         metadata.insert("stage".to_string(), Value::String("run_start".to_string()));
@@ -8847,6 +9554,8 @@ fn execute_gepa_monolithic_with_options(
             workspace: &workspace,
             paths: &paths,
             cache: &mut cache,
+            events: &mut events,
+            rollout_resilience: &mut rollout_resilience,
             cache_namespace: &cache_namespace,
             config: &config,
             program: &program,
@@ -9431,6 +10140,8 @@ fn execute_gepa_monolithic_with_options(
                     workspace: &workspace,
                     paths: &paths,
                     cache: &mut cache,
+                    events: &mut events,
+                    rollout_resilience: &mut rollout_resilience,
                     cache_namespace: &cache_namespace,
                     config: &config,
                     program: &program,
@@ -9625,6 +10336,8 @@ fn execute_gepa_monolithic_with_options(
                 workspace: &workspace,
                 paths: &paths,
                 cache: &mut cache,
+                events: &mut events,
+                rollout_resilience: &mut rollout_resilience,
                 cache_namespace: &cache_namespace,
                 config: &config,
                 program: &program,
@@ -9912,6 +10625,8 @@ fn execute_gepa_monolithic_with_options(
                 workspace: &workspace,
                 paths: &paths,
                 cache: &mut cache,
+                events: &mut events,
+                rollout_resilience: &mut rollout_resilience,
                 cache_namespace: &cache_namespace,
                 config: &config,
                 program: &program,
@@ -10360,6 +11075,8 @@ fn execute_gepa_monolithic_with_options(
                 workspace: &workspace,
                 paths: &paths,
                 cache: &mut cache,
+                events: &mut events,
+                rollout_resilience: &mut rollout_resilience,
                 cache_namespace: &cache_namespace,
                 config: &config,
                 program: &program,
@@ -13782,6 +14499,7 @@ fn record_runtime_effect_job(
             job.lease_expires_at = existing.lease_expires_at;
             job.heartbeat_at = existing.heartbeat_at;
             job.next_retry_at = existing.next_retry_at;
+            job.attempt = existing.attempt;
             job.retry_policy = existing.retry_policy;
             job.payload = existing.payload;
         }
@@ -14062,6 +14780,8 @@ fn evaluate_candidate(call: EvaluationCall<'_>) -> Result<CandidateEvaluation> {
     let mut cost_usd = 0.0;
     let mut scores = Vec::new();
     let mut sensor_frames = Vec::new();
+    let mut section_scored = 0usize;
+    let mut section_degraded = 0usize;
     for row in call.rows {
         check_cancelled(call.cancellation)?;
         let task_id = row_task_id(row);
@@ -14135,31 +14855,36 @@ fn evaluate_candidate(call: EvaluationCall<'_>) -> Result<CandidateEvaluation> {
                 metadata: effect_metadata,
             },
         )?;
-        let rollout_call = {
-            match runtime::execute_one_pending_optimizer_job_from_run_workspace(
-                call.workspace,
-                call.cache,
-                call.config,
-                call.client,
-                &queued_effect.effect.run_id,
-                &queued_effect.job.job_id,
-                runtime::RuntimeEffectExecutorConfig::inline_default(),
-            )? {
-                runtime::RuntimeEffectOutcome::Rollout(outcome) => outcome,
-                runtime::RuntimeEffectOutcome::Proposer(_) => {
-                    return Err(OptimizerError::Invariant(format!(
-                        "rollout runtime effect returned proposer outcome job_id={}",
-                        queued_effect.job.job_id
-                    )));
-                }
-                runtime::RuntimeEffectOutcome::RolloutBatch(_) => {
-                    return Err(OptimizerError::Invariant(format!(
-                        "single rollout runtime effect returned batch outcome job_id={}",
-                        queued_effect.job.job_id
-                    )));
-                }
-            }
-        };
+        let rollout_execution = execute_sync_rollout_job(
+            call.workspace,
+            call.cache,
+            call.config,
+            call.client,
+            &queued_effect,
+            RolloutExecutionIdentity {
+                candidate_id: &call.candidate.candidate_id,
+                stage: call.stage,
+                example_id: &example_id,
+            },
+        )?;
+        if rollout_execution.degraded {
+            section_degraded = section_degraded.saturating_add(1);
+        } else {
+            section_scored = section_scored.saturating_add(1);
+        }
+        record_rollout_resilience_sample(
+            call.config,
+            Some(&mut *call.events),
+            call.rollout_resilience,
+            RolloutResilienceObservation {
+                stage: call.stage,
+                example_id: &example_id,
+                degraded: rollout_execution.degraded,
+                failure: rollout_execution.failure.as_ref(),
+                provider_signal: &rollout_execution.provider_signal,
+            },
+        )?;
+        let rollout_call = rollout_execution.outcome;
         let response = rollout_call.response.clone();
         let typed_response = rollout_call.typed_response.clone();
         let reward = rollout_call.reward;
@@ -14248,6 +14973,14 @@ fn evaluate_candidate(call: EvaluationCall<'_>) -> Result<CandidateEvaluation> {
         cost_usd += rollout_call.cost_usd;
     }
     let rollout_count = call.rows.len();
+    check_rollout_section_breaker(
+        call.config,
+        Some(&mut *call.events),
+        call.rollout_resilience,
+        call.stage,
+        section_scored,
+        section_degraded,
+    )?;
     Ok(CandidateEvaluation {
         average_reward: if rollout_count == 0 {
             0.0
@@ -14260,6 +14993,228 @@ fn evaluate_candidate(call: EvaluationCall<'_>) -> Result<CandidateEvaluation> {
         scores,
         sensor_frames,
     })
+}
+
+struct RolloutExecutionIdentity<'a> {
+    candidate_id: &'a str,
+    stage: &'a str,
+    example_id: &'a str,
+}
+
+fn execute_sync_rollout_job(
+    workspace: &WorkspaceStore,
+    cache: &mut RequestCache,
+    config: &SynthOptimizerConfig,
+    client: &ContainerClient,
+    queued_effect: &runtime::QueuedRuntimeEffect,
+    identity: RolloutExecutionIdentity<'_>,
+) -> Result<RolloutExecutionRecord> {
+    loop {
+        match runtime::execute_one_pending_optimizer_job_from_run_workspace(
+            workspace,
+            cache,
+            config,
+            client,
+            &queued_effect.effect.run_id,
+            &queued_effect.job.job_id,
+            runtime::RuntimeEffectExecutorConfig::inline_default(),
+        ) {
+            Ok(runtime::RuntimeEffectOutcome::Rollout(outcome)) => {
+                return Ok(RolloutExecutionRecord {
+                    outcome: *outcome,
+                    degraded: false,
+                    failure: None,
+                    provider_signal: ProviderSignal::default(),
+                });
+            }
+            Ok(runtime::RuntimeEffectOutcome::Proposer(_)) => {
+                return Err(OptimizerError::Invariant(format!(
+                    "rollout runtime effect returned proposer outcome job_id={}",
+                    queued_effect.job.job_id
+                )));
+            }
+            Ok(runtime::RuntimeEffectOutcome::RolloutBatch(_)) => {
+                return Err(OptimizerError::Invariant(format!(
+                    "single rollout runtime effect returned batch outcome job_id={}",
+                    queued_effect.job.job_id
+                )));
+            }
+            Err(error) => {
+                let provider_signal = provider_signal_from_error(config, &error);
+                let updated_job = workspace
+                    .optimizer_job(&queued_effect.effect.run_id, &queued_effect.job.job_id)?;
+                if matches!(updated_job.status, OptimizerJobStatus::RetryScheduled) {
+                    sleep_for_retry_scheduled_job(&updated_job);
+                    continue;
+                }
+                if updated_job.status.is_terminal() {
+                    let failure = updated_job
+                        .failure
+                        .clone()
+                        .unwrap_or_else(|| FailurePayload::from_optimizer_error(&error));
+                    if failure.retryable
+                        && updated_job.attempt < updated_job.retry_policy.max_attempts
+                    {
+                        if let Some(retry_job) = workspace.schedule_terminal_optimizer_job_retry(
+                            &updated_job.run_id,
+                            &updated_job.job_id,
+                            rollout_retry_backoff_seconds(&updated_job),
+                            &failure,
+                        )? {
+                            sleep_for_retry_scheduled_job(&retry_job);
+                            continue;
+                        }
+                    }
+                    if !failure.retryable && !rollout_error_is_degradable(&error) {
+                        return Err(error);
+                    }
+                    let provider_signal = if provider_signal.status_code.is_some()
+                        || provider_signal.overload
+                        || provider_signal.retryable
+                    {
+                        provider_signal
+                    } else {
+                        provider_signal_from_failure(config, Some(&failure))
+                    };
+                    let outcome = degraded_runtime_rollout_outcome(
+                        queued_effect,
+                        identity.candidate_id,
+                        identity.stage,
+                        identity.example_id,
+                        &failure,
+                        &provider_signal,
+                    )?;
+                    return Ok(RolloutExecutionRecord {
+                        outcome,
+                        degraded: true,
+                        failure: Some(failure),
+                        provider_signal,
+                    });
+                }
+                return Err(error);
+            }
+        }
+    }
+}
+
+fn sleep_for_retry_scheduled_job(job: &OptimizerJob) {
+    thread::sleep(Duration::from_secs(rollout_retry_backoff_seconds(job)));
+}
+
+fn rollout_retry_backoff_seconds(job: &OptimizerJob) -> u64 {
+    let exponent = job.attempt.saturating_sub(1).min(8);
+    job.retry_policy
+        .backoff_seconds
+        .saturating_mul(1_u64 << exponent)
+        .max(1)
+}
+
+fn degraded_runtime_rollout_outcome(
+    queued_effect: &runtime::QueuedRuntimeEffect,
+    candidate_id: &str,
+    stage: &str,
+    example_id: &str,
+    failure: &FailurePayload,
+    provider_signal: &ProviderSignal,
+) -> Result<runtime::RuntimeRolloutOutcome> {
+    let cache_key = queued_effect
+        .effect
+        .cache_key
+        .clone()
+        .or_else(|| {
+            queued_effect
+                .job
+                .payload
+                .get("cache_key")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| queued_effect.effect.idempotency_key.clone());
+    degraded_runtime_rollout_outcome_for_cache_key(
+        candidate_id,
+        stage,
+        example_id,
+        &cache_key,
+        failure,
+        provider_signal,
+    )
+}
+
+fn degraded_runtime_rollout_outcome_for_cache_key(
+    candidate_id: &str,
+    stage: &str,
+    example_id: &str,
+    cache_key: &str,
+    failure: &FailurePayload,
+    provider_signal: &ProviderSignal,
+) -> Result<runtime::RuntimeRolloutOutcome> {
+    let response =
+        degraded_rollout_response(candidate_id, stage, example_id, failure, provider_signal)?;
+    let typed_response = synth_optimizer_platform::RolloutResponse::from_value(response.clone())?;
+    typed_response.validate_for_gepa()?;
+    let usage = UsageTotals {
+        rollout_calls: 1,
+        ..UsageTotals::default()
+    };
+    Ok(runtime::RuntimeRolloutOutcome {
+        candidate_id: candidate_id.to_string(),
+        response,
+        typed_response,
+        reward: 0.0,
+        usage,
+        cost_usd: 0.0,
+        cache_key: cache_key.to_string(),
+        cache_hit: false,
+        stage: stage.to_string(),
+        example_id: example_id.to_string(),
+        dispatch_wall_seconds: None,
+        dispatch_chunk_index: None,
+        dispatch_chunk_size: None,
+    })
+}
+
+fn degraded_rollout_response(
+    candidate_id: &str,
+    stage: &str,
+    example_id: &str,
+    failure: &FailurePayload,
+    provider_signal: &ProviderSignal,
+) -> Result<Value> {
+    let mut digest = Sha256::new();
+    digest.update(candidate_id.as_bytes());
+    digest.update(stage.as_bytes());
+    digest.update(example_id.as_bytes());
+    digest.update(failure.message.as_bytes());
+    let rollout_id = format!("degraded:{:x}", digest.finalize());
+    Ok(json!({
+        "rollout_id": rollout_id,
+        "status": "failed",
+        "success_status": "infra_degraded",
+        "summary": {
+            "outcome_reward": 0.0,
+            "degraded": true,
+            "failure_class": failure.failure_class(),
+        },
+        "reward_info": {
+            "outcome_reward": 0.0,
+            "score": 0.0,
+            "details": {
+                "objective": "outcome_reward",
+                "degraded": true,
+            },
+        },
+        "usage": {},
+        "metadata": {
+            "degraded": true,
+            "failure": serde_json::to_value(failure)?,
+            "provider_signal": serde_json::to_value(provider_signal)?,
+        },
+        "actionable_side_info": {
+            "degraded": true,
+            "failure_class": failure.failure_class(),
+            "message": &failure.message,
+        },
+    }))
 }
 
 fn propose_candidates(call: ProposerCall<'_>) -> Result<ProposerOutcome> {

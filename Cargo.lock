@@ -1175,7 +1175,7 @@ dependencies = [
 
 [[package]]
 name = "synth_gepa"
-version = "0.2.0-dev.20260531"
+version = "0.2.0-dev.20260601"
 dependencies = [
  "base64",
  "reqwest",
@@ -1188,7 +1188,7 @@ dependencies = [
 
 [[package]]
 name = "synth_optimizer_platform"
-version = "0.2.0-dev.20260531"
+version = "0.2.0-dev.20260601"
 dependencies = [
  "fs2",
  "libc",
@@ -1205,7 +1205,7 @@ dependencies = [
 
 [[package]]
 name = "synth_optimizers_py"
-version = "0.2.0-dev.20260531"
+version = "0.2.0-dev.20260601"
 dependencies = [
  "pyo3",
  "serde_json",

@@ -1,13 +1,13 @@
 <h1 align="center">synth-optimizers</h1>
-<p align="center">Prompt-program optimizers for production agents — open-source GEPA on a language-agnostic task contract.</p>
+<p align="center">Prompt optimizers for all AI applications — beginning with open-source GEPA on a language-agnostic task contract.</p>
 <p align="center">
 <a href="https://pypi.org/project/synth-optimizers/">PyPI</a> ·
 <a href="https://github.com/synth-laboratories/containers">Containers</a> ·
 <a href="https://github.com/synth-laboratories/synth-cookbooks-public/tree/main/cookbooks/optimizers/gepa">Cookbooks</a>
 </p>
 
-`synth-optimizers` runs [GEPA](https://arxiv.org/abs/2507.19457) — reflective prompt
-evolution — against any task exposed through the
+`synth-optimizers` runs [GEPA](https://gepa-ai.github.io/gepa/) — reflective prompt
+evolution ([paper](https://arxiv.org/abs/2507.19457)) — against any task exposed through the
 [`synth-containers`](https://github.com/synth-laboratories/containers) HTTP contract.
 Point it at a container and a TOML config; it proposes prompt changes, rolls them out,
 scores them, keeps a Pareto frontier, and returns a deployable candidate with replayable
@@ -16,6 +16,14 @@ evidence.
 - **Container boundary** — the optimizer only speaks HTTP. It never imports your task code or sees your model credentials.
 - **Inspectable runs** — every candidate carries its prompt diff, per-seed scores, rollout traces, cache profile, and usage.
 - **Rust core, thin Python** — the GEPA state machine is Rust (PyO3); configure runs with `GepaConfig` or TOML.
+
+## Supported algorithms
+
+| Algorithm | Status | In this repo | Paper & docs |
+| --- | --- | --- | --- |
+| **GEPA** — reflective prompt evolution | Supported | [`rust/crates/synth_gepa/`](rust/crates/synth_gepa/) (Rust engine + service), [`src/synth_optimizers/gepa.py`](src/synth_optimizers/gepa.py) (Python API), [`skills/gepa/SKILL.md`](skills/gepa/SKILL.md) (agent runbook) | [Paper](https://arxiv.org/abs/2507.19457) · [gepa-ai docs](https://gepa-ai.github.io/gepa/) |
+
+More optimizers will land on the shared [`synth_optimizer_platform`](rust/crates/synth_optimizer_platform/) crate; GEPA is the first public algorithm.
 
 ## Install
 
@@ -30,11 +38,11 @@ Latest daily dev build:
 ```bash
 pip install --pre \
   synth-containers==0.2.0.dev202605312141 \
-  synth-optimizers==0.2.0.dev202605312141
+  synth-optimizers==0.2.0.dev202606010003
 
 uv add --prerelease allow \
   synth-containers==0.2.0.dev202605312141 \
-  synth-optimizers==0.2.0.dev202605312141
+  synth-optimizers==0.2.0.dev202606010003
 ```
 
 Install [`uv`](https://github.com/astral-sh/uv) for local development and editable installs.
@@ -159,11 +167,12 @@ Agent docs: [skills/gepa/SKILL.md](skills/gepa/SKILL.md).
 
 ## Links
 
+- [GEPA docs (gepa-ai)](https://gepa-ai.github.io/gepa/) — algorithm overview, case studies, and adapter guides
+- [GEPA paper](https://arxiv.org/abs/2507.19457) — *GEPA: Reflective Prompt Evolution Can Outperform Reinforcement Learning*
 - [Cookbooks](https://github.com/synth-laboratories/synth-cookbooks-public/tree/main/cookbooks/optimizers/gepa) — runnable GEPA examples
 - [synth-containers](https://github.com/synth-laboratories/containers) — the task contract
 - [uv](https://github.com/astral-sh/uv) — Python package and project manager
 - [GEPA service OpenAPI](rust/crates/synth_gepa/openapi/gepa-service-v1.yaml)
-- [GEPA paper](https://arxiv.org/abs/2507.19457)
 
 ## License
 

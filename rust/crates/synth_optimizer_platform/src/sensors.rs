@@ -104,7 +104,19 @@ impl SensorFrame {
             .and_then(Value::as_str)
             .unwrap_or("outcome_reward")
             .to_string();
-        let failure = if status == "completed" || status == "succeeded" {
+        let failure = if let Some(failure) = rollout_response
+            .metadata
+            .get("failure")
+            .cloned()
+            .map(serde_json::from_value::<FailurePayload>)
+            .transpose()
+            .map_err(|source| {
+                OptimizerError::Container(format!(
+                    "rollout response metadata.failure must be a failure payload: {source}"
+                ))
+            })? {
+            Some(failure)
+        } else if status == "completed" || status == "succeeded" {
             None
         } else {
             Some(

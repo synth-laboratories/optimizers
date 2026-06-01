@@ -232,6 +232,7 @@ class GepaTomlSection(BaseModel):
     max_train_rollouts: int | None = None
     max_heldout_rollouts: int | None = None
     minibatch_accept_margin: float = 0.0
+    rollout_failure_rate_tolerance: float = 0.25
     rollout_submission_mode: RolloutTransport | str = RolloutTransport.ASYNC
     rollout_async_timeout_seconds: int = 600
     pipeline: GepaPipelineTomlSection = Field(default_factory=GepaPipelineTomlSection)
@@ -262,6 +263,7 @@ class GepaTomlSection(BaseModel):
             max_train_rollouts=self.max_train_rollouts,
             max_heldout_rollouts=self.max_heldout_rollouts,
             minibatch_accept_margin=self.minibatch_accept_margin,
+            rollout_failure_rate_tolerance=self.rollout_failure_rate_tolerance,
         )
 
     def pipeline_config(self) -> "GepaPipeline":
@@ -654,6 +656,7 @@ class GepaBudgetConfig:
     max_train_rollouts: int | None = None
     max_heldout_rollouts: int | None = None
     minibatch_accept_margin: float = 0.0
+    rollout_failure_rate_tolerance: float = 0.25
 
     def apply_to_gepa(self, gepa: dict[str, Any]) -> None:
         gepa.update(
@@ -663,6 +666,9 @@ class GepaBudgetConfig:
                 "minibatch_size": int(self.minibatch_size),
                 "minibatch_accept_margin": float(self.minibatch_accept_margin),
                 "max_total_rollouts": int(self.max_total_rollouts),
+                "rollout_failure_rate_tolerance": float(
+                    self.rollout_failure_rate_tolerance
+                ),
             }
         )
         if self.max_train_rollouts is not None:

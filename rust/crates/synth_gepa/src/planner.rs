@@ -193,6 +193,8 @@ pub struct GepaAsyncPipelineCursorState {
     #[serde(default)]
     pub adaptive_rollout_concurrency: GepaAdaptiveRolloutConcurrencyState,
     #[serde(default)]
+    pub rollout_resilience: GepaRolloutResilienceState,
+    #[serde(default)]
     pub terminal_readiness: Value,
 }
 
@@ -226,6 +228,46 @@ pub struct GepaAdaptiveRolloutConcurrencyAdjustment {
     pub reason: String,
     #[serde(default)]
     pub completed_rollouts: usize,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct GepaRolloutResilienceState {
+    #[serde(default, deserialize_with = "deserialize_null_default")]
+    pub rolling_samples: Vec<GepaRolloutFailureSample>,
+    #[serde(default)]
+    pub degraded_rollouts: usize,
+    #[serde(default)]
+    pub scored_rollouts: usize,
+    #[serde(default)]
+    pub last_failure_rate: f64,
+    #[serde(default)]
+    pub last_circuit_breaker: Option<GepaRolloutCircuitBreaker>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct GepaRolloutFailureSample {
+    #[serde(default)]
+    pub infra_failed: bool,
+    #[serde(default)]
+    pub stage: String,
+    #[serde(default)]
+    pub example_id: String,
+    #[serde(default)]
+    pub failure_class: Option<String>,
+    #[serde(default)]
+    pub provider_status_code: Option<u16>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct GepaRolloutCircuitBreaker {
+    #[serde(default)]
+    pub rolling_rate: f64,
+    #[serde(default)]
+    pub tolerance: f64,
+    #[serde(default)]
+    pub sample_count: usize,
+    #[serde(default)]
+    pub reason: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

@@ -2076,6 +2076,39 @@ impl WorkspaceStore {
         self.optimizer_job(run_id, job_id).map(Some)
     }
 
+    pub fn schedule_terminal_optimizer_job_retry(
+        &self,
+        run_id: &str,
+        job_id: &str,
+        backoff_seconds: u64,
+        failure: &crate::failures::FailurePayload,
+    ) -> Result<Option<OptimizerJob>> {
+        let retry_modifier = format!("+{backoff_seconds} seconds");
+        let failure_json = stable_json(&serde_json::to_value(failure)?);
+        let updated = self.conn.execute(
+            r#"
+            UPDATE optimizer_jobs
+            SET status = 'retry_scheduled',
+                lease_id = NULL,
+                worker_id = NULL,
+                leased_at = NULL,
+                lease_expires_at = NULL,
+                heartbeat_at = NULL,
+                next_retry_at = datetime('now', ?3),
+                failure_json = ?4,
+                updated_at = datetime('now')
+            WHERE run_id = ?1
+              AND job_id = ?2
+              AND status IN ('failed', 'expired')
+            "#,
+            params![run_id, job_id, retry_modifier, failure_json],
+        )?;
+        if updated == 0 {
+            return Ok(None);
+        }
+        self.optimizer_job(run_id, job_id).map(Some)
+    }
+
     pub fn heartbeat_optimizer_job(
         &self,
         run_id: &str,

@@ -14,7 +14,7 @@ provider = "openai"
 auth_mode = "api_key"
 api_key_env = "OPENAI_API_KEY"
 copy_host_auth = false
-model = "gpt-5.4-nano"
+model = "gpt-5.4-mini"
 reasoning_effort = "medium"
 timeout_seconds = 900
 sandbox_mode = "workspace-write"
@@ -25,4 +25,3 @@ image = "ghcr.io/synth-laboratories/codex-gepa-proposer:2026-05-31"
 workspace_mount_path = "/workspace"
 network = "bridge"
 extra_env = {}
-

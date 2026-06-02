@@ -806,7 +806,10 @@ fn env_u64(name: &str) -> Option<u64> {
 }
 
 fn rollout_concurrency(config: &SynthOptimizerConfig) -> usize {
-    if matches!(config.gepa.pipeline.mode, GepaPipelineMode::AsyncPipelined) {
+    if matches!(
+        config.gepa.pipeline.mode,
+        GepaPipelineMode::AsyncPipelined | GepaPipelineMode::FlashEvolve
+    ) {
         return config.gepa.pipeline.workers.rollout.max(1);
     }
     env::var("GEPA_ROLLOUT_CONCURRENCY")

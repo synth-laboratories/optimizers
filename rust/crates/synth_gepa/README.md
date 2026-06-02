@@ -82,12 +82,25 @@ chooses orchestration:
 
 - `sync_serial` is the default correctness baseline. It runs the durable
   one-transition tick state machine already used by `/worker/tick`.
-- `async_pipelined` is the FlashEvolve-style runtime mode. Stages declare
-  work, while the runtime records queue, worker, scheduling, and pool-version
-  state in the GEPA cursor. Phase 1 supports the `full` staleness policy and
-  three lanes: `propose`, `rollout`, and `evaluate`.
+- `async_pipelined` keeps generation barriers but parallelizes work inside a
+  generation. Stages declare work, while the runtime records queue, worker,
+  scheduling, and pool-version state in the GEPA cursor. It supports the
+  `full` staleness policy and three lanes: `propose`, `rollout`, and
+  `evaluate`.
+- `flash_evolve` uses the same durable lanes without the full-train generation
+  barrier, so proposer work for a later generation can overlap rollout/evaluate
+  work from earlier generations while `max_in_flight_candidates` has capacity.
+  It supports `full`, `guarded`, and `reflective` staleness policies. `guarded`
+  discards stale evaluate items when
+  `pool_version - parent_pool_version > delta_max`. `reflective` uses a Codex
+  reviewer workspace to accept, discard, or patch stale language artifacts
+  against the current pool.
+  Speculative completion can release partially completed rollout/evaluate work
+  after `speculative_completion.alpha` of rows finish. Adaptive stage workers can
+  raise or lower propose/rollout/evaluate limits from queue pressure and stale
+  gap pressure.
 
-`async_pipelined` runs through the same durable `/worker/tick` driver as the
+Both async modes run through the same durable `/worker/tick` driver as the
 baseline: each tick consumes finished work first or schedules one new runtime
 transition. `run-next` remains a loop over those ticks. Rollout transport stays
 separate and is still selected by `gepa.rollout_submission_mode`.

@@ -30,6 +30,18 @@ class RolloutTransport(StrEnum):
     ASYNC = "async"
 
 
+class GepaPipelineMode(StrEnum):
+    SYNC_SERIAL = "sync_serial"
+    ASYNC_PIPELINED = "async_pipelined"
+    FLASH_EVOLVE = "flash_evolve"
+
+
+class GepaStalenessPolicy(StrEnum):
+    FULL = "full"
+    GUARDED = "guarded"
+    REFLECTIVE = "reflective"
+
+
 class ContainerTomlSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -119,7 +131,7 @@ class ProposerTomlSection(BaseModel):
     execution_mode: str = "local_process"
     provider: str = "openai"
     api_family: str = "chat_completions"
-    model: str | None = "gpt-5.4-nano"
+    model: str | None = "gpt-5.4-mini"
     reasoning_effort: str | None = "medium"
     auth_mode: str = "api_key"
     api_key_env: str | None = "OPENAI_API_KEY"
@@ -137,6 +149,12 @@ class ProposerTomlSection(BaseModel):
         if self.codex_home is not None:
             path = Path(self.codex_home)
             codex_home = path if path.is_absolute() else base_dir / path
+        # ChatGPT-subscription auth forbids api_key_env. Since this field defaults
+        # to "OPENAI_API_KEY" and TOML cannot express null to override it, null it
+        # out explicitly for chatgpt auth (mirrors the service.rs chatgpt path).
+        api_key_env = self.api_key_env
+        if str(self.auth_mode).strip().lower() == "chatgpt":
+            api_key_env = None
         return ProposerConfig(
             backend=self.backend,
             runtime_substrate=self.runtime_substrate,
@@ -146,7 +164,7 @@ class ProposerTomlSection(BaseModel):
             model=self.model,
             reasoning_effort=self.reasoning_effort,
             auth_mode=self.auth_mode,
-            api_key_env=self.api_key_env,
+            api_key_env=api_key_env,
             copy_host_auth=self.copy_host_auth,
             codex_home=codex_home,
             timeout_seconds=self.timeout_seconds,
@@ -199,14 +217,42 @@ class PolicyTomlSection(BaseModel):
 class GepaPipelineWorkersTomlSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
+    propose: int = 1
     rollout: int = 8
+    evaluate: int = 1
+
+
+class GepaSpeculativeCompletionTomlSection(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = False
+    alpha: float = 0.25
+
+
+class GepaAdaptiveStageWorkersTomlSection(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = False
+    min: int = 1
+    max: int = 128
+    backlog_threshold: int = 2
+    stale_gap_threshold: int = 2
 
 
 class GepaPipelineTomlSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
+    mode: GepaPipelineMode | str = GepaPipelineMode.SYNC_SERIAL
+    staleness_policy: GepaStalenessPolicy | str = GepaStalenessPolicy.FULL
+    delta_max: int = 2
     max_in_flight_candidates: int = 1
     workers: GepaPipelineWorkersTomlSection = Field(default_factory=GepaPipelineWorkersTomlSection)
+    speculative_completion: GepaSpeculativeCompletionTomlSection = Field(
+        default_factory=GepaSpeculativeCompletionTomlSection
+    )
+    adaptive_stage_workers: GepaAdaptiveStageWorkersTomlSection = Field(
+        default_factory=GepaAdaptiveStageWorkersTomlSection
+    )
 
 
 class ObjectiveAcceptanceTomlSection(BaseModel):
@@ -235,6 +281,7 @@ class GepaTomlSection(BaseModel):
     rollout_failure_rate_tolerance: float = 0.25
     rollout_submission_mode: RolloutTransport | str = RolloutTransport.ASYNC
     rollout_async_timeout_seconds: int = 600
+    rollout_chunk_size: int | None = None
     pipeline: GepaPipelineTomlSection = Field(default_factory=GepaPipelineTomlSection)
     objective_keys: list[str] = Field(default_factory=list)
     objective_directions: dict[str, str] = Field(default_factory=dict)
@@ -264,14 +311,33 @@ class GepaTomlSection(BaseModel):
             max_heldout_rollouts=self.max_heldout_rollouts,
             minibatch_accept_margin=self.minibatch_accept_margin,
             rollout_failure_rate_tolerance=self.rollout_failure_rate_tolerance,
+            rollout_chunk_size=self.rollout_chunk_size,
         )
 
     def pipeline_config(self) -> "GepaPipeline":
         return GepaPipeline(
+            mode=self.pipeline.mode,
+            staleness_policy=self.pipeline.staleness_policy,
+            staleness_delta_max=self.pipeline.delta_max,
             rollout_transport=self.rollout_submission_mode,
             rollout_timeout_seconds=self.rollout_async_timeout_seconds,
             candidate_concurrency=self.pipeline.max_in_flight_candidates,
+            proposer_concurrency=self.pipeline.workers.propose,
             rollout_concurrency=self.pipeline.workers.rollout,
+            evaluator_concurrency=self.pipeline.workers.evaluate,
+            speculative_alpha=(
+                self.pipeline.speculative_completion.alpha
+                if self.pipeline.speculative_completion.enabled
+                else None
+            ),
+            adaptive_stage_workers=self.pipeline.adaptive_stage_workers.enabled,
+            adaptive_stage_workers_max=self.pipeline.adaptive_stage_workers.max,
+            adaptive_stage_workers_backlog_threshold=(
+                self.pipeline.adaptive_stage_workers.backlog_threshold
+            ),
+            adaptive_stage_workers_stale_gap_threshold=(
+                self.pipeline.adaptive_stage_workers.stale_gap_threshold
+            ),
         )
 
     def objective_config(self) -> "ObjectiveConfig":
@@ -502,7 +568,7 @@ class ProposerConfig:
     provider: str = "openai"
     api_family: str = "chat_completions"
     base_url: str | None = None
-    model: str | None = "gpt-5.4-nano"
+    model: str | None = "gpt-5.4-mini"
     reasoning_effort: str | None = "medium"
     auth_mode: str = "api_key"
     api_key_env: str | None = "OPENAI_API_KEY"
@@ -528,6 +594,9 @@ class ProposerConfig:
         )
 
     def to_toml(self) -> dict[str, Any]:
+        api_key_env = self.api_key_env
+        if str(self.auth_mode).strip().lower() == "chatgpt":
+            api_key_env = None
         payload = _drop_none(
             {
                 "backend": self.backend,
@@ -539,7 +608,7 @@ class ProposerConfig:
                 "model": self.model,
                 "reasoning_effort": self.reasoning_effort,
                 "auth_mode": self.auth_mode,
-                "api_key_env": self.api_key_env,
+                "api_key_env": api_key_env,
                 "copy_host_auth": bool(self.copy_host_auth),
                 "codex_home": str(self.codex_home) if self.codex_home is not None else None,
                 "timeout_seconds": int(self.timeout_seconds),
@@ -657,6 +726,7 @@ class GepaBudgetConfig:
     max_heldout_rollouts: int | None = None
     minibatch_accept_margin: float = 0.0
     rollout_failure_rate_tolerance: float = 0.25
+    rollout_chunk_size: int | None = None
 
     def apply_to_gepa(self, gepa: dict[str, Any]) -> None:
         gepa.update(
@@ -666,23 +736,91 @@ class GepaBudgetConfig:
                 "minibatch_size": int(self.minibatch_size),
                 "minibatch_accept_margin": float(self.minibatch_accept_margin),
                 "max_total_rollouts": int(self.max_total_rollouts),
-                "rollout_failure_rate_tolerance": float(
-                    self.rollout_failure_rate_tolerance
-                ),
+                "rollout_failure_rate_tolerance": float(self.rollout_failure_rate_tolerance),
             }
         )
         if self.max_train_rollouts is not None:
             gepa["max_train_rollouts"] = int(self.max_train_rollouts)
         if self.max_heldout_rollouts is not None:
             gepa["max_heldout_rollouts"] = int(self.max_heldout_rollouts)
+        if self.rollout_chunk_size is not None:
+            gepa["rollout_chunk_size"] = int(self.rollout_chunk_size)
 
 
 @dataclass(slots=True)
 class GepaPipeline:
+    mode: GepaPipelineMode | str = GepaPipelineMode.SYNC_SERIAL
+    staleness_policy: GepaStalenessPolicy | str = GepaStalenessPolicy.FULL
+    staleness_delta_max: int = 2
     rollout_transport: RolloutTransport | str = RolloutTransport.ASYNC
     rollout_timeout_seconds: int = 600
+    proposer_concurrency: int = 1
     rollout_concurrency: int = 8
+    evaluator_concurrency: int = 1
     candidate_concurrency: int = 1
+    speculative_alpha: float | None = None
+    adaptive_stage_workers: bool = False
+    adaptive_stage_workers_max: int = 128
+    adaptive_stage_workers_backlog_threshold: int = 2
+    adaptive_stage_workers_stale_gap_threshold: int = 2
+
+    @classmethod
+    def sync_serial(
+        cls,
+        *,
+        rollout_transport: RolloutTransport | str = RolloutTransport.ASYNC,
+        rollout_timeout_seconds: int = 600,
+    ) -> "GepaPipeline":
+        return cls(
+            mode=GepaPipelineMode.SYNC_SERIAL,
+            rollout_transport=rollout_transport,
+            rollout_timeout_seconds=rollout_timeout_seconds,
+            candidate_concurrency=1,
+            rollout_concurrency=1,
+        )
+
+    @classmethod
+    def async_pipelined(
+        cls,
+        *,
+        candidate_concurrency: int = 4,
+        rollout_concurrency: int = 8,
+        rollout_transport: RolloutTransport | str = RolloutTransport.ASYNC,
+        rollout_timeout_seconds: int = 600,
+    ) -> "GepaPipeline":
+        return cls(
+            mode=GepaPipelineMode.ASYNC_PIPELINED,
+            staleness_policy=GepaStalenessPolicy.FULL,
+            rollout_transport=rollout_transport,
+            rollout_timeout_seconds=rollout_timeout_seconds,
+            candidate_concurrency=candidate_concurrency,
+            rollout_concurrency=rollout_concurrency,
+        )
+
+    @classmethod
+    def flash_evolve(
+        cls,
+        *,
+        candidate_concurrency: int = 8,
+        rollout_concurrency: int = 8,
+        staleness_policy: GepaStalenessPolicy | str = GepaStalenessPolicy.GUARDED,
+        staleness_delta_max: int = 2,
+        speculative_alpha: float | None = None,
+        adaptive_stage_workers: bool = False,
+        rollout_transport: RolloutTransport | str = RolloutTransport.ASYNC,
+        rollout_timeout_seconds: int = 600,
+    ) -> "GepaPipeline":
+        return cls(
+            mode=GepaPipelineMode.FLASH_EVOLVE,
+            staleness_policy=staleness_policy,
+            staleness_delta_max=staleness_delta_max,
+            speculative_alpha=speculative_alpha,
+            adaptive_stage_workers=adaptive_stage_workers,
+            rollout_transport=rollout_transport,
+            rollout_timeout_seconds=rollout_timeout_seconds,
+            candidate_concurrency=candidate_concurrency,
+            rollout_concurrency=rollout_concurrency,
+        )
 
     def apply_to_gepa(self, gepa: dict[str, Any]) -> None:
         rollout_transport = str(self.rollout_transport)
@@ -690,12 +828,14 @@ class GepaPipeline:
         gepa["rollout_poll_interval_ms"] = 250
         gepa["rollout_async_timeout_seconds"] = int(self.rollout_timeout_seconds)
         gepa["pipeline"] = {
-            "mode": "async_pipelined",
+            "mode": str(self.mode),
+            "staleness_policy": str(self.staleness_policy),
+            "delta_max": int(self.staleness_delta_max),
             "max_in_flight_candidates": int(self.candidate_concurrency),
             "workers": {
-                "propose": 1,
+                "propose": int(self.proposer_concurrency),
                 "rollout": int(self.rollout_concurrency),
-                "evaluate": 1,
+                "evaluate": int(self.evaluator_concurrency),
             },
             "adaptive_rollout_concurrency": {
                 "enabled": True,
@@ -705,6 +845,17 @@ class GepaPipeline:
                 "increase_step": 5,
                 "decrease_step": 5,
                 "increase_after_successes": 20,
+            },
+            "speculative_completion": {
+                "enabled": self.speculative_alpha is not None,
+                "alpha": float(self.speculative_alpha or 0.25),
+            },
+            "adaptive_stage_workers": {
+                "enabled": bool(self.adaptive_stage_workers),
+                "min": 1,
+                "max": int(self.adaptive_stage_workers_max),
+                "backlog_threshold": int(self.adaptive_stage_workers_backlog_threshold),
+                "stale_gap_threshold": int(self.adaptive_stage_workers_stale_gap_threshold),
             },
         }
 

@@ -29,6 +29,16 @@ pub(crate) struct CodexProposerInput<'a> {
     pub workspace_dir: PathBuf,
 }
 
+pub(crate) struct CodexStalenessReviewerInput<'a> {
+    pub config: &'a SynthOptimizerConfig,
+    pub program: &'a PromptProgram,
+    pub item: Value,
+    pub stale_candidates: Vec<CandidateRecord>,
+    pub current_best: Option<CandidateRecord>,
+    pub pool_summary: Value,
+    pub workspace_dir: PathBuf,
+}
+
 #[derive(Default)]
 struct ProposerCandidateEvidenceStats {
     rollouts: usize,
@@ -59,6 +69,38 @@ pub(crate) fn run_codex_app_server_proposer(input: CodexProposerInput<'_>) -> Re
         timeout,
     })?;
     build_response_from_outcome(&input, &model, outcome)
+}
+
+pub(crate) fn run_codex_staleness_reviewer(
+    input: CodexStalenessReviewerInput<'_>,
+) -> Result<Value> {
+    if input.config.proposer.backend != "codex_app_server" {
+        return Err(OptimizerError::Config(
+            "gepa.pipeline.staleness_policy = reflective requires proposer.backend = \"codex_app_server\" for the staleness reviewer"
+                .to_string(),
+        ));
+    }
+    materialize_staleness_review_workspace(&input)?;
+    let model = input
+        .config
+        .proposer
+        .model
+        .clone()
+        .unwrap_or_else(|| "gpt-5.4-mini".to_string());
+    let timeout = Duration::from_secs(input.config.proposer.timeout_seconds.max(1));
+    let outcome = run_turn(CodexTurnRequest {
+        run_id: &input.config.run.run_id,
+        proposer: &input.config.proposer,
+        workspace_dir: &input.workspace_dir,
+        model: &model,
+        client_name: "synth-optimizers-gepa",
+        client_title: "synth-optimizers GEPA Staleness Reviewer",
+        client_version: env!("CARGO_PKG_VERSION"),
+        thread_start_params: staleness_thread_start_params(&input, &model),
+        turn_start_params: staleness_turn_start_params(&input, &model),
+        timeout,
+    })?;
+    build_staleness_review_response(&input, &model, outcome)
 }
 
 pub(crate) fn run_deepseek_chat_proposer(input: CodexProposerInput<'_>) -> Result<Value> {
@@ -112,7 +154,9 @@ pub(crate) fn run_deepseek_chat_proposer(input: CodexProposerInput<'_>) -> Resul
         ],
         "response_format": {"type": "json_object"},
         "thinking": {"type": "disabled"},
-        "max_tokens": 4096,
+        // Manifests for large minibatches can be long; 4096 truncates the JSON
+        // mid-string ("EOF while parsing"). deepseek-v4-flash supports far more.
+        "max_tokens": 32768,
         "stream": false
     });
     let client = Client::builder()
@@ -120,16 +164,49 @@ pub(crate) fn run_deepseek_chat_proposer(input: CodexProposerInput<'_>) -> Resul
             input.config.proposer.timeout_seconds.max(1),
         ))
         .build()?;
-    let chat_response = post_deepseek_chat_completion(&client, &base_url, &api_key, &request, 4)?;
-    let content = chat_response
-        .pointer("/choices/0/message/content")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            OptimizerError::Proposer(
-                "DeepSeek chat proposer response missing choices[0].message.content".to_string(),
-            )
-        })?;
-    let manifest = serde_json::from_str(content.trim())?;
+    // Resilience: retry the whole request when the response can't be decoded,
+    // the content is missing, or the model's manifest JSON is malformed/truncated
+    // (transient DeepSeek errors). HTTP 429/5xx are already retried inside
+    // post_deepseek_chat_completion; this outer loop also covers decode/parse.
+    let (chat_response, manifest) = {
+        let mut last_err: Option<String> = None;
+        let mut result: Option<(Value, Value)> = None;
+        for attempt in 1..=3usize {
+            match post_deepseek_chat_completion(&client, &base_url, &api_key, &request, 4) {
+                Ok(resp) => {
+                    match resp
+                        .pointer("/choices/0/message/content")
+                        .and_then(Value::as_str)
+                    {
+                        Some(content) => match serde_json::from_str::<Value>(content.trim()) {
+                            Ok(m) => {
+                                result = Some((resp, m));
+                                break;
+                            }
+                            Err(e) => last_err = Some(format!("manifest JSON parse failed: {e}")),
+                        },
+                        None => {
+                            last_err =
+                                Some("response missing choices[0].message.content".to_string())
+                        }
+                    }
+                }
+                Err(e) => last_err = Some(e.to_string()),
+            }
+            if attempt < 3 {
+                std::thread::sleep(Duration::from_secs(2 * attempt as u64));
+            }
+        }
+        match result {
+            Some(pair) => pair,
+            None => {
+                return Err(OptimizerError::Proposer(format!(
+                    "DeepSeek chat proposer failed after 3 attempts: {}",
+                    last_err.unwrap_or_else(|| "unknown error".to_string())
+                )))
+            }
+        }
+    };
     let manifest_path = input.workspace_dir.join("proposal").join("manifest.json");
     write_json(&manifest_path, &manifest)?;
     let manifest = read_manifest(&input.workspace_dir)?;
@@ -176,6 +253,16 @@ fn deepseek_chat_prompt(input: &CodexProposerInput<'_>) -> Result<String> {
         let file_path = input.workspace_dir.join(path);
         let text = fs::read_to_string(&file_path)
             .map_err(|source| OptimizerError::io(&file_path, source))?;
+        // Bound each evidence file so the prompt stays within the model context
+        // window. With large minibatches + accepted candidates, rollouts.json /
+        // scores.json grow past 1M tokens otherwise (DeepSeek 400: context length).
+        const MAX_EVIDENCE_CHARS: usize = 120_000;
+        let text = if text.chars().count() > MAX_EVIDENCE_CHARS {
+            let head: String = text.chars().take(MAX_EVIDENCE_CHARS).collect();
+            format!("{head}\n…[truncated to {MAX_EVIDENCE_CHARS} chars to fit context budget]…")
+        } else {
+            text
+        };
         prompt.push_str("\n\n--- ");
         prompt.push_str(path);
         prompt.push_str(" ---\n");
@@ -318,6 +405,200 @@ fn build_response_from_outcome(
     )?;
     write_workspace_pack_manifest(&input.workspace_dir)?;
     Ok(response)
+}
+
+fn build_staleness_review_response(
+    input: &CodexStalenessReviewerInput<'_>,
+    model: &str,
+    outcome: AgentTurnOutcome,
+) -> Result<Value> {
+    let usage = outcome
+        .usage
+        .clone()
+        .unwrap_or_else(|| json!({"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}));
+    let verdict_path = input.workspace_dir.join("review").join("verdict.json");
+    let verdict = read_staleness_verdict_json(&verdict_path)?;
+    validate_staleness_verdict(&verdict)?;
+    write_json(&verdict_path, &verdict)?;
+    let mut response = json!({
+        "backend": "codex_app_server",
+        "runtime_substrate": input.config.proposer.runtime_substrate.as_str(),
+        "workspace": input.workspace_dir,
+        "model": model,
+        "usage": usage,
+        "verdict": verdict,
+    });
+    if let Some(receipt) = outcome.supervisor_receipt.as_ref() {
+        response["supervisor_receipt"] = serde_json::to_value(receipt)?;
+    }
+    if let Some(shutdown_warning) = outcome.shutdown_warning.as_ref() {
+        response["shutdown_warning"] = Value::String(shutdown_warning.clone());
+    }
+    write_staleness_agent_artifacts(input, model, &outcome, &response)?;
+    write_workspace_pack_manifest(&input.workspace_dir)?;
+    Ok(response)
+}
+
+fn validate_staleness_verdict(verdict: &Value) -> Result<()> {
+    let verdict_text = verdict
+        .get("verdict")
+        .or_else(|| verdict.get("decision"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if !matches!(
+        verdict_text.as_str(),
+        "accept" | "accept_as_is" | "discard" | "drop" | "patch" | "repair"
+    ) {
+        return Err(OptimizerError::Proposer(format!(
+            "staleness reviewer verdict must be accept, discard, or patch; got {verdict_text:?}"
+        )));
+    }
+    if matches!(verdict_text.as_str(), "patch" | "repair")
+        && !verdict
+            .get("patched_payload")
+            .or_else(|| verdict.get("payload"))
+            .is_some_and(Value::is_object)
+    {
+        return Err(OptimizerError::Proposer(
+            "staleness reviewer patch verdict must include patched_payload".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn write_staleness_agent_artifacts(
+    input: &CodexStalenessReviewerInput<'_>,
+    model: &str,
+    outcome: &AgentTurnOutcome,
+    response: &Value,
+) -> Result<()> {
+    let artifact_dir = input.workspace_dir.join(".agent_artifacts");
+    fs::create_dir_all(&artifact_dir)
+        .map_err(|source| OptimizerError::io(&artifact_dir, source))?;
+    write_json(
+        &artifact_dir.join("opencode_session.json"),
+        &json!({
+            "schema_version": "gepa_codex_staleness_review_session.v1",
+            "backend": "codex_app_server",
+            "model": model,
+            "thread_id": outcome.thread_id,
+            "turn_id": outcome.turn_id,
+            "workspace": input.workspace_dir,
+            "supervisor_receipt": outcome.supervisor_receipt,
+            "thread_response": outcome.thread_response,
+            "final_turn": outcome.final_turn,
+        }),
+    )?;
+    write_json(
+        &artifact_dir.join("opencode_messages.json"),
+        &json!({
+            "schema_version": "gepa_codex_staleness_review_messages.v1",
+            "sent": outcome.sent_messages,
+            "received": outcome.received_messages,
+        }),
+    )?;
+    write_json(&artifact_dir.join("opencode_response.json"), response)?;
+    let mut events = String::new();
+    for message in &outcome.received_messages {
+        events.push_str(&serde_json::to_string(message)?);
+        events.push('\n');
+    }
+    write_text(&artifact_dir.join("opencode_sse_events.jsonl"), &events)?;
+    Ok(())
+}
+
+fn materialize_staleness_review_workspace(input: &CodexStalenessReviewerInput<'_>) -> Result<()> {
+    let state_dir = input.workspace_dir.join("state");
+    let review_dir = input.workspace_dir.join("review");
+    fs::create_dir_all(&state_dir).map_err(|source| OptimizerError::io(&state_dir, source))?;
+    fs::create_dir_all(&review_dir).map_err(|source| OptimizerError::io(&review_dir, source))?;
+    write_text(
+        &input.workspace_dir.join("README.md"),
+        &staleness_review_readme(input),
+    )?;
+    write_text(
+        &review_dir.join("VERDICT_SCHEMA.md"),
+        &staleness_verdict_schema(input),
+    )?;
+    write_json(
+        &review_dir.join("verdict.json"),
+        &json!({
+            "schema_version": "gepa_staleness_review_v1",
+            "verdict": "accept",
+            "reason": "",
+            "patched_payload": null,
+        }),
+    )?;
+    write_json(
+        &state_dir.join("staleness_review_request.json"),
+        &json!({
+            "schema_version": "gepa_staleness_review_request_v1",
+            "run_id": input.config.run.run_id,
+            "target_modules": input.config.candidate.target_modules,
+            "item": input.item,
+            "stale_candidates": input.stale_candidates,
+            "current_best": input.current_best,
+            "pool_summary": input.pool_summary,
+            "program": input.program,
+        }),
+    )?;
+    write_workspace_pack_manifest(&input.workspace_dir)?;
+    Ok(())
+}
+
+fn staleness_review_readme(input: &CodexStalenessReviewerInput<'_>) -> String {
+    format!(
+        r#"# GEPA Staleness Reviewer Workspace
+
+You are reviewing stale FlashEvolve work before it is folded back into the current artifact pool.
+
+Read `state/staleness_review_request.json` and `review/VERDICT_SCHEMA.md`.
+Choose exactly one verdict:
+
+- `accept`: the stale candidate is still compatible with the current pool.
+- `discard`: the stale candidate is obsolete or conflicts with newer accepted pool changes.
+- `patch`: provide a full replacement `patched_payload` for the target modules.
+
+If patching, preserve every target module key and write a complete payload object. Target modules: {}.
+Write strict JSON to `review/verdict.json`.
+"#,
+        input.config.candidate.target_modules.join(", ")
+    )
+}
+
+fn staleness_verdict_schema(input: &CodexStalenessReviewerInput<'_>) -> String {
+    let payload_hint = if input.config.candidate.target_modules.len() > 1 {
+        "When verdict is patch, patched_payload must include every target module key."
+    } else {
+        "When verdict is patch, patched_payload must include the single target module key."
+    };
+    format!(
+        r#"# GEPA Staleness Review Verdict Schema
+
+Write `review/verdict.json` as strict JSON:
+
+```json
+{{
+  "schema_version": "gepa_staleness_review_v1",
+  "verdict": "accept | discard | patch",
+  "reason": "Short explanation grounded in state/staleness_review_request.json.",
+  "patched_payload": {{
+    "<target_module>": "<full replacement instruction>"
+  }}
+}}
+```
+
+Rules:
+
+- Use `accept` when the stale candidate's prompt remains compatible with the current pool.
+- Use `discard` when the candidate duplicates, conflicts with, or is dominated by current pool changes.
+- Use `patch` when a small language-space repair can rebase the stale candidate onto the current pool.
+- {payload_hint}
+- If verdict is not `patch`, set `patched_payload` to null.
+"#
+    )
 }
 
 fn materialize_workspace(input: &CodexProposerInput<'_>) -> Result<()> {
@@ -2634,6 +2915,31 @@ fn thread_start_params(input: &CodexProposerInput<'_>, model: &str) -> Value {
     Value::Object(params)
 }
 
+fn staleness_thread_start_params(input: &CodexStalenessReviewerInput<'_>, model: &str) -> Value {
+    let mut params = Map::new();
+    params.insert("model".to_string(), Value::String(model.to_string()));
+    params.insert(
+        "instructions".to_string(),
+        Value::String(
+            "You are the GEPA FlashEvolve staleness reviewer. Work only inside this workspace."
+                .to_string(),
+        ),
+    );
+    if let Some(approval_policy) = non_empty(input.config.proposer.approval_policy.as_deref()) {
+        params.insert(
+            "approvalPolicy".to_string(),
+            Value::String(approval_policy.to_string()),
+        );
+    }
+    if let Some(sandbox_mode) = non_empty(input.config.proposer.sandbox_mode.as_deref()) {
+        params.insert(
+            "sandbox".to_string(),
+            Value::String(sandbox_mode.to_string()),
+        );
+    }
+    Value::Object(params)
+}
+
 fn turn_start_params(input: &CodexProposerInput<'_>, model: &str) -> Result<Value> {
     let mut params = Map::new();
     params.insert("model".to_string(), Value::String(model.to_string()));
@@ -2666,6 +2972,38 @@ fn turn_start_params(input: &CodexProposerInput<'_>, model: &str) -> Result<Valu
     Ok(Value::Object(params))
 }
 
+fn staleness_turn_start_params(input: &CodexStalenessReviewerInput<'_>, model: &str) -> Value {
+    let mut params = Map::new();
+    params.insert("model".to_string(), Value::String(model.to_string()));
+    params.insert(
+        "input".to_string(),
+        Value::Array(vec![json!({
+            "type": "text",
+            "text": staleness_reviewer_instructions(input),
+            "textElements": [],
+        })]),
+    );
+    if let Some(reasoning_effort) = non_empty(input.config.proposer.reasoning_effort.as_deref()) {
+        params.insert(
+            "effort".to_string(),
+            Value::String(reasoning_effort.to_string()),
+        );
+    }
+    if let Some(approval_policy) = non_empty(input.config.proposer.approval_policy.as_deref()) {
+        params.insert(
+            "approvalPolicy".to_string(),
+            Value::String(approval_policy.to_string()),
+        );
+    }
+    if let Some(sandbox_mode) = non_empty(input.config.proposer.sandbox_mode.as_deref()) {
+        params.insert(
+            "sandboxPolicy".to_string(),
+            sandbox_policy_for_mode(sandbox_mode),
+        );
+    }
+    Value::Object(params)
+}
+
 fn proposer_instructions(input: &CodexProposerInput<'_>) -> Result<String> {
     let context = proposer_prompt_context(input);
     let proposal_policy = proposer_policy_text(input);
@@ -2693,6 +3031,16 @@ fn proposer_instructions(input: &CodexProposerInput<'_>) -> Result<String> {
         input.generation,
         input.config.candidate.target_modules.join(", ")
     ))
+}
+
+fn staleness_reviewer_instructions(input: &CodexStalenessReviewerInput<'_>) -> String {
+    format!(
+        "Read README.md, review/VERDICT_SCHEMA.md, and state/staleness_review_request.json. \
+         Decide whether the stale FlashEvolve work should be accepted, discarded, or patched. \
+         Use only these target modules when patching: {}. \
+         Write the verdict as strict JSON to review/verdict.json. Do not print pseudo-tool calls; inspect files and edit the verdict file.",
+        input.config.candidate.target_modules.join(", ")
+    )
 }
 
 fn proposer_prompt_context(input: &CodexProposerInput<'_>) -> String {
@@ -3110,6 +3458,28 @@ fn dominant_failure_label(failure_summary: &Value) -> Option<String> {
 fn write_json(path: &Path, value: &Value) -> Result<()> {
     let text = serde_json::to_string_pretty(value)?;
     write_text(path, &format!("{text}\n"))
+}
+
+fn read_staleness_verdict_json(path: &Path) -> Result<Value> {
+    let text = fs::read_to_string(path).map_err(|source| OptimizerError::io(path, source))?;
+    match serde_json::from_str::<Value>(&text) {
+        Ok(value) => return Ok(value),
+        Err(source) if !source.to_string().contains("trailing characters") => {
+            return Err(OptimizerError::from(source));
+        }
+        Err(_) => {}
+    }
+
+    let mut values = Vec::new();
+    for value in serde_json::Deserializer::from_str(&text).into_iter::<Value>() {
+        values.push(value.map_err(OptimizerError::from)?);
+    }
+    values.into_iter().last().ok_or_else(|| {
+        OptimizerError::Proposer(format!(
+            "staleness reviewer verdict file {} did not contain a JSON object",
+            path.display()
+        ))
+    })
 }
 
 fn write_text(path: &Path, text: &str) -> Result<()> {

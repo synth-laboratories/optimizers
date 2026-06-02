@@ -35,8 +35,8 @@ Fragment TOMLs under [`profiles/`](./profiles/). Each profile merges:
 
 | Profile file | Proposer model | Notes |
 |--------------|----------------|-------|
-| `banking77_openai_baseline.toml` | `gpt-5.4-nano` (OpenAI API) | Baseline |
-| `banking77_openai_baseline_docker.toml` | `gpt-5.4-nano` (OpenAI API) | Docker proposer substrate |
+| `banking77_openai_baseline.toml` | `gpt-5.4-mini` (OpenAI API) | Baseline |
+| `banking77_openai_baseline_docker.toml` | `gpt-5.4-mini` (OpenAI API) | Docker proposer substrate |
 | `banking77_openrouter_grok43.toml` | `x-ai/grok-4.3` (OpenRouter) | First-class OR |
 | `banking77_openrouter_grok43_docker.toml` | `x-ai/grok-4.3` (OpenRouter) | Docker proposer + provider routing |
 | `banking77_deepseek_v4_flash.toml` | `deepseek-v4-flash` (direct) | Gated |

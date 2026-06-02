@@ -193,6 +193,12 @@ pub struct GepaAsyncPipelineCursorState {
     #[serde(default)]
     pub adaptive_rollout_concurrency: GepaAdaptiveRolloutConcurrencyState,
     #[serde(default)]
+    pub adaptive_stage_workers: GepaAdaptiveStageWorkersState,
+    #[serde(default, deserialize_with = "deserialize_null_default")]
+    pub speculative_releases: Vec<GepaSpeculativeReleaseRecord>,
+    #[serde(default, deserialize_with = "deserialize_null_default")]
+    pub staleness_reviews: Vec<GepaStalenessReviewRecord>,
+    #[serde(default)]
     pub rollout_resilience: GepaRolloutResilienceState,
     #[serde(default)]
     pub terminal_readiness: Value,
@@ -228,6 +234,84 @@ pub struct GepaAdaptiveRolloutConcurrencyAdjustment {
     pub reason: String,
     #[serde(default)]
     pub completed_rollouts: usize,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct GepaAdaptiveStageWorkersState {
+    #[serde(default)]
+    pub initialized: bool,
+    #[serde(default)]
+    pub propose_limit: usize,
+    #[serde(default)]
+    pub rollout_limit: usize,
+    #[serde(default)]
+    pub evaluate_limit: usize,
+    #[serde(default)]
+    pub last_adjustment: Option<GepaAdaptiveStageWorkersAdjustment>,
+    #[serde(default, deserialize_with = "deserialize_null_default")]
+    pub adjustments: Vec<GepaAdaptiveStageWorkersAdjustment>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct GepaAdaptiveStageWorkersAdjustment {
+    #[serde(default)]
+    pub lane: String,
+    #[serde(default)]
+    pub direction: String,
+    #[serde(default)]
+    pub old_limit: usize,
+    #[serde(default)]
+    pub new_limit: usize,
+    #[serde(default)]
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct GepaSpeculativeReleaseRecord {
+    #[serde(default)]
+    pub release_id: String,
+    #[serde(default)]
+    pub source_partial_id: String,
+    #[serde(default)]
+    pub evaluate_partial_id: String,
+    #[serde(default)]
+    pub stage: String,
+    #[serde(default)]
+    pub generation: usize,
+    #[serde(default)]
+    pub candidate_ids: Vec<String>,
+    #[serde(default)]
+    pub completed_rows: usize,
+    #[serde(default)]
+    pub total_rows: usize,
+    #[serde(default)]
+    pub alpha: f64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct GepaStalenessReviewRecord {
+    #[serde(default)]
+    pub review_id: String,
+    #[serde(default)]
+    pub item_id: String,
+    #[serde(default)]
+    pub stage: String,
+    #[serde(default)]
+    pub generation: usize,
+    #[serde(default)]
+    pub candidate_ids: Vec<String>,
+    #[serde(default)]
+    pub verdict: String,
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default)]
+    pub stale_gap: u64,
+    #[serde(default)]
+    pub parent_pool_version: u64,
+    #[serde(default)]
+    pub current_pool_version: u64,
+    #[serde(default)]
+    pub reviewer_workspace: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

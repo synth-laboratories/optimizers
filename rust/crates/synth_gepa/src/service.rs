@@ -13,9 +13,9 @@ use sha1::{Digest as Sha1Digest, Sha1};
 use sha2::{Digest as Sha2Digest, Sha256};
 use synth_optimizer_platform::{
     ArtifactPaths, CacheMode, CheckpointInput, CheckpointRecord, ContainerClient, FailurePayload,
-    GepaPipelineMode, OptimizerError, OptimizerJob, OptimizerJobKind, OptimizerJobStatus,
-    PromptProgram, Result, RuntimeEffectInput, RuntimeEffectRecord, SynthOptimizerConfig,
-    WorkspaceRunRequestStatus, WorkspaceStore,
+    GepaPipelineMode, GepaStalenessPolicy, OptimizerError, OptimizerJob, OptimizerJobKind,
+    OptimizerJobStatus, PromptProgram, Result, RuntimeEffectInput, RuntimeEffectRecord,
+    SynthOptimizerConfig, WorkspaceRunRequestStatus, WorkspaceStore,
 };
 
 use crate::{
@@ -193,6 +193,12 @@ struct ServiceAdvancedConfig {
 #[serde(deny_unknown_fields)]
 struct ServicePipelineConfig {
     #[serde(default)]
+    mode: Option<GepaPipelineMode>,
+    #[serde(default)]
+    staleness_policy: Option<GepaStalenessPolicy>,
+    #[serde(default)]
+    delta_max: Option<u64>,
+    #[serde(default)]
     max_generations: Option<usize>,
     #[serde(default)]
     proposals_per_generation: Option<usize>,
@@ -203,7 +209,15 @@ struct ServicePipelineConfig {
     #[serde(default)]
     rollout_workers: Option<usize>,
     #[serde(default)]
+    proposer_workers: Option<usize>,
+    #[serde(default)]
+    evaluator_workers: Option<usize>,
+    #[serde(default)]
     rollout_chunk_size: Option<usize>,
+    #[serde(default)]
+    speculative_alpha: Option<f64>,
+    #[serde(default)]
+    adaptive_stage_workers: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -2346,6 +2360,15 @@ fn apply_advanced_config(
     advanced: &ServiceAdvancedConfig,
 ) -> Result<()> {
     if let Some(pipeline) = advanced.pipeline.as_ref() {
+        if let Some(value) = pipeline.mode {
+            config.gepa.pipeline.mode = value;
+        }
+        if let Some(value) = pipeline.staleness_policy {
+            config.gepa.pipeline.staleness_policy = value;
+        }
+        if let Some(value) = pipeline.delta_max {
+            config.gepa.pipeline.delta_max = value;
+        }
         if let Some(value) = pipeline.max_generations {
             require_positive_usize("advanced.pipeline.max_generations", value)?;
             config.gepa.max_generations = value;
@@ -2360,16 +2383,40 @@ fn apply_advanced_config(
         }
         if let Some(value) = pipeline.max_in_flight_candidates {
             require_positive_usize("advanced.pipeline.max_in_flight_candidates", value)?;
-            config.gepa.pipeline.mode = GepaPipelineMode::AsyncPipelined;
+            if pipeline.mode.is_none()
+                && matches!(config.gepa.pipeline.mode, GepaPipelineMode::SyncSerial)
+            {
+                config.gepa.pipeline.mode = GepaPipelineMode::AsyncPipelined;
+            }
             config.gepa.pipeline.max_in_flight_candidates = value;
         }
         if let Some(value) = pipeline.rollout_workers {
             require_positive_usize("advanced.pipeline.rollout_workers", value)?;
             config.gepa.pipeline.workers.rollout = value;
         }
+        if let Some(value) = pipeline.proposer_workers {
+            require_positive_usize("advanced.pipeline.proposer_workers", value)?;
+            config.gepa.pipeline.workers.propose = value;
+        }
+        if let Some(value) = pipeline.evaluator_workers {
+            require_positive_usize("advanced.pipeline.evaluator_workers", value)?;
+            config.gepa.pipeline.workers.evaluate = value;
+        }
         if let Some(value) = pipeline.rollout_chunk_size {
             require_positive_usize("advanced.pipeline.rollout_chunk_size", value)?;
             config.gepa.rollout_chunk_size = Some(value);
+        }
+        if let Some(value) = pipeline.speculative_alpha {
+            if !value.is_finite() || value <= 0.0 || value > 1.0 {
+                return Err(OptimizerError::Config(
+                    "advanced.pipeline.speculative_alpha must be in (0, 1]".to_string(),
+                ));
+            }
+            config.gepa.pipeline.speculative_completion.enabled = true;
+            config.gepa.pipeline.speculative_completion.alpha = value;
+        }
+        if let Some(value) = pipeline.adaptive_stage_workers {
+            config.gepa.pipeline.adaptive_stage_workers.enabled = value;
         }
     }
     if let Some(timeouts) = advanced.timeouts.as_ref() {
@@ -2550,12 +2597,19 @@ fn project_stop_conditions(config: &SynthOptimizerConfig) -> Value {
 fn project_advanced_config(config: &SynthOptimizerConfig) -> Value {
     json!({
         "pipeline": {
+            "mode": config.gepa.pipeline.mode.as_str(),
+            "staleness_policy": config.gepa.pipeline.staleness_policy.as_str(),
+            "delta_max": config.gepa.pipeline.delta_max,
             "max_generations": config.gepa.max_generations,
             "proposals_per_generation": config.gepa.proposals_per_generation,
             "minibatch_size": config.gepa.minibatch_size,
             "max_in_flight_candidates": config.gepa.pipeline.max_in_flight_candidates,
+            "proposer_workers": config.gepa.pipeline.workers.propose,
             "rollout_workers": config.gepa.pipeline.workers.rollout,
+            "evaluator_workers": config.gepa.pipeline.workers.evaluate,
             "rollout_chunk_size": config.gepa.rollout_chunk_size,
+            "speculative_completion": config.gepa.pipeline.speculative_completion,
+            "adaptive_stage_workers": config.gepa.pipeline.adaptive_stage_workers,
         },
         "timeouts": {
             "rollout_seconds": config.gepa.rollout_async_timeout_seconds,

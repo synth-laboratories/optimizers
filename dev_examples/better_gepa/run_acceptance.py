@@ -149,7 +149,7 @@ def build_acceptance_config(
         minibatch_size=2,
         max_total_rollouts=12,
         max_cost_usd=0.15 if mode == "cost_stop" else 50.0,
-        proposer_model="gpt-5.4-nano",
+        proposer_model="gpt-5.4-mini",
     )
     base_config_path = _write_gepa_toml(
         port=port,

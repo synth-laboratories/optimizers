@@ -1,5 +1,12 @@
 # synth-optimizers changelog
 
+## 2026-06-02
+
+* Published `0.2.0.dev202606021646` to PyPI.
+* Added FlashEvolve async pipeline mode with reflective staleness reviewer.
+* Fixed FlashEvolve async rollout folding to resolve rows by `example_id`.
+* Documented the current FlashEvolve wall-clock regression vs `sync_serial` pending proposer-priority scheduling.
+
 ## 2026-05-31
 
 * Published `0.2.0.dev202606010003` to PyPI with GEPA rollout resilience.

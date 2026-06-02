@@ -171,6 +171,38 @@ fn default_pipeline_evaluate_workers() -> usize {
     1
 }
 
+fn default_pipeline_staleness_delta_max() -> u64 {
+    2
+}
+
+fn default_gepa_speculative_completion_enabled() -> bool {
+    false
+}
+
+fn default_gepa_speculative_completion_alpha() -> f64 {
+    0.25
+}
+
+fn default_gepa_adaptive_stage_workers_enabled() -> bool {
+    false
+}
+
+fn default_gepa_adaptive_stage_workers_min() -> usize {
+    1
+}
+
+fn default_gepa_adaptive_stage_workers_max() -> usize {
+    128
+}
+
+fn default_gepa_adaptive_stage_workers_backlog_threshold() -> usize {
+    2
+}
+
+fn default_gepa_adaptive_stage_workers_stale_gap_threshold() -> u64 {
+    2
+}
+
 fn default_gepa_adaptive_rollout_concurrency_enabled() -> bool {
     crate::limits::GEPA_ADAPTIVE_ROLLOUT_CONCURRENCY_ENABLED
 }
@@ -1285,6 +1317,21 @@ pub enum GepaPipelineMode {
     #[default]
     SyncSerial,
     AsyncPipelined,
+    /// Async pipeline that overlaps proposer reflection with policy rollouts to
+    /// realize the paper's wall-clock speedup over `SyncSerial`.
+    ///
+    /// LIMITATION (Banking77 matrix `20260602052705`, measured 2026-06-02):
+    /// FlashEvolve does NOT yet beat `SyncSerial`. With
+    /// `max_in_flight_candidates=8` it was ~31% *slower* (0.687x speedup, 741s
+    /// vs 509s) at identical heldout quality (0.750), because proposer/policy
+    /// overlap was near-zero (~0.33s mean) — current-generation full-train
+    /// rollout work drains before the next proposer is scheduled, so reflection
+    /// and rollouts never run concurrently. The intended fix is proposer-priority
+    /// scheduling (admit the next proposer before draining current-generation
+    /// full-train rollouts); see decision
+    /// `.jstack/records/decisions/optimizers/2026-06-02-flashevolve-proposer-priority.md`.
+    /// Until that lands, FlashEvolve is a wall-clock regression, not a win.
+    FlashEvolve,
 }
 
 impl GepaPipelineMode {
@@ -1292,6 +1339,7 @@ impl GepaPipelineMode {
         match self {
             Self::SyncSerial => "sync_serial",
             Self::AsyncPipelined => "async_pipelined",
+            Self::FlashEvolve => "flash_evolve",
         }
     }
 }
@@ -1326,6 +1374,12 @@ pub struct GepaPipelineConfig {
     pub max_in_flight_candidates: usize,
     #[serde(default)]
     pub workers: GepaPipelineWorkers,
+    #[serde(default = "default_pipeline_staleness_delta_max")]
+    pub delta_max: u64,
+    #[serde(default)]
+    pub speculative_completion: GepaSpeculativeCompletionConfig,
+    #[serde(default)]
+    pub adaptive_stage_workers: GepaAdaptiveStageWorkersConfig,
     #[serde(default)]
     pub adaptive_rollout_concurrency: GepaAdaptiveRolloutConcurrencyConfig,
 }
@@ -1337,7 +1391,55 @@ impl Default for GepaPipelineConfig {
             staleness_policy: GepaStalenessPolicy::Full,
             max_in_flight_candidates: default_pipeline_max_in_flight_candidates(),
             workers: GepaPipelineWorkers::default(),
+            delta_max: default_pipeline_staleness_delta_max(),
+            speculative_completion: GepaSpeculativeCompletionConfig::default(),
+            adaptive_stage_workers: GepaAdaptiveStageWorkersConfig::default(),
             adaptive_rollout_concurrency: GepaAdaptiveRolloutConcurrencyConfig::default(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GepaSpeculativeCompletionConfig {
+    #[serde(default = "default_gepa_speculative_completion_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_gepa_speculative_completion_alpha")]
+    pub alpha: f64,
+}
+
+impl Default for GepaSpeculativeCompletionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_gepa_speculative_completion_enabled(),
+            alpha: default_gepa_speculative_completion_alpha(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GepaAdaptiveStageWorkersConfig {
+    #[serde(default = "default_gepa_adaptive_stage_workers_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_gepa_adaptive_stage_workers_min")]
+    pub min: usize,
+    #[serde(default = "default_gepa_adaptive_stage_workers_max")]
+    pub max: usize,
+    #[serde(default = "default_gepa_adaptive_stage_workers_backlog_threshold")]
+    pub backlog_threshold: usize,
+    #[serde(default = "default_gepa_adaptive_stage_workers_stale_gap_threshold")]
+    pub stale_gap_threshold: u64,
+}
+
+impl Default for GepaAdaptiveStageWorkersConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_gepa_adaptive_stage_workers_enabled(),
+            min: default_gepa_adaptive_stage_workers_min(),
+            max: default_gepa_adaptive_stage_workers_max(),
+            backlog_threshold: default_gepa_adaptive_stage_workers_backlog_threshold(),
+            stale_gap_threshold: default_gepa_adaptive_stage_workers_stale_gap_threshold(),
         }
     }
 }
@@ -1792,6 +1894,7 @@ fn parse_gepa_pipeline_mode_override(raw_mode: &str) -> Result<GepaPipelineMode>
     match raw_mode.trim().to_ascii_lowercase().as_str() {
         "sync_serial" | "sync" | "serial" => Ok(GepaPipelineMode::SyncSerial),
         "async_pipelined" | "async" | "pipelined" => Ok(GepaPipelineMode::AsyncPipelined),
+        "flash_evolve" | "flashevolve" | "flash" => Ok(GepaPipelineMode::FlashEvolve),
         _ => Err(OptimizerError::Config(format!(
             "unknown GEPA pipeline mode override: {raw_mode}"
         ))),
@@ -1810,13 +1913,25 @@ fn parse_gepa_staleness_policy_override(raw_policy: &str) -> Result<GepaStalenes
 }
 
 fn validate_gepa_pipeline_config(config: &GepaPipelineConfig) -> Result<()> {
-    if matches!(config.mode, GepaPipelineMode::AsyncPipelined)
-        && !matches!(config.staleness_policy, GepaStalenessPolicy::Full)
-    {
-        return Err(OptimizerError::Config(format!(
-            "gepa.pipeline.staleness_policy = {:?} is reserved for a later async-pipelined phase; use full",
-            config.staleness_policy
-        )));
+    match (config.mode, config.staleness_policy) {
+        (GepaPipelineMode::SyncSerial, GepaStalenessPolicy::Full) => {}
+        (GepaPipelineMode::SyncSerial, policy) => {
+            return Err(OptimizerError::Config(format!(
+                "gepa.pipeline.staleness_policy = {policy:?} is incompatible with sync_serial; use full"
+            )));
+        }
+        (GepaPipelineMode::AsyncPipelined, GepaStalenessPolicy::Full) => {}
+        (GepaPipelineMode::AsyncPipelined, policy) => {
+            return Err(OptimizerError::Config(format!(
+                "gepa.pipeline.staleness_policy = {policy:?} is reserved for flash_evolve; use full with async_pipelined"
+            )));
+        }
+        (
+            GepaPipelineMode::FlashEvolve,
+            GepaStalenessPolicy::Full
+            | GepaStalenessPolicy::Guarded
+            | GepaStalenessPolicy::Reflective,
+        ) => {}
     }
     if config.max_in_flight_candidates == 0 {
         return Err(OptimizerError::Config(
@@ -1836,6 +1951,36 @@ fn validate_gepa_pipeline_config(config: &GepaPipelineConfig) -> Result<()> {
     if config.workers.evaluate == 0 {
         return Err(OptimizerError::Config(
             "gepa.pipeline.workers.evaluate must be positive".to_string(),
+        ));
+    }
+    if config.speculative_completion.enabled {
+        if !matches!(config.mode, GepaPipelineMode::FlashEvolve) {
+            return Err(OptimizerError::Config(
+                "gepa.pipeline.speculative_completion requires mode = \"flash_evolve\"".to_string(),
+            ));
+        }
+        if !config.speculative_completion.alpha.is_finite()
+            || config.speculative_completion.alpha <= 0.0
+            || config.speculative_completion.alpha > 1.0
+        {
+            return Err(OptimizerError::Config(
+                "gepa.pipeline.speculative_completion.alpha must be in (0, 1]".to_string(),
+            ));
+        }
+    }
+    if config.adaptive_stage_workers.min == 0 {
+        return Err(OptimizerError::Config(
+            "gepa.pipeline.adaptive_stage_workers.min must be positive".to_string(),
+        ));
+    }
+    if config.adaptive_stage_workers.max < config.adaptive_stage_workers.min {
+        return Err(OptimizerError::Config(
+            "gepa.pipeline.adaptive_stage_workers.max must be >= min".to_string(),
+        ));
+    }
+    if config.adaptive_stage_workers.backlog_threshold == 0 {
+        return Err(OptimizerError::Config(
+            "gepa.pipeline.adaptive_stage_workers.backlog_threshold must be positive".to_string(),
         ));
     }
     let adaptive = &config.adaptive_rollout_concurrency;
@@ -1872,4 +2017,61 @@ fn validate_gepa_pipeline_config(config: &GepaPipelineConfig) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn flash_evolve_accepts_reflective_speculative_and_adaptive_stage_workers() {
+        let mut config = GepaPipelineConfig::default();
+        config.mode = GepaPipelineMode::FlashEvolve;
+        config.staleness_policy = GepaStalenessPolicy::Reflective;
+        config.speculative_completion.enabled = true;
+        config.speculative_completion.alpha = 0.25;
+        config.adaptive_stage_workers.enabled = true;
+
+        validate_gepa_pipeline_config(&config).expect("flash_evolve full feature config");
+    }
+
+    #[test]
+    fn speculative_completion_requires_flash_evolve_mode() {
+        let mut config = GepaPipelineConfig::default();
+        config.mode = GepaPipelineMode::AsyncPipelined;
+        config.speculative_completion.enabled = true;
+
+        let error = validate_gepa_pipeline_config(&config)
+            .expect_err("speculative completion should reject async_pipelined");
+
+        assert!(error
+            .to_string()
+            .contains("speculative_completion requires mode"));
+    }
+
+    #[test]
+    fn sync_serial_rejects_staleness_policy() {
+        let mut config = GepaPipelineConfig::default();
+        config.mode = GepaPipelineMode::SyncSerial;
+        config.staleness_policy = GepaStalenessPolicy::Guarded;
+
+        let error = validate_gepa_pipeline_config(&config)
+            .expect_err("sync_serial should reject guarded staleness");
+
+        assert!(error.to_string().contains("incompatible with sync_serial"));
+    }
+
+    #[test]
+    fn adaptive_stage_worker_bounds_are_validated() {
+        let mut config = GepaPipelineConfig::default();
+        config.adaptive_stage_workers.min = 4;
+        config.adaptive_stage_workers.max = 2;
+
+        let error =
+            validate_gepa_pipeline_config(&config).expect_err("max below min should be invalid");
+
+        assert!(error
+            .to_string()
+            .contains("adaptive_stage_workers.max must be >= min"));
+    }
 }

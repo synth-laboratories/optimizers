@@ -86,7 +86,7 @@ RolloutResult(
 
 `reward` is the signal GEPA maximizes. `objective_scores` lets a container report multiple
 objectives for Pareto selection. `trace`/`usage` flow into the run evidence and the
-[dashboard](#/index).
+[board](#/cli).
 
 ### Sync vs async
 

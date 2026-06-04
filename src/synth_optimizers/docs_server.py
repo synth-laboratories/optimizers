@@ -32,31 +32,34 @@ import html
 import json
 import re
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Sequence
 from urllib.parse import parse_qs, unquote
 
 from .board_server import EVENTS_BASE, STREAM_PATH, _Hub
+from .o11y import BoardSource
 
 # Docs ship as package data under ``synth_optimizers/docs/<name>/`` so a
 # pip-installed console can find them without a repo checkout.
 _DOCS_DIR = Path(__file__).resolve().parent / "docs"
 
 
-def bundled_docs_root(name: str = "gepa") -> Path:
+def bundled_docs_root(docs_set: str = "gepa") -> Path:
     """Path to a docs set bundled in the package (default: the GEPA docs)."""
-    root = _DOCS_DIR / name
+    root = _DOCS_DIR / docs_set
     if not root.is_dir():
-        raise FileNotFoundError(f"no bundled docs named {name!r} at {root}")
+        raise FileNotFoundError(f"no bundled docs set {docs_set!r} at {root}")
     return root
 
 
-def bundled_logo() -> Path | None:
-    """The Synth logo shipped with the GEPA docs, if present."""
+def bundled_logo() -> Path:
+    """The Synth logo shipped with the GEPA docs (package data; always present)."""
     logo = _DOCS_DIR / "gepa" / "assets" / "synth-logo.png"
-    return logo if logo.exists() else None
+    if not logo.exists():
+        raise FileNotFoundError(f"bundled logo missing at {logo}")
+    return logo
 
 
 # ---------------------------------------------------------------------------
@@ -74,13 +77,48 @@ class DocPage:
 
     key: str          # url-stable slug, e.g. "cli" or "guides/auth"
     title: str        # display title (first H1, else humanized filename)
-    source: Path      # absolute path on disk
+    path: Path        # absolute path on disk
     order: int        # sort key within its section
     section: str      # top-level folder ("" = root)
 
 
+@dataclass(frozen=True)
+class NavEntry:
+    """One linkable page in the nav tree."""
+
+    key: str
+    title: str
+
+
+@dataclass(frozen=True)
+class NavSection:
+    """One nav group: a (possibly empty, for root) heading + its pages."""
+
+    section: str          # display name; "" = ungrouped root pages
+    pages: list[NavEntry]
+
+
+@dataclass(frozen=True)
+class DocsIndex:
+    """The full nav projection. ``to_data`` is the JSON the docs client reads."""
+
+    title: str
+    nav: list[NavSection]
+    default: str | None   # key of the page to open first
+
+    def to_data(self) -> dict:
+        return {
+            "title": self.title,
+            "nav": [
+                {"section": s.section, "pages": [{"key": p.key, "title": p.title} for p in s.pages]}
+                for s in self.nav
+            ],
+            "default": self.default,
+        }
+
+
 class DocsSource:
-    """ServiceBoardSource-shaped source backed by a tree of markdown files.
+    """``BoardSource``-shaped source backed by a tree of markdown files.
 
     Mirrors the board sources' contract: a ``title`` plus pure projection
     methods (``index`` / ``render_page``) the handler can call per request, so
@@ -121,31 +159,31 @@ class DocsSource:
         key = "/".join(slug_parts)
         section = slug_parts[0] if len(slug_parts) > 1 else ""
         title = _first_heading(path) or _humanize(clean_stem)
-        return DocPage(key=key, title=title, source=path, order=order, section=section)
+        return DocPage(key=key, title=title, path=path, order=order, section=section)
 
-    def index(self) -> dict:
+    def index(self) -> DocsIndex:
         """Nav tree: ordered sections, each with ordered pages."""
         pages = sorted(self._pages().values(), key=lambda p: (p.section, p.order, p.title))
-        sections: dict[str, list[dict]] = {}
+        entries_by_section: dict[str, list[NavEntry]] = {}
         for page in pages:
-            sections.setdefault(page.section, []).append(
-                {"key": page.key, "title": page.title}
+            entries_by_section.setdefault(page.section, []).append(
+                NavEntry(key=page.key, title=page.title)
             )
         # Root pages first, then named sections alphabetically.
-        ordered = [""] + sorted(s for s in sections if s)
+        ordered = [""] + sorted(s for s in entries_by_section if s)
         nav = [
-            {"section": _humanize(s) if s else "", "pages": sections[s]}
+            NavSection(section=_humanize(s) if s else "", pages=entries_by_section[s])
             for s in ordered
-            if s in sections
+            if s in entries_by_section
         ]
         default = pages[0].key if pages else None
-        return {"title": self._title, "nav": nav, "default": default}
+        return DocsIndex(title=self._title, nav=nav, default=default)
 
     def render_page(self, key: str) -> str:
         page = self._pages().get(key)
         if page is None:
             raise KeyError(key)
-        return markdown_to_html(page.source.read_text(encoding="utf-8"))
+        return markdown_to_html(page.path.read_text(encoding="utf-8"))
 
 
 def _first_heading(path: Path) -> str | None:
@@ -194,8 +232,8 @@ def _inline(text: str) -> str:
     return text
 
 
-def markdown_to_html(md: str) -> str:
-    lines = md.splitlines()
+def markdown_to_html(markdown: str) -> str:
+    lines = markdown.splitlines()
     out: list[str] = []
     i = 0
     n = len(lines)
@@ -370,22 +408,22 @@ def render_console_html(*, title: str, board_path: str = "/board/", docs_path: s
     <span class="t">{html.escape(title)}</span>
   </div>
   <div class="switch" role="tablist">
-    <button id="tab-dashboard" class="active">Dashboard</button>
+    <button id="tab-board" class="active">Board</button>
     <button id="tab-docs">Docs</button>
   </div>
   <span class="spacer"></span>
-  <span class="hint"><kbd>1</kbd> dashboard <kbd>2</kbd> docs <kbd>T</kbd> toggle</span>
+  <span class="hint"><kbd>1</kbd> board <kbd>2</kbd> docs <kbd>T</kbd> toggle</span>
 </header>
 <main>
-  <iframe id="view-dashboard" src="{board_path}"></iframe>
+  <iframe id="view-board" src="{board_path}"></iframe>
   <iframe id="view-docs" src="{docs_path}" hidden></iframe>
 </main>
 <script>
-  const order = ['dashboard', 'docs'];
-  let current = 'dashboard';
+  const order = ['board', 'docs'];
+  let current = 'board';
 
   function show(name) {{
-    if (!order.includes(name)) name = 'dashboard';
+    if (!order.includes(name)) name = 'board';
     current = name;
     for (const t of order) {{
       document.getElementById('view-' + t).hidden = (t !== name);
@@ -393,14 +431,14 @@ def render_console_html(*, title: str, board_path: str = "/board/", docs_path: s
     }}
     if (location.hash.slice(1) !== name) history.replaceState(null, '', '#' + name);
   }}
-  function toggle() {{ show(current === 'dashboard' ? 'docs' : 'dashboard'); }}
+  function toggle() {{ show(current === 'board' ? 'docs' : 'board'); }}
 
-  // Key handling: 1=dashboard, 2=docs, t/`=toggle. Ignored while typing in a field.
+  // Key handling: 1=board, 2=docs, t/`=toggle. Ignored while typing in a field.
   function onKey(e) {{
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const el = e.target, tag = (el && el.tagName || '').toLowerCase();
     if (tag === 'input' || tag === 'textarea' || tag === 'select' || (el && el.isContentEditable)) return;
-    if (e.key === '1') {{ show('dashboard'); e.preventDefault(); }}
+    if (e.key === '1') {{ show('board'); e.preventDefault(); }}
     else if (e.key === '2') {{ show('docs'); e.preventDefault(); }}
     else if (e.key === 't' || e.key === 'T' || e.key === '`') {{ toggle(); e.preventDefault(); }}
   }}
@@ -420,7 +458,7 @@ def render_console_html(*, title: str, board_path: str = "/board/", docs_path: s
   }}
 
   window.addEventListener('hashchange', () => show(location.hash.slice(1)));
-  show(location.hash.slice(1) || 'dashboard');
+  show(location.hash.slice(1) || 'board');
 </script>
 </body></html>"""
 
@@ -523,22 +561,15 @@ class _Logo:
     content_type: str = "image/svg+xml"
 
 
-def _load_logo(logo_path: Path | str | None) -> _Logo:
-    if logo_path is None:
-        # Minimal fallback wordmark so the header is never empty.
-        svg = (
-            '<svg xmlns="http://www.w3.org/2000/svg" width="92" height="30">'
-            '<rect width="92" height="30" rx="7" fill="#e6edf3"/>'
-            '<text x="46" y="20" font-family="monospace" font-size="15" '
-            'font-weight="700" fill="#0d1117" text-anchor="middle">Synth</text></svg>'
-        )
-        return _Logo(svg.encode())
+def _load_logo(logo_path: Path | str) -> _Logo:
     path = Path(logo_path)
-    ctype = "image/png" if path.suffix.lower() == ".png" else "image/svg+xml"
-    return _Logo(path.read_bytes(), ctype)
+    content_type = "image/png" if path.suffix.lower() == ".png" else "image/svg+xml"
+    return _Logo(path.read_bytes(), content_type)
 
 
-def _console_handler_factory(hub: _Hub, board_source, docs_source: DocsSource, logo: _Logo):
+def _console_handler_factory(
+    hub: _Hub, board_source: BoardSource, docs_source: DocsSource, logo: _Logo
+):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -587,7 +618,7 @@ def _console_handler_factory(hub: _Hub, board_source, docs_source: DocsSource, l
             elif raw in ("/docs", "/docs/"):
                 self._html(render_docs_html(title=docs_source.title))
             elif raw == "/api/docs":
-                self._json(docs_source.index())
+                self._json(docs_source.index().to_data())
             elif raw == "/api/docs/page":
                 key = unquote(query.get("path", [""])[0])
                 try:
@@ -637,7 +668,7 @@ def _console_handler_factory(hub: _Hub, board_source, docs_source: DocsSource, l
 
 
 def serve_console(
-    board_source,
+    board_source: BoardSource,
     docs_source: DocsSource,
     *,
     host: str = "127.0.0.1",
@@ -657,7 +688,7 @@ def serve_console(
     threading.Thread(target=hub.run_forever, name="console-board-poller", daemon=True).start()
 
     httpd = ThreadingHTTPServer((host, port), _console_handler_factory(hub, board_source, docs_source, logo))
-    print(f"[console] dashboard + docs: http://{host}:{port}/  (Ctrl-C to stop)")
+    print(f"[console] board + docs: http://{host}:{port}/  (Ctrl-C to stop)")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

@@ -89,18 +89,21 @@ train_seeds = [0, 1, 2, 3, 4, 5, 6, 7]
 heldout_seeds = [100, 101, 102, 103]
 ```
 
-Load it with `GepaRun.from_toml("gepa.toml")`, or build the equivalent objects directly:
+Load it with `GepaRun.from_toml("gepa.toml")`, or build the equivalent objects directly.
+These are the `GepaConfig` constructor arguments (matching the quickstart above):
 
-| TOML section | SDK type | Purpose |
-|--------------|----------|---------|
-| `[container]` | `container=` connection | Which scored environment to talk to (URL + optional launch command). |
-| `[candidate]` | `program` / `GepaTaskPools` | Which prompt modules to optimize. |
-| `[seed_candidate]` | seed prompts | The starting prompt text per module. |
-| `[dataset]` | `TasksetSelection` | Train and heldout seed/id selection. |
-| `[policy]` | `PolicyConfig` | The model that runs rollouts inside the container. |
-| `[proposer]` | `ProposerConfig` | The reflective Codex model that proposes edits. |
-| `[objectives]` | `ObjectiveConfig` | Scoring objectives and acceptance. |
-| `[output]` | `OutputConfig` | Run dir and evidence output. |
+| `GepaConfig` argument | SDK type | Purpose |
+|-----------------------|----------|---------|
+| `container=` | container connection | Which scored environment to talk to (`handle.connection()` — URL + optional launch command). |
+| `taskset=` | `TasksetSelection` | Train and heldout task-id selection. |
+| `task_pools=` | `GepaTaskPools` | How those task ids split into the pareto / minibatch / reflection / heldout pools. |
+| `program=` | `PromptProgram` | Which prompt modules to optimize; `None` derives it from the container's `/program`. |
+| `policy=` | `PolicyConfig` | The model that runs rollouts inside the container; `None` uses the container/TOML policy. |
+| `objectives=` | `ObjectiveConfig` | Scoring objectives and acceptance; `None` uses the container default. |
+
+The `[proposer]` and `[output]` TOML sections map to `ProposerConfig` / `OutputConfig`; the
+`[seed_candidate]` section sets the starting prompt text per module. Pass `None` for
+`program` / `policy` / `objectives` to derive them from the container and defaults.
 
 Useful config types exported from `synth_optimizers`: `GepaConfig`, `GepaTaskPools`,
 `TasksetSelection`, `PolicyConfig`, `PolicyType`, `ProposerConfig`, `ProposerPromptConfig`,
@@ -142,11 +145,11 @@ timeout_seconds = 900
 
 ## Observability
 
-The SDK also exposes the board/o11y projection used by `gepa board`:
+The SDK also exposes the same board/observability projection that `gepa board` renders:
 
 ```python
 from synth_optimizers import RunBoard, RunStatus, RunState, project_run_events
 ```
 
 These read a run's `events.jsonl` / registry into typed status objects — handy for custom
-dashboards (this docs console is built on exactly that surface).
+dashboards (the run board served by `gepa console` is built on exactly this surface).

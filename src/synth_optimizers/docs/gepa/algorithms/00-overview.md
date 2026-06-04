@@ -21,7 +21,7 @@ GEPA optimizes the **mutable prompt modules** of a task (declared by the contain
 
 This repeats until the budget is exhausted. The frontier, every rollout, and the
 acceptance decision are written to the run dir as inspectable evidence (events, registry,
-manifest) — the same data the [dashboard](#/index) renders.
+manifest) — the same data the [board](#/cli) renders.
 
 ## The pools
 

@@ -74,6 +74,30 @@ synth-optimizers gepa board --serve --port 8765
 | `--interval` | `2.0` | Live re-projection cadence (seconds). |
 | `--json` | off | Print the normalized board JSON instead of writing HTML. |
 
+## `gepa console`
+
+Serve the run **board** and the bundled GEPA docs behind one local port as two tabs
+(`Board` | `Docs`), flippable by click or keyboard (`1`/`2`/`T`). The docs ship with the
+package, so this works from a plain `pip install` with no repo checkout.
+
+```bash
+# Board defaults to GEPA_HOME discovery; docs to the bundled set:
+synth-optimizers gepa console --port 8766
+# Point the board at explicit run roots:
+synth-optimizers gepa console ~/.gepa/runs --root ./runs/final
+```
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `roots` (positional) | — | Registry roots for the board, alongside `GEPA_HOME`. |
+| `--root` | — | Additional registry root for the board; repeatable. |
+| `--title` | `GEPA` | Console title (header + board). |
+| `--host` / `--port` | `127.0.0.1` / `8766` | Bind address. |
+| `--service-url` | discover | Pin the board to one running `gepa service`. |
+| `--interval` | `2.0` | Live re-projection cadence (seconds). |
+| `--docs` | bundled | Override the docs directory (defaults to the bundled GEPA docs). |
+| `--docs-set` | `gepa` | Which bundled docs set to serve. |
+
 ## `gepa eval-stats`
 
 Summarize evaluation stats across one or more runs.

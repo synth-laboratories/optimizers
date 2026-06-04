@@ -229,21 +229,21 @@ def build_parser() -> argparse.ArgumentParser:
     gepa_console.add_argument(
         "roots",
         nargs="*",
-        help="Additional registry roots for the dashboard, alongside GEPA_HOME.",
+        help="Additional registry roots for the board, alongside GEPA_HOME.",
     )
     gepa_console.add_argument(
         "--root",
         dest="extra_roots",
         action="append",
         default=[],
-        help="Additional registry root for the dashboard; may be repeated.",
+        help="Additional registry root for the board; may be repeated.",
     )
     gepa_console.add_argument("--title", default="GEPA")
     gepa_console.add_argument("--host", default="127.0.0.1")
     gepa_console.add_argument("--port", type=int, default=8766)
     gepa_console.add_argument(
         "--service-url",
-        help="Pin the dashboard to one running `gepa service`; otherwise discover from GEPA_HOME.",
+        help="Pin the board to one running `gepa service`; otherwise discover from GEPA_HOME.",
     )
     gepa_console.add_argument(
         "--interval", type=float, default=2.0, help="Live re-projection cadence (seconds)."
@@ -253,7 +253,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override the docs directory (defaults to the bundled GEPA docs).",
     )
     gepa_console.add_argument(
-        "--docs-name", default="gepa", help="Bundled docs set to serve (default: gepa)."
+        "--docs-set", default="gepa", help="Bundled docs set to serve (default: gepa)."
     )
 
     gepa_eval_stats = gepa_subcommands.add_parser("eval-stats")
@@ -490,7 +490,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         from .docs_server import DocsSource, bundled_docs_root, serve_console
 
         roots = [*args.roots, *args.extra_roots]
-        docs_root = Path(args.docs) if args.docs else bundled_docs_root(args.docs_name)
+        docs_root = Path(args.docs) if args.docs else bundled_docs_root(args.docs_set)
         board = AggregateSource(
             roots,
             title=f"{args.title} — runs",

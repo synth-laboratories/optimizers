@@ -48,7 +48,7 @@ config (TOML / GepaConfig)
   gepa run  ──►  Pareto search  ──►  run dir (events.jsonl, registry, manifest)
         │
         ▼
-  gepa board  ──►  live HTML dashboard of every run
+  gepa board  ──►  live HTML board of every run
 ```
 
 ## Next

@@ -95,6 +95,19 @@ pub struct LimitProgressEvent {
     pub source_id: String,
 }
 
+/// Forecast confidence band. A typed, closed set so the interval multipliers
+/// match exhaustively — an unhandled band is a compile error, not a silent
+/// zero-width interval. (`model` stays a free-form forecaster label; it is
+/// display/identity only and never gates behavior.)
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForecastConfidence {
+    High,
+    Medium,
+    Low,
+    Unknown,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LimitForecast {
     pub schema_version: String,
@@ -116,7 +129,7 @@ pub struct LimitForecast {
     pub predicted_crossing_at_high: Option<String>,
     #[serde(default)]
     pub rate_per_second: Option<f64>,
-    pub confidence: String,
+    pub confidence: ForecastConfidence,
     pub sample_count: u64,
     pub updated_at: String,
 }
@@ -570,7 +583,7 @@ fn forecast_limit(
             predicted_crossing_at_low: Some(generated_at.to_string()),
             predicted_crossing_at_high: Some(generated_at.to_string()),
             rate_per_second: None,
-            confidence: "high".to_string(),
+            confidence: ForecastConfidence::High,
             sample_count: events.len() as u64,
             updated_at: generated_at.to_string(),
         };
@@ -591,11 +604,11 @@ fn forecast_limit(
         })
         .unwrap_or((None, None));
     let seconds_to_limit_low = seconds_to_limit.map(|seconds| {
-        let multiplier = interval_low_multiplier(&confidence);
+        let multiplier = interval_low_multiplier(confidence);
         (seconds * multiplier).max(0.0)
     });
     let seconds_to_limit_high = seconds_to_limit.map(|seconds| {
-        let multiplier = interval_high_multiplier(&confidence);
+        let multiplier = interval_high_multiplier(confidence);
         (seconds * multiplier).max(0.0)
     });
     let predicted_crossing_at_low =
@@ -604,7 +617,7 @@ fn forecast_limit(
         seconds_to_limit_high.and_then(|seconds| add_seconds(generated_at, seconds));
     let rate_per_second = seconds_to_limit.map(|_| rate.unwrap_or(0.0));
     let confidence = if spent <= 0.0 && rates.is_empty() {
-        "unknown".to_string()
+        ForecastConfidence::Unknown
     } else {
         confidence
     };
@@ -657,33 +670,37 @@ fn cap_rate_to_elapsed_average(rate: Option<f64>, samples: &[(f64, f64)]) -> Opt
     Some(rate.min(elapsed_average * MAX_BURST_TO_ELAPSED_RATE_RATIO))
 }
 
-fn interval_low_multiplier(confidence: &str) -> f64 {
+fn interval_low_multiplier(confidence: ForecastConfidence) -> f64 {
     match confidence {
-        "high" => 0.85,
-        "medium" => FORECAST_INTERVAL_LOW_MULTIPLIER,
-        "low" => 0.5,
-        _ => 0.0,
+        ForecastConfidence::High => 0.85,
+        ForecastConfidence::Medium => FORECAST_INTERVAL_LOW_MULTIPLIER,
+        ForecastConfidence::Low => 0.5,
+        ForecastConfidence::Unknown => 0.0,
     }
 }
 
-fn interval_high_multiplier(confidence: &str) -> f64 {
+fn interval_high_multiplier(confidence: ForecastConfidence) -> f64 {
     match confidence {
-        "high" => 1.2,
-        "medium" => FORECAST_INTERVAL_HIGH_MULTIPLIER,
-        "low" => 2.25,
-        _ => 0.0,
+        ForecastConfidence::High => 1.2,
+        ForecastConfidence::Medium => FORECAST_INTERVAL_HIGH_MULTIPLIER,
+        ForecastConfidence::Low => 2.25,
+        ForecastConfidence::Unknown => 0.0,
     }
 }
 
-fn forecast_rate(rates: &[f64]) -> (String, Option<f64>, String) {
+fn forecast_rate(rates: &[f64]) -> (String, Option<f64>, ForecastConfidence) {
     if rates.is_empty() {
-        return ("insufficient_samples".to_string(), None, "unknown".to_string());
+        return (
+            "insufficient_samples".to_string(),
+            None,
+            ForecastConfidence::Unknown,
+        );
     }
     if rates.len() < 3 {
         return (
             "ewma_fallback".to_string(),
             Some(ewma(rates, 0.45)),
-            "low".to_string(),
+            ForecastConfidence::Low,
         );
     }
     let mean = rates.iter().sum::<f64>() / rates.len() as f64;
@@ -701,8 +718,12 @@ fn forecast_rate(rates: &[f64]) -> (String, Option<f64>, String) {
     let last = rates.last().copied().unwrap_or(mean);
     let predicted = (mean + phi * (last - mean)).max(0.0);
     let rate = if predicted > 0.0 { predicted } else { ewma(rates, 0.35) };
-    let confidence = if rates.len() >= 8 { "high" } else { "medium" };
-    ("ar1".to_string(), Some(rate), confidence.to_string())
+    let confidence = if rates.len() >= 8 {
+        ForecastConfidence::High
+    } else {
+        ForecastConfidence::Medium
+    };
+    ("ar1".to_string(), Some(rate), confidence)
 }
 
 fn ewma(values: &[f64], alpha: f64) -> f64 {
@@ -755,12 +776,11 @@ fn reservation_value_for_kind(kind: &LimitKind, reservation: &BudgetReservationR
         LimitKind::CostUsd => reservation.max_cost_usd.unwrap_or(0.0),
         LimitKind::PromptTokens => reservation.max_prompt_tokens.unwrap_or(0) as f64,
         LimitKind::CompletionTokens => reservation.max_completion_tokens.unwrap_or(0) as f64,
-        LimitKind::TotalTokens => reservation.max_total_tokens.unwrap_or_else(|| {
-            reservation
-                .max_prompt_tokens
-                .unwrap_or(0)
-                .saturating_add(reservation.max_completion_tokens.unwrap_or(0))
-        }) as f64,
+        // An absent total-token cap means this reservation reserves nothing against
+        // the total-tokens limit; the caller skips a 0 value. Do NOT synthesize a
+        // total from the prompt/completion caps — that fabricates a reservation the
+        // caller never declared.
+        LimitKind::TotalTokens => reservation.max_total_tokens.unwrap_or(0) as f64,
         LimitKind::TotalRollouts => reservation.max_rollouts.unwrap_or(0) as f64,
         LimitKind::WallSeconds => reservation.max_wall_seconds.unwrap_or(0) as f64,
         _ => 0.0,

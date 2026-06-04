@@ -20,9 +20,10 @@ use synth_optimizer_platform::{
     ConfiguredGepaRunLimits, ContainerClient, ContainerContractSnapshotInput,
     ContainerContractSnapshotRecord, DiskBudget, EvaluationCacheRecord, EvaluationCacheRecordInput,
     EventStreamRecord, EventWriter, EvidenceFrame, FailurePayload, GepaBatchSamplerConfig,
-    GepaCandidateSelectorConfig, GepaObjectiveAcceptanceConfig, GepaPipelineMode, GepaRunResult,
-    LeverBundle, LeverKind, LeverManifest, LimitDefinition, LimitEngine, LimitEngineInput,
-    LimitForecast, LimitKind, LimitObservation, LimitSnapshot, LimitStatus, ManagedContainerProcess,
+    ForecastConfidence, GepaCandidateSelectorConfig, GepaObjectiveAcceptanceConfig,
+    GepaPipelineMode, GepaRunResult, LeverBundle, LeverKind, LeverManifest, LimitDefinition,
+    LimitEngine, LimitEngineInput, LimitForecast, LimitKind, LimitObservation, LimitSnapshot,
+    LimitStatus, ManagedContainerProcess,
     MaterializationRecord, MaterializationRecordInput, ObjectiveScore, ObjectiveSetRecord,
     ObjectiveSpec, OptimizerError, OptimizerJob, OptimizerJobKind, OptimizerJobStatus,
     OptimizerRunState, OptimizerStateMachine, OptimizerTransition, OptimizerTransitionTrigger,
@@ -847,7 +848,7 @@ fn gepa_generation_phase_forecast(
             run_id,
             limit_id,
             "exhausted",
-            "high",
+            ForecastConfidence::High,
             0,
             0.0,
             generated_at,
@@ -860,17 +861,17 @@ fn gepa_generation_phase_forecast(
     let (model, confidence, generation_seconds) = if completed_durations.len() >= 3 {
         (
             "phase_generation_ar1",
-            "high",
+            ForecastConfidence::High,
             phase_ar1_duration(&completed_durations)?,
         )
     } else if !completed_durations.is_empty() {
         (
             "phase_generation_mean",
-            "medium",
+            ForecastConfidence::Medium,
             completed_durations.iter().sum::<f64>() / completed_durations.len() as f64,
         )
     } else if current_elapsed >= 1.0 {
-        ("phase_elapsed_fallback", "low", current_elapsed)
+        ("phase_elapsed_fallback", ForecastConfidence::Low, current_elapsed)
     } else {
         return None;
     };
@@ -959,7 +960,7 @@ fn gepa_phase_limit_forecast(
     run_id: &str,
     limit_id: &str,
     model: &str,
-    confidence: &str,
+    confidence: ForecastConfidence,
     sample_count: u64,
     seconds_to_limit: f64,
     generated_at: &str,
@@ -987,7 +988,7 @@ fn gepa_phase_limit_forecast(
         predicted_crossing_at_low: add_rfc3339_seconds(generated_at, seconds_to_limit_low),
         predicted_crossing_at_high: add_rfc3339_seconds(generated_at, seconds_to_limit_high),
         rate_per_second: None,
-        confidence: confidence.to_string(),
+        confidence,
         sample_count,
         updated_at: generated_at.to_string(),
     }
@@ -1029,21 +1030,21 @@ fn add_rfc3339_seconds(base: &str, seconds: f64) -> Option<String> {
         .ok()
 }
 
-fn gepa_phase_interval_low_multiplier(confidence: &str) -> f64 {
+fn gepa_phase_interval_low_multiplier(confidence: ForecastConfidence) -> f64 {
     match confidence {
-        "high" => 0.85,
-        "medium" => 0.75,
-        "low" => 0.5,
-        _ => 0.0,
+        ForecastConfidence::High => 0.85,
+        ForecastConfidence::Medium => 0.75,
+        ForecastConfidence::Low => 0.5,
+        ForecastConfidence::Unknown => 0.0,
     }
 }
 
-fn gepa_phase_interval_high_multiplier(confidence: &str) -> f64 {
+fn gepa_phase_interval_high_multiplier(confidence: ForecastConfidence) -> f64 {
     match confidence {
-        "high" => 1.2,
-        "medium" => 1.5,
-        "low" => 2.25,
-        _ => 0.0,
+        ForecastConfidence::High => 1.2,
+        ForecastConfidence::Medium => 1.5,
+        ForecastConfidence::Low => 2.25,
+        ForecastConfidence::Unknown => 0.0,
     }
 }
 

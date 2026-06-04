@@ -103,8 +103,8 @@ pub use invariants::{
 pub use jobs::{OptimizerJob, OptimizerJobKind, OptimizerJobStatus, RetryPolicy};
 pub use levers::{LeverBundle, LeverKind, LeverManifest, LeverSpec};
 pub use limit_engine::{
-    budget_limit_engine_input, budget_limit_snapshot, LimitDefinition, LimitEngine,
-    LimitEngineInput, LimitForecast, LimitKind, LimitObservation, LimitProgressEvent,
+    budget_limit_engine_input, budget_limit_snapshot, ForecastConfidence, LimitDefinition,
+    LimitEngine, LimitEngineInput, LimitForecast, LimitKind, LimitObservation, LimitProgressEvent,
     LimitSnapshot, LimitStatus,
     LIMIT_ENGINE_SCHEMA_VERSION,
 };

@@ -2,6 +2,7 @@
 
 ## 2026-06-04
 
+* Published `0.2.0.20260604` to PyPI (first non-dev daily release; pins `synth-containers==0.2.0.20260604`).
 * Added `gepa console`: the run board and the bundled GEPA docs served behind one local port as `Board` | `Docs` tabs (click or `1`/`2`/`T` to switch).
 * Shipped GEPA docs (CLI, SDK, algorithms, containers) as package data under `synth_optimizers/docs/gepa`, served by the console with no repo checkout.
 * Extracted the shared board route/SSE handler so the board and console serve one implementation.

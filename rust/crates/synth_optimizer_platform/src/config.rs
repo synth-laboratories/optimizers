@@ -641,7 +641,7 @@ impl SynthOptimizerConfig {
         self.disk_budget.validate()?;
         let backend = self.proposer.backend.trim();
         match backend {
-            "codex_app_server" | "deepseek_chat" => {}
+            "codex_app_server" | "deepseek_chat" | "chat_completions" => {}
             "local_process_json" => {
                 return Err(OptimizerError::Config(
                     "unsupported proposer.backend \"local_process_json\"; GEPA proposer work must use codex_app_server workspace-backed proposing".to_string(),
@@ -649,14 +649,14 @@ impl SynthOptimizerConfig {
             }
             _ => {
                 return Err(OptimizerError::Config(format!(
-                    "unsupported proposer.backend {backend:?}; expected codex_app_server or deepseek_chat"
+                    "unsupported proposer.backend {backend:?}; expected codex_app_server, chat_completions, or deepseek_chat"
                 )));
             }
         }
         validate_execution_mode_compat(&self.proposer.execution_mode)?;
         validate_proposer_runtime_substrate_config(&self.proposer)?;
-        if backend == "deepseek_chat" {
-            validate_deepseek_chat_proposer_config(&self.proposer)?;
+        if matches!(backend, "deepseek_chat" | "chat_completions") {
+            validate_chat_completions_proposer_config(&self.proposer)?;
         }
         validate_openrouter_proposer_config(&self.proposer)?;
         let proposer_api_family = normalize_enum_value(&self.proposer.api_family);
@@ -1109,22 +1109,22 @@ fn validate_proposer_runtime_substrate_config(proposer: &ProposerConfig) -> Resu
     }
 }
 
-fn validate_deepseek_chat_proposer_config(proposer: &ProposerConfig) -> Result<()> {
-    if !proposer.provider.eq_ignore_ascii_case("deepseek") {
-        return Err(OptimizerError::Config(
-            "proposer.backend = \"deepseek_chat\" requires proposer.provider = \"deepseek\""
-                .to_string(),
-        ));
+fn validate_chat_completions_proposer_config(proposer: &ProposerConfig) -> Result<()> {
+    let provider = proposer.provider.trim().to_ascii_lowercase();
+    if !matches!(provider.as_str(), "deepseek" | "nvidia") {
+        return Err(OptimizerError::Config(format!(
+            "chat-completions proposer backend requires proposer.provider = \"deepseek\" or \"nvidia\"; got {:?}",
+            proposer.provider
+        )));
     }
     if proposer_auth_mode_normalized(&proposer.auth_mode) != "api_key" {
         return Err(OptimizerError::Config(
-            "proposer.backend = \"deepseek_chat\" requires proposer.auth_mode = \"api_key\""
-                .to_string(),
+            "chat-completions proposer backend requires proposer.auth_mode = \"api_key\"".to_string(),
         ));
     }
     if !matches!(proposer.runtime_substrate, ExecutionSubstrate::Local) {
         return Err(OptimizerError::Config(
-            "proposer.backend = \"deepseek_chat\" requires proposer.runtime_substrate = \"local\""
+            "chat-completions proposer backend requires proposer.runtime_substrate = \"local\""
                 .to_string(),
         ));
     }

@@ -35,6 +35,7 @@ PROFILE_FILES = {
     "openrouter_grok43": "banking77_openrouter_grok43.toml",
     "openrouter_grok43_docker": "banking77_openrouter_grok43_docker.toml",
     "openrouter_nemotron_ultra": "banking77_openrouter_nemotron_ultra.toml",
+    "nvidia_nemotron_ultra": "banking77_nvidia_nemotron_ultra.toml",
     "deepseek_v4_flash": "banking77_deepseek_v4_flash.toml",
     "chatgpt_mini": "banking77_chatgpt_mini_proposer.toml",
 }
@@ -45,6 +46,7 @@ PROFILE_REQUIRED_ENV = {
     "openrouter_grok43": ("OPENAI_API_KEY", "OPENROUTER_API_KEY"),
     "openrouter_grok43_docker": ("OPENAI_API_KEY", "OPENROUTER_API_KEY"),
     "openrouter_nemotron_ultra": ("OPENAI_API_KEY", "OPENROUTER_API_KEY"),
+    "nvidia_nemotron_ultra": ("OPENAI_API_KEY", "NVIDIA_API_KEY"),
     "deepseek_v4_flash": ("OPENAI_API_KEY", "DEEPSEEK_API_KEY"),
     "chatgpt_mini": ("OPENAI_API_KEY",),
 }

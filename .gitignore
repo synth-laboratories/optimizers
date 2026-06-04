@@ -29,3 +29,5 @@ dev_examples/better_gepa/profiles/*
 !dev_examples/better_gepa/profiles/banking77_openai_baseline_docker.toml
 !dev_examples/better_gepa/profiles/banking77_openrouter_grok43.toml
 !dev_examples/better_gepa/profiles/banking77_openrouter_grok43_docker.toml
+!dev_examples/better_gepa/profiles/banking77_openrouter_nemotron_ultra.toml
+!dev_examples/better_gepa/profiles/banking77_nvidia_nemotron_ultra.toml

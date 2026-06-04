@@ -107,33 +107,48 @@ pub(crate) fn run_codex_staleness_reviewer(
     build_staleness_review_response(&input, &model, outcome)
 }
 
+/// Direct OpenAI-compatible Chat Completions proposer. Works for any provider whose
+/// `/chat/completions` endpoint matches the OpenAI shape — DeepSeek and NVIDIA today.
+/// This is the path NVIDIA must use: the codex_app_server route speaks the Responses
+/// wire, which `integrate.api.nvidia.com` does not serve.
 pub(crate) fn run_deepseek_chat_proposer(input: CodexProposerInput<'_>) -> Result<Value> {
-    if !input
-        .config
-        .proposer
-        .provider
-        .eq_ignore_ascii_case("deepseek")
-    {
-        return Err(OptimizerError::Config(
-            "proposer.backend = \"deepseek_chat\" requires proposer.provider = \"deepseek\""
-                .to_string(),
-        ));
-    }
+    let provider = input.config.proposer.provider.trim().to_ascii_lowercase();
+    // (default base_url, default api_key_env, default model, send DeepSeek `thinking` field)
+    let (default_base_url, default_api_key_env, default_model, deepseek_thinking) =
+        match provider.as_str() {
+            "deepseek" => (
+                "https://api.deepseek.com",
+                "DEEPSEEK_API_KEY",
+                "deepseek-v4-flash",
+                true,
+            ),
+            "nvidia" => (
+                "https://integrate.api.nvidia.com/v1",
+                "NVIDIA_API_KEY",
+                "nvidia/nemotron-3-ultra-550b-a55b",
+                false,
+            ),
+            other => {
+                return Err(OptimizerError::Config(format!(
+                    "chat-completions proposer backend requires proposer.provider = \"deepseek\" or \"nvidia\"; got {other:?}"
+                )))
+            }
+        };
     materialize_workspace(&input)?;
     let model = input
         .config
         .proposer
         .model
         .clone()
-        .unwrap_or_else(|| "deepseek-v4-flash".to_string());
+        .unwrap_or_else(|| default_model.to_string());
     let api_key_env =
-        non_empty(input.config.proposer.api_key_env.as_deref()).unwrap_or("DEEPSEEK_API_KEY");
+        non_empty(input.config.proposer.api_key_env.as_deref()).unwrap_or(default_api_key_env);
     let api_key = env::var(api_key_env)
         .ok()
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| {
             OptimizerError::Proposer(format!(
-                "proposer.backend = \"deepseek_chat\" requires non-empty {api_key_env}"
+                "chat-completions proposer ({provider}) requires non-empty {api_key_env}"
             ))
         })?;
     let base_url = input
@@ -141,10 +156,10 @@ pub(crate) fn run_deepseek_chat_proposer(input: CodexProposerInput<'_>) -> Resul
         .proposer
         .base_url
         .as_deref()
-        .unwrap_or("https://api.deepseek.com")
+        .unwrap_or(default_base_url)
         .trim_end_matches('/')
         .to_string();
-    let request = json!({
+    let mut request = json!({
         "model": model,
         "messages": [
             {
@@ -157,12 +172,16 @@ pub(crate) fn run_deepseek_chat_proposer(input: CodexProposerInput<'_>) -> Resul
             }
         ],
         "response_format": {"type": "json_object"},
-        "thinking": {"type": "disabled"},
-        // Manifests for large minibatches can be long; 4096 truncates the JSON
-        // mid-string ("EOF while parsing"). deepseek-v4-flash supports far more.
+        // Manifests for large minibatches can be long; small caps truncate the JSON
+        // mid-string ("EOF while parsing").
         "max_tokens": 32768,
         "stream": false
     });
+    // DeepSeek-specific switch that suppresses its reasoning channel so `content` is the
+    // bare JSON manifest. NVIDIA rejects unknown request fields, so only send it for DeepSeek.
+    if deepseek_thinking {
+        request["thinking"] = json!({"type": "disabled"});
+    }
     let client = Client::builder()
         .timeout(Duration::from_secs(
             input.config.proposer.timeout_seconds.max(1),

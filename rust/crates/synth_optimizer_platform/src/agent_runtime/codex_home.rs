@@ -41,6 +41,10 @@ pub fn prepare_proposer_codex_launch(
                 })?;
                 let codex_home_relative = PathBuf::from(".codex_api_key_home");
                 let codex_home = workspace_dir.join(&codex_home_relative);
+                // Codex speaks the Responses wire only (chat wire was removed upstream:
+                // github.com/openai/codex/discussions/7782). Providers that serve only
+                // chat-completions (NVIDIA direct) must use the chat_completions proposer
+                // backend instead; OpenRouter proxies the Responses wire so it works here.
                 prepare_api_key_codex_home(
                     &codex_home,
                     &proposer.provider,
@@ -171,6 +175,7 @@ fn proposer_provider_default_base_url(provider: &str) -> Option<&'static str> {
     match provider.trim().to_ascii_lowercase().as_str() {
         "openrouter" => Some("https://openrouter.ai/api/v1"),
         "deepseek" => Some("https://api.deepseek.com"),
+        "nvidia" => Some("https://integrate.api.nvidia.com/v1"),
         _ => None,
     }
 }

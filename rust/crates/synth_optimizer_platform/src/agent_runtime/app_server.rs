@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -14,6 +15,7 @@ use serde_json::Value;
 use crate::{OptimizerError, ProposerConfig, Result};
 
 use super::codex_home::prepare_proposer_codex_launch;
+use super::substrate::normalize_execution_mode;
 
 pub struct CodexAppServerLaunch<'a> {
     pub proposer: &'a ProposerConfig,
@@ -27,11 +29,17 @@ pub struct CodexAppServerProcessLaunch {
     pub env_map: BTreeMap<String, String>,
     pub auth_home_to_cleanup: Option<PathBuf>,
     pub process_label: String,
+    pub execution_mode: String,
+}
+
+enum CodexAppServerTransport {
+    Stdio { stdin: ChildStdin },
+    WebSocket { stream: TcpStream },
 }
 
 pub struct CodexAppServerClient {
     child: Child,
-    stdin: ChildStdin,
+    transport: CodexAppServerTransport,
     receiver: Receiver<Result<Value>>,
     buffer: VecDeque<Value>,
     stderr_tail: Arc<Mutex<VecDeque<String>>>,
@@ -45,11 +53,12 @@ impl CodexAppServerClient {
     pub fn start(launch: CodexAppServerLaunch<'_>) -> Result<Self> {
         let workspace_dir = fs::canonicalize(launch.workspace_dir)
             .map_err(|source| OptimizerError::io(launch.workspace_dir, source))?;
-        let command = if launch.proposer.command.is_empty() {
+        let mut command = if launch.proposer.command.is_empty() {
             vec!["codex".to_string(), "app-server".to_string()]
         } else {
             launch.proposer.command.clone()
         };
+        append_codex_app_server_config_args(&mut command, launch.proposer);
         let env_map = env::vars().collect::<BTreeMap<_, _>>();
         let launch_state =
             prepare_proposer_codex_launch(launch.proposer, &workspace_dir, launch.model, env_map)?;
@@ -59,10 +68,21 @@ impl CodexAppServerClient {
             env_map: launch_state.env_map,
             auth_home_to_cleanup: launch_state.auth_home_to_cleanup,
             process_label: format!("codex app-server model={}", launch.model),
+            execution_mode: launch.proposer.execution_mode.clone(),
         })
     }
 
     pub fn start_process(launch: CodexAppServerProcessLaunch) -> Result<Self> {
+        match normalize_execution_mode(&launch.execution_mode) {
+            Some("websocket") => return Self::start_websocket_process(launch),
+            Some("stdio") => {}
+            _ => {
+                return Err(OptimizerError::Proposer(format!(
+                    "unsupported codex app-server execution mode {:?}",
+                    launch.execution_mode
+                )))
+            }
+        }
         if launch.command.is_empty() {
             return Err(OptimizerError::Proposer(
                 "codex app-server command must not be empty".to_string(),
@@ -97,7 +117,66 @@ impl CodexAppServerClient {
         }
         Ok(Self {
             child,
-            stdin,
+            transport: CodexAppServerTransport::Stdio { stdin },
+            receiver,
+            buffer: VecDeque::new(),
+            stderr_tail,
+            auth_home_to_cleanup: launch.auth_home_to_cleanup,
+            next_id: 1,
+            sent_messages: Vec::new(),
+            received_messages: Vec::new(),
+        })
+    }
+
+    fn start_websocket_process(launch: CodexAppServerProcessLaunch) -> Result<Self> {
+        if launch.command.is_empty() {
+            return Err(OptimizerError::Proposer(
+                "codex app-server command must not be empty".to_string(),
+            ));
+        }
+        let port = available_local_port()?;
+        let listen_url = format!("ws://127.0.0.1:{port}");
+        let mut command = launch.command.clone();
+        command.extend(["--listen".to_string(), listen_url.clone()]);
+        let mut cmd = Command::new(&command[0]);
+        cmd.args(&command[1..])
+            .current_dir(&launch.current_dir)
+            .envs(&launch.env_map)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = cmd.spawn().map_err(|source| {
+            OptimizerError::Proposer(format!(
+                "failed to start {} websocket command {:?}: {}",
+                launch.process_label, command, source
+            ))
+        })?;
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        let stderr_tail = Arc::new(Mutex::new(VecDeque::new()));
+        if let Some(stdout) = stdout {
+            let stderr_tail = Arc::clone(&stderr_tail);
+            thread::spawn(move || drain_stderr(stdout, stderr_tail));
+        }
+        if let Some(stderr) = stderr {
+            let stderr_tail = Arc::clone(&stderr_tail);
+            thread::spawn(move || drain_stderr(stderr, stderr_tail));
+        }
+        wait_for_websocket_ready(port, &stderr_tail)?;
+        let mut stream = TcpStream::connect(("127.0.0.1", port))
+            .map_err(|source| OptimizerError::io("codex app-server websocket connect", source))?;
+        stream
+            .set_nodelay(true)
+            .map_err(|source| OptimizerError::io("codex app-server websocket nodelay", source))?;
+        websocket_handshake(&mut stream, port)?;
+        let reader = stream
+            .try_clone()
+            .map_err(|source| OptimizerError::io("codex app-server websocket clone", source))?;
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || read_websocket_messages(reader, sender));
+        Ok(Self {
+            child,
+            transport: CodexAppServerTransport::WebSocket { stream },
             receiver,
             buffer: VecDeque::new(),
             stderr_tail,
@@ -225,14 +304,24 @@ impl CodexAppServerClient {
     }
 
     fn send(&mut self, payload: Value) -> Result<()> {
-        serde_json::to_writer(&mut self.stdin, &payload)?;
         self.sent_messages.push(payload);
-        self.stdin
-            .write_all(b"\n")
-            .map_err(|source| OptimizerError::io("codex app-server stdin", source))?;
-        self.stdin
-            .flush()
-            .map_err(|source| OptimizerError::io("codex app-server stdin", source))
+        match &mut self.transport {
+            CodexAppServerTransport::Stdio { stdin } => {
+                let payload = self.sent_messages.last().expect("sent payload exists");
+                serde_json::to_writer(&mut *stdin, payload)?;
+                stdin
+                    .write_all(b"\n")
+                    .map_err(|source| OptimizerError::io("codex app-server stdin", source))?;
+                stdin
+                    .flush()
+                    .map_err(|source| OptimizerError::io("codex app-server stdin", source))
+            }
+            CodexAppServerTransport::WebSocket { stream } => {
+                let text =
+                    serde_json::to_string(self.sent_messages.last().expect("sent payload exists"))?;
+                write_websocket_text(stream, text.as_bytes())
+            }
+        }
     }
 
     fn restore_deferred(&mut self, deferred: Vec<Value>) {
@@ -337,6 +426,20 @@ fn message_turn_id(message: &Value) -> Option<String> {
     extract_turn_id(message)
 }
 
+fn append_codex_app_server_config_args(command: &mut Vec<String>, proposer: &ProposerConfig) {
+    let Some(service_tier) = proposer.service_tier.as_deref() else {
+        return;
+    };
+    if service_tier.trim().eq_ignore_ascii_case("fast") {
+        command.extend([
+            "-c".to_string(),
+            "service_tier=\"fast\"".to_string(),
+            "-c".to_string(),
+            "features.fast_mode=true".to_string(),
+        ]);
+    }
+}
+
 fn read_stdout(stdout: impl Read, sender: mpsc::Sender<Result<Value>>) {
     let mut reader = BufReader::new(stdout);
     loop {
@@ -346,6 +449,29 @@ fn read_stdout(stdout: impl Read, sender: mpsc::Sender<Result<Value>>) {
                     return;
                 }
             }
+            Ok(None) => return,
+            Err(error) => {
+                let _ = sender.send(Err(error));
+                return;
+            }
+        }
+    }
+}
+
+fn read_websocket_messages(mut stream: TcpStream, sender: mpsc::Sender<Result<Value>>) {
+    loop {
+        match read_websocket_text(&mut stream) {
+            Ok(Some(text)) => match serde_json::from_str::<Value>(&text) {
+                Ok(value) => {
+                    if sender.send(Ok(value)).is_err() {
+                        return;
+                    }
+                }
+                Err(source) => {
+                    let _ = sender.send(Err(source.into()));
+                    return;
+                }
+            },
             Ok(None) => return,
             Err(error) => {
                 let _ = sender.send(Err(error));
@@ -420,4 +546,189 @@ fn read_jsonrpc_message(reader: &mut BufReader<impl Read>) -> Result<Option<Valu
             .map_err(|source| OptimizerError::io("codex app-server stdout", source))?;
         return Ok(Some(serde_json::from_slice(&payload)?));
     }
+}
+
+fn available_local_port() -> Result<u16> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .map_err(|source| OptimizerError::io("codex app-server websocket port", source))?;
+    let port = listener
+        .local_addr()
+        .map_err(|source| OptimizerError::io("codex app-server websocket port", source))?
+        .port();
+    drop(listener);
+    Ok(port)
+}
+
+fn wait_for_websocket_ready(port: u16, stderr_tail: &Arc<Mutex<VecDeque<String>>>) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let url = format!("http://127.0.0.1:{port}/readyz");
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_millis(500))
+        .build()?;
+    while Instant::now() < deadline {
+        if client
+            .get(&url)
+            .send()
+            .is_ok_and(|response| response.status().is_success())
+        {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    let tail = stderr_tail
+        .lock()
+        .ok()
+        .map(|tail| {
+            tail.iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("")
+                .trim()
+                .to_string()
+        })
+        .unwrap_or_default();
+    Err(OptimizerError::Proposer(format!(
+        "codex app-server websocket listener did not become ready on {url}; stderr_tail={tail}"
+    )))
+}
+
+fn websocket_handshake(stream: &mut TcpStream, port: u16) -> Result<()> {
+    let request = format!(
+        "GET / HTTP/1.1\r\n\
+         Host: 127.0.0.1:{port}\r\n\
+         Upgrade: websocket\r\n\
+         Connection: Upgrade\r\n\
+         Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+         Sec-WebSocket-Version: 13\r\n\
+         \r\n"
+    );
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|source| OptimizerError::io("codex app-server websocket handshake", source))?;
+    stream
+        .flush()
+        .map_err(|source| OptimizerError::io("codex app-server websocket handshake", source))?;
+    let mut response = Vec::new();
+    let mut byte = [0u8; 1];
+    while !response.ends_with(b"\r\n\r\n") {
+        stream
+            .read_exact(&mut byte)
+            .map_err(|source| OptimizerError::io("codex app-server websocket handshake", source))?;
+        response.push(byte[0]);
+        if response.len() > 8192 {
+            return Err(OptimizerError::Proposer(
+                "codex app-server websocket handshake response exceeded 8 KiB".to_string(),
+            ));
+        }
+    }
+    let response_text = String::from_utf8_lossy(&response);
+    if !response_text.starts_with("HTTP/1.1 101 ") {
+        return Err(OptimizerError::Proposer(format!(
+            "codex app-server websocket handshake failed: {}",
+            response_text.trim()
+        )));
+    }
+    Ok(())
+}
+
+fn read_websocket_text(stream: &mut TcpStream) -> Result<Option<String>> {
+    loop {
+        let mut header = [0u8; 2];
+        match stream.read_exact(&mut header) {
+            Ok(()) => {}
+            Err(source) if source.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+            Err(source) => {
+                return Err(OptimizerError::io(
+                    "codex app-server websocket frame",
+                    source,
+                ));
+            }
+        }
+        let opcode = header[0] & 0x0f;
+        let masked = header[1] & 0x80 != 0;
+        let mut len = u64::from(header[1] & 0x7f);
+        if len == 126 {
+            let mut extended = [0u8; 2];
+            stream
+                .read_exact(&mut extended)
+                .map_err(|source| OptimizerError::io("codex app-server websocket frame", source))?;
+            len = u64::from(u16::from_be_bytes(extended));
+        } else if len == 127 {
+            let mut extended = [0u8; 8];
+            stream
+                .read_exact(&mut extended)
+                .map_err(|source| OptimizerError::io("codex app-server websocket frame", source))?;
+            len = u64::from_be_bytes(extended);
+        }
+        if len > 16 * 1024 * 1024 {
+            return Err(OptimizerError::Proposer(
+                "codex app-server websocket frame exceeds 16 MiB".to_string(),
+            ));
+        }
+        let mask = if masked {
+            let mut mask = [0u8; 4];
+            stream
+                .read_exact(&mut mask)
+                .map_err(|source| OptimizerError::io("codex app-server websocket mask", source))?;
+            Some(mask)
+        } else {
+            None
+        };
+        let mut payload = vec![0u8; len as usize];
+        stream
+            .read_exact(&mut payload)
+            .map_err(|source| OptimizerError::io("codex app-server websocket payload", source))?;
+        if let Some(mask) = mask {
+            for (idx, byte) in payload.iter_mut().enumerate() {
+                *byte ^= mask[idx % 4];
+            }
+        }
+        match opcode {
+            0x1 => {
+                return String::from_utf8(payload).map(Some).map_err(|source| {
+                    OptimizerError::Proposer(format!(
+                        "codex app-server websocket text was not UTF-8: {source}"
+                    ))
+                });
+            }
+            0x8 => return Ok(None),
+            0x9 => write_websocket_frame(stream, 0xA, &payload)?,
+            0xA => {}
+            other => {
+                return Err(OptimizerError::Proposer(format!(
+                    "unsupported codex app-server websocket opcode {other}"
+                )));
+            }
+        }
+    }
+}
+
+fn write_websocket_text(stream: &mut TcpStream, payload: &[u8]) -> Result<()> {
+    write_websocket_frame(stream, 0x1, payload)
+}
+
+fn write_websocket_frame(stream: &mut TcpStream, opcode: u8, payload: &[u8]) -> Result<()> {
+    let mut frame = Vec::with_capacity(payload.len() + 14);
+    frame.push(0x80 | (opcode & 0x0f));
+    let len = payload.len();
+    if len < 126 {
+        frame.push(0x80 | len as u8);
+    } else if len <= u16::MAX as usize {
+        frame.push(0x80 | 126);
+        frame.extend_from_slice(&(len as u16).to_be_bytes());
+    } else {
+        frame.push(0x80 | 127);
+        frame.extend_from_slice(&(len as u64).to_be_bytes());
+    }
+    let mask = [0x13, 0x37, 0x42, 0x99];
+    frame.extend_from_slice(&mask);
+    for (idx, byte) in payload.iter().enumerate() {
+        frame.push(*byte ^ mask[idx % 4]);
+    }
+    stream
+        .write_all(&frame)
+        .map_err(|source| OptimizerError::io("codex app-server websocket write", source))?;
+    stream
+        .flush()
+        .map_err(|source| OptimizerError::io("codex app-server websocket write", source))
 }

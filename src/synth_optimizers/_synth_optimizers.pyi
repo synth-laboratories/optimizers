@@ -54,6 +54,13 @@ class GepaRunResult:
 def events_replay(path: str) -> str: ...
 def events_compare(left: str, right: str) -> bool: ...
 def default_proposer_best_practices() -> str: ...
+def gepa_compact_run_storage(
+    run_dir: str,
+    run_id: str | None = None,
+    profile: str = "compact",
+    dry_run: bool = True,
+) -> dict[str, Any]: ...
+def gepa_delete_run_storage(run_dir: str, dry_run: bool = True) -> dict[str, Any]: ...
 
 # The standing HTTP service is the public worker/workspace surface. Queue
 # submission, claiming, run lifecycle control, and workspace status are driven
@@ -63,4 +70,5 @@ def gepa_serve(
     bind_addr: str = "127.0.0.1:8879",
     worker_id: str | None = None,
     lease_seconds: int = 3600,
+    workers: int = 10,
 ) -> None: ...

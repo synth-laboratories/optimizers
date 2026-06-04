@@ -13,10 +13,12 @@ mod event_visualization;
 pub mod events;
 pub mod evidence;
 pub mod failures;
+pub mod fsm;
 pub mod http;
 pub mod invariants;
 pub mod jobs;
 pub mod levers;
+pub mod limit_engine;
 pub mod limits;
 pub mod operations;
 pub mod process;
@@ -30,6 +32,7 @@ pub mod scores;
 pub mod sensors;
 pub mod state_machine;
 pub mod stopper;
+pub mod storage_maintenance;
 pub mod usage;
 pub mod workspace;
 
@@ -89,12 +92,22 @@ pub use evidence::{
     VerifierJob,
 };
 pub use failures::{FailurePayload, OptimizerFailureType};
+pub use fsm::{
+    EntityMachine, StateMachineEntity, TransitionInput, TransitionLog, TransitionRow,
+    TransitionSink,
+};
 pub use http::ContainerClient;
 pub use invariants::{
     CountMismatchInput, InvariantReport, InvariantViolation, InvariantViolationInput,
 };
 pub use jobs::{OptimizerJob, OptimizerJobKind, OptimizerJobStatus, RetryPolicy};
 pub use levers::{LeverBundle, LeverKind, LeverManifest, LeverSpec};
+pub use limit_engine::{
+    budget_limit_engine_input, budget_limit_snapshot, LimitDefinition, LimitEngine,
+    LimitEngineInput, LimitForecast, LimitKind, LimitObservation, LimitProgressEvent,
+    LimitSnapshot, LimitStatus,
+    LIMIT_ENGINE_SCHEMA_VERSION,
+};
 pub use limits::{
     BudgetCommitInput, BudgetCommitRecord, BudgetLedgerSnapshot, BudgetLedgerTotals,
     BudgetLimitBreach, BudgetReleaseInput, BudgetReleaseRecord, BudgetReservationInput,
@@ -116,10 +129,11 @@ pub use runtime_records::{
     runtime_record_json, ContainerContractSnapshotInput, ContainerContractSnapshotRecord,
     PromptProgramSnapshotInput, PromptProgramSnapshotRecord, RenderedOptimizerStateInput,
     RenderedOptimizerStateRecord, ResolvedRunConfigInput, ResolvedRunConfigRecord,
-    RuntimeEffectInput, RuntimeEffectRecord, TasksetSnapshotInput, TasksetSnapshotRecord,
-    CONTAINER_CONTRACT_SNAPSHOT_SCHEMA_VERSION, PROMPT_PROGRAM_SNAPSHOT_SCHEMA_VERSION,
-    RENDERED_OPTIMIZER_STATE_SCHEMA_VERSION, RESOLVED_RUN_CONFIG_SCHEMA_VERSION,
-    RUNTIME_EFFECT_SCHEMA_VERSION, TASKSET_SNAPSHOT_SCHEMA_VERSION,
+    RunPhaseTimingInput, RunPhaseTimingRecord, RuntimeEffectInput, RuntimeEffectRecord,
+    TasksetSnapshotInput, TasksetSnapshotRecord, CONTAINER_CONTRACT_SNAPSHOT_SCHEMA_VERSION,
+    PROMPT_PROGRAM_SNAPSHOT_SCHEMA_VERSION, RENDERED_OPTIMIZER_STATE_SCHEMA_VERSION,
+    RESOLVED_RUN_CONFIG_SCHEMA_VERSION, RUNTIME_EFFECT_SCHEMA_VERSION,
+    RUN_PHASE_TIMING_SCHEMA_VERSION, TASKSET_SNAPSHOT_SCHEMA_VERSION,
 };
 pub use scores::{
     ObjectiveSetRecord, ObjectiveSpec, ParetoComparisonRecord, ScoreRecord, ScoreVectorRecord,
@@ -130,6 +144,9 @@ pub use state_machine::{
     OptimizerRunState, OptimizerStateMachine, OptimizerTransition, OptimizerTransitionTrigger,
 };
 pub use stopper::{StopperStateInput, StopperStateRecord};
+pub use storage_maintenance::{
+    compact_run_storage, delete_run_storage, RunStorageMaintenanceInput, StorageMaintenanceProfile,
+};
 pub use usage::{UsageLedgerInput, UsageLedgerRecord};
 pub use workspace::{
     workspace_status, WorkspaceEntityCounts, WorkspaceRunRequestStatus, WorkspaceRunStatus,

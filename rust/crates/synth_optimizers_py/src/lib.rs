@@ -6,8 +6,9 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use serde_json::{json, Value};
 use synth_optimizer_platform::{
-    compare_normalized_event_feeds, replay_event_feed, GepaRunResult as RustGepaRunResult,
-    OptimizerError, WorkspaceStore,
+    compact_run_storage, compare_normalized_event_feeds, delete_run_storage, replay_event_feed,
+    GepaRunResult as RustGepaRunResult, OptimizerError, RunStorageMaintenanceInput,
+    StorageMaintenanceProfile, WorkspaceStore,
 };
 
 create_exception!(synth_optimizers_py, SynthOptimizerError, PyRuntimeError);
@@ -423,18 +424,20 @@ pub fn workspace_recover_expired_optimizer_jobs(
     value_to_py(py, &value)
 }
 
-#[pyfunction(signature = (db_path, bind_addr="127.0.0.1:8879", worker_id=None, lease_seconds=3600))]
+#[pyfunction(signature = (db_path, bind_addr="127.0.0.1:8879", worker_id=None, lease_seconds=3600, workers=10))]
 pub fn gepa_serve(
     db_path: &str,
     bind_addr: &str,
     worker_id: Option<&str>,
     lease_seconds: u64,
+    workers: usize,
 ) -> PyResult<()> {
     let mut config = synth_gepa::service::GepaServiceConfig::new(db_path, bind_addr);
     if let Some(worker_id) = worker_id {
         config.worker_id = worker_id.to_string();
     }
     config.lease_seconds = lease_seconds;
+    config.worker_count = workers;
     synth_gepa::service::run_gepa_service(config).map_err(py_error)
 }
 
@@ -471,6 +474,35 @@ pub fn gepa_service_recover(py: Python<'_>, db_path: &str) -> PyResult<PyObject>
     let outcome = synth_gepa::service::recover_service_state(db_path).map_err(py_error)?;
     let value = serde_json::to_value(outcome)
         .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
+    value_to_py(py, &value)
+}
+
+#[pyfunction(signature = (run_dir, run_id=None, profile="compact", dry_run=true))]
+pub fn gepa_compact_run_storage(
+    py: Python<'_>,
+    run_dir: &str,
+    run_id: Option<&str>,
+    profile: &str,
+    dry_run: bool,
+) -> PyResult<PyObject> {
+    let profile = StorageMaintenanceProfile::parse(profile).map_err(py_error)?;
+    let value = compact_run_storage(RunStorageMaintenanceInput {
+        run_dir: run_dir.into(),
+        run_id: run_id.map(str::to_string),
+        profile,
+        dry_run,
+    })
+    .map_err(py_error)?;
+    value_to_py(py, &value)
+}
+
+#[pyfunction(signature = (run_dir, dry_run=true))]
+pub fn gepa_delete_run_storage(
+    py: Python<'_>,
+    run_dir: &str,
+    dry_run: bool,
+) -> PyResult<PyObject> {
+    let value = delete_run_storage(run_dir, dry_run).map_err(py_error)?;
     value_to_py(py, &value)
 }
 
@@ -591,6 +623,8 @@ fn _synth_optimizers(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<(
     module.add_function(wrap_pyfunction!(events_compare, module)?)?;
     module.add_function(wrap_pyfunction!(default_proposer_best_practices, module)?)?;
     module.add_function(wrap_pyfunction!(gepa_serve, module)?)?;
+    module.add_function(wrap_pyfunction!(gepa_compact_run_storage, module)?)?;
+    module.add_function(wrap_pyfunction!(gepa_delete_run_storage, module)?)?;
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

@@ -39,7 +39,7 @@ Diagnose which category is missing or wrong before proposing:
 
 - Submit targeted changes grounded in evidence.
 - Prefer one coherent rule, heuristic, premise, or output contract over a broad rewrite.
-- Think in terms of reusable guidance that can generalize across heldout examples.
+- Think in terms of reusable guidance that can generalize across unseen examples.
 - For finite closed-output tasks, compact boundary examples or label-disambiguation tables can be valid when they teach the output contract.
 - For open-output tasks, convert trace evidence into general procedures; do not copy observed training targets into candidate prompts.
 - GEPA needs high-variance candidates. At most one proposal should be conservative. The rest should be very ambitious, task-specific prompt updates that could plausibly produce substantially better task performance than the parent.

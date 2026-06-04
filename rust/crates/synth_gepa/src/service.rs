@@ -3,6 +3,10 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Condvar, Mutex,
+};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -12,10 +16,12 @@ use serde_json::{json, Map, Value};
 use sha1::{Digest as Sha1Digest, Sha1};
 use sha2::{Digest as Sha2Digest, Sha256};
 use synth_optimizer_platform::{
-    ArtifactPaths, CacheMode, CheckpointInput, CheckpointRecord, ContainerClient, FailurePayload,
-    GepaPipelineMode, GepaStalenessPolicy, OptimizerError, OptimizerJob, OptimizerJobKind,
-    OptimizerJobStatus, PromptProgram, Result, RuntimeEffectInput, RuntimeEffectRecord,
-    SynthOptimizerConfig, WorkspaceRunRequestStatus, WorkspaceStore,
+    compact_run_storage, delete_run_storage, ArtifactPaths, CacheMode, CheckpointInput,
+    CheckpointRecord, ContainerClient, FailurePayload, GepaPipelineMode, GepaStalenessPolicy,
+    GepaTaskPoolsConfig, OptimizerError, OptimizerJob, OptimizerJobKind, OptimizerJobStatus,
+    PromptProgram, Result, RunPhaseTimingRecord, RunStorageMaintenanceInput, RuntimeEffectInput,
+    RuntimeEffectRecord, StorageMaintenanceProfile, SynthOptimizerConfig, TransitionLog,
+    TransitionRow, WorkspaceRunRequestStatus, WorkspaceStore,
 };
 
 use crate::{
@@ -23,9 +29,14 @@ use crate::{
     planner::{
         GepaCursor, GepaCursorPhase, GepaTickAction, GepaTickOutcome, GEPA_CURSOR_CHECKPOINT_KIND,
     },
-    GepaAdvanceMode, GepaAdvanceOutcome, GepaCancellationSource, GepaExecutionOptions,
-    GepaRunResult,
+    project_gepa_limit_snapshot, record_initial_platform_snapshots, GepaAdvanceMode,
+    GepaAdvanceOutcome, GepaCancellationSource, GepaExecutionOptions, GepaRunResult,
 };
+
+const DEFAULT_SERVICE_WORKER_COUNT: usize = 10;
+const MAX_SERVICE_WORKER_COUNT: usize = 10;
+const SERVICE_WORKER_IDLE_WAIT: Duration = Duration::from_millis(500);
+const SERVICE_WORKER_ERROR_WAIT: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GepaServiceConfig {
@@ -33,6 +44,7 @@ pub struct GepaServiceConfig {
     pub bind_addr: String,
     pub worker_id: String,
     pub lease_seconds: u64,
+    pub worker_count: usize,
 }
 
 impl GepaServiceConfig {
@@ -42,6 +54,45 @@ impl GepaServiceConfig {
             bind_addr: bind_addr.into(),
             worker_id: "synth-gepa-service".to_string(),
             lease_seconds: 3600,
+            worker_count: DEFAULT_SERVICE_WORKER_COUNT,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct GepaServiceRuntime {
+    config: GepaServiceConfig,
+    scheduler: ServiceSchedulerSignal,
+    service_url: String,
+    started_at: String,
+}
+
+#[derive(Clone)]
+struct ServiceSchedulerSignal {
+    state: Arc<(Mutex<u64>, Condvar)>,
+}
+
+impl ServiceSchedulerSignal {
+    fn new() -> Self {
+        Self {
+            state: Arc::new((Mutex::new(0), Condvar::new())),
+        }
+    }
+
+    fn notify(&self) {
+        let (lock, condvar) = &*self.state;
+        if let Ok(mut generation) = lock.lock() {
+            *generation = generation.saturating_add(1);
+            condvar.notify_all();
+        }
+    }
+
+    fn wait(&self, duration: Duration) {
+        let (lock, condvar) = &*self.state;
+        if let Ok(generation) = lock.lock() {
+            let _ = condvar.wait_timeout(generation, duration);
+        } else {
+            thread::sleep(duration);
         }
     }
 }
@@ -94,6 +145,8 @@ pub struct GepaServiceRecoveryOutcome {
 #[serde(deny_unknown_fields)]
 struct GepaServiceRunRequest {
     container_url: String,
+    #[serde(default)]
+    output_dir: Option<String>,
     policy: ServicePolicySpec,
     proposer: ServiceProposerSpec,
     taskset: ServiceTasksetSpec,
@@ -130,7 +183,15 @@ struct ServiceProposerSpec {
     model: String,
     #[serde(default = "default_api_family")]
     api_family: String,
+    #[serde(default)]
+    auth_mode: Option<String>,
+    #[serde(default)]
+    base_url: Option<String>,
     credentials: ServiceCredentials,
+    #[serde(default)]
+    copy_host_auth: Option<bool>,
+    #[serde(default)]
+    codex_home: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -146,6 +207,7 @@ struct ServiceCredentials {
 struct ServiceTasksetSpec {
     train_ids: Vec<String>,
     heldout_ids: Vec<String>,
+    task_pools: GepaTaskPoolsConfig,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -153,6 +215,10 @@ struct ServiceTasksetSpec {
 enum ServiceStopCondition {
     MaxRollouts {
         n: usize,
+        #[serde(default)]
+        train: Option<usize>,
+        #[serde(default)]
+        heldout: Option<usize>,
     },
     MaxWallSeconds {
         n: u64,
@@ -180,6 +246,8 @@ struct ServiceAdvancedConfig {
     #[serde(default)]
     pipeline: Option<ServicePipelineConfig>,
     #[serde(default)]
+    budgets: Option<ServiceBudgetConfig>,
+    #[serde(default)]
     timeouts: Option<ServiceTimeoutsConfig>,
     #[serde(default)]
     policy_io: Option<Value>,
@@ -187,6 +255,15 @@ struct ServiceAdvancedConfig {
     proposer_io: Option<ServiceProposerIoConfig>,
     #[serde(default)]
     adaptive_rollout_concurrency: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ServiceBudgetConfig {
+    #[serde(default)]
+    max_train_rollouts: Option<usize>,
+    #[serde(default)]
+    max_heldout_rollouts: Option<usize>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -274,17 +351,33 @@ enum WebSocketIncoming {
     Empty,
 }
 
-pub fn run_gepa_service(config: GepaServiceConfig) -> Result<()> {
+pub fn run_gepa_service(mut config: GepaServiceConfig) -> Result<()> {
+    config.worker_count = normalize_service_worker_count(config.worker_count);
     recover_service_state(&config.db_path)?;
+    let scheduler = ServiceSchedulerSignal::new();
     let listener = TcpListener::bind(&config.bind_addr).map_err(|source| {
         OptimizerError::io(format!("gepa service bind {}", config.bind_addr), source)
     })?;
+    config.bind_addr = listener
+        .local_addr()
+        .map(|addr| addr.to_string())
+        .unwrap_or_else(|_| config.bind_addr.clone());
+    let service_url = service_url_from_bind(&config.bind_addr);
+    let started_at = crate::rfc3339_now();
+    start_service_workers(&config, scheduler.clone(), service_url.clone());
+    let _heartbeat = ServiceHeartbeatGuard::start(&config, &service_url, &started_at)?;
+    let runtime = GepaServiceRuntime {
+        config,
+        scheduler,
+        service_url,
+        started_at,
+    };
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                let config = config.clone();
+                let runtime = runtime.clone();
                 thread::spawn(move || {
-                    let _ = handle_connection(stream, config);
+                    let _ = handle_connection(stream, runtime);
                 });
             }
             Err(source) => {
@@ -293,6 +386,46 @@ pub fn run_gepa_service(config: GepaServiceConfig) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn normalize_service_worker_count(worker_count: usize) -> usize {
+    worker_count.clamp(1, MAX_SERVICE_WORKER_COUNT)
+}
+
+fn service_worker_id(base_worker_id: &str, worker_count: usize, slot: usize) -> String {
+    if worker_count == 1 {
+        base_worker_id.to_string()
+    } else {
+        format!("{base_worker_id}-slot-{slot:02}")
+    }
+}
+
+fn start_service_workers(
+    config: &GepaServiceConfig,
+    scheduler: ServiceSchedulerSignal,
+    service_url: String,
+) {
+    for slot in 0..config.worker_count {
+        let db_path = config.db_path.clone();
+        let lease_seconds = config.lease_seconds;
+        let worker_count = config.worker_count;
+        let worker_id = service_worker_id(&config.worker_id, worker_count, slot);
+        let scheduler = scheduler.clone();
+        let service_url = service_url.clone();
+        thread::spawn(move || loop {
+            match tick_next_auto_unit(&db_path, &worker_id, lease_seconds, Some(&service_url)) {
+                Ok(outcome) => {
+                    if outcome.request.is_none() {
+                        scheduler.wait(SERVICE_WORKER_IDLE_WAIT);
+                    }
+                }
+                Err(error) => {
+                    eprintln!("[gepa-worker:{worker_id}] run loop error: {error}");
+                    scheduler.wait(SERVICE_WORKER_ERROR_WAIT);
+                }
+            }
+        });
+    }
 }
 
 pub fn run_next_queued_request(
@@ -317,17 +450,63 @@ pub fn tick_next_unit(
     worker_id: &str,
     lease_seconds: u64,
 ) -> Result<GepaTickOutcome> {
-    recover_service_state(&db_path)?;
+    tick_next_unit_inner(db_path, worker_id, lease_seconds, true, true, None)
+}
+
+fn tick_next_auto_unit(
+    db_path: impl AsRef<Path>,
+    worker_id: &str,
+    lease_seconds: u64,
+    owning_service_url: Option<&str>,
+) -> Result<GepaTickOutcome> {
+    tick_next_unit_inner(
+        db_path,
+        worker_id,
+        lease_seconds,
+        false,
+        is_primary_service_worker(worker_id),
+        owning_service_url,
+    )
+}
+
+fn tick_next_unit_inner(
+    db_path: impl AsRef<Path>,
+    worker_id: &str,
+    lease_seconds: u64,
+    include_manual_step: bool,
+    run_recovery: bool,
+    owning_service_url: Option<&str>,
+) -> Result<GepaTickOutcome> {
+    if run_recovery {
+        recover_service_state(&db_path)?;
+    }
     let lease_id = format!("lease_{}_{}", worker_id, now_millis());
     let store = WorkspaceStore::open_existing(&db_path)?;
     if let Some(active) = active_run_request(&store, worker_id)? {
-        return tick_active_run_request(&store, db_path.as_ref(), active, worker_id, lease_seconds);
+        return tick_active_run_request(
+            &store,
+            db_path.as_ref(),
+            active,
+            worker_id,
+            lease_seconds,
+            owning_service_url,
+        );
     }
-    if let Some(cancelled) = cancelled_run_request_needing_workspace_terminalization(&store)? {
-        return tick_cancelled_run_request_workspace(db_path.as_ref(), cancelled, lease_seconds);
+    if include_manual_step || is_primary_service_worker(worker_id) {
+        if let Some(cancelled) = cancelled_run_request_needing_workspace_terminalization(&store)? {
+            return tick_cancelled_run_request_workspace(
+                db_path.as_ref(),
+                cancelled,
+                lease_seconds,
+            );
+        }
     }
-    let Some(claimed) = store.claim_next_run_request(&lease_id, Some(worker_id), lease_seconds)?
-    else {
+    let claimed = if include_manual_step {
+        store.claim_next_run_request(&lease_id, Some(worker_id), lease_seconds)?
+    } else {
+        store.claim_next_auto_run_request(&lease_id, Some(worker_id), lease_seconds)?
+    };
+    let Some(claimed) = claimed else {
         return Ok(GepaTickOutcome {
             request: None,
             result: None,
@@ -346,6 +525,119 @@ pub fn tick_next_unit(
         terminal: false,
         message: "run request claimed".to_string(),
     })
+}
+
+fn is_primary_service_worker(worker_id: &str) -> bool {
+    !worker_id.contains("-slot-") || worker_id.ends_with("-slot-00")
+}
+
+struct ServiceHeartbeatGuard {
+    path: PathBuf,
+    stop: Arc<AtomicBool>,
+}
+
+impl ServiceHeartbeatGuard {
+    fn start(config: &GepaServiceConfig, service_url: &str, started_at: &str) -> Result<Self> {
+        let home = crate::gepa_home_dir();
+        let services = home.join("services");
+        fs::create_dir_all(&services).map_err(|source| OptimizerError::io(&services, source))?;
+        let path = services.join(format!("{}.json", service_id_for_db(&config.db_path)));
+        let stop = Arc::new(AtomicBool::new(false));
+        write_service_heartbeat(&path, config, service_url, started_at)?;
+        let thread_path = path.clone();
+        let thread_config = config.clone();
+        let thread_service_url = service_url.to_string();
+        let thread_started_at = started_at.to_string();
+        let thread_stop = stop.clone();
+        thread::spawn(move || {
+            while !thread_stop.load(Ordering::Relaxed) {
+                let _ = write_service_heartbeat(
+                    &thread_path,
+                    &thread_config,
+                    &thread_service_url,
+                    &thread_started_at,
+                );
+                thread::sleep(Duration::from_secs(2));
+            }
+        });
+        Ok(Self { path, stop })
+    }
+}
+
+impl Drop for ServiceHeartbeatGuard {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn write_service_heartbeat(
+    path: &Path,
+    config: &GepaServiceConfig,
+    service_url: &str,
+    started_at: &str,
+) -> Result<()> {
+    let payload = service_identity_payload(
+        config,
+        service_url,
+        started_at,
+        Some(crate::rfc3339_now()),
+    );
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, serde_json::to_vec_pretty(&payload)?)
+        .map_err(|source| OptimizerError::io(&tmp, source))?;
+    fs::rename(&tmp, path).map_err(|source| OptimizerError::io(path, source))
+}
+
+fn service_identity_payload(
+    config: &GepaServiceConfig,
+    service_url: &str,
+    started_at: &str,
+    last_seen: Option<String>,
+) -> Value {
+    let mut payload = json!({
+        "kind": "gepa-service",
+        "schema": "synth.gepa_service.whoami.v1",
+        "version": env!("CARGO_PKG_VERSION"),
+        "source_id": service_id_for_db(&config.db_path),
+        "service_url": service_url,
+        "bind": config.bind_addr.clone(),
+        "pid": std::process::id(),
+        "db_path": crate::absolute_path(&config.db_path).display().to_string(),
+        "worker_id": config.worker_id.clone(),
+        "workers": config.worker_count,
+        "lease_seconds": config.lease_seconds,
+        "started_at": started_at,
+        "run_roots": [],
+    });
+    if let Some(last_seen) = last_seen {
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("last_seen".to_string(), json!(last_seen));
+        }
+    }
+    payload
+}
+
+fn service_id_for_db(db_path: &Path) -> String {
+    let mut hasher = Sha256::new();
+    Sha2Digest::update(&mut hasher, crate::absolute_path(db_path).display().to_string().as_bytes());
+    format!("{:x}", Sha2Digest::finalize(hasher))
+}
+
+fn service_url_from_bind(bind_addr: &str) -> String {
+    let (host, port) = bind_addr
+        .rsplit_once(':')
+        .map(|(host, port)| (host.trim_matches(['[', ']']), port))
+        .unwrap_or(("127.0.0.1", "8879"));
+    let host = match host {
+        "" | "0.0.0.0" | "::" => "127.0.0.1",
+        other => other,
+    };
+    if host.contains(':') {
+        format!("http://[{host}]:{port}")
+    } else {
+        format!("http://{host}:{port}")
+    }
 }
 
 fn active_run_request(
@@ -424,6 +716,7 @@ fn tick_cancelled_run_request_workspace(
                 lease_id: None,
                 lease_seconds,
             }),
+            owning_service_url: None,
         },
         GepaAdvanceMode::ServiceTick,
     )?;
@@ -442,6 +735,7 @@ fn tick_active_run_request(
     request: WorkspaceRunRequestStatus,
     _worker_id: &str,
     lease_seconds: u64,
+    owning_service_url: Option<&str>,
 ) -> Result<GepaTickOutcome> {
     let lease_id = request.lease_id.clone().ok_or_else(|| {
         OptimizerError::Invariant(format!(
@@ -483,6 +777,7 @@ fn tick_active_run_request(
     }
 
     let _ = store.heartbeat_run_request(&request.request_id, &lease_id, lease_seconds)?;
+    ensure_run_workspace(store, &request)?;
     let config = store.run_request_config(&request.request_id)?;
     let advance = match advance_gepa_config_once(
         config,
@@ -493,6 +788,7 @@ fn tick_active_run_request(
                 lease_id: Some(lease_id.clone()),
                 lease_seconds,
             }),
+            owning_service_url: owning_service_url.map(str::to_string),
         },
         GepaAdvanceMode::ServiceTick,
     ) {
@@ -532,6 +828,7 @@ fn ensure_run_workspace(
         .clone()
         .unwrap_or_else(|| format!("gepa:{}", config.run.run_id));
     store.record_run_started(&paths, &config, cache_mode, &cache_namespace)?;
+    record_initial_platform_snapshots(&store, &config, cache_mode, &cache_namespace, &paths)?;
     Ok(store)
 }
 
@@ -704,6 +1001,7 @@ fn execute_gepa_job(input: ExecuteGepaJobInput<'_>) -> Result<GepaTickOutcome> {
                 lease_id: Some(request_lease_id.to_string()),
                 lease_seconds,
             }),
+            owning_service_url: None,
         },
     );
     let mut updated_job = run_store.optimizer_job(&request.run_id, &job.job_id)?;
@@ -1176,64 +1474,84 @@ fn lost_run_request_lease_error(request_id: &str, lease_id: &str) -> OptimizerEr
     ))
 }
 
-fn handle_connection(mut stream: TcpStream, config: GepaServiceConfig) -> Result<()> {
+fn handle_connection(mut stream: TcpStream, runtime: GepaServiceRuntime) -> Result<()> {
     let request = HttpRequest::read(&mut stream)?;
     let (path, _) = split_path_query(&request.path);
     let segments = path_segments(path);
     if request.method == "GET" && matches!(segments.as_slice(), ["runs", _, "ws"]) {
         if let ["runs", run_id, "ws"] = segments.as_slice() {
-            return handle_websocket_connection(&mut stream, config, &request, run_id);
+            return handle_websocket_connection(&mut stream, runtime, &request, run_id);
         }
     }
-    let response = route_request(request, config);
+    let response = route_request(request, runtime);
     write_response(&mut stream, response)
 }
 
-fn route_request(request: HttpRequest, config: GepaServiceConfig) -> HttpResponse {
+fn route_request(request: HttpRequest, runtime: GepaServiceRuntime) -> HttpResponse {
     let (path, query) = split_path_query(&request.path);
     let segments = path_segments(path);
+    let config = &runtime.config;
     match (request.method.as_str(), segments.as_slice()) {
         ("GET", ["health"]) => json_response(200, &json!({"status": "ok"})),
+        ("GET", ["whoami"]) => json_response(
+            200,
+            &service_identity_payload(
+                config,
+                &runtime.service_url,
+                &runtime.started_at,
+                None,
+            ),
+        ),
         ("GET", ["openapi.yaml"]) => {
             text_response(200, "application/yaml", GEPA_SERVICE_OPENAPI_YAML)
         }
-        ("GET", ["workspace"]) => result_response(workspace_summary(&config), 200),
-        ("GET", ["workspace", "usage"]) => result_response(workspace_usage(&config), 200),
+        ("GET", ["workspace"]) => result_response(workspace_summary(config), 200),
+        ("GET", ["workspace", "usage"]) => result_response(workspace_usage(config), 200),
         ("POST", ["workspace", "prune"]) => {
-            result_response(prune_workspace(&config, &request), 200)
+            result_response(prune_workspace(config, &request), 200)
         }
-        ("POST", ["runs"]) => create_run_response(&config, &request),
-        ("GET", ["runs"]) => result_response(list_runs(&config, &query), 200),
-        ("GET", ["runs", run_id]) => run_response(&config, run_id),
-        ("DELETE", ["runs", run_id]) => delete_run_response(&config, run_id),
+        ("POST", ["workspace", "compact"]) => {
+            result_response(compact_workspace_response(config, &request), 200)
+        }
+        ("POST", ["runs"]) => create_run_response(&runtime, &request),
+        ("GET", ["runs"]) => result_response(list_runs(config, &query), 200),
+        ("GET", ["runs", run_id]) => run_response(config, run_id),
+        ("GET", ["runs", run_id, "state"]) => run_state_response(config, run_id),
+        ("GET", ["runs", run_id, "limits"]) => run_limits_response(config, run_id),
+        ("GET", ["runs", run_id, "timings"]) => run_timings_response(config, run_id),
+        ("GET", ["runs", run_id, "stats"]) => run_stats_response(config, run_id),
+        ("DELETE", ["runs", run_id]) => delete_run_response(config, run_id),
+        ("POST", ["runs", run_id, "compact"]) => {
+            compact_run_response(config, run_id, &request)
+        }
         ("POST", ["runs", run_id, "cancel"]) => {
-            control_run_response(&config, run_id, "cancel", &request)
+            control_run_response(&runtime, run_id, "cancel", &request)
         }
         ("POST", ["runs", run_id, "stop"]) => {
-            control_run_response(&config, run_id, "stop", &request)
+            control_run_response(&runtime, run_id, "stop", &request)
         }
         ("POST", ["runs", run_id, "pause"]) => {
-            control_run_response(&config, run_id, "pause", &request)
+            control_run_response(&runtime, run_id, "pause", &request)
         }
         ("POST", ["runs", run_id, "resume"]) => {
-            control_run_response(&config, run_id, "resume", &request)
+            control_run_response(&runtime, run_id, "resume", &request)
         }
-        ("POST", ["runs", run_id, "step"]) => result_response(step_run(&config, run_id), 200),
+        ("POST", ["runs", run_id, "step"]) => result_response(step_run(config, run_id), 200),
         ("GET", ["runs", run_id, "candidates"]) => {
-            result_response(list_candidates(&config, run_id, &query), 200)
+            result_response(list_candidates(config, run_id, &query), 200)
         }
         ("GET", ["runs", run_id, "candidates", candidate_id]) => {
-            candidate_response(&config, run_id, candidate_id)
+            candidate_response(config, run_id, candidate_id)
         }
         ("GET", ["runs", run_id, "candidates", candidate_id, "rollouts"]) => result_response(
-            list_rollouts(&config, run_id, Some(candidate_id), &query),
+            list_rollouts(config, run_id, Some(candidate_id), &query),
             200,
         ),
         ("GET", ["runs", run_id, "rollouts", rollout_id]) => {
-            rollout_response(&config, run_id, rollout_id, &query)
+            rollout_response(config, run_id, rollout_id, &query)
         }
-        ("GET", ["runs", run_id, "artifacts", name]) => artifact_response(&config, run_id, name),
-        ("DELETE", ["runs", run_id, "artifacts"]) => drop_artifacts_response(&config, run_id),
+        ("GET", ["runs", run_id, "artifacts", name]) => artifact_response(config, run_id, name),
+        ("DELETE", ["runs", run_id, "artifacts"]) => drop_artifacts_response(config, run_id),
         ("GET", ["runs", run_id, "ws"]) => match WorkspaceStore::open_existing(&config.db_path)
             .and_then(|store| store.run_request_by_run_id(run_id))
         {
@@ -1257,11 +1575,11 @@ fn route_request(request: HttpRequest, config: GepaServiceConfig) -> HttpRespons
 
 fn handle_websocket_connection(
     stream: &mut TcpStream,
-    config: GepaServiceConfig,
+    runtime: GepaServiceRuntime,
     request: &HttpRequest,
     run_id: &str,
 ) -> Result<()> {
-    match WorkspaceStore::open_existing(&config.db_path)
+    match WorkspaceStore::open_existing(&runtime.config.db_path)
         .and_then(|store| store.run_request_by_run_id(run_id))
     {
         Ok(Some(_)) => {}
@@ -1318,12 +1636,12 @@ fn handle_websocket_connection(
     stream
         .set_read_timeout(Some(Duration::from_millis(500)))
         .map_err(|source| OptimizerError::io("gepa service websocket timeout", source))?;
-    stream_websocket_run(stream, &config, run_id, &kinds, subscribe.since)
+    stream_websocket_run(stream, &runtime, run_id, &kinds, subscribe.since)
 }
 
 fn stream_websocket_run(
     stream: &mut TcpStream,
-    config: &GepaServiceConfig,
+    runtime: &GepaServiceRuntime,
     run_id: &str,
     kinds: &BTreeSet<String>,
     since: u64,
@@ -1331,7 +1649,7 @@ fn stream_websocket_run(
     let mut last_sent_seq = since;
     let mut truncated_sent = false;
     loop {
-        let store = WorkspaceStore::open_existing(&config.db_path)?;
+        let store = WorkspaceStore::open_existing(&runtime.config.db_path)?;
         let Some(request) = store.run_request_by_run_id(run_id)? else {
             write_websocket_json(
                 stream,
@@ -1382,7 +1700,7 @@ fn stream_websocket_run(
         write_websocket_json(stream, &json!({"type": "status", "run": run}))?;
         match read_websocket_frame(stream)? {
             WebSocketIncoming::Text(text) => {
-                if let Some(response) = handle_websocket_control(config, run_id, &text)? {
+                if let Some(response) = handle_websocket_control(runtime, run_id, &text)? {
                     write_websocket_json(stream, &response)?;
                 }
             }
@@ -1393,14 +1711,14 @@ fn stream_websocket_run(
 }
 
 fn handle_websocket_control(
-    config: &GepaServiceConfig,
+    runtime: &GepaServiceRuntime,
     run_id: &str,
     text: &str,
 ) -> Result<Option<Value>> {
     let frame: WebSocketControlFrame = serde_json::from_str(text)?;
     match frame.frame_type.as_str() {
         "stop" | "cancel" | "resume" => {
-            let run = control_run(config, run_id, &frame.frame_type, None)?;
+            let run = control_run(runtime, run_id, &frame.frame_type, None)?;
             Ok(run.map(|run| json!({"type": "status", "run": run})))
         }
         "pause" => {
@@ -1408,12 +1726,11 @@ fn handle_websocket_control(
                 Some(timeout) => validate_pause_timeout_seconds(timeout)?,
                 None => 1_800,
             };
-            let run = control_run(config, run_id, "pause", Some(timeout))?;
+            let run = control_run(runtime, run_id, "pause", Some(timeout))?;
             Ok(run.map(|run| json!({"type": "status", "run": run})))
         }
-        "step" => {
-            step_run(config, run_id).map(|value| Some(json!({"type": "status", "step": value})))
-        }
+        "step" => step_run(&runtime.config, run_id)
+            .map(|value| Some(json!({"type": "status", "step": value}))),
         "subscribe" => Err(OptimizerError::Config(
             "subscribe is only valid as the first WebSocket frame".to_string(),
         )),
@@ -1423,11 +1740,11 @@ fn handle_websocket_control(
     }
 }
 
-fn create_run_response(config: &GepaServiceConfig, request: &HttpRequest) -> HttpResponse {
+fn create_run_response(runtime: &GepaServiceRuntime, request: &HttpRequest) -> HttpResponse {
     let idempotency_key = request.headers.get("idempotency-key").cloned();
     let body_sha256 = request_body_sha256(&request.body);
     match json_body::<GepaServiceRunRequest>(request)
-        .and_then(|run_request| create_run(config, run_request, idempotency_key, body_sha256))
+        .and_then(|run_request| create_run(runtime, run_request, idempotency_key, body_sha256))
     {
         Ok((status, run)) => json_response(status, &run),
         Err(error) => optimizer_error_response(error),
@@ -1435,11 +1752,12 @@ fn create_run_response(config: &GepaServiceConfig, request: &HttpRequest) -> Htt
 }
 
 fn create_run(
-    config: &GepaServiceConfig,
+    runtime: &GepaServiceRuntime,
     run_request: GepaServiceRunRequest,
     idempotency_key: Option<String>,
     request_body_sha256: String,
 ) -> Result<(u16, Value)> {
+    let config = &runtime.config;
     let store = WorkspaceStore::open(&config.db_path)?;
     if let Some(idempotency_key) = idempotency_key.as_deref() {
         if let Some((existing, existing_body_sha256)) =
@@ -1472,19 +1790,7 @@ fn create_run(
         Some(&request_body_sha256),
     )?;
     if !request.manual_step {
-        let worker_config = config.clone();
-        thread::spawn(move || {
-            // S8: surface worker-loop errors instead of swallowing them. Most run
-            // errors terminalize into the request inside the tick; this catches the
-            // residual (pre-lease / final-mark) failures that would otherwise vanish.
-            if let Err(error) = run_next_queued_request(
-                &worker_config.db_path,
-                &worker_config.worker_id,
-                worker_config.lease_seconds,
-            ) {
-                eprintln!("[gepa-worker] run loop error: {error}");
-            }
-        });
+        runtime.scheduler.notify();
     }
     project_run(&store, &request).map(|run| (201, run))
 }
@@ -1492,6 +1798,8 @@ fn create_run(
 fn workspace_summary(config: &GepaServiceConfig) -> Result<Value> {
     let store = WorkspaceStore::open(&config.db_path)?;
     let status = store.status()?;
+    let scheduler = project_scheduler_summary(config, &status.run_requests);
+    let run_status = project_run_status_summary(config, &status.run_requests)?;
     let oldest_queued_age_seconds = status
         .run_requests
         .iter()
@@ -1519,7 +1827,354 @@ fn workspace_summary(config: &GepaServiceConfig) -> Result<Value> {
             "oldest_queued_age_seconds": oldest_queued_age_seconds,
             "last_progress_at": last_progress_at,
         },
+        "scheduler": scheduler,
+        "run_status": run_status,
     }))
+}
+
+fn project_run_status_summary(
+    config: &GepaServiceConfig,
+    requests: &[WorkspaceRunRequestStatus],
+) -> Result<Value> {
+    let worker_count = normalize_service_worker_count(config.worker_count);
+    let active = requests
+        .iter()
+        .filter(|request| matches!(request.status.as_str(), "leased" | "running"))
+        .collect::<Vec<_>>();
+    let active_workers = active.len().min(worker_count);
+    let queued = requests
+        .iter()
+        .filter(|request| request.status == "queued")
+        .collect::<Vec<_>>();
+    let mut queued_reasons = Vec::new();
+    let mut runnable_queued = 0usize;
+    let mut blocked_queued = 0usize;
+    for request in &queued {
+        let block = scheduler_block_reason(request, &active, active_workers, worker_count);
+        if block.is_some() {
+            blocked_queued += 1;
+        } else {
+            runnable_queued += 1;
+        }
+        queued_reasons.push(json!({
+            "run_id": request.run_id,
+            "request_id": request.request_id,
+            "submitted_at": request.submitted_at,
+            "reason": block.as_ref().map(|block| block.reason.as_str()),
+            "blocked_by_run_id": block.as_ref().and_then(|block| block.blocked_by_run_id.clone()),
+            "blocked_by_request_id": block.as_ref().and_then(|block| block.blocked_by_request_id.clone()),
+            "why_not_running": scheduler_why_not_running(block.as_ref()),
+        }));
+    }
+    let active_leases = active
+        .iter()
+        .map(|request| project_active_lease(request))
+        .collect::<Result<Vec<_>>>()?;
+    let stale_lease_count = active_leases
+        .iter()
+        .filter(|lease| lease.get("stale").and_then(Value::as_bool).unwrap_or(false))
+        .count();
+    let worker_slots = (0..worker_count)
+        .map(|slot| {
+            let worker_id = service_worker_id(&config.worker_id, worker_count, slot);
+            let active_request = active
+                .iter()
+                .find(|request| request.worker_id.as_deref() == Some(worker_id.as_str()));
+            project_worker_slot(slot, worker_id, active_request.copied())
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let raw_status_counts = raw_status_counts(requests);
+    let projected_status_counts = project_status_counts(&raw_status_counts);
+    Ok(json!({
+        "raw_status_counts": raw_status_counts,
+        "projected_status_counts": projected_status_counts,
+        "counts": {
+            "total": requests.len(),
+            "queued": raw_status_count(requests, "queued"),
+            "leased": raw_status_count(requests, "leased"),
+            "running": raw_status_count(requests, "running"),
+            "paused": raw_status_count(requests, "paused"),
+            "terminal": requests
+                .iter()
+                .filter(|request| is_terminal_status(project_request_status(&request.status)))
+                .count(),
+            "succeeded": projected_status_counts.get("succeeded").copied().unwrap_or(0),
+            "failed": projected_status_counts.get("failed").copied().unwrap_or(0),
+            "cancelled": projected_status_counts.get("cancelled").copied().unwrap_or(0),
+            "active_workers": active_workers,
+            "idle_workers": worker_count.saturating_sub(active_workers),
+            "worker_count": worker_count,
+            "queued_runnable": runnable_queued,
+            "queued_blocked": blocked_queued,
+            "stale_leases": stale_lease_count,
+        },
+        "active_leases": active_leases,
+        "queued_reasons": queued_reasons,
+        "worker_slots": worker_slots,
+    }))
+}
+
+fn project_scheduler_summary(
+    config: &GepaServiceConfig,
+    requests: &[WorkspaceRunRequestStatus],
+) -> Value {
+    let worker_count = normalize_service_worker_count(config.worker_count);
+    let active = requests
+        .iter()
+        .filter(|request| matches!(request.status.as_str(), "leased" | "running"))
+        .collect::<Vec<_>>();
+    let active_workers = active.len().min(worker_count);
+    let queued = requests
+        .iter()
+        .filter(|request| request.status == "queued")
+        .collect::<Vec<_>>();
+    let mut runnable_queued = 0usize;
+    let mut blocked_queued = 0usize;
+    let mut queued_items = Vec::new();
+    for request in queued {
+        let block = scheduler_block_reason(request, &active, active_workers, worker_count);
+        if block.is_some() {
+            blocked_queued += 1;
+        } else {
+            runnable_queued += 1;
+        }
+        queued_items.push(json!({
+            "run_id": request.run_id,
+            "request_id": request.request_id,
+            "submitted_at": request.submitted_at,
+            "reason": block.as_ref().map(|block| block.reason.as_str()),
+            "blocked_by_run_id": block.as_ref().and_then(|block| block.blocked_by_run_id.clone()),
+            "blocked_by_request_id": block.as_ref().and_then(|block| block.blocked_by_request_id.clone()),
+        }));
+    }
+    let workers = (0..worker_count)
+        .map(|slot| {
+            let worker_id = service_worker_id(&config.worker_id, worker_count, slot);
+            let active_request = active
+                .iter()
+                .find(|request| request.worker_id.as_deref() == Some(worker_id.as_str()));
+            let heartbeat = active_request.map(|request| heartbeat_projection(request));
+            json!({
+                "slot": slot,
+                "worker_id": worker_id,
+                "state": if active_request.is_some() { "active" } else { "idle" },
+                "run_id": active_request.map(|request| request.run_id.clone()),
+                "request_id": active_request.map(|request| request.request_id.clone()),
+                "request_status": active_request.map(|request| request.status.clone()),
+                "lease_expires_at": active_request.and_then(|request| request.lease_expires_at.clone()),
+                "seconds_until_lease_expiry": heartbeat.as_ref().and_then(|heartbeat| heartbeat.seconds_until_lease_expiry),
+                "last_heartbeat_at": active_request.and_then(|request| request.lease_expires_at.clone()),
+                "last_worker_progress_at": active_request.map(|request| request.updated_at.clone()),
+                "last_progress_at": active_request.map(|request| request.updated_at.clone()),
+                "heartbeat_state": heartbeat.as_ref().map(|heartbeat| heartbeat.state),
+                "heartbeat_detail": heartbeat.as_ref().map(|heartbeat| heartbeat.detail),
+                "stale": heartbeat.as_ref().map(|heartbeat| heartbeat.stale),
+                "stale_reason": heartbeat.as_ref().and_then(|heartbeat| heartbeat.stale_reason),
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "worker_count": worker_count,
+        "active_workers": active_workers,
+        "idle_workers": worker_count.saturating_sub(active_workers),
+        "queued_runnable": runnable_queued,
+        "queued_blocked": blocked_queued,
+        "workers": workers,
+        "queued": queued_items,
+    })
+}
+
+struct SchedulerBlockReason {
+    reason: String,
+    blocked_by_run_id: Option<String>,
+    blocked_by_request_id: Option<String>,
+}
+
+fn scheduler_block_reason(
+    queued: &WorkspaceRunRequestStatus,
+    active: &[&WorkspaceRunRequestStatus],
+    active_workers: usize,
+    worker_count: usize,
+) -> Option<SchedulerBlockReason> {
+    if queued.manual_step {
+        return Some(SchedulerBlockReason {
+            reason: "manual_step".to_string(),
+            blocked_by_run_id: None,
+            blocked_by_request_id: None,
+        });
+    }
+    if let Some(blocker) = active.iter().find(|request| {
+        !request.container_url.is_empty() && request.container_url == queued.container_url
+    }) {
+        return Some(SchedulerBlockReason {
+            reason: "container_exclusive_conflict".to_string(),
+            blocked_by_run_id: Some(blocker.run_id.clone()),
+            blocked_by_request_id: Some(blocker.request_id.clone()),
+        });
+    }
+    if let Some(blocker) = active.iter().find(|request| {
+        !request.cache_namespace.is_empty() && request.cache_namespace == queued.cache_namespace
+    }) {
+        return Some(SchedulerBlockReason {
+            reason: "cache_namespace_conflict".to_string(),
+            blocked_by_run_id: Some(blocker.run_id.clone()),
+            blocked_by_request_id: Some(blocker.request_id.clone()),
+        });
+    }
+    if active_workers >= worker_count {
+        return Some(SchedulerBlockReason {
+            reason: "worker_capacity".to_string(),
+            blocked_by_run_id: None,
+            blocked_by_request_id: None,
+        });
+    }
+    None
+}
+
+fn scheduler_why_not_running(block: Option<&SchedulerBlockReason>) -> &'static str {
+    match block.map(|block| block.reason.as_str()) {
+        None => "runnable; waiting for worker tick",
+        Some("manual_step") => "manual step required",
+        Some("container_exclusive_conflict") => "waiting for active run using same container",
+        Some("cache_namespace_conflict") => "waiting for active run using same cache namespace",
+        Some("worker_capacity") => "waiting for an idle service worker",
+        Some(_) => "blocked by scheduler policy",
+    }
+}
+
+fn raw_status_counts(requests: &[WorkspaceRunRequestStatus]) -> BTreeMap<String, u64> {
+    let mut counts = BTreeMap::new();
+    for request in requests {
+        *counts.entry(request.status.clone()).or_insert(0) += 1;
+    }
+    counts
+}
+
+fn raw_status_count(requests: &[WorkspaceRunRequestStatus], status: &str) -> usize {
+    requests
+        .iter()
+        .filter(|request| request.status == status)
+        .count()
+}
+
+fn project_worker_slot(
+    slot: usize,
+    worker_id: String,
+    active_request: Option<&WorkspaceRunRequestStatus>,
+) -> Result<Value> {
+    let Some(request) = active_request else {
+        return Ok(json!({
+            "slot": slot,
+            "worker_id": worker_id,
+            "state": "idle",
+            "heartbeat_state": "idle",
+            "stale": false,
+        }));
+    };
+    let heartbeat = heartbeat_projection(request);
+    Ok(json!({
+        "slot": slot,
+        "worker_id": worker_id,
+        "state": "active",
+        "run_id": request.run_id,
+        "request_id": request.request_id,
+        "request_status": request.status,
+        "lease_id": request.lease_id,
+        "leased_at": request.leased_at,
+        "lease_expires_at": request.lease_expires_at,
+        "seconds_until_lease_expiry": heartbeat.seconds_until_lease_expiry,
+        "last_worker_progress_at": request.updated_at,
+        "last_progress_at": request.updated_at,
+        "last_run_event_at": latest_run_event_at(request)?,
+        "heartbeat_state": heartbeat.state,
+        "heartbeat_detail": heartbeat.detail,
+        "stale": heartbeat.stale,
+        "stale_reason": heartbeat.stale_reason,
+    }))
+}
+
+fn project_active_lease(request: &WorkspaceRunRequestStatus) -> Result<Value> {
+    let heartbeat = heartbeat_projection(request);
+    Ok(json!({
+        "run_id": request.run_id,
+        "request_id": request.request_id,
+        "worker_id": request.worker_id,
+        "request_status": request.status,
+        "lease_id": request.lease_id,
+        "leased_at": request.leased_at,
+        "lease_expires_at": request.lease_expires_at,
+        "seconds_until_lease_expiry": heartbeat.seconds_until_lease_expiry,
+        "last_worker_progress_at": request.updated_at,
+        "last_run_event_at": latest_run_event_at(request)?,
+        "heartbeat_state": heartbeat.state,
+        "heartbeat_detail": heartbeat.detail,
+        "stale": heartbeat.stale,
+        "stale_reason": heartbeat.stale_reason,
+    }))
+}
+
+struct HeartbeatProjection {
+    state: &'static str,
+    detail: &'static str,
+    seconds_until_lease_expiry: Option<i64>,
+    stale: bool,
+    stale_reason: Option<&'static str>,
+}
+
+fn heartbeat_projection(request: &WorkspaceRunRequestStatus) -> HeartbeatProjection {
+    if !matches!(request.status.as_str(), "leased" | "running") {
+        return HeartbeatProjection {
+            state: "inactive",
+            detail: "request is not leased or running",
+            seconds_until_lease_expiry: None,
+            stale: false,
+            stale_reason: None,
+        };
+    }
+    let Some(lease_expires_at) = request.lease_expires_at.as_deref() else {
+        return HeartbeatProjection {
+            state: "unknown",
+            detail: "active request has no lease expiry",
+            seconds_until_lease_expiry: None,
+            stale: true,
+            stale_reason: Some("missing_lease_expiry"),
+        };
+    };
+    let Some(seconds_until_lease_expiry) = seconds_until_sqlite_timestamp(lease_expires_at) else {
+        return HeartbeatProjection {
+            state: "unknown",
+            detail: "lease expiry timestamp could not be parsed",
+            seconds_until_lease_expiry: None,
+            stale: true,
+            stale_reason: Some("invalid_lease_expiry"),
+        };
+    };
+    if seconds_until_lease_expiry <= 0 {
+        return HeartbeatProjection {
+            state: "stale",
+            detail: "active lease expired",
+            seconds_until_lease_expiry: Some(seconds_until_lease_expiry),
+            stale: true,
+            stale_reason: Some("lease_expired"),
+        };
+    }
+    HeartbeatProjection {
+        state: "heartbeating",
+        detail: "active lease has not expired",
+        seconds_until_lease_expiry: Some(seconds_until_lease_expiry),
+        stale: false,
+        stale_reason: None,
+    }
+}
+
+fn latest_run_event_at(request: &WorkspaceRunRequestStatus) -> Result<Option<String>> {
+    let Some(run_store) = run_workspace_store(request)? else {
+        return Ok(None);
+    };
+    Ok(run_store
+        .event_stream_history(&request.run_id)?
+        .last()
+        .map(|record| record.timestamp.clone()))
 }
 
 fn workspace_usage(config: &GepaServiceConfig) -> Result<Value> {
@@ -1578,6 +2233,110 @@ fn prune_workspace(config: &GepaServiceConfig, request: &HttpRequest) -> Result<
     }))
 }
 
+#[derive(Clone, Debug, Deserialize)]
+struct StorageMaintenanceRequest {
+    #[serde(default = "default_true")]
+    dry_run: bool,
+    #[serde(default = "default_compact_profile")]
+    profile: String,
+    #[serde(default)]
+    status: Option<Vec<String>>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_compact_profile() -> String {
+    "compact".to_string()
+}
+
+fn compact_workspace_response(
+    config: &GepaServiceConfig,
+    request: &HttpRequest,
+) -> Result<Value> {
+    let body = storage_maintenance_request(request)?;
+    let profile = StorageMaintenanceProfile::parse(&body.profile)?;
+    let statuses = body
+        .status
+        .map(|items| items.into_iter().collect::<BTreeSet<_>>());
+    let store = WorkspaceStore::open(&config.db_path)?;
+    let mut runs = Vec::new();
+    for request in store.status()?.run_requests {
+        let projected_status = project_request_status(&request.status);
+        if !is_terminal_status(projected_status) {
+            continue;
+        }
+        if let Some(statuses) = statuses.as_ref() {
+            if !statuses.contains(projected_status) {
+                continue;
+            }
+        }
+        runs.push(compact_run_request_storage(
+            &request,
+            profile,
+            body.dry_run,
+        )?);
+    }
+    Ok(json!({
+        "schema": "synth.gepa.workspace_compaction.v1",
+        "dry_run": body.dry_run,
+        "profile": profile.as_str(),
+        "runs": runs,
+    }))
+}
+
+fn compact_run_response(
+    config: &GepaServiceConfig,
+    run_id: &str,
+    http_request: &HttpRequest,
+) -> HttpResponse {
+    match WorkspaceStore::open(&config.db_path).and_then(|store| {
+        let Some(request) = store.run_request_by_run_id(run_id)? else {
+            return Ok(None);
+        };
+        if !is_terminal_status(project_request_status(&request.status)) {
+            return Err(OptimizerError::Config(format!(
+                "run {run_id} is not terminal"
+            )));
+        }
+        let body = storage_maintenance_request(http_request)?;
+        let profile = StorageMaintenanceProfile::parse(&body.profile)?;
+        compact_run_request_storage(&request, profile, body.dry_run).map(Some)
+    }) {
+        Ok(Some(report)) => json_response(200, &report),
+        Ok(None) => run_not_found_response(run_id),
+        Err(OptimizerError::Config(message)) => {
+            error_response(409, "not_terminal", &message, None)
+        }
+        Err(error) => optimizer_error_response(error),
+    }
+}
+
+fn compact_run_request_storage(
+    request: &WorkspaceRunRequestStatus,
+    profile: StorageMaintenanceProfile,
+    dry_run: bool,
+) -> Result<Value> {
+    compact_run_storage(RunStorageMaintenanceInput {
+        run_dir: PathBuf::from(&request.run_dir),
+        run_id: Some(request.run_id.clone()),
+        profile,
+        dry_run,
+    })
+}
+
+fn storage_maintenance_request(request: &HttpRequest) -> Result<StorageMaintenanceRequest> {
+    if request.body.is_empty() {
+        return Ok(StorageMaintenanceRequest {
+            dry_run: true,
+            profile: default_compact_profile(),
+            status: None,
+        });
+    }
+    serde_json::from_slice(&request.body).map_err(OptimizerError::from)
+}
+
 fn list_runs(config: &GepaServiceConfig, query: &BTreeMap<String, String>) -> Result<Value> {
     let store = WorkspaceStore::open(&config.db_path)?;
     let requested_status = query.get("status").map(String::as_str);
@@ -1618,6 +2377,73 @@ fn run_response(config: &GepaServiceConfig, run_id: &str) -> HttpResponse {
     }
 }
 
+fn run_state_response(config: &GepaServiceConfig, run_id: &str) -> HttpResponse {
+    match WorkspaceStore::open(&config.db_path).and_then(|store| {
+        let request = store.run_request_by_run_id(run_id)?;
+        request
+            .map(|request| project_run_state(&store, &request))
+            .transpose()
+    }) {
+        Ok(Some(state)) => json_response(200, &state),
+        Ok(None) => run_not_found_response(run_id),
+        Err(error) => optimizer_error_response(error),
+    }
+}
+
+fn run_limits_response(config: &GepaServiceConfig, run_id: &str) -> HttpResponse {
+    match WorkspaceStore::open(&config.db_path).and_then(|store| {
+        let Some(request) = store.run_request_by_run_id(run_id)? else {
+            return Ok(None);
+        };
+        let config = store.run_request_config(&request.request_id)?;
+        let Some(run_store) = run_workspace_store(&request)? else {
+            return Ok(None);
+        };
+        Ok(Some(project_gepa_limit_snapshot(&run_store, &config)?))
+    }) {
+        Ok(Some(snapshot)) => match serde_json::to_value(snapshot) {
+            Ok(value) => json_response(200, &value),
+            Err(error) => optimizer_error_response(OptimizerError::from(error)),
+        },
+        Ok(None) => run_not_found_response(run_id),
+        Err(error) => optimizer_error_response(error),
+    }
+}
+
+fn run_timings_response(config: &GepaServiceConfig, run_id: &str) -> HttpResponse {
+    match WorkspaceStore::open(&config.db_path).and_then(|store| {
+        let Some(request) = store.run_request_by_run_id(run_id)? else {
+            return Ok(None);
+        };
+        let timings = run_phase_timings_for_request(&request)?;
+        Ok(Some(json!({
+            "run_id": run_id,
+            "summary": timing_summary_from_records(&timings),
+            "timings": timings
+                .iter()
+                .map(project_timing_record)
+                .collect::<Vec<_>>(),
+        })))
+    }) {
+        Ok(Some(timings)) => json_response(200, &timings),
+        Ok(None) => run_not_found_response(run_id),
+        Err(error) => optimizer_error_response(error),
+    }
+}
+
+fn run_stats_response(config: &GepaServiceConfig, run_id: &str) -> HttpResponse {
+    match WorkspaceStore::open(&config.db_path).and_then(|store| {
+        let Some(request) = store.run_request_by_run_id(run_id)? else {
+            return Ok(None);
+        };
+        project_run_transition_stats(&request).map(Some)
+    }) {
+        Ok(Some(stats)) => json_response(200, &stats),
+        Ok(None) => run_not_found_response(run_id),
+        Err(error) => optimizer_error_response(error),
+    }
+}
+
 fn delete_run_response(config: &GepaServiceConfig, run_id: &str) -> HttpResponse {
     match WorkspaceStore::open(&config.db_path).and_then(|store| {
         let Some(request) = store.run_request_by_run_id(run_id)? else {
@@ -1628,7 +2454,7 @@ fn delete_run_response(config: &GepaServiceConfig, run_id: &str) -> HttpResponse
                 "run {run_id} is not terminal"
             )));
         }
-        let _ = fs::remove_dir_all(&request.run_dir);
+        let _ = delete_run_storage(&request.run_dir, false)?;
         let _ = store.delete_run_request_by_run_id(run_id)?;
         Ok(Some(()))
     }) {
@@ -1639,7 +2465,7 @@ fn delete_run_response(config: &GepaServiceConfig, run_id: &str) -> HttpResponse
 }
 
 fn control_run_response(
-    config: &GepaServiceConfig,
+    runtime: &GepaServiceRuntime,
     run_id: &str,
     action: &str,
     http_request: &HttpRequest,
@@ -1651,7 +2477,7 @@ fn control_run_response(
         },
         _ => None,
     };
-    match control_run(config, run_id, action, pause_timeout) {
+    match control_run(runtime, run_id, action, pause_timeout) {
         Ok(Some(run)) => json_response(202, &run),
         Ok(None) => run_not_found_response(run_id),
         Err(OptimizerError::Config(message)) => {
@@ -1662,11 +2488,12 @@ fn control_run_response(
 }
 
 fn control_run(
-    config: &GepaServiceConfig,
+    runtime: &GepaServiceRuntime,
     run_id: &str,
     action: &str,
     pause_timeout_seconds: Option<u64>,
 ) -> Result<Option<Value>> {
+    let config = &runtime.config;
     WorkspaceStore::open(&config.db_path).and_then(|store| {
         let Some(request) = store.run_request_by_run_id(run_id)? else {
             return Ok(None);
@@ -1679,6 +2506,7 @@ fn control_run(
             "cancel" => {
                 let request =
                     store.mark_run_request_cancelled(&request.request_id, "cancelled_by_user")?;
+                runtime.scheduler.notify();
                 project_run(&store, &request).map(Some)
             }
             "stop" => {
@@ -1711,14 +2539,7 @@ fn control_run(
                 }
                 restore_paused_cursor(&request)?;
                 let request = store.mark_run_request_resumed(&request.request_id)?;
-                let worker_config = config.clone();
-                thread::spawn(move || {
-                    let _ = run_next_queued_request(
-                        &worker_config.db_path,
-                        &worker_config.worker_id,
-                        worker_config.lease_seconds,
-                    );
-                });
+                runtime.scheduler.notify();
                 project_run(&store, &request).map(Some)
             }
             _ => Err(OptimizerError::Invariant(format!(
@@ -2112,9 +2933,18 @@ fn run_request_to_optimizer_config(
     validate_api_family("proposer.api_family", &request.proposer.api_family)?;
     validate_taskset(&request.taskset)?;
     let mut config = SynthOptimizerConfig::default();
+    if let Some(output_dir) = request
+        .output_dir
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        config.run.output_dir = PathBuf::from(output_dir);
+    }
     config.container.url = Some(request.container_url.clone());
     config.taskset.train_ids = request.taskset.train_ids.clone();
     config.taskset.heldout_ids = request.taskset.heldout_ids.clone();
+    config.gepa.task_pools = request.taskset.task_pools.clone();
     config.policy.provider = request.policy.provider.clone();
     config.policy.model = request.policy.model.clone();
     config.policy.api_family = request.policy.api_family.clone();
@@ -2145,13 +2975,19 @@ fn run_request_to_optimizer_config(
     config.proposer.provider = request.proposer.provider.clone();
     config.proposer.model = Some(request.proposer.model.clone());
     config.proposer.api_family = request.proposer.api_family.clone();
-    apply_proposer_credentials(&mut config, &request.proposer.credentials)?;
-    // COMPAT(service): standing GEPA HTTP service always launches ChatGPT-subscription
-    // proposers. Callers must supply advanced.proposer_io.codex_home; raw API keys cannot
-    // drive subscription models through Codex.
-    config.proposer.auth_mode = "chatgpt".to_string();
-    config.proposer.copy_host_auth = true;
-    config.proposer.api_key_env = None;
+    config.proposer.base_url = request
+        .proposer
+        .base_url
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            if normalize_key(&request.proposer.provider) == "openai" {
+                None
+            } else {
+                Some(provider_default_base_url(&request.proposer.provider).to_string())
+            }
+        });
+    apply_service_proposer_auth(&mut config, &request.proposer)?;
     // Headless codex proposer config (mirrors the proven go-ex proposer in
     // synth-go-ex/core/proposers.py): never wait for approvals (the app-server has
     // no one to answer them → would hang to the turn timeout), workspace-write
@@ -2163,6 +2999,7 @@ fn run_request_to_optimizer_config(
     config.proposer.timeout_seconds = 300;
     apply_stop_conditions(&mut config, &request.stop_conditions)?;
     apply_advanced_config(&mut config, &request.advanced)?;
+    normalize_service_rollout_budgets(&mut config, &request.taskset)?;
     // Ingest the container's prompt program: target fields + seed candidate.
     // target_modules must be the MUTABLE candidate fields (see PromptProgram::validate_for_gepa).
     let mutable_fields: BTreeSet<String> = program
@@ -2223,12 +3060,58 @@ fn validate_taskset(taskset: &ServiceTasksetSpec) -> Result<()> {
             "taskset.heldout_ids must be non-empty".to_string(),
         ));
     }
-    let train = taskset.train_ids.iter().cloned().collect::<BTreeSet<_>>();
-    let heldout = taskset.heldout_ids.iter().cloned().collect::<BTreeSet<_>>();
-    let overlap = train.intersection(&heldout).cloned().collect::<Vec<_>>();
-    if !overlap.is_empty() {
+    validate_service_task_pools(&taskset.task_pools)?;
+    Ok(())
+}
+
+fn validate_service_task_pools(task_pools: &GepaTaskPoolsConfig) -> Result<()> {
+    for (name, values) in [
+        ("taskset.task_pools.pareto", &task_pools.pareto),
+        ("taskset.task_pools.minibatch", &task_pools.minibatch),
+        ("taskset.task_pools.reflection", &task_pools.reflection),
+        ("taskset.task_pools.heldout", &task_pools.heldout),
+    ] {
+        if values.is_empty() {
+            return Err(OptimizerError::Config(format!("{name} must be non-empty")));
+        }
+        if values.iter().any(|value| value.trim().is_empty()) {
+            return Err(OptimizerError::Config(format!(
+                "{name} entries must be non-empty"
+            )));
+        }
+    }
+    let minibatch = task_pools
+        .minibatch
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let reflection = task_pools
+        .reflection
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let missing = minibatch
+        .difference(&reflection)
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
         return Err(OptimizerError::Config(format!(
-            "taskset.train_ids and taskset.heldout_ids must be disjoint; overlapping task ids: {overlap:?}"
+            "taskset.task_pools.minibatch must be a subset of taskset.task_pools.reflection; missing from reflection: {:?}",
+            missing
+        )));
+    }
+    let heldout = task_pools.heldout.iter().cloned().collect::<BTreeSet<_>>();
+    let pareto = task_pools.pareto.iter().cloned().collect::<BTreeSet<_>>();
+    let overlaps = heldout
+        .intersection(&pareto)
+        .chain(heldout.intersection(&minibatch))
+        .chain(heldout.intersection(&reflection))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if !overlaps.is_empty() {
+        return Err(OptimizerError::Config(format!(
+            "taskset.task_pools.heldout must be disjoint from pareto/minibatch/reflection; overlaps: {:?}",
+            overlaps
         )));
     }
     Ok(())
@@ -2282,6 +3165,46 @@ fn apply_proposer_credentials(
     }
 }
 
+fn apply_service_proposer_auth(
+    config: &mut SynthOptimizerConfig,
+    proposer: &ServiceProposerSpec,
+) -> Result<()> {
+    let auth_mode = proposer
+        .auth_mode
+        .as_deref()
+        .map(normalize_key)
+        .unwrap_or_else(
+            || match normalize_key(&proposer.credentials.resolver).as_str() {
+                "env" => "api_key".to_string(),
+                _ => "chatgpt".to_string(),
+            },
+        );
+    match auth_mode.as_str() {
+        "api_key" => {
+            apply_proposer_credentials(config, &proposer.credentials)?;
+            config.proposer.auth_mode = "api_key".to_string();
+            config.proposer.copy_host_auth = proposer.copy_host_auth.unwrap_or(false);
+        }
+        "chatgpt" | "host" => {
+            config.proposer.auth_mode = "chatgpt".to_string();
+            config.proposer.api_key_env = None;
+            config.proposer.copy_host_auth = proposer.copy_host_auth.unwrap_or(true);
+            config.proposer.codex_home = proposer
+                .codex_home
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from);
+        }
+        other => {
+            return Err(OptimizerError::Config(format!(
+                "proposer.auth_mode must be api_key, chatgpt, or host; got {other:?}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn required_env_var(credentials: &ServiceCredentials, field: &str) -> Result<String> {
     credentials
         .env_var
@@ -2298,9 +3221,17 @@ fn apply_stop_conditions(
 ) -> Result<()> {
     for condition in stop_conditions {
         match condition {
-            ServiceStopCondition::MaxRollouts { n } => {
+            ServiceStopCondition::MaxRollouts { n, train, heldout } => {
                 require_positive_usize("stop_conditions.max_rollouts.n", *n)?;
                 config.gepa.max_total_rollouts = *n;
+                if let Some(value) = *train {
+                    require_positive_usize("stop_conditions.max_rollouts.train", value)?;
+                    config.gepa.max_train_rollouts = Some(value);
+                }
+                if let Some(value) = *heldout {
+                    require_positive_usize("stop_conditions.max_rollouts.heldout", value)?;
+                    config.gepa.max_heldout_rollouts = Some(value);
+                }
             }
             ServiceStopCondition::MaxWallSeconds { n } => {
                 require_positive_u64("stop_conditions.max_wall_seconds.n", *n)?;
@@ -2359,6 +3290,16 @@ fn apply_advanced_config(
     config: &mut SynthOptimizerConfig,
     advanced: &ServiceAdvancedConfig,
 ) -> Result<()> {
+    if let Some(budgets) = advanced.budgets.as_ref() {
+        if let Some(value) = budgets.max_train_rollouts {
+            require_positive_usize("advanced.budgets.max_train_rollouts", value)?;
+            config.gepa.max_train_rollouts = Some(value);
+        }
+        if let Some(value) = budgets.max_heldout_rollouts {
+            require_positive_usize("advanced.budgets.max_heldout_rollouts", value)?;
+            config.gepa.max_heldout_rollouts = Some(value);
+        }
+    }
     if let Some(pipeline) = advanced.pipeline.as_ref() {
         if let Some(value) = pipeline.mode {
             config.gepa.pipeline.mode = value;
@@ -2464,6 +3405,61 @@ fn apply_advanced_config(
     Ok(())
 }
 
+fn normalize_service_rollout_budgets(
+    config: &mut SynthOptimizerConfig,
+    taskset: &ServiceTasksetSpec,
+) -> Result<()> {
+    let total = config.gepa.max_total_rollouts;
+    let minimum_heldout_rollouts = taskset.heldout_ids.len();
+    if minimum_heldout_rollouts == 0 {
+        return Err(OptimizerError::Config(
+            "taskset.heldout_ids must be non-empty".to_string(),
+        ));
+    }
+
+    let explicit_train = config.gepa.max_train_rollouts;
+    let explicit_heldout = config.gepa.max_heldout_rollouts;
+    let (train, heldout) = match (explicit_train, explicit_heldout) {
+        (Some(train), Some(heldout)) => (train, heldout),
+        (Some(train), None) => {
+            if train >= total {
+                return Err(OptimizerError::Config(format!(
+                    "max_rollouts total {total} leaves no heldout budget after max_train_rollouts={train}; set max_heldout_rollouts explicitly or lower train"
+                )));
+            }
+            (train, total - train)
+        }
+        (None, Some(heldout)) => {
+            if heldout >= total {
+                return Err(OptimizerError::Config(format!(
+                    "max_rollouts total {total} leaves no train budget after max_heldout_rollouts={heldout}; increase max_rollouts or lower heldout"
+                )));
+            }
+            (total - heldout, heldout)
+        }
+        (None, None) => {
+            if total <= minimum_heldout_rollouts {
+                return Err(OptimizerError::Config(format!(
+                    "max_rollouts total {total} is too small to reserve {minimum_heldout_rollouts} heldout rollouts and still run training"
+                )));
+            }
+            (total - minimum_heldout_rollouts, minimum_heldout_rollouts)
+        }
+    };
+
+    if train == 0 || heldout == 0 {
+        return Err(OptimizerError::Config(
+            "GEPA service rollout budgets must leave positive train and heldout buckets"
+                .to_string(),
+        ));
+    }
+
+    config.gepa.max_train_rollouts = Some(train);
+    config.gepa.max_heldout_rollouts = Some(heldout);
+    config.gepa.max_total_rollouts = train.saturating_add(heldout);
+    Ok(())
+}
+
 fn require_positive_usize(name: &str, value: usize) -> Result<()> {
     if value == 0 {
         return Err(OptimizerError::Config(format!("{name} must be positive")));
@@ -2480,6 +3476,9 @@ fn require_positive_u64(name: &str, value: u64) -> Result<()> {
 
 fn project_run(store: &WorkspaceStore, request: &WorkspaceRunRequestStatus) -> Result<Value> {
     let config = store.run_request_config(&request.request_id)?;
+    if request.status != "queued" {
+        ensure_run_workspace(store, request)?;
+    }
     let run_store = run_workspace_store(request)?;
     let run_status = run_store
         .as_ref()
@@ -2495,10 +3494,17 @@ fn project_run(store: &WorkspaceStore, request: &WorkspaceRunRequestStatus) -> R
         run_status
             .as_ref()
             .map(|status| status.usage.clone())
+            .or_else(|| cursor.as_ref().map(|cursor| cursor.usage.clone()))
             .unwrap_or(Value::Null)
     } else {
         request.usage.clone()
     };
+    let cost_usd = request.cost_usd.or_else(|| {
+        cursor
+            .as_ref()
+            .map(|cursor| cursor.cost_usd)
+            .filter(|cost| *cost > 0.0)
+    });
     let rollout_count = run_status
         .as_ref()
         .map(|status| status.counts.rollouts)
@@ -2508,20 +3514,653 @@ fn project_run(store: &WorkspaceStore, request: &WorkspaceRunRequestStatus) -> R
         .as_ref()
         .map(|cursor| cursor.generation as u64)
         .unwrap_or(0);
+    let best_candidate_id = request.best_candidate_id.clone().or_else(|| {
+        cursor
+            .as_ref()
+            .and_then(|cursor| cursor.best_candidate_id.clone())
+    });
+    let candidate_count = cursor
+        .as_ref()
+        .map(|cursor| value_array_len(&cursor.candidates) as u64)
+        .unwrap_or(0);
+    let timing_records = run_store
+        .as_ref()
+        .map(|store| store.view().run_phase_timing_records(&request.run_id))
+        .transpose()?
+        .unwrap_or_default();
+    let limit_snapshot = run_store
+        .as_ref()
+        .map(|store| {
+            let view = store.view();
+            if view.run_limit_records(&request.run_id)?.is_empty() {
+                Ok(None)
+            } else {
+                project_gepa_limit_snapshot(store, &config).map(Some)
+            }
+        })
+        .transpose()?
+        .flatten();
     Ok(json!({
         "run_id": request.run_id,
         "status": project_request_status(&request.status),
+        "worker_id": request.worker_id.as_ref(),
+        "lease_expires_at": request.lease_expires_at.as_ref(),
+        "phase": cursor.as_ref().map(|cursor| cursor.phase.as_str()),
+        "generation": generation_count,
+        "best_candidate_id": best_candidate_id,
+        "candidate_count": candidate_count,
+        "checkpoint_sequence": cursor.as_ref().map(|cursor| cursor.checkpoint_sequence),
         "config": project_run_config(&config, request.manual_step),
         "submitted_at": request.submitted_at,
         "started_at": request.started_at,
         "finished_at": request.finished_at,
-        "usage": project_usage(&usage_source, request.cost_usd),
+        "usage": project_usage(&usage_source, cost_usd),
         "totals": {
             "rollouts": rollout_count,
             "generations": generation_count,
         },
+        "limits": limit_snapshot,
+        "timing_summary": timing_summary_from_records(&timing_records),
         "outcome": project_outcome(request),
     }))
+}
+
+fn run_phase_timings_for_request(
+    request: &WorkspaceRunRequestStatus,
+) -> Result<Vec<RunPhaseTimingRecord>> {
+    let Some(run_store) = run_workspace_store(request)? else {
+        return Ok(Vec::new());
+    };
+    run_store.view().run_phase_timing_records(&request.run_id)
+}
+
+fn project_timing_record(record: &RunPhaseTimingRecord) -> Value {
+    serde_json::to_value(record).unwrap_or_else(|_| {
+        json!({
+            "run_id": record.run_id,
+            "timing_id": record.timing_id,
+            "lane": record.lane,
+            "kind": record.kind,
+            "status": record.status,
+            "started_at": record.started_at,
+            "finished_at": record.finished_at,
+            "wall_seconds": record.wall_seconds,
+            "item_count": record.item_count,
+        })
+    })
+}
+
+fn project_run_transition_stats(request: &WorkspaceRunRequestStatus) -> Result<Value> {
+    let run_dir = Path::new(&request.run_dir);
+    let transition_path = run_dir.join("transitions.sqlite");
+    let transitions = TransitionLog::read_run_dir(run_dir)?;
+    let transition_count = transitions.len();
+    let entity_counts = transition_entity_counts(&transitions);
+    let latest_state_counts = transition_latest_state_counts(&transitions);
+    let wall_seconds = wall_seconds_from_transitions(&transitions);
+    let run_duration = run_duration_seconds(&transitions);
+
+    let candidate_terminal_states = [
+        "accepted",
+        "rejected_minibatch",
+        "rejected_full_train",
+        "deferred_budget",
+        "heldout_scored",
+        "archived",
+    ];
+    let rollout_terminal_states = ["completed", "failed", "cached", "cancelled"];
+    let rollout_count = distinct_entity_count_any(
+        &transitions,
+        "rollout",
+        &rollout_terminal_states,
+        false,
+    );
+    let rollout_spans = state_spans(
+        &transitions,
+        "rollout",
+        "running",
+        &rollout_terminal_states,
+        false,
+    );
+    let proposer_generation_spans =
+        state_spans(&transitions, "proposer_round", "generating", &["returned"], false);
+    let proposer_lifecycle_spans =
+        state_spans(
+            &transitions,
+            "proposer_round",
+            "requested",
+            &["closed", "parse_failed"],
+            false,
+        );
+    let candidate_lifecycle_spans = state_spans(
+        &transitions,
+        "candidate",
+        "registered",
+        &candidate_terminal_states,
+        true,
+    );
+    let candidate_minibatch_spans = state_spans(
+        &transitions,
+        "candidate",
+        "minibatch_evaluating",
+        &["accepted_minibatch", "rejected_minibatch"],
+        true,
+    );
+    let candidate_count = distinct_generated_candidate_count(&transitions);
+    let candidate_terminal_count =
+        distinct_generated_entity_count_any(&transitions, "candidate", &candidate_terminal_states);
+    let minibatch_passed =
+        distinct_generated_entity_count(&transitions, "candidate", "accepted_minibatch");
+    let minibatch_rejected =
+        distinct_generated_entity_count(&transitions, "candidate", "rejected_minibatch");
+    let accepted_full_train = distinct_generated_entity_count(&transitions, "candidate", "accepted");
+    let proposer_round_count = distinct_entity_type_count(&transitions, "proposer_round");
+    let upstream_429_count = transitions
+        .iter()
+        .filter(|row| {
+            row.entity_type == "rollout"
+                && rollout_terminal_states.contains(&row.to_state.as_str())
+                && transition_has_429(row)
+        })
+        .count();
+    let proposer_minutes = proposer_generation_spans.iter().sum::<f64>() / 60.0;
+    let wall_minutes = wall_seconds.unwrap_or(0.0) / 60.0;
+    let rollout_runtime_minutes = rollout_spans.iter().sum::<f64>() / 60.0;
+    let (total_tokens, cost_usd) = transition_usage_totals(&transitions);
+
+    Ok(json!({
+        "schema_version": "gepa_run_transition_stats.v1",
+        "run_id": request.run_id,
+        "source": {
+            "kind": "transitions.sqlite",
+            "path": transition_path.display().to_string(),
+            "exists": transition_path.exists(),
+        },
+        "transition_count": transition_count,
+        "entity_counts": entity_counts,
+        "latest_state_counts": latest_state_counts,
+        "run": {
+            "status": project_request_status(&request.status),
+            "duration_seconds": run_duration,
+            "wall_seconds": wall_seconds,
+            "started_at": request.started_at,
+            "finished_at": request.finished_at,
+        },
+        "candidate": {
+            "count": candidate_count,
+            "terminal_count": candidate_terminal_count,
+            "active_count": candidate_count.saturating_sub(candidate_terminal_count),
+            "duration_seconds": duration_summary(&candidate_lifecycle_spans),
+            "minibatch_decision_seconds": duration_summary(&candidate_minibatch_spans),
+        },
+        "minibatch": {
+            "passed": minibatch_passed,
+            "rejected": minibatch_rejected,
+            "pass_rate": ratio_value(minibatch_passed, minibatch_passed + minibatch_rejected),
+        },
+        "rollout": {
+            "count": rollout_count,
+            "duration_seconds": duration_summary(&rollout_spans),
+            "max_concurrent": max_concurrent_rollouts(&transitions),
+            "upstream_429_count": upstream_429_count,
+            "upstream_429_rate": ratio_value(upstream_429_count, rollout_count),
+        },
+        "proposer": {
+            "round_count": proposer_round_count,
+            "llm_duration_seconds": duration_summary(&proposer_generation_spans),
+            "lifecycle_seconds": duration_summary(&proposer_lifecycle_spans),
+        },
+        "throughput": {
+            "candidates_per_proposer_minute": rate_value(candidate_count, proposer_minutes),
+            "passing_candidates_per_proposer_minute": rate_value(minibatch_passed, proposer_minutes),
+            "pareto_delta_per_proposer_minute": rate_value(accepted_full_train, proposer_minutes),
+            "rollouts_per_wall_minute": rate_value(rollout_count, wall_minutes),
+            "rollouts_per_rollout_runtime_minute": rate_value(rollout_count, rollout_runtime_minutes),
+        },
+        "usage": {
+            "total_tokens": total_tokens,
+            "cost_usd": cost_usd,
+        },
+    }))
+}
+
+fn timing_summary_from_records(records: &[RunPhaseTimingRecord]) -> Value {
+    let mut proposer_total_seconds = 0.0f64;
+    let mut rollout_total_seconds = 0.0f64;
+    let mut proposer_count = 0u64;
+    let mut rollout_count = 0u64;
+    let mut latest_proposer_seconds = None;
+    let mut latest_rollout_seconds = None;
+    let mut latest_proposer_finished_at: Option<&str> = None;
+    let mut latest_rollout_finished_at: Option<&str> = None;
+    for record in records {
+        let wall_seconds = record.wall_seconds.unwrap_or(0.0);
+        if record.lane == "proposer" {
+            proposer_count += 1;
+            proposer_total_seconds += wall_seconds;
+            if record
+                .finished_at
+                .as_deref()
+                .map(|finished_at| {
+                    latest_proposer_finished_at
+                        .map(|latest| finished_at > latest)
+                        .unwrap_or(true)
+                })
+                .unwrap_or(false)
+            {
+                latest_proposer_finished_at = record.finished_at.as_deref();
+                latest_proposer_seconds = record.wall_seconds;
+            }
+        } else if record.lane == "rollout" {
+            rollout_count += record.item_count.unwrap_or(0);
+            rollout_total_seconds += wall_seconds;
+            if record
+                .finished_at
+                .as_deref()
+                .map(|finished_at| {
+                    latest_rollout_finished_at
+                        .map(|latest| finished_at > latest)
+                        .unwrap_or(true)
+                })
+                .unwrap_or(false)
+            {
+                latest_rollout_finished_at = record.finished_at.as_deref();
+                latest_rollout_seconds = record.wall_seconds;
+            }
+        }
+    }
+    json!({
+        "proposer_round_count": proposer_count,
+        "proposer_total_seconds": proposer_total_seconds,
+        "latest_proposer_seconds": latest_proposer_seconds,
+        "latest_proposer_finished_at": latest_proposer_finished_at,
+        "rollout_count": rollout_count,
+        "rollout_batch_count": records.iter().filter(|record| record.lane == "rollout").count(),
+        "rollout_total_seconds": rollout_total_seconds,
+        "latest_rollout_seconds": latest_rollout_seconds,
+        "latest_rollout_finished_at": latest_rollout_finished_at,
+    })
+}
+
+fn transition_entity_counts(transitions: &[TransitionRow]) -> BTreeMap<String, u64> {
+    let mut counts = BTreeMap::new();
+    for row in transitions {
+        *counts.entry(row.entity_type.clone()).or_insert(0) += 1;
+    }
+    counts
+}
+
+fn transition_latest_state_counts(
+    transitions: &[TransitionRow],
+) -> BTreeMap<String, BTreeMap<String, u64>> {
+    let mut latest: BTreeMap<(&str, &str), &str> = BTreeMap::new();
+    for row in transitions {
+        latest.insert(
+            (row.entity_type.as_str(), row.entity_id.as_str()),
+            row.to_state.as_str(),
+        );
+    }
+    let mut counts: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
+    for ((entity_type, _), state) in latest {
+        *counts
+            .entry(entity_type.to_string())
+            .or_default()
+            .entry(state.to_string())
+            .or_insert(0) += 1;
+    }
+    counts
+}
+
+fn wall_seconds_from_transitions(transitions: &[TransitionRow]) -> Option<f64> {
+    let min_ts = transitions.iter().map(|row| row.ts_unix_ms).min()?;
+    let max_ts = transitions.iter().map(|row| row.ts_unix_ms).max()?;
+    Some(seconds_between(min_ts, max_ts))
+}
+
+fn run_duration_seconds(transitions: &[TransitionRow]) -> Option<f64> {
+    let run_rows = transitions
+        .iter()
+        .filter(|row| row.entity_type == "run")
+        .collect::<Vec<_>>();
+    let first = run_rows.first()?.ts_unix_ms;
+    let terminal = run_rows
+        .iter()
+        .find(|row| matches!(row.to_state.as_str(), "completed" | "failed" | "cancelled"))
+        .map(|row| row.ts_unix_ms);
+    let last = terminal.or_else(|| run_rows.last().map(|row| row.ts_unix_ms))?;
+    Some(seconds_between(first, last))
+}
+
+fn state_spans(
+    transitions: &[TransitionRow],
+    entity_type: &str,
+    start_state: &str,
+    terminal_states: &[&str],
+    generated_only: bool,
+) -> Vec<f64> {
+    let mut by_entity: BTreeMap<&str, Vec<&TransitionRow>> = BTreeMap::new();
+    for row in transitions {
+        if row.entity_type == entity_type {
+            by_entity.entry(row.entity_id.as_str()).or_default().push(row);
+        }
+    }
+    let mut spans = Vec::new();
+    for rows in by_entity.values() {
+        let mut start_ms = None;
+        for row in rows {
+            if generated_only && row.parent_id.is_none() {
+                continue;
+            }
+            if row.to_state == start_state {
+                start_ms = Some(row.ts_unix_ms);
+            } else if let Some(start) = start_ms {
+                if terminal_states.contains(&row.to_state.as_str()) {
+                    spans.push(seconds_between(start, row.ts_unix_ms));
+                    start_ms = None;
+                }
+            }
+        }
+    }
+    spans
+}
+
+fn seconds_between(start_ms: i64, end_ms: i64) -> f64 {
+    end_ms.saturating_sub(start_ms).max(0) as f64 / 1000.0
+}
+
+fn distinct_entity_type_count(transitions: &[TransitionRow], entity_type: &str) -> usize {
+    transitions
+        .iter()
+        .filter(|row| row.entity_type == entity_type)
+        .map(|row| row.entity_id.as_str())
+        .collect::<BTreeSet<_>>()
+        .len()
+}
+
+fn distinct_entity_count_any(
+    transitions: &[TransitionRow],
+    entity_type: &str,
+    to_states: &[&str],
+    generated_only: bool,
+) -> usize {
+    transitions
+        .iter()
+        .filter(|row| {
+            row.entity_type == entity_type
+                && to_states.contains(&row.to_state.as_str())
+                && (!generated_only || row.parent_id.is_some())
+        })
+        .map(|row| row.entity_id.as_str())
+        .collect::<BTreeSet<_>>()
+        .len()
+}
+
+fn distinct_generated_candidate_count(transitions: &[TransitionRow]) -> usize {
+    transitions
+        .iter()
+        .filter(|row| {
+            row.entity_type == "candidate"
+                && row.trigger == "registered"
+                && row.parent_id.is_some()
+        })
+        .map(|row| row.entity_id.as_str())
+        .collect::<BTreeSet<_>>()
+        .len()
+}
+
+fn distinct_generated_entity_count(
+    transitions: &[TransitionRow],
+    entity_type: &str,
+    to_state: &str,
+) -> usize {
+    transitions
+        .iter()
+        .filter(|row| {
+            row.entity_type == entity_type && row.to_state == to_state && row.parent_id.is_some()
+        })
+        .map(|row| row.entity_id.as_str())
+        .collect::<BTreeSet<_>>()
+        .len()
+}
+
+fn distinct_generated_entity_count_any(
+    transitions: &[TransitionRow],
+    entity_type: &str,
+    to_states: &[&str],
+) -> usize {
+    distinct_entity_count_any(transitions, entity_type, to_states, true)
+}
+
+fn max_concurrent_rollouts(transitions: &[TransitionRow]) -> u64 {
+    let mut events = Vec::new();
+    for row in transitions {
+        if row.entity_type != "rollout" {
+            continue;
+        }
+        if row.to_state == "running" {
+            events.push((row.ts_unix_ms, 1i64));
+        } else if matches!(row.to_state.as_str(), "completed" | "failed" | "cancelled") {
+            events.push((row.ts_unix_ms, -1i64));
+        }
+    }
+    events.sort_by_key(|(ts, delta)| (*ts, -*delta));
+    let mut active = 0i64;
+    let mut max_active = 0i64;
+    for (_, delta) in events {
+        active = active.saturating_add(delta);
+        max_active = max_active.max(active);
+    }
+    u64::try_from(max_active).unwrap_or(0)
+}
+
+fn transition_has_429(row: &TransitionRow) -> bool {
+    if metadata_status_is_429(row.metadata.get("status_code"))
+        || metadata_status_is_429(row.metadata.get("http_status"))
+    {
+        return true;
+    }
+    row.metadata
+        .get("failure")
+        .and_then(Value::as_object)
+        .map(|failure| {
+            metadata_status_is_429(failure.get("status_code"))
+                || metadata_status_is_429(failure.get("http_status"))
+        })
+        .unwrap_or(false)
+}
+
+fn metadata_status_is_429(value: Option<&Value>) -> bool {
+    match value {
+        Some(Value::Number(number)) => number.as_u64() == Some(429),
+        Some(Value::String(status)) => status == "429",
+        _ => false,
+    }
+}
+
+fn transition_usage_totals(transitions: &[TransitionRow]) -> (u64, f64) {
+    let mut total_tokens = 0u64;
+    let mut cost_usd = 0.0f64;
+    for row in transitions {
+        if row.entity_type == "proposer_round" && row.to_state != "closed" {
+            continue;
+        }
+        if row.entity_type == "rollout"
+            && !matches!(
+                row.to_state.as_str(),
+                "completed" | "failed" | "cached" | "cancelled"
+            )
+        {
+            continue;
+        }
+        if !matches!(row.entity_type.as_str(), "proposer_round" | "rollout") {
+            continue;
+        }
+        cost_usd += value_as_f64(row.metadata.get("cost_usd")).unwrap_or(0.0);
+        if let Some(usage) = row.metadata.get("usage").and_then(Value::as_object) {
+            total_tokens = total_tokens.saturating_add(
+                value_as_u64(usage.get("total_tokens"))
+                    .or_else(|| value_as_u64(usage.get("totalTokens")))
+                    .unwrap_or(0),
+            );
+        }
+    }
+    (total_tokens, cost_usd)
+}
+
+fn value_as_f64(value: Option<&Value>) -> Option<f64> {
+    match value {
+        Some(Value::Number(number)) => number.as_f64(),
+        Some(Value::String(text)) => text.parse::<f64>().ok(),
+        _ => None,
+    }
+}
+
+fn value_as_u64(value: Option<&Value>) -> Option<u64> {
+    match value {
+        Some(Value::Number(number)) => number.as_u64(),
+        Some(Value::String(text)) => text.parse::<u64>().ok(),
+        _ => None,
+    }
+}
+
+fn duration_summary(values: &[f64]) -> Value {
+    json!({
+        "count": values.len(),
+        "total": values.iter().sum::<f64>(),
+        "min": values.iter().copied().reduce(f64::min),
+        "max": values.iter().copied().reduce(f64::max),
+        "p50": percentile(values, 0.50),
+        "p95": percentile(values, 0.95),
+    })
+}
+
+fn percentile(values: &[f64], quantile: f64) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut ordered = values.to_vec();
+    ordered.sort_by(|left, right| left.total_cmp(right));
+    if (quantile - 0.50).abs() < f64::EPSILON {
+        let middle = ordered.len() / 2;
+        if ordered.len() % 2 == 0 {
+            return Some((ordered[middle - 1] + ordered[middle]) / 2.0);
+        }
+        return Some(ordered[middle]);
+    }
+    let index = ((ordered.len().saturating_sub(1)) as f64 * quantile).round() as usize;
+    ordered.get(index.min(ordered.len() - 1)).copied()
+}
+
+fn ratio_value(numerator: usize, denominator: usize) -> Value {
+    if denominator == 0 {
+        Value::Null
+    } else {
+        json!(numerator as f64 / denominator as f64)
+    }
+}
+
+fn rate_value(count: usize, minutes: f64) -> Value {
+    if minutes <= 0.0 {
+        Value::Null
+    } else {
+        json!(count as f64 / minutes)
+    }
+}
+
+fn project_run_state(store: &WorkspaceStore, request: &WorkspaceRunRequestStatus) -> Result<Value> {
+    let run = project_run(store, request)?;
+    let run_store = run_workspace_store(request)?;
+    let cursor = run_store
+        .as_ref()
+        .map(|store| load_gepa_cursor(store, &request.run_id))
+        .transpose()?
+        .flatten();
+    let Some(cursor) = cursor else {
+        return Ok(json!({
+            "run_id": request.run_id,
+            "status": project_request_status(&request.status),
+            "run": run,
+            "cursor": Value::Null,
+            "phase": Value::Null,
+            "generation": 0,
+            "proposal_index": 0,
+            "heldout_candidate_index": 0,
+            "best_candidate_id": request.best_candidate_id,
+            "candidate_count": 0,
+            "rollout_count": 0,
+            "cost_usd": request.cost_usd.unwrap_or(0.0),
+            "usage": request.usage,
+            "pending": {
+                "job_id": Value::Null,
+                "effect_id": Value::Null,
+                "reservation_ids": [],
+            },
+            "queues": {
+                "proposal": {"count": 0, "items": []},
+                "propose": {"count": 0, "items": []},
+                "rollout": {"count": 0, "items": []},
+                "evaluate": {"count": 0, "items": []},
+            },
+            "pipeline": Value::Null,
+            "state_history": [],
+            "metadata": Value::Null,
+            "terminal_summary": Value::Null,
+            "error_summary": Value::Null,
+        }));
+    };
+    let cursor_value = serde_json::to_value(&cursor)?;
+    let pipeline_value = serde_json::to_value(&cursor.pipeline_state)?;
+    Ok(json!({
+        "run_id": request.run_id,
+        "status": project_request_status(&request.status),
+        "run": run,
+        "cursor": cursor_value,
+        "phase": cursor.phase.as_str(),
+        "generation": cursor.generation,
+        "proposal_index": cursor.proposal_index,
+        "heldout_candidate_index": cursor.heldout_candidate_index,
+        "best_candidate_id": &cursor.best_candidate_id,
+        "candidate_count": value_array_len(&cursor.candidates),
+        "rollout_count": cursor.rollout_count,
+        "cost_usd": cursor.cost_usd,
+        "usage": &cursor.usage,
+        "usage_ledger": &cursor.usage_ledger,
+        "pending": {
+            "job_id": &cursor.pending_job_id,
+            "effect_id": &cursor.pending_effect_id,
+            "reservation_ids": &cursor.pending_reservation_ids,
+            "rollout_task_id": &cursor.rollout_task_id,
+        },
+        "active_evaluation": &cursor.active_evaluation,
+        "queues": {
+            "proposal": {
+                "count": value_array_len(&cursor.proposal_queue),
+                "items": &cursor.proposal_queue,
+            },
+            "propose": {
+                "count": cursor.pipeline_state.propose_queue.len(),
+                "items": &cursor.pipeline_state.propose_queue,
+            },
+            "rollout": {
+                "count": cursor.pipeline_state.rollout_queue.len(),
+                "items": &cursor.pipeline_state.rollout_queue,
+            },
+            "evaluate": {
+                "count": cursor.pipeline_state.evaluate_queue.len(),
+                "items": &cursor.pipeline_state.evaluate_queue,
+            },
+        },
+        "pipeline": pipeline_value,
+        "checkpoint_sequence": cursor.checkpoint_sequence,
+        "state_history": &cursor.state_history,
+        "metadata": &cursor.metadata,
+        "terminal_summary": &cursor.terminal_summary,
+        "error_summary": &cursor.error_summary,
+    }))
+}
+
+fn value_array_len(value: &Value) -> usize {
+    value.as_array().map(Vec::len).unwrap_or(0)
 }
 
 fn project_run_config(config: &SynthOptimizerConfig, manual_step: bool) -> Value {
@@ -2567,8 +4206,18 @@ fn credential_projection(env_var: Option<String>) -> Value {
 }
 
 fn project_stop_conditions(config: &SynthOptimizerConfig) -> Value {
+    let rollout_limit = if config.gepa.split_rollout_budgets_enabled() {
+        json!({
+            "kind": "max_rollouts",
+            "n": config.gepa.effective_max_total_rollouts(),
+            "train": config.gepa.train_rollout_limit(),
+            "heldout": config.gepa.heldout_rollout_limit(),
+        })
+    } else {
+        json!({"kind": "max_rollouts", "n": config.gepa.max_total_rollouts})
+    };
     let mut conditions = vec![
-        json!({"kind": "max_rollouts", "n": config.gepa.max_total_rollouts}),
+        rollout_limit,
         json!({"kind": "max_generations", "n": config.gepa.max_generations}),
     ];
     if let Some(n) = config.gepa.max_time_seconds {
@@ -2595,6 +4244,14 @@ fn project_stop_conditions(config: &SynthOptimizerConfig) -> Value {
 }
 
 fn project_advanced_config(config: &SynthOptimizerConfig) -> Value {
+    let max_train_rollouts = config
+        .gepa
+        .split_rollout_budgets_enabled()
+        .then(|| config.gepa.train_rollout_limit());
+    let max_heldout_rollouts = config
+        .gepa
+        .split_rollout_budgets_enabled()
+        .then(|| config.gepa.heldout_rollout_limit());
     json!({
         "pipeline": {
             "mode": config.gepa.pipeline.mode.as_str(),
@@ -2610,6 +4267,10 @@ fn project_advanced_config(config: &SynthOptimizerConfig) -> Value {
             "rollout_chunk_size": config.gepa.rollout_chunk_size,
             "speculative_completion": config.gepa.pipeline.speculative_completion,
             "adaptive_stage_workers": config.gepa.pipeline.adaptive_stage_workers,
+        },
+        "budgets": {
+            "max_train_rollouts": max_train_rollouts,
+            "max_heldout_rollouts": max_heldout_rollouts,
         },
         "timeouts": {
             "rollout_seconds": config.gepa.rollout_async_timeout_seconds,
@@ -3191,6 +4852,18 @@ fn directory_bytes(path: &Path) -> Result<u64> {
 }
 
 fn seconds_since_sqlite_timestamp(timestamp: &str) -> Option<u64> {
+    let timestamp_seconds = sqlite_timestamp_seconds(timestamp)?;
+    let now_seconds = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs() as i64;
+    Some(now_seconds.saturating_sub(timestamp_seconds).max(0) as u64)
+}
+
+fn seconds_until_sqlite_timestamp(timestamp: &str) -> Option<i64> {
+    let timestamp_seconds = sqlite_timestamp_seconds(timestamp)?;
+    let now_seconds = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs() as i64;
+    Some(timestamp_seconds.saturating_sub(now_seconds))
+}
+
+fn sqlite_timestamp_seconds(timestamp: &str) -> Option<i64> {
     let (date, time) = timestamp.split_once(' ')?;
     let mut date_parts = date.split('-').filter_map(|part| part.parse::<i64>().ok());
     let year = date_parts.next()?;
@@ -3200,13 +4873,13 @@ fn seconds_since_sqlite_timestamp(timestamp: &str) -> Option<u64> {
     let hour = time_parts.next()?;
     let minute = time_parts.next()?;
     let second = time_parts.next()?;
-    let timestamp_seconds = days_from_civil(year, month, day)?
-        .saturating_mul(86_400)
-        .saturating_add(hour.saturating_mul(3_600))
-        .saturating_add(minute.saturating_mul(60))
-        .saturating_add(second);
-    let now_seconds = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs() as i64;
-    Some(now_seconds.saturating_sub(timestamp_seconds).max(0) as u64)
+    Some(
+        days_from_civil(year, month, day)?
+            .saturating_mul(86_400)
+            .saturating_add(hour.saturating_mul(3_600))
+            .saturating_add(minute.saturating_mul(60))
+            .saturating_add(second),
+    )
 }
 
 fn days_from_civil(year: i64, month: i64, day: i64) -> Option<i64> {

@@ -1,7 +1,8 @@
 use std::fs::{self, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::OffsetDateTime;
@@ -24,47 +25,58 @@ impl RunRegistry {
     }
 
     pub fn append(&self, entry: &RunRegistryEntry) -> Result<()> {
-        if self.contains_terminal_entry(entry)? {
-            return Ok(());
-        }
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent).map_err(|source| OptimizerError::io(parent, source))?;
         }
         let mut file = OpenOptions::new()
             .create(true)
+            .read(true)
             .append(true)
             .open(&self.path)
+            .map_err(|source| OptimizerError::io(&self.path, source))?;
+        file.lock_exclusive()
+            .map_err(|source| OptimizerError::io(&self.path, source))?;
+        if self.contains_terminal_entry_locked(entry, &file)? {
+            return Ok(());
+        }
+        file.seek(SeekFrom::End(0))
             .map_err(|source| OptimizerError::io(&self.path, source))?;
         let line = serde_json::to_string(entry)?;
         writeln!(file, "{line}").map_err(|source| OptimizerError::io(&self.path, source))
     }
 
-    fn contains_terminal_entry(&self, entry: &RunRegistryEntry) -> Result<bool> {
-        if !matches!(
-            entry.status.as_str(),
-            "started" | "finished" | "failed" | "cancelled"
-        ) {
-            return Ok(false);
-        }
-        if !self.path.exists() {
-            return Ok(false);
-        }
-        let file = OpenOptions::new()
-            .read(true)
-            .open(&self.path)
+    fn contains_terminal_entry_locked(
+        &self,
+        entry: &RunRegistryEntry,
+        file: &fs::File,
+    ) -> Result<bool> {
+        let mut file = file
+            .try_clone()
+            .map_err(|source| OptimizerError::io(&self.path, source))?;
+        file.seek(SeekFrom::Start(0))
             .map_err(|source| OptimizerError::io(&self.path, source))?;
         for line in BufReader::new(file).lines() {
             let line = line.map_err(|source| OptimizerError::io(&self.path, source))?;
             if line.trim().is_empty() {
                 continue;
             }
-            let existing: RunRegistryEntry = serde_json::from_str(&line)?;
-            if existing.run_id == entry.run_id && existing.status == entry.status {
-                return Ok(true);
+            for existing in run_registry_entries_from_line(&line)? {
+                if existing.run_id == entry.run_id && existing.status == entry.status {
+                    return Ok(true);
+                }
             }
         }
         Ok(false)
     }
+}
+
+fn run_registry_entries_from_line(line: &str) -> Result<Vec<RunRegistryEntry>> {
+    let mut entries = Vec::new();
+    let stream = serde_json::Deserializer::from_str(line).into_iter::<RunRegistryEntry>();
+    for parsed in stream {
+        entries.push(parsed?);
+    }
+    Ok(entries)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

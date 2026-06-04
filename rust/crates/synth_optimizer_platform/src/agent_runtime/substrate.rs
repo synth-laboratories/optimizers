@@ -27,12 +27,19 @@ impl std::fmt::Display for ExecutionSubstrate {
 }
 
 pub fn validate_execution_mode_compat(execution_mode: &str) -> Result<()> {
-    if execution_mode.trim() == "local_process" {
+    if normalize_execution_mode(execution_mode).is_some() {
         return Ok(());
     }
     Err(OptimizerError::Config(format!(
-        "unsupported proposer.execution_mode {execution_mode:?}; use \
-         proposer.runtime_substrate = \"local\" or \"docker\" and leave \
-         execution_mode = \"local_process\" during migration"
+        "unsupported proposer.execution_mode {execution_mode:?}; expected stdio/local_process \
+         or websocket/ws"
     )))
+}
+
+pub fn normalize_execution_mode(execution_mode: &str) -> Option<&'static str> {
+    match execution_mode.trim().to_ascii_lowercase().as_str() {
+        "stdio" | "local_process" => Some("stdio"),
+        "websocket" | "ws" => Some("websocket"),
+        _ => None,
+    }
 }

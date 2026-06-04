@@ -1,0 +1,24 @@
+# Banking77 acceptance profile — OpenRouter NVIDIA Nemotron 3 Ultra proposer via Codex.
+# Requires: OPENROUTER_API_KEY (proposer), OPENAI_API_KEY (policy rollouts)
+# Provider: Nvidia (only live endpoint is the :free variant, 1M ctx, tools+reasoning).
+
+[policy]
+provider = "openai"
+model = "gpt-4.1-nano"
+api_key_env = "OPENAI_API_KEY"
+
+[proposer]
+backend = "codex_app_server"
+runtime_substrate = "local"
+execution_mode = "local_process"
+provider = "openrouter"
+base_url = "https://openrouter.ai/api/v1"
+auth_mode = "api_key"
+api_key_env = "OPENROUTER_API_KEY"
+copy_host_auth = false
+model = "nvidia/nemotron-3-ultra-550b-a55b:free"
+allow_unverified_model = true
+reasoning_effort = "medium"
+timeout_seconds = 900
+sandbox_mode = "workspace-write"
+approval_policy = "never"

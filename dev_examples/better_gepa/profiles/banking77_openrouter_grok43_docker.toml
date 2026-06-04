@@ -11,6 +11,7 @@ backend = "codex_app_server"
 runtime_substrate = "docker"
 execution_mode = "local_process"
 provider = "openrouter"
+base_url = "https://openrouter.ai/api/v1"
 auth_mode = "api_key"
 api_key_env = "OPENROUTER_API_KEY"
 copy_host_auth = false
@@ -25,4 +26,3 @@ image = "ghcr.io/synth-laboratories/codex-gepa-proposer:2026-05-31"
 workspace_mount_path = "/workspace"
 network = "bridge"
 extra_env = {}
-

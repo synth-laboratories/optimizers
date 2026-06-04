@@ -578,6 +578,11 @@ impl SynthOptimizerConfig {
         validate_gepa_candidate_selector_config(&self.gepa.candidate_selector)?;
         validate_gepa_batch_sampler_config(&self.gepa.batch_sampler)?;
         validate_gepa_task_pools_config(&self.gepa.task_pools)?;
+        validate_task_pools_against_taskset(
+            &self.gepa.task_pools,
+            &self.taskset.train_ids,
+            &self.taskset.heldout_ids,
+        )?;
         validate_gepa_pipeline_config(&self.gepa.pipeline)?;
         if !self.gepa.max_cost_usd.is_finite() || self.gepa.max_cost_usd < 0.0 {
             return Err(OptimizerError::Config(
@@ -2007,6 +2012,45 @@ fn validate_gepa_task_pools_config(config: &GepaTaskPoolsConfig) -> Result<()> {
         return Err(OptimizerError::Config(format!(
             "gepa.task_pools.heldout must be disjoint from pareto, minibatch, and reflection pools; overlaps: {:?}",
             heldout_overlaps
+        )));
+    }
+    Ok(())
+}
+
+/// Pools are split-local: search pools (pareto/minibatch/reflection) draw from
+/// `taskset.train_ids`, the heldout pool from `taskset.heldout_ids`. A pool id
+/// outside its split would silently mis-select (or fail) at rollout time.
+fn validate_task_pools_against_taskset(
+    config: &GepaTaskPoolsConfig,
+    train_ids: &[String],
+    heldout_ids: &[String],
+) -> Result<()> {
+    let train = train_ids.iter().cloned().collect::<BTreeSet<_>>();
+    let unknown_search = config
+        .pareto
+        .iter()
+        .chain(&config.minibatch)
+        .chain(&config.reflection)
+        .filter(|id| !train.contains(*id))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if !unknown_search.is_empty() {
+        return Err(OptimizerError::Config(format!(
+            "gepa.task_pools pareto/minibatch/reflection ids must come from taskset.train_ids; unknown: {:?}",
+            unknown_search.into_iter().collect::<Vec<_>>()
+        )));
+    }
+    let held = heldout_ids.iter().cloned().collect::<BTreeSet<_>>();
+    let unknown_heldout = config
+        .heldout
+        .iter()
+        .filter(|id| !held.contains(*id))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if !unknown_heldout.is_empty() {
+        return Err(OptimizerError::Config(format!(
+            "gepa.task_pools.heldout ids must come from taskset.heldout_ids; unknown: {:?}",
+            unknown_heldout.into_iter().collect::<Vec<_>>()
         )));
     }
     Ok(())

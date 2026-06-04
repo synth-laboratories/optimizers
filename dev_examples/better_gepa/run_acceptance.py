@@ -377,10 +377,10 @@ def apply_docker_image_override(payload: dict[str, Any]) -> None:
 def apply_acceptance_taskset(payload: dict[str, Any]) -> None:
     payload["taskset"]["train_ids"] = [f"train:{task_id}" for task_id in range(4)]
     payload["taskset"]["heldout_ids"] = [f"test:{task_id}" for task_id in range(2)]
-    # Task pools live under [gepa] for a standalone `GepaRun.from_toml` config —
-    # this matches GepaConfig.to_toml_dict (gepa["task_pools"]) and the Rust
-    # config.gepa.task_pools schema. (The service request format nests them under
-    # taskset; that is a separate wire shape.)
+    # Task pools live under [gepa] for a standalone `GepaRun.from_toml` config,
+    # matching GepaConfig.to_toml_dict (gepa["task_pools"]) and config.gepa.task_pools.
+    # (The service request uses a sibling `task_pools` field — same canonical home,
+    # different transport.)
     payload.setdefault("gepa", {})["task_pools"] = {
         "pareto": [f"train:{task_id}" for task_id in range(2)],
         "minibatch": [f"train:{task_id}" for task_id in range(2)],

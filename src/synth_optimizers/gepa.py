@@ -550,6 +550,23 @@ class GepaTaskPools:
                 f"overlaps: {overlaps}"
             )
 
+    def validate_against_taskset(self, train_ids: list[str], heldout_ids: list[str]) -> None:
+        """Pools are split-local: search pools draw from train, heldout from heldout."""
+        unknown_search = sorted(
+            (set(self.pareto) | set(self.minibatch) | set(self.reflection)) - set(train_ids)
+        )
+        if unknown_search:
+            raise ValueError(
+                "GepaTaskPools pareto/minibatch/reflection ids must come from "
+                f"taskset.train_ids; unknown: {unknown_search}"
+            )
+        unknown_heldout = sorted(set(self.heldout) - set(heldout_ids))
+        if unknown_heldout:
+            raise ValueError(
+                "GepaTaskPools.heldout ids must come from taskset.heldout_ids; "
+                f"unknown: {unknown_heldout}"
+            )
+
     def to_toml(self) -> dict[str, Any]:
         self.validate()
         return {
@@ -1055,6 +1072,9 @@ class GepaConfig:
         if not self.taskset.heldout_ids:
             raise ValueError("GepaConfig.taskset.heldout_ids must not be empty")
         self.task_pools.validate()
+        self.task_pools.validate_against_taskset(
+            self.taskset.train_ids, self.taskset.heldout_ids
+        )
 
     def to_toml_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {}

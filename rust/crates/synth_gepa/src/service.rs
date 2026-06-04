@@ -150,6 +150,9 @@ struct GepaServiceRunRequest {
     policy: ServicePolicySpec,
     proposer: ServiceProposerSpec,
     taskset: ServiceTasksetSpec,
+    // Sibling of taskset, mirroring `GepaConfig(taskset=..., task_pools=...)` and
+    // the standalone `[gepa.task_pools]` TOML — one canonical location everywhere.
+    task_pools: GepaTaskPoolsConfig,
     #[serde(default)]
     manual_step: bool,
     #[serde(default)]
@@ -207,7 +210,6 @@ struct ServiceCredentials {
 struct ServiceTasksetSpec {
     train_ids: Vec<String>,
     heldout_ids: Vec<String>,
-    task_pools: GepaTaskPoolsConfig,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2932,6 +2934,11 @@ fn run_request_to_optimizer_config(
     validate_api_family("policy.api_family", &request.policy.api_family)?;
     validate_api_family("proposer.api_family", &request.proposer.api_family)?;
     validate_taskset(&request.taskset)?;
+    validate_request_task_pools(
+        &request.task_pools,
+        &request.taskset.train_ids,
+        &request.taskset.heldout_ids,
+    )?;
     let mut config = SynthOptimizerConfig::default();
     if let Some(output_dir) = request
         .output_dir
@@ -2944,7 +2951,7 @@ fn run_request_to_optimizer_config(
     config.container.url = Some(request.container_url.clone());
     config.taskset.train_ids = request.taskset.train_ids.clone();
     config.taskset.heldout_ids = request.taskset.heldout_ids.clone();
-    config.gepa.task_pools = request.taskset.task_pools.clone();
+    config.gepa.task_pools = request.task_pools.clone();
     config.policy.provider = request.policy.provider.clone();
     config.policy.model = request.policy.model.clone();
     config.policy.api_family = request.policy.api_family.clone();
@@ -3060,16 +3067,21 @@ fn validate_taskset(taskset: &ServiceTasksetSpec) -> Result<()> {
             "taskset.heldout_ids must be non-empty".to_string(),
         ));
     }
-    validate_service_task_pools(&taskset.task_pools)?;
     Ok(())
 }
 
-fn validate_service_task_pools(task_pools: &GepaTaskPoolsConfig) -> Result<()> {
+/// Validate the request's `task_pools` (sibling of `taskset`): internal pool
+/// invariants plus the split-local cross-reference against the taskset ids.
+fn validate_request_task_pools(
+    task_pools: &GepaTaskPoolsConfig,
+    train_ids: &[String],
+    heldout_ids: &[String],
+) -> Result<()> {
     for (name, values) in [
-        ("taskset.task_pools.pareto", &task_pools.pareto),
-        ("taskset.task_pools.minibatch", &task_pools.minibatch),
-        ("taskset.task_pools.reflection", &task_pools.reflection),
-        ("taskset.task_pools.heldout", &task_pools.heldout),
+        ("task_pools.pareto", &task_pools.pareto),
+        ("task_pools.minibatch", &task_pools.minibatch),
+        ("task_pools.reflection", &task_pools.reflection),
+        ("task_pools.heldout", &task_pools.heldout),
     ] {
         if values.is_empty() {
             return Err(OptimizerError::Config(format!("{name} must be non-empty")));
@@ -3096,7 +3108,7 @@ fn validate_service_task_pools(task_pools: &GepaTaskPoolsConfig) -> Result<()> {
         .collect::<Vec<_>>();
     if !missing.is_empty() {
         return Err(OptimizerError::Config(format!(
-            "taskset.task_pools.minibatch must be a subset of taskset.task_pools.reflection; missing from reflection: {:?}",
+            "task_pools.minibatch must be a subset of task_pools.reflection; missing from reflection: {:?}",
             missing
         )));
     }
@@ -3110,8 +3122,35 @@ fn validate_service_task_pools(task_pools: &GepaTaskPoolsConfig) -> Result<()> {
         .collect::<BTreeSet<_>>();
     if !overlaps.is_empty() {
         return Err(OptimizerError::Config(format!(
-            "taskset.task_pools.heldout must be disjoint from pareto/minibatch/reflection; overlaps: {:?}",
+            "task_pools.heldout must be disjoint from pareto/minibatch/reflection; overlaps: {:?}",
             overlaps
+        )));
+    }
+    // Pools are split-local: search pools draw from train_ids, heldout from heldout_ids.
+    let train = train_ids.iter().cloned().collect::<BTreeSet<_>>();
+    let unknown_search = pareto
+        .iter()
+        .chain(&minibatch)
+        .chain(&reflection)
+        .filter(|id| !train.contains(*id))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if !unknown_search.is_empty() {
+        return Err(OptimizerError::Config(format!(
+            "task_pools pareto/minibatch/reflection ids must come from taskset.train_ids; unknown: {:?}",
+            unknown_search.into_iter().collect::<Vec<_>>()
+        )));
+    }
+    let held = heldout_ids.iter().cloned().collect::<BTreeSet<_>>();
+    let unknown_heldout = heldout
+        .iter()
+        .filter(|id| !held.contains(*id))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if !unknown_heldout.is_empty() {
+        return Err(OptimizerError::Config(format!(
+            "task_pools.heldout ids must come from taskset.heldout_ids; unknown: {:?}",
+            unknown_heldout.into_iter().collect::<Vec<_>>()
         )));
     }
     Ok(())

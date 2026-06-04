@@ -1230,7 +1230,7 @@ components:
     # ---- Submission body ---------------------------------------------------
     RunRequest:
       type: object
-      required: [container_url, policy, proposer, taskset]
+      required: [container_url, policy, proposer, taskset, task_pools]
       properties:
         container_url: { type: string, format: uri }
         output_dir:
@@ -1241,6 +1241,15 @@ components:
         policy: { $ref: '#/components/schemas/PolicySpec' }
         proposer: { $ref: '#/components/schemas/ProposerSpec' }
         taskset: { $ref: '#/components/schemas/TasksetSpec' }
+        task_pools:
+          allOf: [{ $ref: '#/components/schemas/GepaTaskPools' }]
+          description: |
+            GEPA selection pools, a sibling of `taskset` (mirroring the SDK
+            `GepaConfig(taskset=..., task_pools=...)` and the standalone
+            `[gepa.task_pools]` TOML). pareto is the selection set, minibatch the
+            judge set, reflection the proposer evidence set; heldout stays
+            untouched during search. Search-pool ids must come from
+            `taskset.train_ids`, the heldout pool from `taskset.heldout_ids`.
         manual_step: { type: boolean, default: false }
         stop_conditions:
           type: array
@@ -1307,13 +1316,12 @@ components:
 
     TasksetSpec:
       type: object
-      required: [train_ids, heldout_ids, task_pools]
+      required: [train_ids, heldout_ids]
       description: |
         Explicit only in v1 — runs must be reproducible from the request alone.
         Task ids are split-local: train_ids are fetched from the train split and
-        heldout_ids from the heldout/test split. GEPA selection uses task_pools:
-        pareto is the selection set, minibatch is the judge set, reflection is
-        the proposer evidence set, and heldout remains untouched during search.
+        heldout_ids from the heldout/test split. Selection pools are declared in
+        the request's sibling `task_pools` field.
       properties:
         train_ids:
           type: array
@@ -1323,8 +1331,6 @@ components:
           type: array
           minItems: 1
           items: { type: string }
-        task_pools:
-          $ref: '#/components/schemas/GepaTaskPools'
 
     GepaTaskPools:
       type: object

@@ -28,6 +28,8 @@ from ._synth_optimizers import (
     __version__,
     events_compare,
     events_replay,
+    gepa_compact_run_storage,
+    gepa_delete_run_storage,
     gepa_serve,
 )
 from .gepa import (
@@ -40,6 +42,7 @@ from .gepa import (
     GepaPipelineMode,
     GepaRun,
     GepaStalenessPolicy,
+    GepaTaskPools,
     ObjectiveConfig,
     OutputConfig,
     PolicyConfig,
@@ -49,6 +52,16 @@ from .gepa import (
     ProposerPromptConfig,
     RunSettings,
     TasksetSelection,
+)
+from .o11y import (
+    LiveProgress,
+    RegistryRecord,
+    RunBoard,
+    RunFailure,
+    RunState,
+    RunStatus,
+    RunUsage,
+    project_run_events,
 )
 from .sdk import OptimizerConfig, OptimizerRun
 
@@ -71,7 +84,9 @@ __all__ = [
     "GepaRun",
     "GepaRunResult",
     "GepaStalenessPolicy",
+    "GepaTaskPools",
     "InvariantError",
+    "LiveProgress",
     "ObjectiveConfig",
     "OptimizerConfig",
     "OptimizerRun",
@@ -88,13 +103,22 @@ __all__ = [
     "ProposerError",
     "ProposerConfig",
     "ProposerPromptConfig",
+    "RegistryRecord",
+    "RunBoard",
     "RunFailedError",
+    "RunFailure",
     "RunSettings",
+    "RunState",
+    "RunStatus",
+    "RunUsage",
     "StateTransitionError",
     "SynthOptimizerError",
     "TasksetSelection",
+    "project_run_events",
     "__version__",
     "events_compare",
     "events_replay",
+    "gepa_compact_run_storage",
+    "gepa_delete_run_storage",
     "gepa_serve",
 ]

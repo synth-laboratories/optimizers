@@ -41,6 +41,9 @@ build-backend = "maturin"
 manifest-path = "rust/crates/synth_optimizers_py/Cargo.toml"
 module-name = "synth_optimizers._synth_optimizers"
 python-source = "src"
+# Ship the bundled console docs (markdown + logo) as package data so a
+# pip-installed `gepa console` can serve them without a repo checkout.
+include = ["src/synth_optimizers/docs/**/*"]
 
 [tool.uv]
 package = true

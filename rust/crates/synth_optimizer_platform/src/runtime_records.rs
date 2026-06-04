@@ -10,6 +10,7 @@ pub const PROMPT_PROGRAM_SNAPSHOT_SCHEMA_VERSION: &str = "prompt_program_snapsho
 pub const TASKSET_SNAPSHOT_SCHEMA_VERSION: &str = "taskset_snapshot.v1";
 pub const RENDERED_OPTIMIZER_STATE_SCHEMA_VERSION: &str = "rendered_optimizer_state.v1";
 pub const RUNTIME_EFFECT_SCHEMA_VERSION: &str = "runtime_effect.v1";
+pub const RUN_PHASE_TIMING_SCHEMA_VERSION: &str = "run_phase_timing.v1";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ResolvedRunConfigRecord {
@@ -225,6 +226,62 @@ pub struct RuntimeEffectInput<'a> {
     pub metadata: Map<String, Value>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RunPhaseTimingRecord {
+    pub schema_version: String,
+    pub timing_id: String,
+    pub run_id: String,
+    pub lane: String,
+    pub kind: String,
+    #[serde(default)]
+    pub stage: Option<String>,
+    #[serde(default)]
+    pub generation: Option<u64>,
+    #[serde(default)]
+    pub candidate_id: Option<String>,
+    pub subject_type: String,
+    pub subject_id: String,
+    pub status: String,
+    pub started_at: String,
+    #[serde(default)]
+    pub finished_at: Option<String>,
+    #[serde(default)]
+    pub wall_seconds: Option<f64>,
+    #[serde(default)]
+    pub item_count: Option<u64>,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub total_tokens: u64,
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
+    pub source_effect_id: String,
+    #[serde(default)]
+    pub metadata: Map<String, Value>,
+    pub recorded_at: String,
+}
+
+pub struct RunPhaseTimingInput<'a> {
+    pub run_id: &'a str,
+    pub lane: &'a str,
+    pub kind: &'a str,
+    pub stage: Option<String>,
+    pub generation: Option<u64>,
+    pub candidate_id: Option<String>,
+    pub subject_type: &'a str,
+    pub subject_id: &'a str,
+    pub status: &'a str,
+    pub started_at: &'a str,
+    pub finished_at: Option<String>,
+    pub wall_seconds: Option<f64>,
+    pub item_count: Option<u64>,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub total_tokens: u64,
+    pub cost_usd: Option<f64>,
+    pub source_effect_id: &'a str,
+    pub metadata: Map<String, Value>,
+}
+
 impl ResolvedRunConfigRecord {
     pub fn from_input(input: ResolvedRunConfigInput<'_>) -> Self {
         let config_hash = stable_value_hash(input.config);
@@ -403,6 +460,42 @@ impl RuntimeEffectRecord {
             planned_at: now.clone(),
             updated_at: now,
             terminal_at,
+        }
+    }
+}
+
+impl RunPhaseTimingRecord {
+    pub fn from_input(input: RunPhaseTimingInput<'_>) -> Self {
+        let identity = json!({
+            "run_id": input.run_id,
+            "source_effect_id": input.source_effect_id,
+            "lane": input.lane,
+            "kind": input.kind,
+            "status": input.status,
+        });
+        Self {
+            schema_version: RUN_PHASE_TIMING_SCHEMA_VERSION.to_string(),
+            timing_id: prefixed_hash_id("timing", &identity),
+            run_id: input.run_id.to_string(),
+            lane: input.lane.to_string(),
+            kind: input.kind.to_string(),
+            stage: input.stage,
+            generation: input.generation,
+            candidate_id: input.candidate_id,
+            subject_type: input.subject_type.to_string(),
+            subject_id: input.subject_id.to_string(),
+            status: input.status.to_string(),
+            started_at: input.started_at.to_string(),
+            finished_at: input.finished_at,
+            wall_seconds: input.wall_seconds,
+            item_count: input.item_count,
+            prompt_tokens: input.prompt_tokens,
+            completion_tokens: input.completion_tokens,
+            total_tokens: input.total_tokens,
+            cost_usd: input.cost_usd,
+            source_effect_id: input.source_effect_id.to_string(),
+            metadata: input.metadata,
+            recorded_at: now_rfc3339(),
         }
     }
 }

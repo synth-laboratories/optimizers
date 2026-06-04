@@ -131,8 +131,10 @@ class ProposerTomlSection(BaseModel):
     execution_mode: str = "local_process"
     provider: str = "openai"
     api_family: str = "chat_completions"
+    base_url: str | None = None
     model: str | None = "gpt-5.4-mini"
     reasoning_effort: str | None = "medium"
+    service_tier: str | None = None
     auth_mode: str = "api_key"
     api_key_env: str | None = "OPENAI_API_KEY"
     copy_host_auth: bool = False
@@ -161,8 +163,10 @@ class ProposerTomlSection(BaseModel):
             execution_mode=self.execution_mode,
             provider=self.provider,
             api_family=self.api_family,
+            base_url=self.base_url,
             model=self.model,
             reasoning_effort=self.reasoning_effort,
+            service_tier=self.service_tier,
             auth_mode=self.auth_mode,
             api_key_env=api_key_env,
             copy_host_auth=self.copy_host_auth,
@@ -263,6 +267,23 @@ class ObjectiveAcceptanceTomlSection(BaseModel):
     objective_regression_tolerance: float | None = None
 
 
+class GepaTaskPoolsTomlSection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pareto: list[str] = Field(default_factory=list)
+    minibatch: list[str] = Field(default_factory=list)
+    reflection: list[str] = Field(default_factory=list)
+    heldout: list[str] = Field(default_factory=list)
+
+    def to_domain(self) -> "GepaTaskPools":
+        return GepaTaskPools(
+            pareto=list(self.pareto),
+            minibatch=list(self.minibatch),
+            reflection=list(self.reflection),
+            heldout=list(self.heldout),
+        )
+
+
 class GepaTomlSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -271,6 +292,15 @@ class GepaTomlSection(BaseModel):
     max_prompt_tokens: int | None = None
     max_completion_tokens: int | None = None
     max_total_tokens: int | None = None
+    proposer_estimated_cost_usd: float | None = None
+    proposer_estimated_prompt_tokens: int | None = None
+    proposer_estimated_completion_tokens: int | None = None
+    proposer_estimated_total_tokens: int | None = None
+    rollout_estimated_cost_usd: float | None = None
+    rollout_estimated_prompt_tokens: int | None = None
+    rollout_estimated_completion_tokens: int | None = None
+    rollout_estimated_total_tokens: int | None = None
+    rollout_estimated_wall_seconds: int | None = None
     max_generations: int = 1
     proposals_per_generation: int = 1
     minibatch_size: int = 1
@@ -291,6 +321,7 @@ class GepaTomlSection(BaseModel):
     objective_acceptance: ObjectiveAcceptanceTomlSection = Field(
         default_factory=ObjectiveAcceptanceTomlSection
     )
+    task_pools: GepaTaskPoolsTomlSection = Field(default_factory=GepaTaskPoolsTomlSection)
 
     def budget_config(self) -> "BudgetConfig":
         return BudgetConfig(
@@ -312,6 +343,15 @@ class GepaTomlSection(BaseModel):
             minibatch_accept_margin=self.minibatch_accept_margin,
             rollout_failure_rate_tolerance=self.rollout_failure_rate_tolerance,
             rollout_chunk_size=self.rollout_chunk_size,
+            proposer_estimated_cost_usd=self.proposer_estimated_cost_usd,
+            proposer_estimated_prompt_tokens=self.proposer_estimated_prompt_tokens,
+            proposer_estimated_completion_tokens=self.proposer_estimated_completion_tokens,
+            proposer_estimated_total_tokens=self.proposer_estimated_total_tokens,
+            rollout_estimated_cost_usd=self.rollout_estimated_cost_usd,
+            rollout_estimated_prompt_tokens=self.rollout_estimated_prompt_tokens,
+            rollout_estimated_completion_tokens=self.rollout_estimated_completion_tokens,
+            rollout_estimated_total_tokens=self.rollout_estimated_total_tokens,
+            rollout_estimated_wall_seconds=self.rollout_estimated_wall_seconds,
         )
 
     def pipeline_config(self) -> "GepaPipeline":
@@ -397,6 +437,7 @@ class GepaTomlDocument(BaseModel):
             objectives=self.gepa.objective_config(),
             policy=self.policy.to_domain(),
             proposer=self.proposer.to_domain(source_path.parent),
+            task_pools=self.gepa.task_pools.to_domain(),
             budgets=self.gepa.gepa_budget_config(),
             pipeline=self.gepa.pipeline_config(),
             budget=self.gepa.budget_config(),
@@ -475,6 +516,68 @@ class TasksetSelection:
 
 
 @dataclass(slots=True)
+class GepaTaskPools:
+    pareto: list[str]
+    minibatch: list[str]
+    reflection: list[str]
+    heldout: list[str]
+
+    def validate(self) -> None:
+        for name, values in {
+            "pareto": self.pareto,
+            "minibatch": self.minibatch,
+            "reflection": self.reflection,
+            "heldout": self.heldout,
+        }.items():
+            if not values:
+                raise ValueError(f"GepaTaskPools.{name} must not be empty")
+            if any(not value.strip() for value in values):
+                raise ValueError(f"GepaTaskPools.{name} entries must not be empty")
+        minibatch = set(self.minibatch)
+        reflection = set(self.reflection)
+        missing = sorted(minibatch - reflection)
+        if missing:
+            raise ValueError(
+                "GepaTaskPools.minibatch must be a subset of GepaTaskPools.reflection; "
+                f"missing from reflection: {missing}"
+            )
+        heldout = set(self.heldout)
+        search_ids = set(self.pareto) | minibatch | reflection
+        overlaps = sorted(heldout & search_ids)
+        if overlaps:
+            raise ValueError(
+                "GepaTaskPools.heldout must be disjoint from pareto/minibatch/reflection; "
+                f"overlaps: {overlaps}"
+            )
+
+    def validate_against_taskset(self, train_ids: list[str], heldout_ids: list[str]) -> None:
+        """Pools are split-local: search pools draw from train, heldout from heldout."""
+        unknown_search = sorted(
+            (set(self.pareto) | set(self.minibatch) | set(self.reflection)) - set(train_ids)
+        )
+        if unknown_search:
+            raise ValueError(
+                "GepaTaskPools pareto/minibatch/reflection ids must come from "
+                f"taskset.train_ids; unknown: {unknown_search}"
+            )
+        unknown_heldout = sorted(set(self.heldout) - set(heldout_ids))
+        if unknown_heldout:
+            raise ValueError(
+                "GepaTaskPools.heldout ids must come from taskset.heldout_ids; "
+                f"unknown: {unknown_heldout}"
+            )
+
+    def to_toml(self) -> dict[str, Any]:
+        self.validate()
+        return {
+            "pareto": list(self.pareto),
+            "minibatch": list(self.minibatch),
+            "reflection": list(self.reflection),
+            "heldout": list(self.heldout),
+        }
+
+
+@dataclass(slots=True)
 class ProposerPromptConfig:
     best_practices: str | None = None
     best_practices_path: str | Path | None = None
@@ -538,6 +641,12 @@ class GepaDefaults:
         return GepaConfig(
             container=ContainerConnection(url=container_url),
             taskset=TasksetSelection(),
+            task_pools=GepaTaskPools(
+                pareto=["train:0"],
+                minibatch=["train:0"],
+                reflection=["train:0"],
+                heldout=["heldout:0"],
+            ),
             policy=None,
         )
 
@@ -570,6 +679,7 @@ class ProposerConfig:
     base_url: str | None = None
     model: str | None = "gpt-5.4-mini"
     reasoning_effort: str | None = "medium"
+    service_tier: str | None = None
     auth_mode: str = "api_key"
     api_key_env: str | None = "OPENAI_API_KEY"
     copy_host_auth: bool = False
@@ -607,6 +717,7 @@ class ProposerConfig:
                 "base_url": self.base_url,
                 "model": self.model,
                 "reasoning_effort": self.reasoning_effort,
+                "service_tier": self.service_tier,
                 "auth_mode": self.auth_mode,
                 "api_key_env": api_key_env,
                 "copy_host_auth": bool(self.copy_host_auth),
@@ -727,6 +838,15 @@ class GepaBudgetConfig:
     minibatch_accept_margin: float = 0.0
     rollout_failure_rate_tolerance: float = 0.25
     rollout_chunk_size: int | None = None
+    proposer_estimated_cost_usd: float | None = None
+    proposer_estimated_prompt_tokens: int | None = None
+    proposer_estimated_completion_tokens: int | None = None
+    proposer_estimated_total_tokens: int | None = None
+    rollout_estimated_cost_usd: float | None = None
+    rollout_estimated_prompt_tokens: int | None = None
+    rollout_estimated_completion_tokens: int | None = None
+    rollout_estimated_total_tokens: int | None = None
+    rollout_estimated_wall_seconds: int | None = None
 
     def apply_to_gepa(self, gepa: dict[str, Any]) -> None:
         gepa.update(
@@ -745,6 +865,39 @@ class GepaBudgetConfig:
             gepa["max_heldout_rollouts"] = int(self.max_heldout_rollouts)
         if self.rollout_chunk_size is not None:
             gepa["rollout_chunk_size"] = int(self.rollout_chunk_size)
+        if self.proposer_estimated_cost_usd is not None:
+            gepa["proposer_estimated_cost_usd"] = float(self.proposer_estimated_cost_usd)
+        if self.proposer_estimated_prompt_tokens is not None:
+            gepa["proposer_estimated_prompt_tokens"] = int(self.proposer_estimated_prompt_tokens)
+        if self.proposer_estimated_completion_tokens is not None:
+            gepa["proposer_estimated_completion_tokens"] = int(
+                self.proposer_estimated_completion_tokens
+            )
+        if self.proposer_estimated_total_tokens is not None:
+            gepa["proposer_estimated_total_tokens"] = int(self.proposer_estimated_total_tokens)
+        if self.rollout_estimated_cost_usd is not None:
+            gepa["rollout_estimated_cost_usd"] = float(self.rollout_estimated_cost_usd)
+        if self.rollout_estimated_prompt_tokens is not None:
+            gepa["rollout_estimated_prompt_tokens"] = int(self.rollout_estimated_prompt_tokens)
+        if self.rollout_estimated_completion_tokens is not None:
+            gepa["rollout_estimated_completion_tokens"] = int(
+                self.rollout_estimated_completion_tokens
+            )
+        if self.rollout_estimated_total_tokens is not None:
+            gepa["rollout_estimated_total_tokens"] = int(self.rollout_estimated_total_tokens)
+        if self.rollout_estimated_wall_seconds is not None:
+            gepa["rollout_estimated_wall_seconds"] = int(self.rollout_estimated_wall_seconds)
+
+
+DEFAULT_PROPOSER_ESTIMATED_COST_USD = 0.05
+DEFAULT_ROLLOUT_ESTIMATED_COST_USD = 0.01
+
+
+def _apply_default_budget_estimates(gepa: dict[str, Any]) -> None:
+    if float(gepa.get("max_cost_usd") or 0.0) <= 0.0:
+        return
+    gepa.setdefault("proposer_estimated_cost_usd", DEFAULT_PROPOSER_ESTIMATED_COST_USD)
+    gepa.setdefault("rollout_estimated_cost_usd", DEFAULT_ROLLOUT_ESTIMATED_COST_USD)
 
 
 @dataclass(slots=True)
@@ -885,6 +1038,7 @@ class OutputConfig:
 class GepaConfig:
     container: ContainerConnection
     taskset: TasksetSelection
+    task_pools: GepaTaskPools
     run: RunSettings = field(default_factory=RunSettings)
     program: PromptProgram | None = None
     objectives: ObjectiveConfig | None = None
@@ -917,6 +1071,10 @@ class GepaConfig:
             raise ValueError("GepaConfig.taskset.train_ids must not be empty")
         if not self.taskset.heldout_ids:
             raise ValueError("GepaConfig.taskset.heldout_ids must not be empty")
+        self.task_pools.validate()
+        self.task_pools.validate_against_taskset(
+            self.taskset.train_ids, self.taskset.heldout_ids
+        )
 
     def to_toml_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {}
@@ -942,6 +1100,8 @@ class GepaConfig:
         self.pipeline.apply_to_gepa(gepa)
         if self.objectives is not None:
             self.objectives.apply_to_gepa(gepa)
+        _apply_default_budget_estimates(gepa)
+        gepa["task_pools"] = self.task_pools.to_toml()
         payload["gepa"] = gepa
         payload["cache"] = self.cache.to_toml()
         return payload

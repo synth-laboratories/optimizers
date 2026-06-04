@@ -3,8 +3,9 @@ openapi: 3.1.0
 # =============================================================================
 # GEPA Service API — v1 (2026-05-28)
 # Canonical contract. CLI + Python SDK are thin clients of this.
-# Single-worker v1: runs execute one-at-a-time, FIFO. `priority`, `attempt`,
-# `submitted_by` are intentionally absent until their backing feature lands.
+# Service-managed v1: the service owns a bounded worker pool. Compatible runs
+# can execute concurrently; resource-conflicting runs remain queued with
+# scheduler reasons.
 # Status reflects WHY a run ended, never result quality (read candidates for that).
 # =============================================================================
 
@@ -13,9 +14,10 @@ info:
   version: 1.0.0
   description: |
     HTTP service that runs GEPA prompt-optimization. The service owns the worker
-    loop in-process; worker internals (leases, tick actions, cursor phases,
-    workspace paths) are never exposed on the wire. The user submits a Run and
-    observes it via REST + a WebSocket event stream.
+    loop in-process; `/workspace.run_status` exposes worker-slot, lease, and
+    queue health for dashboards, while tick actions and workspace paths remain
+    internal. The user submits a Run and observes it via REST + a WebSocket
+    event stream.
 
     NOUN BOUNDARY: this service's `Run` is a distinct bounded context from
     managed-research's `Run`. They are not the same entity; a managed-research
@@ -116,6 +118,100 @@ paths:
       responses:
         '204': { description: Deleted (or already absent). }
         '409': { $ref: '#/components/responses/NotTerminal' }
+
+  /runs/{run_id}/compact:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+    post:
+      operationId: compactRunStorage
+      summary: Compact bulky storage for a terminal Run
+      description: |
+        Preserves candidate, reward, frontier, public artifact, and latest
+        resumable checkpoint data while pruning generated runtime homes and
+        historical full checkpoint snapshots. 409 if the Run is not terminal.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StorageMaintenanceRequest' }
+      responses:
+        '200':
+          description: Storage compaction report.
+          content:
+            application/json:
+              schema: { type: object }
+        '404': { $ref: '#/components/responses/RunNotFound' }
+        '409': { $ref: '#/components/responses/NotTerminal' }
+
+  /runs/{run_id}/state:
+    parameters: [ { $ref: '#/components/parameters/RunId' } ]
+    get:
+      operationId: getRunState
+      summary: Get the live GEPA cursor and queue state for a Run
+      description: |
+        Service-managed authority for GEPA runtime state: cursor phase,
+        pending jobs/effects, proposal/evaluation queues, pipeline state, usage
+        ledger, and terminal summaries. `cursor` is null until the first
+        checkpoint exists.
+      responses:
+        '200':
+          description: Run state snapshot.
+          content:
+            application/json:
+                schema: { $ref: '#/components/schemas/RunStateSnapshot' }
+        '404': { $ref: '#/components/responses/RunNotFound' }
+
+  /runs/{run_id}/timings:
+    parameters: [ { $ref: '#/components/parameters/RunId' } ]
+    get:
+      operationId: getRunTimings
+      summary: Get first-class GEPA phase timing records for a Run
+      description: |
+        Returns queryable timing rows recorded from completed runtime effects.
+        Proposer rows represent proposal rounds. Rollout rows represent rollout
+        batches and include item counts, token usage, cost, and wall time when
+        available.
+      responses:
+        '200':
+          description: Run timing records and aggregate timing summary.
+          content:
+                application/json:
+                  schema: { $ref: '#/components/schemas/RunTimings' }
+        '404': { $ref: '#/components/responses/RunNotFound' }
+
+  /runs/{run_id}/stats:
+    parameters: [ { $ref: '#/components/parameters/RunId' } ]
+    get:
+      operationId: getRunStats
+      summary: Get aggregate GEPA state-machine throughput stats for a Run
+      description: |
+        Returns aggregate runtime and search-efficiency stats computed directly
+        from the per-run `transitions.sqlite` state-machine log. This endpoint
+        does not fall back to phase timing rows or workspace projections.
+      responses:
+        '200':
+          description: Run transition-log aggregate stats.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RunTransitionStats' }
+        '404': { $ref: '#/components/responses/RunNotFound' }
+
+  /runs/{run_id}/limits:
+    parameters: [ { $ref: '#/components/parameters/RunId' } ]
+    get:
+      operationId: getRunLimits
+      summary: Get first-class limit progress and ETA forecast for a Run
+      description: |
+        Returns the platform limit-engine projection for a run: configured
+        limits, cumulative progress events, per-limit AR/EWMA forecasts, and
+        the nearest predicted limiting resource.
+      responses:
+        '200':
+          description: Run limit snapshot.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RunLimitSnapshot' }
+        '404': { $ref: '#/components/responses/RunNotFound' }
 
   /runs/{run_id}/stop:
     parameters: [ { $ref: '#/components/parameters/RunId' } ]
@@ -457,6 +553,30 @@ paths:
                   run_ids: { type: array, items: { type: string } }
                   dry_run: { type: boolean }
 
+  /workspace/compact:
+    post:
+      operationId: compactWorkspaceStorage
+      summary: Bulk compact terminal Run storage
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StorageMaintenanceRequest' }
+      responses:
+        '200':
+          description: Per-run compaction reports.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [dry_run, profile, runs]
+                properties:
+                  dry_run: { type: boolean }
+                  profile: { $ref: '#/components/schemas/StorageMaintenanceProfile' }
+                  runs:
+                    type: array
+                    items: { type: object }
+
   /openapi.yaml:
     get:
       operationId: getOpenApi
@@ -549,6 +669,10 @@ components:
     ArtifactKind:
       type: string
       enum: [manifest, event_feed, score_chart, candidate_registry, frontier]
+    StorageMaintenanceProfile:
+      type: string
+      enum: [debug, compact, minimal]
+      default: compact
     CursorPhase:
       type: string
       enum: [initializing, seed_full_train, generation_start, proposer_waiting, candidate_minibatch, candidate_full_train, heldout, finalizing, paused, completed, failed, cancelled]
@@ -576,6 +700,18 @@ components:
         - generation
         - -generation
 
+    StorageMaintenanceRequest:
+      type: object
+      properties:
+        dry_run:
+          type: boolean
+          default: true
+        profile:
+          $ref: '#/components/schemas/StorageMaintenanceProfile'
+        status:
+          type: array
+          items: { $ref: '#/components/schemas/RunStatus' }
+
     # ---- Core entities -----------------------------------------------------
     Run:
       type: object
@@ -583,6 +719,14 @@ components:
       properties:
         run_id: { type: string }
         status: { $ref: '#/components/schemas/RunStatus' }
+        phase:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/CursorPhase'
+        generation: { type: integer, minimum: 0 }
+        best_candidate_id: { type: [string, 'null'] }
+        candidate_count: { type: integer, minimum: 0 }
+        checkpoint_sequence: { type: [integer, 'null'] }
         config:
           allOf: [ { $ref: '#/components/schemas/RunRequest' } ]
           description: |
@@ -598,6 +742,7 @@ components:
           properties:
             rollouts: { type: integer }
             generations: { type: integer }
+        timing_summary: { $ref: '#/components/schemas/RunTimingSummary' }
         outcome:
           description: |
             null while non-terminal. On terminal, a discriminated object keyed on
@@ -613,6 +758,357 @@ components:
         # links:         # untyped HATEOAS bag — typed clients derive routes from the spec.
         #   type: object
         #   additionalProperties: { type: string }
+
+    RunStateSnapshot:
+      type: object
+      required: [run_id, status, run, cursor, phase, generation, queues, pipeline]
+      properties:
+        run_id: { type: string }
+        status: { $ref: '#/components/schemas/RunStatus' }
+        run: { $ref: '#/components/schemas/Run' }
+        cursor:
+          description: Raw persisted GEPA cursor. Null until first checkpoint.
+          type: [object, 'null']
+          additionalProperties: true
+        phase:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/CursorPhase'
+        generation: { type: integer, minimum: 0 }
+        proposal_index: { type: integer, minimum: 0 }
+        heldout_candidate_index: { type: integer, minimum: 0 }
+        best_candidate_id: { type: [string, 'null'] }
+        candidate_count: { type: integer, minimum: 0 }
+        rollout_count: { type: integer, minimum: 0 }
+        cost_usd: { type: number }
+        usage:
+          type: object
+          additionalProperties: true
+        usage_ledger:
+          type: [array, object, 'null']
+          items: {}
+          additionalProperties: true
+        pending:
+          type: object
+          additionalProperties: true
+        active_evaluation:
+          type: [object, 'null']
+          additionalProperties: true
+        queues:
+          type: object
+          required: [proposal, propose, rollout, evaluate]
+          properties:
+            proposal: { $ref: '#/components/schemas/RunQueueSnapshot' }
+            propose: { $ref: '#/components/schemas/RunQueueSnapshot' }
+            rollout: { $ref: '#/components/schemas/RunQueueSnapshot' }
+            evaluate: { $ref: '#/components/schemas/RunQueueSnapshot' }
+        pipeline:
+          type: [object, 'null']
+          additionalProperties: true
+        checkpoint_sequence: { type: [integer, 'null'] }
+        state_history:
+          type: [array, object, 'null']
+          items: {}
+          additionalProperties: true
+        metadata:
+          type: [object, 'null']
+          additionalProperties: true
+        terminal_summary:
+          type: [object, 'null']
+          additionalProperties: true
+        error_summary:
+          type: [object, 'null']
+          additionalProperties: true
+
+    RunTimings:
+      type: object
+      required: [run_id, summary, timings]
+      properties:
+        run_id: { type: string }
+        summary: { $ref: '#/components/schemas/RunTimingSummary' }
+        timings:
+          type: array
+          items: { $ref: '#/components/schemas/RunPhaseTiming' }
+
+    RunTransitionStats:
+      type: object
+      required:
+        - schema_version
+        - run_id
+        - source
+        - transition_count
+        - entity_counts
+        - latest_state_counts
+        - run
+        - candidate
+        - minibatch
+        - rollout
+        - proposer
+        - throughput
+        - usage
+      properties:
+        schema_version: { type: string }
+        run_id: { type: string }
+        source: { $ref: '#/components/schemas/RunTransitionStatsSource' }
+        transition_count: { type: integer, minimum: 0 }
+        entity_counts:
+          type: object
+          additionalProperties: { type: integer, minimum: 0 }
+        latest_state_counts:
+          type: object
+          additionalProperties:
+            type: object
+            additionalProperties: { type: integer, minimum: 0 }
+        run:
+          type: object
+          properties:
+            status: { type: string }
+            duration_seconds: { type: [number, 'null'], minimum: 0 }
+            wall_seconds: { type: [number, 'null'], minimum: 0 }
+            started_at: { type: [string, 'null'], format: date-time }
+            finished_at: { type: [string, 'null'], format: date-time }
+        candidate:
+          type: object
+          properties:
+            count: { type: integer, minimum: 0 }
+            terminal_count: { type: integer, minimum: 0 }
+            active_count: { type: integer, minimum: 0 }
+            duration_seconds: { $ref: '#/components/schemas/RunTransitionDurationSummary' }
+            minibatch_decision_seconds: { $ref: '#/components/schemas/RunTransitionDurationSummary' }
+        minibatch:
+          type: object
+          properties:
+            passed: { type: integer, minimum: 0 }
+            rejected: { type: integer, minimum: 0 }
+            pass_rate: { type: [number, 'null'], minimum: 0, maximum: 1 }
+        rollout:
+          type: object
+          properties:
+            count: { type: integer, minimum: 0 }
+            duration_seconds: { $ref: '#/components/schemas/RunTransitionDurationSummary' }
+            max_concurrent: { type: integer, minimum: 0 }
+            upstream_429_count: { type: integer, minimum: 0 }
+            upstream_429_rate: { type: [number, 'null'], minimum: 0 }
+        proposer:
+          type: object
+          properties:
+            round_count: { type: integer, minimum: 0 }
+            llm_duration_seconds: { $ref: '#/components/schemas/RunTransitionDurationSummary' }
+            lifecycle_seconds: { $ref: '#/components/schemas/RunTransitionDurationSummary' }
+        throughput:
+          type: object
+          properties:
+            candidates_per_proposer_minute: { type: [number, 'null'], minimum: 0 }
+            passing_candidates_per_proposer_minute: { type: [number, 'null'], minimum: 0 }
+            pareto_delta_per_proposer_minute: { type: [number, 'null'], minimum: 0 }
+            rollouts_per_wall_minute: { type: [number, 'null'], minimum: 0 }
+            rollouts_per_rollout_runtime_minute: { type: [number, 'null'], minimum: 0 }
+        usage:
+          type: object
+          properties:
+            total_tokens: { type: integer, minimum: 0 }
+            cost_usd: { type: number, minimum: 0 }
+
+    RunTransitionStatsSource:
+      type: object
+      required: [kind, path, exists]
+      properties:
+        kind: { type: string, enum: [transitions.sqlite] }
+        path: { type: string }
+        exists: { type: boolean }
+
+    RunTransitionDurationSummary:
+      type: object
+      required: [count, total, min, max, p50, p95]
+      properties:
+        count: { type: integer, minimum: 0 }
+        total: { type: number, minimum: 0 }
+        min: { type: [number, 'null'], minimum: 0 }
+        max: { type: [number, 'null'], minimum: 0 }
+        p50: { type: [number, 'null'], minimum: 0 }
+        p95: { type: [number, 'null'], minimum: 0 }
+
+    RunLimitSnapshot:
+      type: object
+      required: [schema_version, run_id, generated_at, limits, events]
+      properties:
+        schema_version: { type: string }
+        run_id: { type: string }
+        generated_at: { type: string, format: date-time }
+        nearest_limit:
+          anyOf:
+            - { $ref: '#/components/schemas/RunLimitForecast' }
+            - { type: 'null' }
+        limits:
+          type: array
+          items: { $ref: '#/components/schemas/RunLimitStatus' }
+        events:
+          type: array
+          items: { $ref: '#/components/schemas/RunLimitProgressEvent' }
+
+    RunLimitStatus:
+      type: object
+      required: [definition, spent, reserved, remaining, utilization, forecast]
+      properties:
+        definition: { $ref: '#/components/schemas/RunLimitDefinition' }
+        spent: { type: number, minimum: 0 }
+        reserved: { type: number, minimum: 0 }
+        remaining: { type: number, minimum: 0 }
+        utilization: { type: number, minimum: 0, maximum: 1 }
+        forecast: { $ref: '#/components/schemas/RunLimitForecast' }
+
+    RunLimitDefinition:
+      type: object
+      required: [schema_version, limit_id, run_id, kind, scope, max_value, hard, stop_policy, source]
+      properties:
+        schema_version: { type: string }
+        limit_id: { type: string }
+        run_id: { type: string }
+        kind:
+          oneOf:
+            - type: string
+              enum:
+                - cost_usd
+                - total_rollouts
+                - train_rollouts
+                - heldout_rollouts
+                - wall_seconds
+                - prompt_tokens
+                - completion_tokens
+                - total_tokens
+                - candidates
+                - generations
+            - type: object
+              additionalProperties: true
+        scope: { type: string }
+        max_value: { type: number, exclusiveMinimum: 0 }
+        hard: { type: boolean }
+        stop_policy: { type: string }
+        source: { type: string }
+        metadata:
+          type: object
+          additionalProperties: true
+
+    RunLimitForecast:
+      type: object
+      required: [schema_version, forecast_id, run_id, limit_id, model, confidence, sample_count, updated_at]
+      properties:
+        schema_version: { type: string }
+        forecast_id: { type: string }
+        run_id: { type: string }
+        limit_id: { type: string }
+        model: { type: string }
+        predicted_crossing_at: { type: [string, 'null'], format: date-time }
+        seconds_to_limit: { type: [number, 'null'], minimum: 0 }
+        seconds_to_limit_low: { type: [number, 'null'], minimum: 0 }
+        seconds_to_limit_high: { type: [number, 'null'], minimum: 0 }
+        predicted_crossing_at_low: { type: [string, 'null'], format: date-time }
+        predicted_crossing_at_high: { type: [string, 'null'], format: date-time }
+        rate_per_second: { type: [number, 'null'], minimum: 0 }
+        confidence:
+          type: string
+          enum: [unknown, low, medium, high]
+        sample_count: { type: integer, minimum: 0 }
+        updated_at: { type: string, format: date-time }
+
+    RunLimitProgressEvent:
+      type: object
+      required:
+        - schema_version
+        - event_id
+        - run_id
+        - limit_id
+        - timestamp
+        - spent
+        - reserved
+        - remaining
+        - utilization
+        - delta_spent
+        - delta_reserved
+        - source_kind
+        - source_id
+      properties:
+        schema_version: { type: string }
+        event_id: { type: string }
+        run_id: { type: string }
+        limit_id: { type: string }
+        timestamp: { type: string, format: date-time }
+        spent: { type: number, minimum: 0 }
+        reserved: { type: number, minimum: 0 }
+        remaining: { type: number, minimum: 0 }
+        utilization: { type: number, minimum: 0, maximum: 1 }
+        delta_spent: { type: number, minimum: 0 }
+        delta_reserved: { type: number }
+        source_kind: { type: string }
+        source_id: { type: string }
+
+    RunTimingSummary:
+      type: object
+      properties:
+        proposer_round_count: { type: integer, minimum: 0 }
+        proposer_total_seconds: { type: number, minimum: 0 }
+        latest_proposer_seconds: { type: [number, 'null'], minimum: 0 }
+        latest_proposer_finished_at: { type: [string, 'null'], format: date-time }
+        rollout_count: { type: integer, minimum: 0 }
+        rollout_batch_count: { type: integer, minimum: 0 }
+        rollout_total_seconds: { type: number, minimum: 0 }
+        latest_rollout_seconds: { type: [number, 'null'], minimum: 0 }
+        latest_rollout_finished_at: { type: [string, 'null'], format: date-time }
+
+    RunPhaseTiming:
+      type: object
+      required:
+        - schema_version
+        - timing_id
+        - run_id
+        - lane
+        - kind
+        - subject_type
+        - subject_id
+        - status
+        - started_at
+        - prompt_tokens
+        - completion_tokens
+        - total_tokens
+        - metadata
+        - recorded_at
+      properties:
+        schema_version: { type: string }
+        timing_id: { type: string }
+        run_id: { type: string }
+        lane:
+          type: string
+          enum: [proposer, rollout]
+        kind: { type: string }
+        stage: { type: [string, 'null'] }
+        generation: { type: [integer, 'null'], minimum: 0 }
+        candidate_id: { type: [string, 'null'] }
+        subject_type: { type: string }
+        subject_id: { type: string }
+        status: { type: string }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: [string, 'null'], format: date-time }
+        wall_seconds: { type: [number, 'null'], minimum: 0 }
+        item_count: { type: [integer, 'null'], minimum: 0 }
+        prompt_tokens: { type: integer, minimum: 0 }
+        completion_tokens: { type: integer, minimum: 0 }
+        total_tokens: { type: integer, minimum: 0 }
+        cost_usd: { type: [number, 'null'], minimum: 0 }
+        source_effect_id: { type: [string, 'null'] }
+        metadata:
+          type: object
+          additionalProperties: true
+        recorded_at: { type: string, format: date-time }
+
+    RunQueueSnapshot:
+      type: object
+      required: [count, items]
+      properties:
+        count: { type: integer, minimum: 0 }
+        items:
+          type: [array, object]
+          items: {}
+          additionalProperties: true
 
     Candidate:
       type: object
@@ -734,12 +1230,26 @@ components:
     # ---- Submission body ---------------------------------------------------
     RunRequest:
       type: object
-      required: [container_url, policy, proposer, taskset]
+      required: [container_url, policy, proposer, taskset, task_pools]
       properties:
         container_url: { type: string, format: uri }
+        output_dir:
+          type: [string, 'null']
+          description: |
+            Optional artifact root for this run. If omitted, the optimizer default
+            output root is used.
         policy: { $ref: '#/components/schemas/PolicySpec' }
         proposer: { $ref: '#/components/schemas/ProposerSpec' }
         taskset: { $ref: '#/components/schemas/TasksetSpec' }
+        task_pools:
+          allOf: [{ $ref: '#/components/schemas/GepaTaskPools' }]
+          description: |
+            GEPA selection pools, a sibling of `taskset` (mirroring the SDK
+            `GepaConfig(taskset=..., task_pools=...)` and the standalone
+            `[gepa.task_pools]` TOML). pareto is the selection set, minibatch the
+            judge set, reflection the proposer evidence set; heldout stays
+            untouched during search. Search-pool ids must come from
+            `taskset.train_ids`, the heldout pool from `taskset.heldout_ids`.
         manual_step: { type: boolean, default: false }
         stop_conditions:
           type: array
@@ -771,7 +1281,21 @@ components:
         provider: { $ref: '#/components/schemas/Provider' }
         model: { type: string }
         api_family: { $ref: '#/components/schemas/ApiFamily' }
+        auth_mode:
+          type: [string, 'null']
+          enum: [api_key, chatgpt, host, null]
+          description: |
+            Proposer credential mode for Codex app-server launches. `api_key`
+            preserves provider routing such as OpenRouter; `chatgpt`/`host`
+            use a host Codex auth bundle.
+        base_url: { type: [string, 'null'], format: uri }
         credentials: { $ref: '#/components/schemas/Credentials' }
+        copy_host_auth: { type: [boolean, 'null'] }
+        codex_home:
+          type: [string, 'null']
+          description: |
+            Host Codex auth directory used when `auth_mode` is `chatgpt`/`host`
+            or `copy_host_auth` is true. Required for ChatGPT-auth proposer runs.
 
     Credentials:
       type: object
@@ -795,14 +1319,36 @@ components:
       required: [train_ids, heldout_ids]
       description: |
         Explicit only in v1 — runs must be reproducible from the request alone.
-        ASSERTION: train_ids and heldout_ids MUST be disjoint (heldout leakage
-        guard) and both non-empty → else 422 invalid_config.
+        Task ids are split-local: train_ids are fetched from the train split and
+        heldout_ids from the heldout/test split. Selection pools are declared in
+        the request's sibling `task_pools` field.
       properties:
         train_ids:
           type: array
           minItems: 1
           items: { type: string }
         heldout_ids:
+          type: array
+          minItems: 1
+          items: { type: string }
+
+    GepaTaskPools:
+      type: object
+      required: [pareto, minibatch, reflection, heldout]
+      properties:
+        pareto:
+          type: array
+          minItems: 1
+          items: { type: string }
+        minibatch:
+          type: array
+          minItems: 1
+          items: { type: string }
+        reflection:
+          type: array
+          minItems: 1
+          items: { type: string }
+        heldout:
           type: array
           minItems: 1
           items: { type: string }
@@ -824,9 +1370,22 @@ components:
     StopMaxRollouts:
       type: object
       required: [kind, n]
+      description: |
+        Total rollout budget. The service normalizes this into train and
+        heldout buckets before execution so training cannot consume heldout
+        capacity. Omit `train`/`heldout` to let the service reserve at least one
+        full heldout pass from `taskset.heldout_ids`.
       properties:
         kind: { type: string, const: max_rollouts }
         n: { type: integer, minimum: 1 }
+        train:
+          type: [integer, 'null']
+          minimum: 1
+          description: Optional explicit training rollout cap.
+        heldout:
+          type: [integer, 'null']
+          minimum: 1
+          description: Optional explicit heldout rollout cap.
     StopMaxWallSeconds:
       type: object
       required: [kind, n]
@@ -871,6 +1430,7 @@ components:
       description: All optional. Loop/perf tuning folded out of the common path.
       properties:
         pipeline: { $ref: '#/components/schemas/PipelineConfig' }
+        budgets: { $ref: '#/components/schemas/BudgetConfig' }
         timeouts: { $ref: '#/components/schemas/Timeouts' }
         policy_io:
           type: object
@@ -886,6 +1446,20 @@ components:
           type: boolean
           default: true
           description: Bool only — the 6 internal tuning sub-knobs are server-managed.
+
+    BudgetConfig:
+      type: object
+      description: |
+        Explicit split rollout caps. These are first-class execution limits:
+        train stages draw only from `max_train_rollouts`, and heldout draws only
+        from `max_heldout_rollouts`.
+      properties:
+        max_train_rollouts:
+          type: [integer, 'null']
+          minimum: 1
+        max_heldout_rollouts:
+          type: [integer, 'null']
+          minimum: 1
 
     PipelineConfig:
       type: object
@@ -955,7 +1529,7 @@ components:
     # ---- Workspace ---------------------------------------------------------
     Workspace:
       type: object
-      required: [schema_version, runs, liveness]
+      required: [schema_version, runs, liveness, scheduler]
       properties:
         schema_version: { type: integer }
         runs:
@@ -980,3 +1554,116 @@ components:
             running_count: { type: integer }
             oldest_queued_age_seconds: { type: [integer, 'null'] }
             last_progress_at: { type: [string, 'null'], format: date-time }
+        scheduler:
+          type: object
+          description: Service worker-pool capacity and queued blocked reasons.
+          properties:
+            worker_count: { type: integer }
+            active_workers: { type: integer }
+            idle_workers: { type: integer }
+            queued_runnable: { type: integer }
+            queued_blocked: { type: integer }
+            workers:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+            queued:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+        run_status:
+          type: object
+          description: First-class run queue, lease, and worker heartbeat projection for dashboards.
+          properties:
+            raw_status_counts:
+              type: object
+              description: Counts by internal request status, including queued, leased, running, and terminal states.
+              additionalProperties:
+                type: integer
+            projected_status_counts:
+              type: object
+              description: Counts by public Run status.
+              additionalProperties:
+                type: integer
+            counts:
+              type: object
+              properties:
+                total: { type: integer }
+                queued: { type: integer }
+                leased: { type: integer }
+                running: { type: integer }
+                paused: { type: integer }
+                terminal: { type: integer }
+                active_workers: { type: integer }
+                idle_workers: { type: integer }
+                worker_count: { type: integer }
+                queued_runnable: { type: integer }
+                queued_blocked: { type: integer }
+                stale_leases: { type: integer }
+            active_leases:
+              type: array
+              items: { $ref: '#/components/schemas/RunLeaseStatus' }
+            queued_reasons:
+              type: array
+              items: { $ref: '#/components/schemas/QueuedRunReason' }
+            worker_slots:
+              type: array
+              items: { $ref: '#/components/schemas/WorkerSlotStatus' }
+
+    RunLeaseStatus:
+      type: object
+      properties:
+        run_id: { type: string }
+        request_id: { type: string }
+        worker_id: { type: [string, 'null'] }
+        request_status: { type: string }
+        lease_id: { type: [string, 'null'] }
+        leased_at: { type: [string, 'null'], format: date-time }
+        lease_expires_at: { type: [string, 'null'], format: date-time }
+        seconds_until_lease_expiry: { type: [integer, 'null'] }
+        last_worker_progress_at: { type: string, format: date-time }
+        last_run_event_at: { type: [string, 'null'], format: date-time }
+        heartbeat_state:
+          type: string
+          enum: [idle, inactive, heartbeating, stale, unknown]
+        heartbeat_detail: { type: string }
+        stale: { type: boolean }
+        stale_reason: { type: [string, 'null'] }
+
+    QueuedRunReason:
+      type: object
+      properties:
+        run_id: { type: string }
+        request_id: { type: string }
+        submitted_at: { type: string, format: date-time }
+        reason: { type: [string, 'null'] }
+        blocked_by_run_id: { type: [string, 'null'] }
+        blocked_by_request_id: { type: [string, 'null'] }
+        why_not_running: { type: string }
+
+    WorkerSlotStatus:
+      type: object
+      properties:
+        slot: { type: integer }
+        worker_id: { type: string }
+        state:
+          type: string
+          enum: [idle, active]
+        run_id: { type: [string, 'null'] }
+        request_id: { type: [string, 'null'] }
+        request_status: { type: [string, 'null'] }
+        lease_id: { type: [string, 'null'] }
+        leased_at: { type: [string, 'null'], format: date-time }
+        lease_expires_at: { type: [string, 'null'], format: date-time }
+        seconds_until_lease_expiry: { type: [integer, 'null'] }
+        last_worker_progress_at: { type: [string, 'null'], format: date-time }
+        last_progress_at: { type: [string, 'null'], format: date-time }
+        last_run_event_at: { type: [string, 'null'], format: date-time }
+        heartbeat_state:
+          type: string
+          enum: [idle, inactive, heartbeating, stale, unknown]
+        heartbeat_detail: { type: [string, 'null'] }
+        stale: { type: boolean }
+        stale_reason: { type: [string, 'null'] }

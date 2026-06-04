@@ -64,7 +64,11 @@ pub fn prepare_proposer_codex_launch(
                 let codex_home = workspace_dir.join(&codex_home_relative);
                 copy_codex_home(&source, &codex_home)?;
                 env_map.insert("CODEX_HOME".to_string(), codex_home.display().to_string());
-                (None, Some(codex_home), Some(codex_home_relative))
+                (
+                    Some(codex_home.clone()),
+                    Some(codex_home),
+                    Some(codex_home_relative),
+                )
             }
         };
     Ok(ProposerCodexLaunch {

@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use std::collections::BTreeMap;
 
@@ -30,6 +31,7 @@ use crate::invariants::{
     CountMismatchInput, InvariantReport, InvariantViolation, InvariantViolationInput,
 };
 use crate::jobs::{OptimizerJob, OptimizerJobKind, OptimizerJobStatus, RetryPolicy};
+use crate::limit_engine::{budget_limit_snapshot, LimitSnapshot};
 use crate::limits::{
     BudgetCommitRecord, BudgetLedgerSnapshot, BudgetLedgerTotals, BudgetReleaseRecord,
     BudgetReservationRecord, RunLimitsRecord, RuntimeEffectAdmissionRecord,
@@ -41,7 +43,7 @@ use crate::rollouts::{RolloutEventRecord, RolloutRecord, SensorRolloutRecords};
 use crate::runtime_records::{
     runtime_record_json, ContainerContractSnapshotRecord, PromptProgramSnapshotRecord,
     RenderedOptimizerStateInput, RenderedOptimizerStateRecord, ResolvedRunConfigRecord,
-    RuntimeEffectRecord, TasksetSnapshotRecord,
+    RunPhaseTimingRecord, RuntimeEffectRecord, TasksetSnapshotRecord,
 };
 use crate::scores::{
     ObjectiveSetRecord, ObjectiveSpec, ParetoComparisonRecord, ScoreRecord, ScoreVectorRecord,
@@ -51,6 +53,8 @@ use crate::sensors::SensorFrame;
 use crate::state_machine::OptimizerTransition;
 use crate::stopper::StopperStateRecord;
 use crate::usage::UsageLedgerRecord;
+
+const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkspaceStatus {
@@ -291,6 +295,7 @@ impl WorkspaceStore {
             fs::create_dir_all(parent).map_err(|source| OptimizerError::io(parent, source))?;
         }
         let conn = Connection::open(&path)?;
+        conn.busy_timeout(SQLITE_BUSY_TIMEOUT)?;
         let store = Self { path, conn };
         store.initialize()?;
         Ok(store)
@@ -305,6 +310,7 @@ impl WorkspaceStore {
             )));
         }
         let conn = Connection::open(&path)?;
+        conn.busy_timeout(SQLITE_BUSY_TIMEOUT)?;
         let store = Self { path, conn };
         store.initialize()?;
         Ok(store)
@@ -659,6 +665,25 @@ impl WorkspaceStore {
         worker_id: Option<&str>,
         lease_seconds: u64,
     ) -> Result<Option<WorkspaceRunRequestStatus>> {
+        self.claim_next_run_request_matching(lease_id, worker_id, lease_seconds, true)
+    }
+
+    pub fn claim_next_auto_run_request(
+        &self,
+        lease_id: &str,
+        worker_id: Option<&str>,
+        lease_seconds: u64,
+    ) -> Result<Option<WorkspaceRunRequestStatus>> {
+        self.claim_next_run_request_matching(lease_id, worker_id, lease_seconds, false)
+    }
+
+    fn claim_next_run_request_matching(
+        &self,
+        lease_id: &str,
+        worker_id: Option<&str>,
+        lease_seconds: u64,
+        include_manual_step: bool,
+    ) -> Result<Option<WorkspaceRunRequestStatus>> {
         self.recover_expired_run_requests()?;
         let request_id = self
             .conn
@@ -667,6 +692,7 @@ impl WorkspaceStore {
                 SELECT queued.request_id
                 FROM run_requests AS queued
                 WHERE queued.status = 'queued'
+                  AND (?1 OR queued.manual_step = 0)
                   AND NOT EXISTS (
                     SELECT 1
                     FROM run_requests AS active
@@ -690,7 +716,7 @@ impl WorkspaceStore {
                 ORDER BY queued.priority DESC, queued.submitted_at ASC, queued.request_id ASC
                 LIMIT 1
                 "#,
-                [],
+                params![include_manual_step],
                 |row| row.get::<_, String>(0),
             )
             .optional()?;
@@ -1773,6 +1799,66 @@ impl WorkspaceStore {
                 runtime_record_json(record),
                 record.planned_at,
                 record.terminal_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn record_run_phase_timing(&self, record: &RunPhaseTimingRecord) -> Result<()> {
+        self.conn.execute(
+            r#"
+            INSERT INTO run_phase_timings(
+                run_id, timing_id, lane, kind, stage, generation, candidate_id,
+                subject_type, subject_id, status, started_at, finished_at,
+                wall_seconds, item_count, prompt_tokens, completion_tokens,
+                total_tokens, cost_usd, source_effect_id, metadata_json,
+                record_json, recorded_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
+            ON CONFLICT(run_id, timing_id) DO UPDATE SET
+                lane = excluded.lane,
+                kind = excluded.kind,
+                stage = excluded.stage,
+                generation = excluded.generation,
+                candidate_id = excluded.candidate_id,
+                subject_type = excluded.subject_type,
+                subject_id = excluded.subject_id,
+                status = excluded.status,
+                started_at = excluded.started_at,
+                finished_at = excluded.finished_at,
+                wall_seconds = excluded.wall_seconds,
+                item_count = excluded.item_count,
+                prompt_tokens = excluded.prompt_tokens,
+                completion_tokens = excluded.completion_tokens,
+                total_tokens = excluded.total_tokens,
+                cost_usd = excluded.cost_usd,
+                source_effect_id = excluded.source_effect_id,
+                metadata_json = excluded.metadata_json,
+                record_json = excluded.record_json,
+                recorded_at = excluded.recorded_at
+            "#,
+            params![
+                record.run_id,
+                record.timing_id,
+                record.lane,
+                record.kind,
+                record.stage.as_deref(),
+                record.generation.map(|value| value as i64),
+                record.candidate_id.as_deref(),
+                record.subject_type,
+                record.subject_id,
+                record.status,
+                record.started_at,
+                record.finished_at.as_deref(),
+                record.wall_seconds,
+                record.item_count.map(|value| value as i64),
+                record.prompt_tokens as i64,
+                record.completion_tokens as i64,
+                record.total_tokens as i64,
+                record.cost_usd,
+                record.source_effect_id,
+                stable_json(&Value::Object(record.metadata.clone())),
+                runtime_record_json(record),
+                record.recorded_at,
             ],
         )?;
         Ok(())
@@ -3120,6 +3206,11 @@ impl WorkspaceStore {
         Ok(())
     }
 
+    pub fn vacuum(&self) -> Result<()> {
+        self.conn.execute_batch("VACUUM")?;
+        Ok(())
+    }
+
     pub fn latest_checkpoint(
         &self,
         run_id: &str,
@@ -3572,6 +3663,33 @@ impl WorkspaceStore {
                 updated_at TEXT NOT NULL,
                 terminal_at TEXT,
                 PRIMARY KEY(run_id, runtime_effect_id),
+                FOREIGN KEY(run_id) REFERENCES optimization_runs(run_id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS run_phase_timings (
+                run_id TEXT NOT NULL,
+                timing_id TEXT NOT NULL,
+                lane TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                stage TEXT,
+                generation INTEGER,
+                candidate_id TEXT,
+                subject_type TEXT NOT NULL,
+                subject_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                wall_seconds REAL,
+                item_count INTEGER,
+                prompt_tokens INTEGER NOT NULL,
+                completion_tokens INTEGER NOT NULL,
+                total_tokens INTEGER NOT NULL,
+                cost_usd REAL,
+                source_effect_id TEXT NOT NULL,
+                metadata_json TEXT NOT NULL,
+                record_json TEXT NOT NULL,
+                recorded_at TEXT NOT NULL,
+                PRIMARY KEY(run_id, timing_id),
                 FOREIGN KEY(run_id) REFERENCES optimization_runs(run_id) ON DELETE CASCADE
             );
 
@@ -4345,6 +4463,15 @@ impl WorkspaceStore {
 
             CREATE INDEX IF NOT EXISTS idx_runtime_effects_run_subject
             ON runtime_effects(run_id, subject_type, subject_id);
+
+            CREATE INDEX IF NOT EXISTS idx_run_phase_timings_run_started
+            ON run_phase_timings(run_id, started_at);
+
+            CREATE INDEX IF NOT EXISTS idx_run_phase_timings_run_lane
+            ON run_phase_timings(run_id, lane, generation, stage);
+
+            CREATE INDEX IF NOT EXISTS idx_run_phase_timings_run_effect
+            ON run_phase_timings(run_id, source_effect_id);
 
             CREATE INDEX IF NOT EXISTS idx_runtime_effect_admissions_run_status
             ON runtime_effect_admissions(run_id, status);
@@ -5673,6 +5800,18 @@ impl<'a> WorkspaceView<'a> {
         )
     }
 
+    pub fn run_phase_timing_records(&self, run_id: &str) -> Result<Vec<RunPhaseTimingRecord>> {
+        self.json_records(
+            run_id,
+            r#"
+            SELECT record_json
+            FROM run_phase_timings
+            WHERE run_id = ?1
+            ORDER BY started_at, lane, timing_id
+            "#,
+        )
+    }
+
     pub fn runtime_effect(
         &self,
         run_id: &str,
@@ -5794,6 +5933,25 @@ impl<'a> WorkspaceView<'a> {
             ORDER BY released_at, budget_release_id
             "#,
         )
+    }
+
+    pub fn limit_snapshot(&self, run_id: &str) -> Result<LimitSnapshot> {
+        let limits = self.store.required_run_limits(run_id)?;
+        let ledger = self.store.budget_ledger_snapshot(run_id)?;
+        let reservations = self.budget_reservation_records(run_id)?;
+        let commits = self.budget_commit_records(run_id)?;
+        let admissions = self.runtime_effect_admission_records(run_id)?;
+        let timings = self.run_phase_timing_records(run_id)?;
+        Ok(budget_limit_snapshot(
+            run_id,
+            &limits,
+            &ledger,
+            &reservations,
+            &commits,
+            &admissions,
+            &timings,
+            None,
+        ))
     }
 
     pub fn candidate_records(&self, run_id: &str) -> Result<Vec<Value>> {

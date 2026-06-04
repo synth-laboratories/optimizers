@@ -11,6 +11,10 @@ __pycache__/
 *.code-workspace
 .cursor/
 
+# Local board/console artifacts and scratch run dirs.
+gepa_board.html
+/runs/
+
 # Local dev examples — keep bulky runs on disk, but track Better GEPA acceptance replay.
 dev_examples/
 !dev_examples/

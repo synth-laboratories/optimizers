@@ -34,6 +34,7 @@ PROFILE_FILES = {
     "openai_baseline_docker": "banking77_openai_baseline_docker.toml",
     "openrouter_grok43": "banking77_openrouter_grok43.toml",
     "openrouter_grok43_docker": "banking77_openrouter_grok43_docker.toml",
+    "openrouter_nemotron_ultra": "banking77_openrouter_nemotron_ultra.toml",
     "deepseek_v4_flash": "banking77_deepseek_v4_flash.toml",
     "chatgpt_mini": "banking77_chatgpt_mini_proposer.toml",
 }
@@ -43,6 +44,7 @@ PROFILE_REQUIRED_ENV = {
     "openai_baseline_docker": ("OPENAI_API_KEY",),
     "openrouter_grok43": ("OPENAI_API_KEY", "OPENROUTER_API_KEY"),
     "openrouter_grok43_docker": ("OPENAI_API_KEY", "OPENROUTER_API_KEY"),
+    "openrouter_nemotron_ultra": ("OPENAI_API_KEY", "OPENROUTER_API_KEY"),
     "deepseek_v4_flash": ("OPENAI_API_KEY", "DEEPSEEK_API_KEY"),
     "chatgpt_mini": ("OPENAI_API_KEY",),
 }
@@ -375,6 +377,16 @@ def apply_docker_image_override(payload: dict[str, Any]) -> None:
 def apply_acceptance_taskset(payload: dict[str, Any]) -> None:
     payload["taskset"]["train_ids"] = [f"train:{task_id}" for task_id in range(4)]
     payload["taskset"]["heldout_ids"] = [f"test:{task_id}" for task_id in range(2)]
+    # Task pools live under [gepa] for a standalone `GepaRun.from_toml` config,
+    # matching GepaConfig.to_toml_dict (gepa["task_pools"]) and config.gepa.task_pools.
+    # (The service request uses a sibling `task_pools` field — same canonical home,
+    # different transport.)
+    payload.setdefault("gepa", {})["task_pools"] = {
+        "pareto": [f"train:{task_id}" for task_id in range(2)],
+        "minibatch": [f"train:{task_id}" for task_id in range(2)],
+        "reflection": [f"train:{task_id}" for task_id in range(4)],
+        "heldout": [f"test:{task_id}" for task_id in range(2)],
+    }
     command = payload["container"]["command"]
     command.insert(4, "BANKING77_POLICY_TIMEOUT_SECONDS=60")
 

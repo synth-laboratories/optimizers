@@ -1,6 +1,6 @@
 [project]
 name = "synth-optimizers"
-version = "0.2.0.dev202606021646"
+version = "0.2.0.20260604"
 description = "Public Synth optimizer tooling with a Rust GEPA core."
 authors = [{name = "Synth Laboratories", email = "josh@usesynth.ai"}]
 readme = "README.md"
@@ -8,7 +8,7 @@ requires-python = ">=3.11"
 license = "Apache-2.0"
 dependencies = [
     "pydantic>=2.0.0",
-    "synth-containers==0.2.0.dev202605312141",
+    "synth-containers==0.2.0.20260604",
 ]
 
 [project.optional-dependencies]
@@ -41,6 +41,9 @@ build-backend = "maturin"
 manifest-path = "rust/crates/synth_optimizers_py/Cargo.toml"
 module-name = "synth_optimizers._synth_optimizers"
 python-source = "src"
+# Ship the bundled console docs (markdown + logo) as package data so a
+# pip-installed `gepa console` can serve them without a repo checkout.
+include = ["src/synth_optimizers/docs/**/*"]
 
 [tool.uv]
 package = true

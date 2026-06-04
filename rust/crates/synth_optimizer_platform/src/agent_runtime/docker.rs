@@ -142,6 +142,7 @@ fn run_docker_with_staged_workspace(
         env_map: docker_process_env,
         auth_home_to_cleanup: launch_state.auth_home_to_cleanup,
         process_label,
+        execution_mode: "local_process".to_string(),
     })?;
     let receipt = SupervisorReceipt {
         substrate: "docker".to_string(),

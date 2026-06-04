@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -308,6 +308,45 @@ impl SynthOptimizerConfig {
         ]) {
             self.proposer.backend = proposer_backend;
         }
+        if let Some(execution_mode) = read_env_override(&[
+            "SYNTH_OPTIMIZERS_PROPOSER_EXECUTION_MODE",
+            "GEPA_PLATFORM_PROPOSER_EXECUTION_MODE",
+        ]) {
+            self.proposer.execution_mode = execution_mode.trim().to_ascii_lowercase();
+        }
+        if let Some(model) = read_env_override(&[
+            "SYNTH_OPTIMIZERS_PROPOSER_MODEL",
+            "GEPA_PLATFORM_PROPOSER_MODEL",
+        ]) {
+            self.proposer.model = Some(model.trim().to_string());
+        }
+        if let Some(reasoning_effort) = read_env_override(&[
+            "SYNTH_OPTIMIZERS_PROPOSER_REASONING_EFFORT",
+            "GEPA_PLATFORM_PROPOSER_REASONING_EFFORT",
+        ]) {
+            self.proposer.reasoning_effort = Some(normalize_enum_value(&reasoning_effort));
+        }
+        if let Some(service_tier) = read_env_override(&[
+            "SYNTH_OPTIMIZERS_PROPOSER_SERVICE_TIER",
+            "GEPA_PLATFORM_PROPOSER_SERVICE_TIER",
+        ]) {
+            self.proposer.service_tier = normalize_proposer_service_tier(&service_tier);
+        }
+        if let Some(auth_mode) = read_env_override(&[
+            "SYNTH_OPTIMIZERS_PROPOSER_AUTH_MODE",
+            "GEPA_PLATFORM_PROPOSER_AUTH_MODE",
+        ]) {
+            self.proposer.auth_mode = proposer_auth_mode_normalized(&auth_mode);
+            if proposer_uses_chatgpt_auth(&self.proposer.auth_mode) {
+                self.proposer.api_key_env = None;
+            }
+        }
+        if let Some(codex_home) = read_env_override(&[
+            "SYNTH_OPTIMIZERS_PROPOSER_CODEX_HOME",
+            "GEPA_PLATFORM_PROPOSER_CODEX_HOME",
+        ]) {
+            self.proposer.codex_home = Some(PathBuf::from(codex_home));
+        }
         if let Some(rollout_submission_mode) =
             read_env_override(&["SYNTH_OPTIMIZERS_ROLLOUT_SUBMISSION_MODE"])
         {
@@ -538,6 +577,12 @@ impl SynthOptimizerConfig {
         validate_gepa_objective_acceptance_config(&self.gepa.objective_acceptance)?;
         validate_gepa_candidate_selector_config(&self.gepa.candidate_selector)?;
         validate_gepa_batch_sampler_config(&self.gepa.batch_sampler)?;
+        validate_gepa_task_pools_config(&self.gepa.task_pools)?;
+        validate_task_pools_against_taskset(
+            &self.gepa.task_pools,
+            &self.taskset.train_ids,
+            &self.taskset.heldout_ids,
+        )?;
         validate_gepa_pipeline_config(&self.gepa.pipeline)?;
         if !self.gepa.max_cost_usd.is_finite() || self.gepa.max_cost_usd < 0.0 {
             return Err(OptimizerError::Config(
@@ -613,6 +658,7 @@ impl SynthOptimizerConfig {
         if backend == "deepseek_chat" {
             validate_deepseek_chat_proposer_config(&self.proposer)?;
         }
+        validate_openrouter_proposer_config(&self.proposer)?;
         let proposer_api_family = normalize_enum_value(&self.proposer.api_family);
         if !matches!(
             proposer_api_family.as_str(),
@@ -623,6 +669,8 @@ impl SynthOptimizerConfig {
                 self.proposer.api_family
             )));
         }
+        validate_proposer_reasoning_effort(&self.proposer)?;
+        validate_proposer_service_tier(&self.proposer)?;
         validate_proposer_auth_config(&self.proposer)?;
         validate_proposer_prompt_config(&self.proposer.prompt)?;
         Ok(())
@@ -780,6 +828,8 @@ pub struct ProposerConfig {
     pub approval_policy: Option<String>,
     #[serde(default)]
     pub reasoning_effort: Option<String>,
+    #[serde(default)]
+    pub service_tier: Option<String>,
     #[serde(default = "default_proposer_auth_mode")]
     pub auth_mode: String,
     #[serde(default)]
@@ -792,6 +842,11 @@ pub struct ProposerConfig {
     pub timeout_seconds: u64,
     #[serde(default)]
     pub model: Option<String>,
+    /// Opt out of the curated OpenRouter model allowlist so any OpenRouter
+    /// slug can be used as a proposer. Cost is taken from OpenRouter's reported
+    /// usage instead of a verified static price.
+    #[serde(default)]
+    pub allow_unverified_model: bool,
     #[serde(default)]
     pub prompt: ProposerPromptConfig,
     #[serde(default)]
@@ -811,12 +866,14 @@ impl Default for ProposerConfig {
             sandbox_mode: None,
             approval_policy: None,
             reasoning_effort: None,
+            service_tier: None,
             auth_mode: default_proposer_auth_mode(),
             copy_host_auth: false,
             codex_home: None,
             api_key_env: None,
             timeout_seconds: default_timeout_seconds(),
             model: None,
+            allow_unverified_model: false,
             prompt: ProposerPromptConfig::default(),
             docker: None,
         }
@@ -850,6 +907,7 @@ impl Default for ProposerDockerConfig {
 /// Proposer models allowed when using ChatGPT subscription auth (`auth_mode = chatgpt`).
 pub const CHATGPT_PROPOSER_MODELS: &[&str] = &[
     "gpt-5.4-mini",
+    "gpt-5.4",
     "gpt-5.3-codex",
     "gpt-5.3-codex-spark",
     "gpt-5.5",
@@ -1003,6 +1061,47 @@ fn validate_proposer_auth_config(proposer: &ProposerConfig) -> Result<()> {
     Ok(())
 }
 
+fn validate_proposer_reasoning_effort(proposer: &ProposerConfig) -> Result<()> {
+    let Some(reasoning_effort) = proposer.reasoning_effort.as_deref() else {
+        return Ok(());
+    };
+    let normalized = normalize_enum_value(reasoning_effort);
+    if matches!(normalized.as_str(), "none" | "low" | "medium" | "high") {
+        return Ok(());
+    }
+    Err(OptimizerError::Config(format!(
+        "proposer.reasoning_effort must be none, low, medium, or high; got {reasoning_effort:?}. \
+         Use proposer.service_tier = \"fast\" for Codex Fast mode."
+    )))
+}
+
+fn validate_proposer_service_tier(proposer: &ProposerConfig) -> Result<()> {
+    let Some(service_tier) = proposer.service_tier.as_deref() else {
+        return Ok(());
+    };
+    let normalized = normalize_enum_value(service_tier);
+    if normalized != "fast" {
+        return Err(OptimizerError::Config(format!(
+            "unsupported proposer.service_tier {service_tier:?}; expected fast or omit the field \
+             for the default Codex tier"
+        )));
+    }
+    if proposer.backend.trim() != "codex_app_server" {
+        return Err(OptimizerError::Config(
+            "proposer.service_tier = \"fast\" requires proposer.backend = \"codex_app_server\""
+                .to_string(),
+        ));
+    }
+    if !proposer_uses_chatgpt_auth(&proposer.auth_mode) {
+        return Err(OptimizerError::Config(
+            "proposer.service_tier = \"fast\" requires proposer.auth_mode = \"chatgpt\"; \
+             API-key Codex runs use standard API pricing, not Codex Fast mode"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_proposer_runtime_substrate_config(proposer: &ProposerConfig) -> Result<()> {
     match proposer.runtime_substrate {
         ExecutionSubstrate::Local => Ok(()),
@@ -1028,6 +1127,84 @@ fn validate_deepseek_chat_proposer_config(proposer: &ProposerConfig) -> Result<(
             "proposer.backend = \"deepseek_chat\" requires proposer.runtime_substrate = \"local\""
                 .to_string(),
         ));
+    }
+    Ok(())
+}
+
+fn validate_openrouter_proposer_config(proposer: &ProposerConfig) -> Result<()> {
+    if !proposer.provider.eq_ignore_ascii_case("openrouter") {
+        return Ok(());
+    }
+    let model = proposer
+        .model
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            OptimizerError::Config(
+                "proposer.provider = \"openrouter\" requires proposer.model".to_string(),
+            )
+        })?;
+    // Curated allowlist of first-class OpenRouter proposers (verified, with a
+    // known static price). Any other slug requires the explicit
+    // proposer.allow_unverified_model opt-in, after which OpenRouter validates
+    // the slug and cost flows through from its reported usage.
+    const VERIFIED_OPENROUTER_MODELS: [&str; 1] = ["x-ai/grok-4.3"];
+    let normalized_model = model.trim().to_ascii_lowercase();
+    if !proposer.allow_unverified_model
+        && !VERIFIED_OPENROUTER_MODELS.contains(&normalized_model.as_str())
+    {
+        return Err(OptimizerError::Config(format!(
+            "OpenRouter proposer.model {model:?} is not in the verified allowlist ({}); \
+             set proposer.allow_unverified_model = true to use any OpenRouter model",
+            VERIFIED_OPENROUTER_MODELS.join(", ")
+        )));
+    }
+    if proposer.backend != "codex_app_server" {
+        return Err(OptimizerError::Config(
+            "OpenRouter proposer requires proposer.backend = \"codex_app_server\"".to_string(),
+        ));
+    }
+    let auth_mode = proposer_auth_mode_normalized(&proposer.auth_mode);
+    if !matches!(auth_mode.as_str(), "api_key" | "auto") {
+        return Err(OptimizerError::Config(
+            "OpenRouter proposer requires proposer.auth_mode = \"api_key\" or \"auto\"".to_string(),
+        ));
+    }
+    let api_key_env = proposer
+        .api_key_env
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            OptimizerError::Config(
+                "OpenRouter proposer requires proposer.api_key_env, usually OPENROUTER_API_KEY"
+                    .to_string(),
+            )
+        })?;
+    if api_key_env == "OPENAI_API_KEY" {
+        return Err(OptimizerError::Config(
+            "OpenRouter proposer must not use OPENAI_API_KEY; set \
+             proposer.api_key_env = \"OPENROUTER_API_KEY\""
+                .to_string(),
+        ));
+    }
+    let api_family = normalize_enum_value(&proposer.api_family);
+    if !matches!(api_family.as_str(), "chat_completions" | "responses") {
+        return Err(OptimizerError::Config(format!(
+            "OpenRouter proposer supports chat_completions or responses; got {:?}",
+            proposer.api_family
+        )));
+    }
+    if let Some(reasoning_effort) = proposer.reasoning_effort.as_deref() {
+        let normalized_effort = normalize_enum_value(reasoning_effort);
+        if !matches!(
+            normalized_effort.as_str(),
+            "none" | "low" | "medium" | "high"
+        ) {
+            return Err(OptimizerError::Config(format!(
+                "OpenRouter proposer.reasoning_effort must be none, low, medium, \
+                 or high; got {reasoning_effort:?}"
+            )));
+        }
     }
     Ok(())
 }
@@ -1136,13 +1313,13 @@ impl Default for GepaBatchSamplerConfig {
 #[serde(deny_unknown_fields)]
 pub struct GepaTaskPoolsConfig {
     #[serde(default)]
-    pub pareto_eval: Vec<String>,
+    pub pareto: Vec<String>,
     #[serde(default)]
     pub minibatch: Vec<String>,
     #[serde(default)]
     pub reflection: Vec<String>,
     #[serde(default)]
-    pub validation: Vec<String>,
+    pub heldout: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -1688,6 +1865,14 @@ fn normalize_enum_value(value: &str) -> String {
     value.trim().to_ascii_lowercase().replace('-', "_")
 }
 
+fn normalize_proposer_service_tier(value: &str) -> Option<String> {
+    match normalize_enum_value(value).as_str() {
+        "" | "default" | "normal" | "standard" => None,
+        "fast" => Some("fast".to_string()),
+        _ => Some(value.trim().to_string()),
+    }
+}
+
 fn validate_proposer_prompt_config(config: &ProposerPromptConfig) -> Result<()> {
     if config.best_practices.is_some() && config.best_practices_path.is_some() {
         return Err(OptimizerError::Config(
@@ -1778,6 +1963,95 @@ fn validate_gepa_batch_sampler_config(config: &GepaBatchSamplerConfig) -> Result
         return Err(OptimizerError::Config(
             "gepa.batch_sampler.field must be non-empty when set".to_string(),
         ));
+    }
+    Ok(())
+}
+
+fn validate_gepa_task_pools_config(config: &GepaTaskPoolsConfig) -> Result<()> {
+    for (name, values) in [
+        ("gepa.task_pools.pareto", &config.pareto),
+        ("gepa.task_pools.minibatch", &config.minibatch),
+        ("gepa.task_pools.reflection", &config.reflection),
+        ("gepa.task_pools.heldout", &config.heldout),
+    ] {
+        if values.is_empty() {
+            return Err(OptimizerError::Config(format!(
+                "{name} must contain at least one task id"
+            )));
+        }
+        if values.iter().any(|value| value.trim().is_empty()) {
+            return Err(OptimizerError::Config(format!(
+                "{name} entries must be non-empty"
+            )));
+        }
+    }
+
+    let minibatch = config.minibatch.iter().cloned().collect::<BTreeSet<_>>();
+    let reflection = config.reflection.iter().cloned().collect::<BTreeSet<_>>();
+    let pareto = config.pareto.iter().cloned().collect::<BTreeSet<_>>();
+    let heldout = config.heldout.iter().cloned().collect::<BTreeSet<_>>();
+
+    let minibatch_not_reflected = minibatch
+        .difference(&reflection)
+        .cloned()
+        .collect::<Vec<_>>();
+    if !minibatch_not_reflected.is_empty() {
+        return Err(OptimizerError::Config(format!(
+            "gepa.task_pools.minibatch must be a subset of gepa.task_pools.reflection; missing from reflection: {:?}",
+            minibatch_not_reflected
+        )));
+    }
+
+    let heldout_overlaps = heldout
+        .intersection(&pareto)
+        .chain(heldout.intersection(&minibatch))
+        .chain(heldout.intersection(&reflection))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if !heldout_overlaps.is_empty() {
+        return Err(OptimizerError::Config(format!(
+            "gepa.task_pools.heldout must be disjoint from pareto, minibatch, and reflection pools; overlaps: {:?}",
+            heldout_overlaps
+        )));
+    }
+    Ok(())
+}
+
+/// Pools are split-local: search pools (pareto/minibatch/reflection) draw from
+/// `taskset.train_ids`, the heldout pool from `taskset.heldout_ids`. A pool id
+/// outside its split would silently mis-select (or fail) at rollout time.
+fn validate_task_pools_against_taskset(
+    config: &GepaTaskPoolsConfig,
+    train_ids: &[String],
+    heldout_ids: &[String],
+) -> Result<()> {
+    let train = train_ids.iter().cloned().collect::<BTreeSet<_>>();
+    let unknown_search = config
+        .pareto
+        .iter()
+        .chain(&config.minibatch)
+        .chain(&config.reflection)
+        .filter(|id| !train.contains(*id))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if !unknown_search.is_empty() {
+        return Err(OptimizerError::Config(format!(
+            "gepa.task_pools pareto/minibatch/reflection ids must come from taskset.train_ids; unknown: {:?}",
+            unknown_search.into_iter().collect::<Vec<_>>()
+        )));
+    }
+    let held = heldout_ids.iter().cloned().collect::<BTreeSet<_>>();
+    let unknown_heldout = config
+        .heldout
+        .iter()
+        .filter(|id| !held.contains(*id))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if !unknown_heldout.is_empty() {
+        return Err(OptimizerError::Config(format!(
+            "gepa.task_pools.heldout ids must come from taskset.heldout_ids; unknown: {:?}",
+            unknown_heldout.into_iter().collect::<Vec<_>>()
+        )));
     }
     Ok(())
 }

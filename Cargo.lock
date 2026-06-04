@@ -1184,6 +1184,7 @@ dependencies = [
  "sha1",
  "sha2",
  "synth_optimizer_platform",
+ "time",
 ]
 
 [[package]]

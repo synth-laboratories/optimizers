@@ -1470,7 +1470,10 @@ fn ensure_container_inputs(context: &mut GepaRunContext) -> Result<GepaContainer
         .url
         .clone()
         .ok_or_else(|| OptimizerError::Config("container.url is required".to_string()))?;
-    let client = ContainerClient::new(container_url.clone())?;
+    let client = ContainerClient::with_headers(
+        container_url.clone(),
+        context.config.container.headers.clone(),
+    )?;
     let metadata = client.verify_gepa_contract()?;
     let gepa_contract = metadata.resolved_gepa_contract()?;
     context.workspace.record_container_contract_snapshot(

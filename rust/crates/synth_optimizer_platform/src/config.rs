@@ -708,6 +708,8 @@ pub struct ContainerConfig {
     #[serde(default)]
     pub url: Option<String>,
     #[serde(default)]
+    pub headers: BTreeMap<String, String>,
+    #[serde(default)]
     pub command: Vec<String>,
     #[serde(default)]
     pub cwd: Option<PathBuf>,

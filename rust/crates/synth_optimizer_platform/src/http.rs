@@ -1,6 +1,9 @@
-use std::{env, time::Duration};
+use std::{collections::BTreeMap, env, time::Duration};
 
-use reqwest::blocking::Client;
+use reqwest::{
+    blocking::Client,
+    header::{HeaderMap, HeaderName, HeaderValue},
+};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 
@@ -15,10 +18,18 @@ use crate::prompt_program::PromptProgram;
 pub struct ContainerClient {
     base_url: String,
     client: Client,
+    headers: HeaderMap,
 }
 
 impl ContainerClient {
     pub fn new(base_url: impl Into<String>) -> Result<Self> {
+        Self::with_headers(base_url, BTreeMap::new())
+    }
+
+    pub fn with_headers(
+        base_url: impl Into<String>,
+        headers: BTreeMap<String, String>,
+    ) -> Result<Self> {
         let base_url = base_url.into().trim_end_matches('/').to_string();
         if base_url.is_empty() {
             return Err(OptimizerError::Config(
@@ -33,7 +44,11 @@ impl ContainerClient {
         let client = Client::builder()
             .timeout(Duration::from_secs(timeout_seconds))
             .build()?;
-        Ok(Self { base_url, client })
+        Ok(Self {
+            base_url,
+            client,
+            headers: parse_headers(headers)?,
+        })
     }
 
     pub fn health(&self) -> Result<Value> {
@@ -118,13 +133,18 @@ impl ContainerClient {
 
     fn get(&self, path: &str) -> Result<Value> {
         let url = format!("{}{}", self.base_url, path);
-        let response = self.client.get(url).send()?;
+        let response = self.client.get(url).headers(self.headers.clone()).send()?;
         Self::json_response(path, response)
     }
 
     fn post(&self, path: &str, request: &Value) -> Result<Value> {
         let url = format!("{}{}", self.base_url, path);
-        let response = self.client.post(url).json(request).send()?;
+        let response = self
+            .client
+            .post(url)
+            .headers(self.headers.clone())
+            .json(request)
+            .send()?;
         Self::json_response(path, response)
     }
 
@@ -159,4 +179,22 @@ impl ContainerClient {
         }
         Ok(serde_json::from_str(&text)?)
     }
+}
+
+fn parse_headers(headers: BTreeMap<String, String>) -> Result<HeaderMap> {
+    let mut map = HeaderMap::new();
+    for (name, value) in headers {
+        let header_name = HeaderName::from_bytes(name.as_bytes()).map_err(|source| {
+            OptimizerError::Config(format!(
+                "container.headers contains invalid header name {name:?}: {source}"
+            ))
+        })?;
+        let header_value = HeaderValue::from_str(&value).map_err(|source| {
+            OptimizerError::Config(format!(
+                "container.headers contains invalid value for header {name:?}: {source}"
+            ))
+        })?;
+        map.insert(header_name, header_value);
+    }
+    Ok(map)
 }

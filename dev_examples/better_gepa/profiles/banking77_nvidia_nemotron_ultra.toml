@@ -1,0 +1,25 @@
+# Banking77 acceptance profile — NVIDIA Nemotron 3 Ultra proposer (non-free, direct NVIDIA API).
+# Uses the direct chat-completions backend: NVIDIA's integrate.api.nvidia.com serves
+# /chat/completions, NOT the Codex Responses wire — which is why the codex_app_server route
+# only ever worked through OpenRouter's :free Nemotron proxy.
+# Requires: NVIDIA_API_KEY (build.nvidia.com "nvapi-..." key), OPENAI_API_KEY (policy rollouts).
+# Confirm the exact model id in the NVIDIA model catalog; the default below mirrors the
+# OpenRouter id minus the :free suffix and may need adjusting.
+
+[policy]
+provider = "openai"
+model = "gpt-4.1-nano"
+api_key_env = "OPENAI_API_KEY"
+
+[proposer]
+backend = "chat_completions"
+execution_mode = "local_process"
+provider = "nvidia"
+base_url = "https://integrate.api.nvidia.com/v1"
+auth_mode = "api_key"
+api_key_env = "NVIDIA_API_KEY"
+copy_host_auth = false
+model = "nvidia/nemotron-3-ultra-550b-a55b"
+allow_unverified_model = true
+reasoning_effort = "medium"
+timeout_seconds = 1200

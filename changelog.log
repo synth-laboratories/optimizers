@@ -1,5 +1,12 @@
 # synth-optimizers changelog
 
+## 2026-06-04
+
+* Added `gepa console`: the run board and the bundled GEPA docs served behind one local port as `Board` | `Docs` tabs (click or `1`/`2`/`T` to switch).
+* Shipped GEPA docs (CLI, SDK, algorithms, containers) as package data under `synth_optimizers/docs/gepa`, served by the console with no repo checkout.
+* Extracted the shared board route/SSE handler so the board and console serve one implementation.
+* Fixed acceptance config generation to emit `task_pools` under `[gepa]` (standalone `GepaRun.from_toml` rejects `[taskset.task_pools]`).
+
 ## 2026-06-02
 
 * Published `0.2.0.dev202606021646` to PyPI.

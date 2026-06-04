@@ -2,6 +2,8 @@
 
 ## 2026-06-04
 
+* Started the `0.2.1.dev` cycle (post-release dev).
+* Added a paid NVIDIA Nemotron 3 Ultra proposer via OpenRouter (`nvidia/nemotron-3-ultra-550b-a55b`, no `:free`) through the proven Codex+Responses path; added a provider-agnostic `chat_completions` proposer backend for NVIDIA-direct (Codex no longer supports the chat wire).
 * Published `0.2.0.20260604` to PyPI (first non-dev daily release; pins `synth-containers==0.2.0.20260604`).
 * Added `gepa console`: the run board and the bundled GEPA docs served behind one local port as `Board` | `Docs` tabs (click or `1`/`2`/`T` to switch).
 * Shipped GEPA docs (CLI, SDK, algorithms, containers) as package data under `synth_optimizers/docs/gepa`, served by the console with no repo checkout.

@@ -83,7 +83,7 @@ heldout_seeds = [100, 101, 102, 103]
 
 ```python
 from synth_containers import Container
-from synth_optimizers import GepaConfig, GepaRun, OptimizerRun, TasksetSelection
+from synth_optimizers import GepaConfig, GepaRun, GepaTaskPools, OptimizerRun, TasksetSelection
 
 container = Container("my-task")
 
@@ -92,6 +92,12 @@ with container.serve() as handle:
         GepaConfig(
             container=handle.connection(),
             taskset=TasksetSelection(train_ids=["train:0", "train:1"], heldout_ids=["test:100"]),
+            task_pools=GepaTaskPools(
+                pareto=["train:0"],
+                minibatch=["train:0"],
+                reflection=["train:0", "train:1"],
+                heldout=["test:100"],
+            ),
             program=None,
             objectives=None,
             policy=None,

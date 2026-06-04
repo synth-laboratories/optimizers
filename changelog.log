@@ -6,6 +6,9 @@
 * Shipped GEPA docs (CLI, SDK, algorithms, containers) as package data under `synth_optimizers/docs/gepa`, served by the console with no repo checkout.
 * Extracted the shared board route/SSE handler so the board and console serve one implementation.
 * Fixed acceptance config generation to emit `task_pools` under `[gepa]` (standalone `GepaRun.from_toml` rejects `[taskset.task_pools]`).
+* Unified the GEPA task-pools location: the service request now takes `task_pools` as a top-level field (sibling of `taskset`), matching the SDK `GepaConfig` and the standalone `[gepa.task_pools]` TOML.
+* Validated that task-pool ids are split-local — pareto/minibatch/reflection must come from `taskset.train_ids` and heldout from `taskset.heldout_ids` (fails at config time instead of mis-selecting at rollout).
+* Typed the forecast confidence band in the limit engine so the interval multipliers match exhaustively (no silent zero-width interval), and dropped a fabricated total-token reservation fallback.
 
 ## 2026-06-02
 

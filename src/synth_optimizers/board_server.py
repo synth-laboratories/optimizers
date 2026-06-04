@@ -793,6 +793,89 @@ class _Hub:
         self._stop.set()
 
 
+# Shared board HTTP helpers. Both the standalone board handler and the console
+# handler (docs_server) serve the same board surface; these keep that single
+# implementation in one place.
+
+
+def write_bytes(handler: BaseHTTPRequestHandler, body: bytes, content_type: str) -> None:
+    handler.send_response(200)
+    handler.send_header("Content-Type", content_type)
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+def write_html(handler: BaseHTTPRequestHandler, text: str) -> None:
+    write_bytes(handler, text.encode(), "text/html; charset=utf-8")
+
+
+def write_json(handler: BaseHTTPRequestHandler, data: dict) -> None:
+    write_bytes(handler, json.dumps(data).encode(), "application/json")
+
+
+def render_board_page(hub: _Hub, source: BoardSource) -> str:
+    from .o11y import render_board_html
+
+    return render_board_html(
+        hub.latest,
+        title=source.title,
+        live_endpoint=STREAM_PATH,
+        service_url=getattr(source, "service_url", None),
+        events_base=EVENTS_BASE,
+    )
+
+
+def stream_board(handler: BaseHTTPRequestHandler, hub: _Hub) -> None:
+    """Serve the SSE ``board`` event stream until the client disconnects."""
+    handler.send_response(200)
+    handler.send_header("Content-Type", "text/event-stream")
+    handler.send_header("Cache-Control", "no-cache")
+    handler.send_header("Connection", "keep-alive")
+    handler.end_headers()
+    event = hub.subscribe()
+    try:
+        while True:
+            if event.wait(timeout=15.0):
+                event.clear()
+                payload = json.dumps(hub.latest)
+                handler.wfile.write(f"event: board\ndata: {payload}\n\n".encode())
+            else:
+                handler.wfile.write(b": ping\n\n")
+            handler.wfile.flush()
+    except (BrokenPipeError, ConnectionResetError):
+        pass
+    finally:
+        hub.unsubscribe(event)
+
+
+def handle_board_request(
+    handler: BaseHTTPRequestHandler,
+    raw_path: str,
+    query: dict,
+    hub: _Hub,
+    source: BoardSource,
+) -> bool:
+    """Serve the shared board API routes; return True if the path was handled."""
+    if raw_path == "/api/runs":
+        write_json(handler, hub.latest)
+    elif raw_path == STREAM_PATH:
+        stream_board(handler, hub)
+    elif raw_path.startswith(EVENTS_BASE + "/") and raw_path.endswith("/events"):
+        run_id = unquote(raw_path[len(EVENTS_BASE) + 1 : -len("/events")])
+        since = int(query.get("since", ["0"])[0])
+        write_json(handler, {"run_id": run_id, "events": source.run_events(run_id, since=since)})
+    elif raw_path.startswith(EVENTS_BASE + "/") and raw_path.endswith("/timings"):
+        run_id = unquote(raw_path[len(EVENTS_BASE) + 1 : -len("/timings")])
+        write_json(handler, source.run_timings(run_id))
+    elif raw_path.startswith(EVENTS_BASE + "/") and raw_path.endswith("/limits"):
+        run_id = unquote(raw_path[len(EVENTS_BASE) + 1 : -len("/limits")])
+        write_json(handler, source.run_limits(run_id))
+    else:
+        return False
+    return True
+
+
 def _handler_factory(hub: _Hub, source: BoardSource):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -804,68 +887,11 @@ def _handler_factory(hub: _Hub, source: BoardSource):
             raw_path = self.path.split("?", 1)[0]
             query = parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
             if raw_path == "/":
-                self._send_html()
-            elif raw_path == "/api/runs":
-                self._send_json(hub.latest)
-            elif raw_path == STREAM_PATH:
-                self._stream()
-            elif raw_path.startswith(EVENTS_BASE + "/") and raw_path.endswith("/events"):
-                run_id = unquote(raw_path[len(EVENTS_BASE) + 1 : -len("/events")])
-                since = int(query.get("since", ["0"])[0])
-                self._send_json({"run_id": run_id, "events": source.run_events(run_id, since=since)})
-            elif raw_path.startswith(EVENTS_BASE + "/") and raw_path.endswith("/timings"):
-                run_id = unquote(raw_path[len(EVENTS_BASE) + 1 : -len("/timings")])
-                self._send_json(source.run_timings(run_id))
-            elif raw_path.startswith(EVENTS_BASE + "/") and raw_path.endswith("/limits"):
-                run_id = unquote(raw_path[len(EVENTS_BASE) + 1 : -len("/limits")])
-                self._send_json(source.run_limits(run_id))
+                write_html(self, render_board_page(hub, source))
+            elif handle_board_request(self, raw_path, query, hub, source):
+                pass
             else:
                 self.send_error(404, "not found")
-
-        def _send_html(self) -> None:
-            from .o11y import render_board_html
-
-            body = render_board_html(
-                hub.latest,
-                title=source.title,
-                live_endpoint=STREAM_PATH,
-                service_url=getattr(source, "service_url", None),
-                events_base=EVENTS_BASE,
-            ).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        def _send_json(self, data: dict) -> None:
-            body = json.dumps(data).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        def _stream(self) -> None:
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Cache-Control", "no-cache")
-            self.send_header("Connection", "keep-alive")
-            self.end_headers()
-            event = hub.subscribe()
-            try:
-                while True:
-                    if event.wait(timeout=15.0):
-                        event.clear()
-                        payload = json.dumps(hub.latest)
-                        self.wfile.write(f"event: board\ndata: {payload}\n\n".encode())
-                    else:
-                        self.wfile.write(b": ping\n\n")
-                    self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError):
-                pass
-            finally:
-                hub.unsubscribe(event)
 
     return Handler
 
@@ -971,7 +997,6 @@ def _project_service_run(run: dict) -> dict:
         "scheduler_state": None,
         "blocked_reason": None,
         "blocked_by_run_id": None,
-        "worker_last_progress_at": None,
             "active_evaluation": None,
             "queue_counts": {},
             "checkpoint_sequence": None,

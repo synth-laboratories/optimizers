@@ -29,7 +29,6 @@ published wheel keeps the same pure-stdlib footprint as the board.
 from __future__ import annotations
 
 import html
-import json
 import re
 import threading
 from dataclasses import dataclass
@@ -38,7 +37,14 @@ from pathlib import Path
 from typing import Sequence
 from urllib.parse import parse_qs, unquote
 
-from .board_server import EVENTS_BASE, STREAM_PATH, _Hub
+from .board_server import (
+    _Hub,
+    handle_board_request,
+    render_board_page,
+    write_bytes,
+    write_html,
+    write_json,
+)
 from .o11y import BoardSource
 
 # Docs ship as package data under ``synth_optimizers/docs/<name>/`` so a
@@ -582,87 +588,29 @@ def _console_handler_factory(
 
             # Console shell + assets
             if raw == "/":
-                self._html(render_console_html(title=docs_source.title))
+                write_html(self, render_console_html(title=docs_source.title))
             elif raw == "/assets/synth-logo":
-                self._bytes(logo.body, logo.content_type)
+                write_bytes(self, logo.body, logo.content_type)
 
-            # Board surface (reuses o11y.render_board_html + the board hub/source)
+            # Board surface — the board HTML plus the shared board API routes.
             elif raw in ("/board", "/board/"):
-                from .o11y import render_board_html
-
-                self._html(
-                    render_board_html(
-                        hub.latest,
-                        title=board_source.title,
-                        live_endpoint=STREAM_PATH,
-                        service_url=getattr(board_source, "service_url", None),
-                        events_base=EVENTS_BASE,
-                    )
-                )
-            elif raw == "/api/runs":
-                self._json(hub.latest)
-            elif raw == STREAM_PATH:
-                self._stream()
-            elif raw.startswith(EVENTS_BASE + "/") and raw.endswith("/events"):
-                run_id = unquote(raw[len(EVENTS_BASE) + 1 : -len("/events")])
-                since = int(query.get("since", ["0"])[0])
-                self._json({"run_id": run_id, "events": board_source.run_events(run_id, since=since)})
-            elif raw.startswith(EVENTS_BASE + "/") and raw.endswith("/timings"):
-                run_id = unquote(raw[len(EVENTS_BASE) + 1 : -len("/timings")])
-                self._json(board_source.run_timings(run_id))
-            elif raw.startswith(EVENTS_BASE + "/") and raw.endswith("/limits"):
-                run_id = unquote(raw[len(EVENTS_BASE) + 1 : -len("/limits")])
-                self._json(board_source.run_limits(run_id))
+                write_html(self, render_board_page(hub, board_source))
+            elif handle_board_request(self, raw, query, hub, board_source):
+                pass
 
             # Docs surface
             elif raw in ("/docs", "/docs/"):
-                self._html(render_docs_html(title=docs_source.title))
+                write_html(self, render_docs_html(title=docs_source.title))
             elif raw == "/api/docs":
-                self._json(docs_source.index().to_data())
+                write_json(self, docs_source.index().to_data())
             elif raw == "/api/docs/page":
                 key = unquote(query.get("path", [""])[0])
                 try:
-                    self._json({"key": key, "html": docs_source.render_page(key)})
+                    write_json(self, {"key": key, "html": docs_source.render_page(key)})
                 except KeyError:
                     self.send_error(404, "doc not found")
             else:
                 self.send_error(404, "not found")
-
-        # -- writers --------------------------------------------------------
-
-        def _html(self, text: str) -> None:
-            self._bytes(text.encode(), "text/html; charset=utf-8")
-
-        def _json(self, data: dict) -> None:
-            self._bytes(json.dumps(data).encode(), "application/json")
-
-        def _bytes(self, body: bytes, content_type: str) -> None:
-            self.send_response(200)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        def _stream(self) -> None:
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Cache-Control", "no-cache")
-            self.send_header("Connection", "keep-alive")
-            self.end_headers()
-            event = hub.subscribe()
-            try:
-                while True:
-                    if event.wait(timeout=15.0):
-                        event.clear()
-                        payload = json.dumps(hub.latest)
-                        self.wfile.write(f"event: board\ndata: {payload}\n\n".encode())
-                    else:
-                        self.wfile.write(b": ping\n\n")
-                    self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError):
-                pass
-            finally:
-                hub.unsubscribe(event)
 
     return Handler
 

@@ -108,7 +108,7 @@ pub(crate) fn run_codex_staleness_reviewer(
 }
 
 /// Direct OpenAI-compatible Chat Completions proposer. Works for any provider whose
-/// `/chat/completions` endpoint matches the OpenAI shape — DeepSeek and NVIDIA today.
+/// `/chat/completions` endpoint matches the OpenAI shape.
 /// This is the path NVIDIA must use: the codex_app_server route speaks the Responses
 /// wire, which `integrate.api.nvidia.com` does not serve.
 pub(crate) fn run_deepseek_chat_proposer(input: CodexProposerInput<'_>) -> Result<Value> {
@@ -128,9 +128,15 @@ pub(crate) fn run_deepseek_chat_proposer(input: CodexProposerInput<'_>) -> Resul
                 "nvidia/nemotron-3-ultra-550b-a55b",
                 false,
             ),
+            "openai" => (
+                "https://api.openai.com/v1",
+                "OPENAI_API_KEY",
+                "gpt-4.1-mini",
+                false,
+            ),
             other => {
                 return Err(OptimizerError::Config(format!(
-                    "chat-completions proposer backend requires proposer.provider = \"deepseek\" or \"nvidia\"; got {other:?}"
+                    "chat-completions proposer backend requires proposer.provider = \"deepseek\", \"nvidia\", or \"openai\"; got {other:?}"
                 )))
             }
         };

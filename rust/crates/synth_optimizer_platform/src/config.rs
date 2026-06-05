@@ -708,6 +708,8 @@ pub struct ContainerConfig {
     #[serde(default)]
     pub url: Option<String>,
     #[serde(default)]
+    pub headers: BTreeMap<String, String>,
+    #[serde(default)]
     pub command: Vec<String>,
     #[serde(default)]
     pub cwd: Option<PathBuf>,
@@ -1111,9 +1113,9 @@ fn validate_proposer_runtime_substrate_config(proposer: &ProposerConfig) -> Resu
 
 fn validate_chat_completions_proposer_config(proposer: &ProposerConfig) -> Result<()> {
     let provider = proposer.provider.trim().to_ascii_lowercase();
-    if !matches!(provider.as_str(), "deepseek" | "nvidia") {
+    if !matches!(provider.as_str(), "deepseek" | "nvidia" | "openai") {
         return Err(OptimizerError::Config(format!(
-            "chat-completions proposer backend requires proposer.provider = \"deepseek\" or \"nvidia\"; got {:?}",
+            "chat-completions proposer backend requires proposer.provider = \"deepseek\", \"nvidia\", or \"openai\"; got {:?}",
             proposer.provider
         )));
     }

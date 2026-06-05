@@ -1470,7 +1470,10 @@ fn ensure_container_inputs(context: &mut GepaRunContext) -> Result<GepaContainer
         .url
         .clone()
         .ok_or_else(|| OptimizerError::Config("container.url is required".to_string()))?;
-    let client = ContainerClient::new(container_url.clone())?;
+    let client = ContainerClient::with_headers(
+        container_url.clone(),
+        context.config.container.headers.clone(),
+    )?;
     let metadata = client.verify_gepa_contract()?;
     let gepa_contract = metadata.resolved_gepa_contract()?;
     context.workspace.record_container_contract_snapshot(
@@ -14749,6 +14752,8 @@ fn normalize_candidate_payload(
     } else {
         mutable_fields
     };
+    let proposed_payload =
+        normalize_single_module_proposal_shape(&allowed_fields, proposed_payload);
     let mut payload = parent_payload.clone();
     for (key, value) in proposed_payload {
         if !allowed_fields.iter().any(|field| field == &key) {
@@ -14768,6 +14773,34 @@ fn normalize_candidate_payload(
         }
     }
     Ok(payload)
+}
+
+fn normalize_single_module_proposal_shape(
+    allowed_fields: &[String],
+    proposed_payload: BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    if proposed_payload
+        .keys()
+        .any(|key| allowed_fields.iter().any(|field| field == key))
+    {
+        return proposed_payload;
+    }
+
+    let Some(module_id) = proposed_payload.get("module_id").map(String::as_str) else {
+        return proposed_payload;
+    };
+    if !allowed_fields.iter().any(|field| field == module_id) {
+        return proposed_payload;
+    }
+
+    for value_key in ["content", "value", "prompt", "instructions", "text"] {
+        if let Some(value) = proposed_payload.get(value_key) {
+            if !value.trim().is_empty() {
+                return BTreeMap::from([(module_id.to_string(), value.clone())]);
+            }
+        }
+    }
+    proposed_payload
 }
 
 fn minibatch_rows(

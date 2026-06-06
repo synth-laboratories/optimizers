@@ -46,9 +46,22 @@ class ContainerTomlSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     url: str = Field(min_length=1)
+    headers: dict[str, str] = Field(default_factory=dict)
 
     def to_connection(self) -> ContainerConnection:
-        return ContainerConnection(url=self.url)
+        headers = _normalize_headers(self.headers)
+        if not headers:
+            return ContainerConnection(url=self.url)
+        try:
+            return ContainerConnection(url=self.url, headers=headers)
+        except TypeError:
+            return _HeaderContainerConnection(url=self.url, headers=headers)
+
+
+@dataclass(frozen=True, slots=True)
+class _HeaderContainerConnection:
+    url: str
+    headers: dict[str, str] = field(default_factory=dict)
 
 
 class RunSettingsTomlSection(BaseModel):
@@ -1079,7 +1092,11 @@ class GepaConfig:
     def to_toml_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {}
         payload["run"] = self.run.to_toml()
-        payload["container"] = {"url": self.container.url.rstrip("/")}
+        container_payload = {"url": self.container.url.rstrip("/")}
+        container_headers = _connection_headers(self.container)
+        if container_headers:
+            container_payload["headers"] = container_headers
+        payload["container"] = container_payload
         payload["taskset"] = self.taskset.to_toml()
         if self.target_modules is not None:
             payload["candidate"] = {"target_modules": list(self.target_modules)}
@@ -1126,8 +1143,9 @@ class GepaConfig:
         return _NativeGepaRun.from_toml(str(config_path)).execute()
 
     def _preflight_container_capabilities(self) -> None:
+        headers = _connection_headers(self.container)
         metadata = ContainerMetadataPayload.model_validate(
-            _http_json(self.container.url, "/metadata")
+            _http_json(self.container.url, "/metadata", headers=headers)
         )
         if self.policy is None and not metadata.capabilities.metadata.policy_ready:
             raise ValueError(
@@ -1135,7 +1153,9 @@ class GepaConfig:
                 "metadata.capabilities.metadata.policy_ready"
             )
         if self.program is None:
-            ProgramPayload.model_validate(_http_json(self.container.url, "/program"))
+            ProgramPayload.model_validate(
+                _http_json(self.container.url, "/program", headers=headers)
+            )
 
 
 class GepaRun:
@@ -1150,8 +1170,20 @@ class GepaRun:
     def execute(self) -> GepaRunResult:
         return self.config.execute()
 
+    def execute_hosted(self, **kwargs: Any) -> dict[str, Any]:
+        from .hosted import HostedOptimizerClient
 
-def _http_json(base_url: str, path: str, *, timeout_seconds: float = 10.0) -> dict[str, Any]:
+        client = kwargs.pop("client", None) or HostedOptimizerClient()
+        return client.submit_gepa(self.config, **kwargs)
+
+
+def _http_json(
+    base_url: str,
+    path: str,
+    *,
+    timeout_seconds: float = 10.0,
+    headers: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
     parsed = urlparse(base_url.rstrip("/"))
     if parsed.scheme not in {"http", "https"}:
         raise ValueError(f"unsupported container URL scheme: {parsed.scheme!r}")
@@ -1162,7 +1194,7 @@ def _http_json(base_url: str, path: str, *, timeout_seconds: float = 10.0) -> di
     if parsed.path and parsed.path != "/":
         request_path = f"{parsed.path.rstrip('/')}{path}"
     with closing(connection_cls(parsed.netloc, timeout=timeout_seconds)) as connection:
-        connection.request("GET", request_path)
+        connection.request("GET", request_path, headers=dict(headers or {}))
         response = connection.getresponse()
         body = response.read()
     if response.status >= 400:
@@ -1175,6 +1207,25 @@ def _http_json(base_url: str, path: str, *, timeout_seconds: float = 10.0) -> di
 
 def _drop_none(payload: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in payload.items() if value is not None and value != []}
+
+
+def _connection_headers(connection: Any) -> dict[str, str]:
+    return _normalize_headers(getattr(connection, "headers", None))
+
+
+def _normalize_headers(headers: Any) -> dict[str, str]:
+    if headers is None:
+        return {}
+    if not isinstance(headers, Mapping):
+        raise ValueError("container.headers must be a mapping of string keys to string values")
+    normalized: dict[str, str] = {}
+    for key, value in headers.items():
+        key_text = str(key).strip()
+        value_text = str(value)
+        if not key_text:
+            raise ValueError("container.headers contains an empty header name")
+        normalized[key_text] = value_text
+    return normalized
 
 
 def _toml_dumps(payload: Mapping[str, Any]) -> str:

@@ -53,6 +53,12 @@ from .gepa import (
     RunSettings,
     TasksetSelection,
 )
+from .hosted import (
+    HostedOptimizerAuthError,
+    HostedOptimizerClient,
+    HostedOptimizerError,
+    HostedOptimizerHTTPError,
+)
 from .o11y import (
     LiveProgress,
     RegistryRecord,
@@ -85,6 +91,10 @@ __all__ = [
     "GepaRunResult",
     "GepaStalenessPolicy",
     "GepaTaskPools",
+    "HostedOptimizerAuthError",
+    "HostedOptimizerClient",
+    "HostedOptimizerError",
+    "HostedOptimizerHTTPError",
     "InvariantError",
     "LiveProgress",
     "ObjectiveConfig",

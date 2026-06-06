@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -110,6 +111,27 @@ class HostedOptimizerClient:
 
     def get_run(self, run_id: str) -> dict[str, Any]:
         return self._request_json("GET", f"/api/v1/optimizers/runs/{run_id}")
+
+    def wait_for_run(
+        self,
+        run_id: str,
+        *,
+        poll_interval_seconds: float = 10.0,
+        timeout_seconds: float = 1200.0,
+        terminal_statuses: set[str] | None = None,
+    ) -> dict[str, Any]:
+        terminal = terminal_statuses or {"succeeded", "failed", "cancelled"}
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            payload = self.get_run(run_id)
+            status = str(payload.get("status") or "").strip().lower()
+            if status in terminal:
+                return payload
+            if time.monotonic() >= deadline:
+                raise HostedOptimizerError(
+                    f"optimizer run {run_id!r} did not finish within {timeout_seconds:.1f}s"
+                )
+            time.sleep(max(0.1, poll_interval_seconds))
 
     def cancel_run(self, run_id: str) -> dict[str, Any]:
         return self._request_json("POST", f"/api/v1/optimizers/runs/{run_id}/cancel")

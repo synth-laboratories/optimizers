@@ -19,6 +19,10 @@ fn default_startup_timeout_seconds() -> u64 {
     30
 }
 
+fn default_container_pool_api_key_env() -> String {
+    "SYNTH_API_KEY".to_string()
+}
+
 fn default_train_split() -> String {
     "train".to_string()
 }
@@ -307,6 +311,7 @@ impl SynthOptimizerConfig {
         let mut config: Self = toml::from_str(&text)?;
         config.apply_env_overrides()?;
         config.resolve_relative_paths(path.parent().unwrap_or_else(|| Path::new(".")));
+        config.resolve_runtime_targets()?;
         config.validate()?;
         Ok(config)
     }
@@ -483,20 +488,29 @@ impl SynthOptimizerConfig {
         resolve_command_path_args(base_dir, &mut self.proposer.command);
     }
 
+    pub fn resolve_runtime_targets(&mut self) -> Result<()> {
+        self.container.resolve_pool_target()
+    }
+
     pub fn validate(&self) -> Result<()> {
         if self.run.run_id.trim().is_empty() {
             return Err(OptimizerError::Config("run.run_id is required".to_string()));
         }
-        if self
+        let has_container_url = !self
             .container
             .url
             .as_deref()
             .unwrap_or_default()
             .trim()
-            .is_empty()
-        {
+            .is_empty();
+        let has_pool_target = self
+            .container
+            .pool
+            .as_ref()
+            .is_some_and(|pool| !pool.pool_id.trim().is_empty());
+        if !has_container_url && !has_pool_target {
             return Err(OptimizerError::Config(
-                "container.url is required".to_string(),
+                "container.url or container.pool.pool_id is required".to_string(),
             ));
         }
         if self.taskset.train_ids.is_empty() {
@@ -744,13 +758,87 @@ pub struct ContainerConfig {
     #[serde(default)]
     pub url: Option<String>,
     #[serde(default)]
+    pub pool: Option<ContainerPoolTargetConfig>,
+    #[serde(default)]
     pub headers: BTreeMap<String, String>,
+    #[serde(default)]
+    pub auth_bearer_env: Option<String>,
     #[serde(default)]
     pub command: Vec<String>,
     #[serde(default)]
     pub cwd: Option<PathBuf>,
     #[serde(default = "default_startup_timeout_seconds")]
     pub startup_timeout_seconds: u64,
+}
+
+impl ContainerConfig {
+    pub fn resolve_pool_target(&mut self) -> Result<()> {
+        let Some(pool) = &self.pool else {
+            return Ok(());
+        };
+        let pool_id = pool.pool_id.trim();
+        if pool_id.is_empty() {
+            return Err(OptimizerError::Config(
+                "container.pool.pool_id is required when container.pool is set".to_string(),
+            ));
+        }
+        reject_path_segment("container.pool.pool_id", pool_id)?;
+        let task_id = pool
+            .task_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        if let Some(task_id) = task_id {
+            reject_path_segment("container.pool.task_id", task_id)?;
+        }
+
+        let base_url_source = pool
+            .backend_base_url
+            .clone()
+            .or_else(resolve_backend_base_url_from_env)
+            .unwrap_or_else(|| "https://api.usesynth.ai".to_string());
+        let base_url = normalize_backend_base_url(&base_url_source);
+        self.url = Some(match task_id {
+            Some(task_id) => {
+                format!("{base_url}/v1/pools/{pool_id}/tasks/{task_id}/container")
+            }
+            None => format!("{base_url}/v1/pools/{pool_id}/container"),
+        });
+        if self
+            .auth_bearer_env
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
+            && !headers_contain_authorization(&self.headers)
+        {
+            self.auth_bearer_env = Some(pool.api_key_env.clone());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContainerPoolTargetConfig {
+    pub pool_id: String,
+    #[serde(default)]
+    pub task_id: Option<String>,
+    #[serde(default)]
+    pub backend_base_url: Option<String>,
+    #[serde(default = "default_container_pool_api_key_env")]
+    pub api_key_env: String,
+}
+
+impl Default for ContainerPoolTargetConfig {
+    fn default() -> Self {
+        Self {
+            pool_id: String::new(),
+            task_id: None,
+            backend_base_url: None,
+            api_key_env: default_container_pool_api_key_env(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1916,6 +2004,53 @@ fn absolutize(base_dir: &Path, path: &Path) -> PathBuf {
         };
         base_dir.join(path)
     }
+}
+
+fn headers_contain_authorization(headers: &BTreeMap<String, String>) -> bool {
+    headers
+        .keys()
+        .any(|name| name.trim().eq_ignore_ascii_case("authorization"))
+}
+
+fn reject_path_segment(field: &str, value: &str) -> Result<()> {
+    if value.contains('/') || value.contains('?') || value.contains('#') {
+        return Err(OptimizerError::Config(format!(
+            "{field} must be a single URL path segment"
+        )));
+    }
+    Ok(())
+}
+
+fn resolve_backend_base_url_from_env() -> Option<String> {
+    for name in [
+        "SYNTH_BACKEND_URL_OVERRIDE",
+        "SYNTH_BACKEND_URL",
+        "SYNTH_API_URL",
+        "DEV_SYNTH_BACKEND_URL",
+        "DEV_BACKEND_URL",
+        "PROD_SYNTH_BACKEND_URL",
+        "PROD_BACKEND_URL",
+        "BACKEND_URL",
+    ] {
+        if let Ok(value) = env::var(name) {
+            let value = value.trim().to_string();
+            if !value.is_empty() {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+fn normalize_backend_base_url(raw: &str) -> String {
+    let mut base = raw.trim().trim_end_matches('/').to_string();
+    for suffix in ["/v1", "/api"] {
+        if base.ends_with(suffix) {
+            base.truncate(base.len() - suffix.len());
+            break;
+        }
+    }
+    base
 }
 
 fn resolve_command_path_args(base_dir: &Path, command: &mut [String]) {

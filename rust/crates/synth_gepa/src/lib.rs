@@ -15,27 +15,26 @@ use synth_optimizer_platform::limits::{
     RuntimeEffectAdmissionInput, RuntimeEffectAdmissionRecord, RuntimeEffectBudgetEstimate,
 };
 use synth_optimizer_platform::{
-    budget_limit_engine_input, normalize_event_feed, stable_json_hash, task_identity, ArtifactPaths, ArtifactRef,
-    CacheMode, CacheProfileRecord, CandidateOverlay, CheckpointInput, CheckpointRecord,
-    ConfiguredGepaRunLimits, ContainerClient, ContainerContractSnapshotInput,
+    budget_limit_engine_input, normalize_event_feed, stable_json_hash, task_identity,
+    ArtifactPaths, ArtifactRef, CacheMode, CacheProfileRecord, CandidateOverlay, CheckpointInput,
+    CheckpointRecord, ConfiguredGepaRunLimits, ContainerClient, ContainerContractSnapshotInput,
     ContainerContractSnapshotRecord, DiskBudget, EvaluationCacheRecord, EvaluationCacheRecordInput,
-    EventStreamRecord, EventWriter, EvidenceFrame, FailurePayload, GepaBatchSamplerConfig,
-    ForecastConfidence, GepaCandidateSelectorConfig, GepaObjectiveAcceptanceConfig,
+    EventStreamRecord, EventWriter, EvidenceFrame, FailurePayload, ForecastConfidence,
+    GepaBatchSamplerConfig, GepaCandidateSelectorConfig, GepaObjectiveAcceptanceConfig,
     GepaPipelineMode, GepaRunResult, LeverBundle, LeverKind, LeverManifest, LimitDefinition,
     LimitEngine, LimitEngineInput, LimitForecast, LimitKind, LimitObservation, LimitSnapshot,
-    LimitStatus, ManagedContainerProcess,
-    MaterializationRecord, MaterializationRecordInput, ObjectiveScore, ObjectiveSetRecord,
-    ObjectiveSpec, OptimizerError, OptimizerJob, OptimizerJobKind, OptimizerJobStatus,
-    OptimizerRunState, OptimizerStateMachine, OptimizerTransition, OptimizerTransitionTrigger,
-    ParetoComparisonRecord, PlanLinkInput, PlanLinkRecord, PromptCandidatePayload, PromptProgram,
-    PromptProgramSnapshotInput, PromptProgramSnapshotRecord, RequestCache, ResolvedRunConfigInput,
-    ResolvedRunConfigRecord, Result, RetryPolicy, RolloutMaterializationIdentity,
-    RunPhaseTimingInput, RunRegistry, RunRegistryEntry, RuntimeEffectInput, RuntimeEffectRecord,
-    ScoreRecord, ScoreVectorRecord, SensorFrame, SensorScoreRecords, StateMachineEntity,
-    StopperStateInput, StopperStateRecord, SynthOptimizerConfig, TasksetResponse,
-    TasksetSnapshotInput, TasksetSnapshotRecord, TasksetTasksRequest, TasksetTasksResponse,
-    TransitionInput, TransitionLog, TransitionSink, UsageLedgerInput, UsageLedgerRecord,
-    WorkspaceStore, LIMIT_ENGINE_SCHEMA_VERSION,
+    LimitStatus, ManagedContainerProcess, MaterializationRecord, MaterializationRecordInput,
+    ObjectiveScore, ObjectiveSetRecord, ObjectiveSpec, OptimizerError, OptimizerJob,
+    OptimizerJobKind, OptimizerJobStatus, OptimizerRunState, OptimizerStateMachine,
+    OptimizerTransition, OptimizerTransitionTrigger, ParetoComparisonRecord, PlanLinkInput,
+    PlanLinkRecord, PromptCandidatePayload, PromptProgram, PromptProgramSnapshotInput,
+    PromptProgramSnapshotRecord, RequestCache, ResolvedRunConfigInput, ResolvedRunConfigRecord,
+    Result, RetryPolicy, RolloutMaterializationIdentity, RunPhaseTimingInput, RunRegistry,
+    RunRegistryEntry, RuntimeEffectInput, RuntimeEffectRecord, ScoreRecord, ScoreVectorRecord,
+    SensorFrame, SensorScoreRecords, StateMachineEntity, StopperStateInput, StopperStateRecord,
+    SynthOptimizerConfig, TasksetResponse, TasksetSnapshotInput, TasksetSnapshotRecord,
+    TasksetTasksRequest, TasksetTasksResponse, TransitionInput, TransitionLog, TransitionSink,
+    UsageLedgerInput, UsageLedgerRecord, WorkspaceStore, LIMIT_ENGINE_SCHEMA_VERSION,
 };
 
 mod codex_app_server;
@@ -871,7 +870,11 @@ fn gepa_generation_phase_forecast(
             completed_durations.iter().sum::<f64>() / completed_durations.len() as f64,
         )
     } else if current_elapsed >= 1.0 {
-        ("phase_elapsed_fallback", ForecastConfidence::Low, current_elapsed)
+        (
+            "phase_elapsed_fallback",
+            ForecastConfidence::Low,
+            current_elapsed,
+        )
     } else {
         return None;
     };
@@ -1470,9 +1473,10 @@ fn ensure_container_inputs(context: &mut GepaRunContext) -> Result<GepaContainer
         .url
         .clone()
         .ok_or_else(|| OptimizerError::Config("container.url is required".to_string()))?;
-    let client = ContainerClient::with_headers(
+    let client = ContainerClient::with_headers_and_bearer_env(
         container_url.clone(),
         context.config.container.headers.clone(),
+        context.config.container.auth_bearer_env.as_deref(),
     )?;
     let metadata = client.verify_gepa_contract()?;
     let gepa_contract = metadata.resolved_gepa_contract()?;
@@ -2084,10 +2088,9 @@ fn limit_estimate_update_is_major(events: &[EventStreamRecord], payload: &Value)
         }
         (None, None) => {}
     }
-    let utilization_delta =
-        (json_f64(current, "utilization").unwrap_or(0.0)
-            - json_f64(previous, "utilization").unwrap_or(0.0))
-        .abs();
+    let utilization_delta = (json_f64(current, "utilization").unwrap_or(0.0)
+        - json_f64(previous, "utilization").unwrap_or(0.0))
+    .abs();
     if utilization_delta >= 0.05 {
         return true;
     }
@@ -12140,9 +12143,10 @@ fn stopped_by_value(config: &SynthOptimizerConfig, state: &GepaRunState) -> Valu
 }
 
 pub fn execute_gepa_with_options(
-    config: SynthOptimizerConfig,
+    mut config: SynthOptimizerConfig,
     options: GepaExecutionOptions,
 ) -> Result<GepaRunResult> {
+    config.resolve_runtime_targets()?;
     let mut context = open_gepa_run_context(config, &options)?;
     let mut state = restore_gepa_run_state(&mut context)?;
     loop {

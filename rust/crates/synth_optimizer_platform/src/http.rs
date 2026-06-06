@@ -30,6 +30,14 @@ impl ContainerClient {
         base_url: impl Into<String>,
         headers: BTreeMap<String, String>,
     ) -> Result<Self> {
+        Self::with_headers_and_bearer_env(base_url, headers, None)
+    }
+
+    pub fn with_headers_and_bearer_env(
+        base_url: impl Into<String>,
+        headers: BTreeMap<String, String>,
+        bearer_env: Option<&str>,
+    ) -> Result<Self> {
         let base_url = base_url.into().trim_end_matches('/').to_string();
         if base_url.is_empty() {
             return Err(OptimizerError::Config(
@@ -44,10 +52,12 @@ impl ContainerClient {
         let client = Client::builder()
             .timeout(Duration::from_secs(timeout_seconds))
             .build()?;
+        let mut headers = parse_headers(headers)?;
+        apply_bearer_env(&mut headers, bearer_env)?;
         Ok(Self {
             base_url,
             client,
-            headers: parse_headers(headers)?,
+            headers,
         })
     }
 
@@ -230,4 +240,29 @@ fn parse_headers(headers: BTreeMap<String, String>) -> Result<HeaderMap> {
         map.insert(header_name, header_value);
     }
     Ok(map)
+}
+
+fn apply_bearer_env(headers: &mut HeaderMap, bearer_env: Option<&str>) -> Result<()> {
+    let Some(env_name) = bearer_env.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(());
+    };
+    if headers.contains_key("authorization") {
+        return Ok(());
+    }
+    let token = env::var(env_name)
+        .map(|value| value.trim().to_string())
+        .ok()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            OptimizerError::Config(format!(
+                "container.auth_bearer_env references missing environment variable {env_name:?}"
+            ))
+        })?;
+    let header_value = HeaderValue::from_str(&format!("Bearer {token}")).map_err(|source| {
+        OptimizerError::Config(format!(
+            "container.auth_bearer_env {env_name:?} produced invalid bearer header: {source}"
+        ))
+    })?;
+    headers.insert(HeaderName::from_static("authorization"), header_value);
+    Ok(())
 }

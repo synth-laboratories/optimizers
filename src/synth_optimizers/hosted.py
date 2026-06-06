@@ -4,12 +4,10 @@ import json
 import os
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
-
-from .gepa import GepaConfig
 
 
 class HostedOptimizerError(RuntimeError):
@@ -25,6 +23,10 @@ class HostedOptimizerHTTPError(HostedOptimizerError):
         super().__init__(message)
         self.status_code = status_code
         self.payload = payload
+
+
+class HostedGepaConfig(Protocol):
+    def to_toml_dict(self) -> Mapping[str, Any]: ...
 
 
 @dataclass(slots=True)
@@ -86,7 +88,7 @@ class HostedOptimizerClient:
 
     def submit_gepa(
         self,
-        config: GepaConfig,
+        config: HostedGepaConfig | Mapping[str, Any],
         *,
         run_id: str | None = None,
         idempotency_key: str | None = None,
@@ -101,7 +103,7 @@ class HostedOptimizerClient:
                 "run_id": run_id,
                 "idempotency_key": idempotency_key,
                 "project_id": project_id,
-                "config_json": config.to_toml_dict(),
+                "config_json": _gepa_config_json(config),
                 "container_pool": dict(container_pool) if container_pool is not None else None,
             },
         )
@@ -218,7 +220,22 @@ def _drop_none(payload: Mapping[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in payload.items() if value is not None}
 
 
+def _gepa_config_json(config: HostedGepaConfig | Mapping[str, Any]) -> dict[str, Any]:
+    if isinstance(config, Mapping):
+        return dict(config)
+    to_toml_dict = getattr(config, "to_toml_dict", None)
+    if not callable(to_toml_dict):
+        raise HostedOptimizerError(
+            "GEPA hosted config must be a mapping or expose to_toml_dict()"
+        )
+    payload = to_toml_dict()
+    if not isinstance(payload, Mapping):
+        raise HostedOptimizerError("GEPA hosted config to_toml_dict() must return a mapping")
+    return dict(payload)
+
+
 __all__ = [
+    "HostedGepaConfig",
     "HostedOptimizerAuthError",
     "HostedOptimizerClient",
     "HostedOptimizerError",

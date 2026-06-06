@@ -130,6 +130,8 @@ fn run_daytona_with_staged_workspace(
     let command = bootstrap_command(daytona, request.proposer, &remote_env);
     let command_id = toolbox.execute_session_command(&session_id, &command, true)?;
     receipt.command_id = Some(command_id.clone());
+    let run_id_for_log = request.run_id.to_string();
+    let command_id_for_log = command_id.clone();
     eprintln!(
         "[gepa-proposer] daytona substrate started run_id={} sandbox={} command={} workspace={}",
         request.run_id, sandbox.id, command_id, daytona.remote_workspace_dir
@@ -157,6 +159,22 @@ fn run_daytona_with_staged_workspace(
     } else {
         daytona_client.delete_sandbox(&sandbox.id)
     };
+    if daytona.keep_sandbox {
+        eprintln!(
+            "[gepa-proposer] daytona sandbox kept run_id={} sandbox={} command={}",
+            run_id_for_log, sandbox.id, command_id_for_log
+        );
+    } else if let Err(error) = &delete_result {
+        eprintln!(
+            "[gepa-proposer] daytona sandbox cleanup failed run_id={} sandbox={} command={} error={}",
+            run_id_for_log, sandbox.id, command_id_for_log, error
+        );
+    } else {
+        eprintln!(
+            "[gepa-proposer] daytona sandbox cleaned run_id={} sandbox={} command={}",
+            run_id_for_log, sandbox.id, command_id_for_log
+        );
+    }
     let mut outcome = result?;
     output_sync_result?;
     if let Err(error) = terminate_result {

@@ -140,6 +140,11 @@ fn run_daytona_with_staged_workspace(
         Duration::from_millis(daytona.poll_interval_ms),
     );
     let result = run_daytona_jsonrpc_turn(&mut client, request, Some(receipt.clone()));
+    let output_sync_result = if result.is_ok() {
+        client.sync_output_files(&daytona.remote_workspace_dir, staged_workspace)
+    } else {
+        Ok(())
+    };
     let terminate_result = if daytona.keep_sandbox {
         Ok(())
     } else {
@@ -151,6 +156,7 @@ fn run_daytona_with_staged_workspace(
         daytona_client.delete_sandbox(&sandbox.id)
     };
     let mut outcome = result?;
+    output_sync_result?;
     if let Err(error) = terminate_result {
         outcome.shutdown_warning = Some(error.to_string());
     }
@@ -422,6 +428,22 @@ impl DaytonaAppServerClient {
 
     fn terminate(&mut self) -> Result<()> {
         self.toolbox.delete_session(&self.session_id)
+    }
+
+    fn sync_output_files(&self, remote_workspace: &str, local_workspace: &Path) -> Result<()> {
+        for relative in ["proposal/manifest.json", "review/verdict.json"] {
+            let remote_path = remote_join(remote_workspace, Path::new(relative));
+            let Some(content) = self.toolbox.read_text_file_if_exists(&remote_path)? else {
+                continue;
+            };
+            let local_path = local_workspace.join(relative);
+            if let Some(parent) = local_path.parent() {
+                fs::create_dir_all(parent).map_err(|source| OptimizerError::io(parent, source))?;
+            }
+            fs::write(&local_path, content)
+                .map_err(|source| OptimizerError::io(&local_path, source))?;
+        }
+        Ok(())
     }
 
     fn read_next(&mut self, deadline: Instant) -> Result<Value> {
@@ -797,6 +819,43 @@ impl DaytonaToolboxClient {
                 "timeout": 600,
             }),
         )
+    }
+
+    fn read_text_file_if_exists(&self, remote_path: &str) -> Result<Option<String>> {
+        const BEGIN: &str = "__SYNTH_DAYTONA_FILE_BEGIN__";
+        const END: &str = "__SYNTH_DAYTONA_FILE_END__";
+        const MISSING: &str = "__SYNTH_DAYTONA_FILE_MISSING__";
+        let command = format!(
+            "printf {begin}; if [ -f {path} ]; then cat {path}; else printf {missing}; fi; printf {end}",
+            begin = shell_quote(BEGIN),
+            path = shell_quote(remote_path),
+            missing = shell_quote(MISSING),
+            end = shell_quote(END)
+        );
+        let value = self.exec_shell(&command)?;
+        if value.get("exitCode").and_then(Value::as_i64).unwrap_or(0) != 0 {
+            return Err(OptimizerError::Proposer(format!(
+                "daytona file read command failed for {remote_path}: {value}"
+            )));
+        }
+        let output = value.get("result").and_then(Value::as_str).unwrap_or("");
+        let Some(begin_index) = output.find(BEGIN) else {
+            return Err(OptimizerError::Proposer(format!(
+                "daytona file read output missing begin marker for {remote_path}: {output}"
+            )));
+        };
+        let content_start = begin_index + BEGIN.len();
+        let Some(end_offset) = output[content_start..].find(END) else {
+            return Err(OptimizerError::Proposer(format!(
+                "daytona file read output missing end marker for {remote_path}: {output}"
+            )));
+        };
+        let content = &output[content_start..content_start + end_offset];
+        if content == MISSING {
+            Ok(None)
+        } else {
+            Ok(Some(content.to_string()))
+        }
     }
 
     fn create_session(&self, session_id: &str) -> Result<()> {

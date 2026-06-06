@@ -1195,6 +1195,13 @@ fn safe_fragment(value: &str) -> String {
 }
 
 fn demux_log(data: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    if !data.windows(STDOUT_PREFIX.len()).any(|window| window == STDOUT_PREFIX)
+        && !data
+            .windows(STDERR_PREFIX.len())
+            .any(|window| window == STDERR_PREFIX)
+    {
+        return (data.to_vec(), Vec::new());
+    }
     let mut out = Vec::new();
     let mut err = Vec::new();
     let mut state = 0u8;

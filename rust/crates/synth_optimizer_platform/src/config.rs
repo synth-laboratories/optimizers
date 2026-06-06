@@ -958,6 +958,8 @@ pub struct ProposerDaytonaConfig {
     pub image: Option<String>,
     #[serde(default)]
     pub snapshot: Option<String>,
+    #[serde(default)]
+    pub dockerfile_content: Option<String>,
     #[serde(default = "default_daytona_language")]
     pub language: String,
     #[serde(default = "default_daytona_sandbox_name_prefix")]
@@ -990,6 +992,7 @@ impl Default for ProposerDaytonaConfig {
             target: None,
             image: None,
             snapshot: None,
+            dockerfile_content: None,
             language: default_daytona_language(),
             sandbox_name_prefix: default_daytona_sandbox_name_prefix(),
             remote_workspace_dir: default_daytona_remote_workspace_dir(),
@@ -1373,11 +1376,16 @@ fn validate_proposer_daytona_config(proposer: &ProposerConfig) -> Result<()> {
             "proposer.daytona.api_key_env must name the environment variable holding the Daytona API key".to_string(),
         ));
     }
+    let dockerfile_content = daytona
+        .dockerfile_content
+        .as_deref()
+        .unwrap_or_default()
+        .trim();
     let image = daytona.image.as_deref().unwrap_or_default().trim();
     let snapshot = daytona.snapshot.as_deref().unwrap_or_default().trim();
-    if image.is_empty() && snapshot.is_empty() {
+    if dockerfile_content.is_empty() && image.is_empty() && snapshot.is_empty() {
         return Err(OptimizerError::Config(
-            "proposer.runtime_substrate = \"daytona\" requires [proposer.daytona].image or [proposer.daytona].snapshot".to_string(),
+            "proposer.runtime_substrate = \"daytona\" requires [proposer.daytona].dockerfile_content, [proposer.daytona].image, or [proposer.daytona].snapshot".to_string(),
         ));
     }
     if !image.is_empty() && (image.ends_with(":latest") || image == "latest") {

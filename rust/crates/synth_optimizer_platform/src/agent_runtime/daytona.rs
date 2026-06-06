@@ -581,7 +581,17 @@ impl DaytonaControlClient {
             "target": self.target,
             "autoStopInterval": self.config.auto_stop_interval_minutes,
         });
-        if let Some(image) = self
+        if let Some(dockerfile_content) = self
+            .config
+            .dockerfile_content
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            body["buildInfo"] = json!({
+                "dockerfileContent": dockerfile_content,
+            });
+        } else if let Some(image) = self
             .config
             .image
             .as_deref()

@@ -16,6 +16,7 @@ from .hosted import (
     HostedOptimizerClient,
     HostedOptimizerError,
     HostedOptimizerHTTPError,
+    SynthTunnelLease,
 )
 from .o11y import (
     LiveProgress,
@@ -40,6 +41,7 @@ __all__ = [
     "HostedOptimizerClient",
     "HostedOptimizerError",
     "HostedOptimizerHTTPError",
+    "SynthTunnelLease",
     "LiveProgress",
     "OptimizerConfig",
     "OptimizerRun",

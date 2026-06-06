@@ -79,6 +79,42 @@ fn default_docker_network() -> String {
     crate::agent_runtime::limits::DOCKER_NETWORK.to_string()
 }
 
+fn default_daytona_api_key_env() -> String {
+    "DAYTONA_API_KEY".to_string()
+}
+
+fn default_daytona_api_url() -> String {
+    "https://app.daytona.io/api".to_string()
+}
+
+fn default_daytona_language() -> String {
+    "python".to_string()
+}
+
+fn default_daytona_sandbox_name_prefix() -> String {
+    "synth-optimizer-proposer".to_string()
+}
+
+fn default_daytona_remote_workspace_dir() -> String {
+    crate::agent_runtime::limits::DOCKER_WORKSPACE_MOUNT_PATH.to_string()
+}
+
+fn default_daytona_auto_stop_interval_minutes() -> u64 {
+    30
+}
+
+fn default_daytona_startup_timeout_seconds() -> u64 {
+    120
+}
+
+fn default_daytona_poll_interval_ms() -> u64 {
+    250
+}
+
+fn default_daytona_public() -> bool {
+    true
+}
+
 fn default_proposer_auth_mode() -> String {
     "auto".to_string()
 }
@@ -853,6 +889,8 @@ pub struct ProposerConfig {
     pub prompt: ProposerPromptConfig,
     #[serde(default)]
     pub docker: Option<ProposerDockerConfig>,
+    #[serde(default)]
+    pub daytona: Option<ProposerDaytonaConfig>,
 }
 
 impl Default for ProposerConfig {
@@ -878,6 +916,7 @@ impl Default for ProposerConfig {
             allow_unverified_model: false,
             prompt: ProposerPromptConfig::default(),
             docker: None,
+            daytona: None,
         }
     }
 }
@@ -901,6 +940,66 @@ impl Default for ProposerDockerConfig {
             image: None,
             workspace_mount_path: default_docker_workspace_mount_path(),
             network: default_docker_network(),
+            extra_env: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProposerDaytonaConfig {
+    #[serde(default = "default_daytona_api_url")]
+    pub api_url: String,
+    #[serde(default = "default_daytona_api_key_env")]
+    pub api_key_env: String,
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub image: Option<String>,
+    #[serde(default)]
+    pub snapshot: Option<String>,
+    #[serde(default = "default_daytona_language")]
+    pub language: String,
+    #[serde(default = "default_daytona_sandbox_name_prefix")]
+    pub sandbox_name_prefix: String,
+    #[serde(default = "default_daytona_remote_workspace_dir")]
+    pub remote_workspace_dir: String,
+    #[serde(default = "default_daytona_auto_stop_interval_minutes")]
+    pub auto_stop_interval_minutes: u64,
+    #[serde(default = "default_daytona_startup_timeout_seconds")]
+    pub startup_timeout_seconds: u64,
+    #[serde(default = "default_daytona_poll_interval_ms")]
+    pub poll_interval_ms: u64,
+    #[serde(default = "default_daytona_public")]
+    pub public: bool,
+    #[serde(default)]
+    pub keep_sandbox: bool,
+    #[serde(default)]
+    pub sync_workspace_back: bool,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    #[serde(default)]
+    pub extra_env: BTreeMap<String, String>,
+}
+
+impl Default for ProposerDaytonaConfig {
+    fn default() -> Self {
+        Self {
+            api_url: default_daytona_api_url(),
+            api_key_env: default_daytona_api_key_env(),
+            target: None,
+            image: None,
+            snapshot: None,
+            language: default_daytona_language(),
+            sandbox_name_prefix: default_daytona_sandbox_name_prefix(),
+            remote_workspace_dir: default_daytona_remote_workspace_dir(),
+            auto_stop_interval_minutes: default_daytona_auto_stop_interval_minutes(),
+            startup_timeout_seconds: default_daytona_startup_timeout_seconds(),
+            poll_interval_ms: default_daytona_poll_interval_ms(),
+            public: default_daytona_public(),
+            keep_sandbox: false,
+            sync_workspace_back: false,
+            env: BTreeMap::new(),
             extra_env: BTreeMap::new(),
         }
     }
@@ -1108,6 +1207,7 @@ fn validate_proposer_runtime_substrate_config(proposer: &ProposerConfig) -> Resu
     match proposer.runtime_substrate {
         ExecutionSubstrate::Local => Ok(()),
         ExecutionSubstrate::Docker => validate_proposer_docker_config(proposer),
+        ExecutionSubstrate::Daytona => validate_proposer_daytona_config(proposer),
     }
 }
 
@@ -1121,7 +1221,8 @@ fn validate_chat_completions_proposer_config(proposer: &ProposerConfig) -> Resul
     }
     if proposer_auth_mode_normalized(&proposer.auth_mode) != "api_key" {
         return Err(OptimizerError::Config(
-            "chat-completions proposer backend requires proposer.auth_mode = \"api_key\"".to_string(),
+            "chat-completions proposer backend requires proposer.auth_mode = \"api_key\""
+                .to_string(),
         ));
     }
     if !matches!(proposer.runtime_substrate, ExecutionSubstrate::Local) {
@@ -1250,6 +1351,89 @@ fn validate_proposer_docker_config(proposer: &ProposerConfig) -> Result<()> {
         if container_key.trim().is_empty() || host_key.trim().is_empty() {
             return Err(OptimizerError::Config(
                 "proposer.docker.extra_env entries must map non-empty container env names to non-empty host env names".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_proposer_daytona_config(proposer: &ProposerConfig) -> Result<()> {
+    let daytona = proposer.daytona.as_ref().ok_or_else(|| {
+        OptimizerError::Config(
+            "proposer.runtime_substrate = \"daytona\" requires [proposer.daytona]".to_string(),
+        )
+    })?;
+    if daytona.api_url.trim().is_empty() {
+        return Err(OptimizerError::Config(
+            "proposer.daytona.api_url must be non-empty".to_string(),
+        ));
+    }
+    if daytona.api_key_env.trim().is_empty() {
+        return Err(OptimizerError::Config(
+            "proposer.daytona.api_key_env must name the environment variable holding the Daytona API key".to_string(),
+        ));
+    }
+    let image = daytona.image.as_deref().unwrap_or_default().trim();
+    let snapshot = daytona.snapshot.as_deref().unwrap_or_default().trim();
+    if image.is_empty() && snapshot.is_empty() {
+        return Err(OptimizerError::Config(
+            "proposer.runtime_substrate = \"daytona\" requires [proposer.daytona].image or [proposer.daytona].snapshot".to_string(),
+        ));
+    }
+    if !image.is_empty() && (image.ends_with(":latest") || image == "latest") {
+        return Err(OptimizerError::Config(
+            "proposer.daytona.image must be pinned to a non-latest tag or digest".to_string(),
+        ));
+    }
+    if daytona.language.trim().is_empty() {
+        return Err(OptimizerError::Config(
+            "proposer.daytona.language must be non-empty".to_string(),
+        ));
+    }
+    if daytona.sandbox_name_prefix.trim().is_empty() {
+        return Err(OptimizerError::Config(
+            "proposer.daytona.sandbox_name_prefix must be non-empty".to_string(),
+        ));
+    }
+    if !daytona.remote_workspace_dir.starts_with('/') {
+        return Err(OptimizerError::Config(format!(
+            "proposer.daytona.remote_workspace_dir must be an absolute path; got {:?}",
+            daytona.remote_workspace_dir
+        )));
+    }
+    if daytona.startup_timeout_seconds == 0 {
+        return Err(OptimizerError::Config(
+            "proposer.daytona.startup_timeout_seconds must be greater than zero".to_string(),
+        ));
+    }
+    if daytona.poll_interval_ms == 0 {
+        return Err(OptimizerError::Config(
+            "proposer.daytona.poll_interval_ms must be greater than zero".to_string(),
+        ));
+    }
+    if proposer.execution_mode.trim() != "local_process"
+        && proposer.execution_mode.trim() != "stdio"
+    {
+        return Err(OptimizerError::Config(
+            "proposer.runtime_substrate = \"daytona\" requires proposer.execution_mode = \"local_process\" or \"stdio\"; websocket mode is local-process only".to_string(),
+        ));
+    }
+    if proposer_uses_chatgpt_auth(&proposer.auth_mode) {
+        return Err(OptimizerError::Config(
+            "proposer.runtime_substrate = \"daytona\" does not support auth_mode = \"chatgpt\" in v1; use api_key proposer auth".to_string(),
+        ));
+    }
+    for (key, value) in &daytona.env {
+        if key.trim().is_empty() || value.trim().is_empty() {
+            return Err(OptimizerError::Config(
+                "proposer.daytona.env entries must have non-empty keys and values".to_string(),
+            ));
+        }
+    }
+    for (container_key, host_key) in &daytona.extra_env {
+        if container_key.trim().is_empty() || host_key.trim().is_empty() {
+            return Err(OptimizerError::Config(
+                "proposer.daytona.extra_env entries must map non-empty sandbox env names to non-empty host env names".to_string(),
             ));
         }
     }

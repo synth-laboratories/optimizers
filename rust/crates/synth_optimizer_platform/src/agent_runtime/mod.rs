@@ -6,9 +6,11 @@
 
 pub mod app_server;
 pub mod codex_home;
+pub mod daytona;
 pub mod docker;
 pub mod limits;
 pub mod local;
+pub mod role_agent;
 pub mod session;
 pub mod substrate;
 pub mod supervisor;
@@ -19,6 +21,11 @@ pub use app_server::{
     CodexAppServerProcessLaunch,
 };
 pub use codex_home::{prepare_proposer_codex_launch, ProposerCodexLaunch};
+pub use daytona::DaytonaCodexSubstrate;
+pub use role_agent::{
+    sandbox_policy_for_mode, text_turn_input, ResolvedRoleAgentConfig, RoleAgentConfig,
+    RoleAgentTurnRequestInput,
+};
 pub use session::{run_turn, AgentRuntimeSubstrate, AgentTurnOutcome, CodexTurnRequest};
 pub use substrate::{validate_execution_mode_compat, ExecutionSubstrate};
 pub use supervisor::SupervisorReceipt;

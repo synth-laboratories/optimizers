@@ -104,6 +104,39 @@ impl ContainerClient {
         self.post("/rollout", request)
     }
 
+    pub fn resume_rollout(
+        &self,
+        parent_rollout_id: &str,
+        checkpoint_id: &str,
+        request: &Value,
+    ) -> Result<Value> {
+        self.post(
+            &format!("/rollouts/{parent_rollout_id}/resume"),
+            &json!({
+                "checkpoint_id": checkpoint_id,
+                "target_rollout_id": request
+                    .get("trace_correlation_id")
+                    .and_then(Value::as_str),
+                "overrides": request,
+            }),
+        )
+    }
+
+    pub fn create_rollout_checkpoint(
+        &self,
+        rollout_id: &str,
+        checkpoint_id: &str,
+        request: &Value,
+    ) -> Result<Value> {
+        self.post(
+            &format!("/rollouts/{rollout_id}/checkpoints"),
+            &json!({
+                "checkpoint_id": checkpoint_id,
+                "metadata": request,
+            }),
+        )
+    }
+
     pub fn rollout_typed(&self, request: &Value) -> Result<RolloutResponse> {
         let response: RolloutResponse = self.post_typed("/rollout", request)?;
         response.validate_for_gepa()?;

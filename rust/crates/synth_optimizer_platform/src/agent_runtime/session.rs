@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 use crate::{OptimizerError, ProposerConfig, Result};
 
 use super::app_server::CodexAppServerClient;
+use super::daytona::DaytonaCodexSubstrate;
 use super::docker::DockerCodexSubstrate;
 use super::local::LocalCodexSubstrate;
 use super::substrate::ExecutionSubstrate;
@@ -44,6 +45,7 @@ pub fn run_turn(request: CodexTurnRequest<'_>) -> Result<AgentTurnOutcome> {
     match request.proposer.runtime_substrate {
         ExecutionSubstrate::Local => LocalCodexSubstrate.run_codex_turn(request),
         ExecutionSubstrate::Docker => DockerCodexSubstrate.run_codex_turn(request),
+        ExecutionSubstrate::Daytona => DaytonaCodexSubstrate.run_codex_turn(request),
     }
 }
 

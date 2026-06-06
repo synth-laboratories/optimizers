@@ -309,6 +309,9 @@ impl FrontierCellRecord {
 }
 
 fn decision_parts(input: &AcceptanceDecisionInput<'_>) -> (String, String, String, String) {
+    if let Some(parts) = decision_parts_from_metadata(input) {
+        return parts;
+    }
     match input.candidate_status {
         "accepted" => (
             "accepted".to_string(),
@@ -366,6 +369,33 @@ fn decision_parts(input: &AcceptanceDecisionInput<'_>) -> (String, String, Strin
             format!("candidate status {other} observed"),
         ),
     }
+}
+
+fn decision_parts_from_metadata(
+    input: &AcceptanceDecisionInput<'_>,
+) -> Option<(String, String, String, String)> {
+    let decision = metadata_string(input, "platform_acceptance_decision")?;
+    let stage = metadata_string(input, "platform_acceptance_stage")
+        .unwrap_or_else(|| "algorithm".to_string());
+    let status = metadata_string(input, "platform_acceptance_status")
+        .unwrap_or_else(|| "observed".to_string());
+    let reason = metadata_string(input, "platform_acceptance_reason").unwrap_or_else(|| {
+        format!(
+            "candidate status {} observed with algorithm-provided acceptance metadata",
+            input.candidate_status
+        )
+    });
+    Some((decision, stage, status, reason))
+}
+
+fn metadata_string(input: &AcceptanceDecisionInput<'_>, key: &str) -> Option<String> {
+    input
+        .metadata
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn payload_hash(payload: &Value, lever_bundle: &Value) -> String {

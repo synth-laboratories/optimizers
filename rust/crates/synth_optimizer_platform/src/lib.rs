@@ -38,9 +38,10 @@ pub mod workspace;
 
 pub use agent_runtime::{
     ensure_turn_completed, extract_thread_id, prepare_proposer_codex_launch, run_turn,
-    usage_from_message, usage_from_messages, AgentRuntimeSubstrate, AgentTurnOutcome,
-    CodexAppServerClient, CodexAppServerLaunch, CodexAppServerProcessLaunch, CodexTurnRequest,
-    ExecutionSubstrate, ProposerCodexLaunch, SupervisorReceipt,
+    sandbox_policy_for_mode, text_turn_input, usage_from_message, usage_from_messages,
+    AgentRuntimeSubstrate, AgentTurnOutcome, CodexAppServerClient, CodexAppServerLaunch,
+    CodexAppServerProcessLaunch, CodexTurnRequest, ExecutionSubstrate, ProposerCodexLaunch,
+    ResolvedRoleAgentConfig, RoleAgentConfig, RoleAgentTurnRequestInput, SupervisorReceipt,
 };
 pub use artifacts::{ArtifactPaths, ArtifactRef, GepaRunResult};
 pub use cache::{
@@ -61,8 +62,8 @@ pub use config::{
     GepaCandidateSelectorConfig, GepaConfig, GepaObjectiveAcceptanceConfig, GepaPipelineConfig,
     GepaPipelineMode, GepaPipelineWorkers, GepaSpeculativeCompletionConfig, GepaStalenessPolicy,
     GepaTaskPoolsConfig, PolicyConfig, ProposerAuthLaunchMode, ProposerConfig,
-    ProposerDockerConfig, ProposerPromptConfig, RunConfig, SynthOptimizerConfig, TasksetConfig,
-    CHATGPT_PROPOSER_MODELS,
+    ProposerDaytonaConfig, ProposerDockerConfig, ProposerPromptConfig, RunConfig,
+    SynthOptimizerConfig, TasksetConfig, CHATGPT_PROPOSER_MODELS,
 };
 pub use configured_limits::{
     ConfiguredGepaRunLimits, GepaRuntimeEffectBudgetEstimates, GEPA_LIMIT_STOP_POLICY,
@@ -105,8 +106,7 @@ pub use levers::{LeverBundle, LeverKind, LeverManifest, LeverSpec};
 pub use limit_engine::{
     budget_limit_engine_input, budget_limit_snapshot, ForecastConfidence, LimitDefinition,
     LimitEngine, LimitEngineInput, LimitForecast, LimitKind, LimitObservation, LimitProgressEvent,
-    LimitSnapshot, LimitStatus,
-    LIMIT_ENGINE_SCHEMA_VERSION,
+    LimitSnapshot, LimitStatus, LIMIT_ENGINE_SCHEMA_VERSION,
 };
 pub use limits::{
     BudgetCommitInput, BudgetCommitRecord, BudgetLedgerSnapshot, BudgetLedgerTotals,
@@ -149,8 +149,9 @@ pub use storage_maintenance::{
 };
 pub use usage::{UsageLedgerInput, UsageLedgerRecord};
 pub use workspace::{
-    workspace_status, WorkspaceEntityCounts, WorkspaceRunRequestStatus, WorkspaceRunStatus,
-    WorkspaceStateTransitionStatus, WorkspaceStatus, WorkspaceStore, WorkspaceView,
+    workspace_status, OptimizationRunStartedInput, WorkspaceEntityCounts,
+    WorkspaceRunRequestStatus, WorkspaceRunStatus, WorkspaceStateTransitionStatus, WorkspaceStatus,
+    WorkspaceStore, WorkspaceView,
 };
 
 pub const GEPA_OPTIMIZER_CONTRACT_VERSION: &str = "synth_optimizers.gepa.v2";

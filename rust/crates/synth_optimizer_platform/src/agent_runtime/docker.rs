@@ -152,6 +152,11 @@ fn run_docker_with_staged_workspace(
         staging_dir: Some(staged_workspace.display().to_string()),
         workspace_mount_path: Some(workspace_mount_path.to_string()),
         cleanup_status: "pending".to_string(),
+        sandbox_id: None,
+        sandbox_name: None,
+        daytona_target: None,
+        command_id: None,
+        toolbox_url: None,
     };
     eprintln!(
         "[gepa-proposer] docker substrate started run_id={} container={} image={} staging_dir={}",

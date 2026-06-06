@@ -232,6 +232,17 @@ pub struct WorkspaceStore {
     conn: Connection,
 }
 
+pub struct OptimizationRunStartedInput<'a> {
+    pub run_id: &'a str,
+    pub state: &'a str,
+    pub config: &'a Value,
+    pub cache_mode: &'a str,
+    pub cache_namespace: &'a str,
+    pub output_dir: &'a Path,
+    pub run_dir: &'a Path,
+    pub manifest_path: &'a Path,
+}
+
 pub struct WorkspaceView<'a> {
     store: &'a WorkspaceStore,
 }
@@ -1437,6 +1448,22 @@ impl WorkspaceStore {
         cache_mode: CacheMode,
         cache_namespace: &str,
     ) -> Result<()> {
+        self.record_optimization_run_started(OptimizationRunStartedInput {
+            run_id: &config.run.run_id,
+            state: "created",
+            config: &serde_json::to_value(config)?,
+            cache_mode: cache_mode.as_str(),
+            cache_namespace,
+            output_dir: &config.run.output_dir,
+            run_dir: &paths.run_dir,
+            manifest_path: &paths.manifest_path,
+        })
+    }
+
+    pub fn record_optimization_run_started(
+        &self,
+        input: OptimizationRunStartedInput<'_>,
+    ) -> Result<()> {
         self.conn.execute(
             r#"
             INSERT INTO optimization_runs(
@@ -1454,14 +1481,14 @@ impl WorkspaceStore {
                 updated_at = datetime('now')
             "#,
             params![
-                config.run.run_id,
-                "created",
-                stable_json(&serde_json::to_value(config)?),
-                cache_mode.as_str(),
-                cache_namespace,
-                config.run.output_dir.display().to_string(),
-                paths.run_dir.display().to_string(),
-                paths.manifest_path.display().to_string(),
+                input.run_id,
+                input.state,
+                stable_json(input.config),
+                input.cache_mode,
+                input.cache_namespace,
+                input.output_dir.display().to_string(),
+                input.run_dir.display().to_string(),
+                input.manifest_path.display().to_string(),
             ],
         )?;
         Ok(())
@@ -3157,6 +3184,28 @@ impl WorkspaceStore {
                 record_json(record),
             ],
         )?;
+        Ok(())
+    }
+
+    pub fn record_sensor_frame(&mut self, run_id: &str, frame: &SensorFrame) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        upsert_sensor_frame_tx(&tx, run_id, frame)?;
+        upsert_rollout_job_tx(&tx, run_id, frame)?;
+        let rollout_records = SensorRolloutRecords::from_sensor_frame(frame);
+        upsert_rollout_record_tx(&tx, run_id, &rollout_records.rollout)?;
+        for event in &rollout_records.events {
+            upsert_rollout_event_tx(&tx, run_id, event)?;
+        }
+        let score_records = SensorScoreRecords::from_sensor_frame(frame);
+        for objective in &score_records.objectives {
+            upsert_objective_tx(&tx, run_id, objective)?;
+        }
+        for score in &score_records.scores {
+            upsert_score_tx(&tx, run_id, score)?;
+        }
+        let derived = SensorDerivedRecords::from_sensor_frame(frame);
+        upsert_trace_annotation_tx(&tx, run_id, &derived.trace_annotation)?;
+        tx.commit()?;
         Ok(())
     }
 

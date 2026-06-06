@@ -1227,7 +1227,9 @@ fn demux_log(data: &[u8]) -> (Vec<u8>, Vec<u8>) {
 
 fn extract_turn_id(message: &Value) -> Option<String> {
     message
-        .pointer("/result/turnId")
+        .pointer("/result/turn/id")
+        .or_else(|| message.pointer("/result/turnId"))
+        .or_else(|| message.pointer("/params/turn/id"))
         .or_else(|| message.pointer("/params/turnId"))
         .or_else(|| message.get("turnId"))
         .and_then(Value::as_str)
@@ -1236,7 +1238,9 @@ fn extract_turn_id(message: &Value) -> Option<String> {
 
 fn message_matches_turn(message: &Value, turn_id: &str) -> bool {
     message
-        .pointer("/params/turnId")
+        .pointer("/params/turn/id")
+        .or_else(|| message.pointer("/params/turnId"))
+        .or_else(|| message.pointer("/result/turn/id"))
         .or_else(|| message.pointer("/result/turnId"))
         .or_else(|| message.get("turnId"))
         .and_then(Value::as_str)
@@ -1249,7 +1253,9 @@ fn is_terminal_turn_event(message: &Value) -> bool {
         return true;
     }
     message
-        .pointer("/params/status")
+        .pointer("/params/turn/status")
+        .or_else(|| message.pointer("/params/status"))
+        .or_else(|| message.pointer("/result/turn/status"))
         .or_else(|| message.pointer("/result/status"))
         .or_else(|| message.get("status"))
         .and_then(Value::as_str)

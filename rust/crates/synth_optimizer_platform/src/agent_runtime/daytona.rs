@@ -56,6 +56,8 @@ fn run_daytona_codex_turn(request: CodexTurnRequest<'_>) -> Result<AgentTurnOutc
         run_daytona_with_staged_workspace(request, daytona, &staged_workspace, &mut receipt);
     let sync_result = if daytona.sync_workspace_back {
         sync_workspace_back(&staged_workspace, &original_workspace)
+    } else if run_result.is_ok() {
+        sync_workspace_output_files(&staged_workspace, &original_workspace)
     } else {
         Ok(())
     };
@@ -1107,6 +1109,30 @@ fn stage_workspace(original_workspace: &Path, run_id: &str) -> Result<PathBuf> {
 
 fn sync_workspace_back(staged_workspace: &Path, original_workspace: &Path) -> Result<()> {
     copy_dir_contents(staged_workspace, original_workspace, true)
+}
+
+fn sync_workspace_output_files(staged_workspace: &Path, original_workspace: &Path) -> Result<()> {
+    for relative in ["proposal/manifest.json", "review/verdict.json"] {
+        let source = staged_workspace.join(relative);
+        if !source.exists() {
+            continue;
+        }
+        let destination = original_workspace.join(relative);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent).map_err(|source| OptimizerError::io(parent, source))?;
+        }
+        fs::copy(&source, &destination).map_err(|source_error| {
+            OptimizerError::io(
+                format!(
+                    "copy daytona output {} to {}",
+                    source.display(),
+                    destination.display()
+                ),
+                source_error,
+            )
+        })?;
+    }
+    Ok(())
 }
 
 fn cleanup_staged_workspace(staged_workspace: &Path) -> Result<()> {

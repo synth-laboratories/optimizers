@@ -75,11 +75,11 @@ class HostedOptimizerClient:
         algorithms: list[str] | None = None,
         runtime: str | None = None,
         metadata: Mapping[str, Any] | None = None,
-        record: bool = False,
+        record: bool = True,
     ) -> dict[str, Any]:
         catalog = self._request_json("GET", "/api/v1/optimizers/startup")
         if record:
-            self.record_startup(
+            catalog["startup_record"] = self.record_startup(
                 client=client,
                 version=version,
                 algorithms=algorithms,

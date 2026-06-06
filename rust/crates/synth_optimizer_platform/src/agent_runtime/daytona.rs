@@ -140,7 +140,11 @@ fn run_daytona_with_staged_workspace(
         Duration::from_millis(daytona.poll_interval_ms),
     );
     let result = run_daytona_jsonrpc_turn(&mut client, request, Some(receipt.clone()));
-    let terminate_result = client.terminate();
+    let terminate_result = if daytona.keep_sandbox {
+        Ok(())
+    } else {
+        client.terminate()
+    };
     let delete_result = if daytona.keep_sandbox {
         Ok(())
     } else {

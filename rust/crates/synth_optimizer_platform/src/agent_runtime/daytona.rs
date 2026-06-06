@@ -478,14 +478,59 @@ impl DaytonaAppServerClient {
 
     fn handle_stdout_chunk(&mut self, chunk: &str) -> Result<()> {
         self.stdout_remainder.push_str(chunk);
-        while let Some(index) = self.stdout_remainder.find('\n') {
-            let line = self.stdout_remainder[..index]
-                .trim_end_matches('\r')
-                .to_string();
-            self.stdout_remainder = self.stdout_remainder[index + 1..].to_string();
-            self.emit_stdout_line(&line)?;
+        loop {
+            let trimmed_start = self
+                .stdout_remainder
+                .trim_start_matches(|c| c == '\r' || c == '\n');
+            if trimmed_start.len() != self.stdout_remainder.len() {
+                self.stdout_remainder = trimmed_start.to_string();
+            }
+            if self.stdout_remainder.is_empty() {
+                return Ok(());
+            }
+            if self.stdout_remainder.starts_with('{') || self.stdout_remainder.starts_with('[') {
+                let Some(index) = self.stdout_remainder.find('\n') else {
+                    return Ok(());
+                };
+                let line = self.stdout_remainder[..index]
+                    .trim_end_matches('\r')
+                    .to_string();
+                self.stdout_remainder = self.stdout_remainder[index + 1..].to_string();
+                self.emit_stdout_line(&line)?;
+                continue;
+            }
+            let Some((header_end, separator_len)) =
+                content_length_header_end(&self.stdout_remainder)
+            else {
+                if let Some(index) = self.stdout_remainder.find('\n') {
+                    let line = self.stdout_remainder[..index]
+                        .trim_end_matches('\r')
+                        .to_string();
+                    self.stdout_remainder = self.stdout_remainder[index + 1..].to_string();
+                    self.emit_stdout_line(&line)?;
+                    continue;
+                }
+                return Ok(());
+            };
+            let headers = &self.stdout_remainder[..header_end];
+            let Some(content_length) = parse_content_length_header(headers)? else {
+                let consumed = header_end + separator_len;
+                let line = self.stdout_remainder[..header_end].to_string();
+                self.stdout_remainder = self.stdout_remainder[consumed..].to_string();
+                self.emit_stdout_line(&line)?;
+                continue;
+            };
+            let body_start = header_end + separator_len;
+            let body_end = body_start + content_length;
+            if self.stdout_remainder.as_bytes().len() < body_end {
+                return Ok(());
+            }
+            let payload = self.stdout_remainder.as_bytes()[body_start..body_end].to_vec();
+            let value: Value = serde_json::from_slice(&payload)?;
+            self.received_messages.push(value.clone());
+            self.buffer.push_back(value);
+            self.stdout_remainder = self.stdout_remainder[body_end..].to_string();
         }
-        Ok(())
     }
 
     fn handle_stderr_chunk(&mut self, chunk: &str) {
@@ -521,6 +566,31 @@ impl DaytonaAppServerClient {
         }
         Ok(())
     }
+}
+
+fn content_length_header_end(buffer: &str) -> Option<(usize, usize)> {
+    if let Some(index) = buffer.find("\r\n\r\n") {
+        return Some((index, 4));
+    }
+    buffer.find("\n\n").map(|index| (index, 2))
+}
+
+fn parse_content_length_header(headers: &str) -> Result<Option<usize>> {
+    for line in headers.lines() {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        if key.trim().eq_ignore_ascii_case("content-length") {
+            let value = value.trim();
+            let len = value.parse::<usize>().map_err(|source| {
+                OptimizerError::Proposer(format!(
+                    "invalid daytona codex app-server Content-Length {value}: {source}"
+                ))
+            })?;
+            return Ok(Some(len));
+        }
+    }
+    Ok(None)
 }
 
 #[derive(Clone)]

@@ -5,8 +5,11 @@ import json
 import os
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Sequence
+from urllib.parse import urljoin
 
 from . import (
     GepaRun,
@@ -121,6 +124,152 @@ def _print_storage_reports(reports: list[dict], json_output: bool) -> None:
             print(f"{mode}: {run_dir} bytes={before}")
 
 
+def _api_endpoint(base_url: str, path: str) -> str:
+    base = base_url.rstrip("/") + "/"
+    return urljoin(base, path.lstrip("/"))
+
+
+def _hosted_api_key(api_key_env: str) -> str:
+    token = os.environ.get(api_key_env, "").strip()
+    if not token:
+        raise SystemExit(f"{api_key_env} is required for hosted optimizer submit")
+    return token
+
+
+def _hosted_json_request(
+    *,
+    method: str,
+    url: str,
+    api_key: str,
+    payload: dict | None = None,
+    timeout: float = 120.0,
+) -> dict:
+    body = None
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Accept": "application/json",
+    }
+    if payload is not None:
+        body = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(url, data=body, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            text = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise SystemExit(f"hosted optimizer request failed: {exc.code} {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise SystemExit(f"hosted optimizer request failed: {exc}") from exc
+    if not text:
+        return {}
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"hosted optimizer returned non-JSON response: {text[:500]}") from exc
+    if not isinstance(data, dict):
+        raise SystemExit("hosted optimizer returned non-object JSON response")
+    return data
+
+
+def _follow_hosted_events(
+    *,
+    base_url: str,
+    events_url: str,
+    api_key: str,
+) -> None:
+    url = _api_endpoint(base_url, events_url)
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "text/event-stream",
+        },
+        method="GET",
+    )
+    data_lines: list[str] = []
+    try:
+        with urllib.request.urlopen(request, timeout=1200.0) as response:
+            for raw_line in response:
+                line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
+                if line.startswith("data:"):
+                    data_lines.append(line.removeprefix("data:").strip())
+                    continue
+                if line:
+                    continue
+                if not data_lines:
+                    continue
+                payload_text = "\n".join(data_lines)
+                data_lines.clear()
+                try:
+                    event = json.loads(payload_text)
+                except json.JSONDecodeError:
+                    continue
+                event_type = str(event.get("event_type") or "event")
+                status = str(event.get("status") or "")
+                print(f"event {event_type} status={status}")
+                if status in {"succeeded", "failed"}:
+                    return
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise SystemExit(f"hosted optimizer events failed: {exc.code} {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise SystemExit(f"hosted optimizer events failed: {exc}") from exc
+
+
+def _submit_hosted_gepa(args: argparse.Namespace) -> int:
+    config_text = Path(args.config).read_text(encoding="utf-8")
+    api_key = _hosted_api_key(args.api_key_env)
+    caller: dict[str, str] = {}
+    if args.run_id:
+        caller["backend_run_id"] = args.run_id
+    request = {
+        "algorithm": "gepa",
+        "config_toml": config_text,
+    }
+    if caller:
+        request["caller"] = caller
+    if args.idempotency_key:
+        request["idempotency_key"] = args.idempotency_key
+
+    submit = _hosted_json_request(
+        method="POST",
+        url=_api_endpoint(args.base_url, "/api/v1/optimizers/runs"),
+        api_key=api_key,
+        payload=request,
+    )
+    if args.json and not args.follow:
+        print(json.dumps(submit, indent=2, sort_keys=True))
+        return 0
+
+    run_id = str(submit.get("run_id") or "")
+    status = submit.get("status")
+    print(f"submitted run_id={run_id} status={status}")
+    events_url = str(submit.get("events_url") or "")
+    if events_url:
+        print(f"events: {_api_endpoint(args.base_url, events_url)}")
+
+    if args.follow:
+        if not run_id:
+            raise SystemExit("hosted optimizer submit did not return run_id")
+        if events_url:
+            _follow_hosted_events(base_url=args.base_url, events_url=events_url, api_key=api_key)
+        final_record = _hosted_json_request(
+            method="GET",
+            url=_api_endpoint(args.base_url, f"/api/v1/optimizers/runs/{run_id}"),
+            api_key=api_key,
+        )
+        if args.json:
+            print(json.dumps(final_record, indent=2, sort_keys=True))
+        else:
+            print(f"final status={final_record.get('status')}")
+            if final_record.get("error"):
+                print(f"error: {final_record['error']}")
+        if final_record.get("status") == "failed":
+            return 1
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="synth-optimizers")
     subcommands = parser.add_subparsers(dest="command", required=True)
@@ -169,6 +318,23 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print the full result JSON instead of the terminal progress view.",
     )
+    gepa_submit = gepa_subcommands.add_parser("submit")
+    gepa_submit.add_argument("--config", required=True)
+    gepa_submit.add_argument(
+        "--base-url",
+        default=os.environ.get("SYNTH_BACKEND_URL", "https://api.usesynth.ai"),
+        help="Synth API base URL. Defaults to SYNTH_BACKEND_URL or https://api.usesynth.ai.",
+    )
+    gepa_submit.add_argument(
+        "--api-key-env",
+        default="SYNTH_API_KEY",
+        help="Environment variable containing the Synth API key.",
+    )
+    gepa_submit.add_argument("--run-id")
+    gepa_submit.add_argument("--idempotency-key")
+    gepa_submit.add_argument("--follow", action="store_true")
+    gepa_submit.add_argument("--json", action="store_true")
+
     # The standing HTTP service is the public worker/workspace surface: queueing,
     # claiming, and lifecycle control happen over the /runs and /workspace routes.
     gepa_service = gepa_subcommands.add_parser("service")
@@ -418,6 +584,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             print()
             print(f"artifacts: {Path(result.manifest_path).parent}")
         return 0
+    if args.command == "gepa" and args.gepa_command == "submit":
+        return _submit_hosted_gepa(args)
     if args.command == "gepa" and args.gepa_command == "service":
         gepa_serve(args.db, args.bind, args.worker_id, args.lease_seconds, args.workers)
         return 0

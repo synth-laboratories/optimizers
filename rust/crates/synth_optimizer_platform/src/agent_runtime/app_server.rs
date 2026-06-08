@@ -47,6 +47,25 @@ pub struct CodexAppServerClient {
     next_id: u64,
     sent_messages: Vec<Value>,
     received_messages: Vec<Value>,
+    /// No-progress stall window: max gap between app-server messages before a
+    /// distinct "stalled" error is raised. Separate from the per-turn deadline
+    /// (the generous overall cap) so a wedged app-server — one that goes idle
+    /// after turn/start and never emits another message — is flagged well before
+    /// the full budget elapses. Tunable via OPTIMIZERS_AGENT_STALL_SECONDS.
+    stall_window: Duration,
+}
+
+/// No-progress stall window for app-server reads. Defaults to 150s; set
+/// OPTIMIZERS_AGENT_STALL_SECONDS=0 to disable (rely on the per-turn deadline).
+fn agent_stall_window() -> Duration {
+    match env::var("OPTIMIZERS_AGENT_STALL_SECONDS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+    {
+        Some(0) => Duration::from_secs(u64::MAX / 4),
+        Some(seconds) => Duration::from_secs(seconds),
+        None => Duration::from_secs(150),
+    }
 }
 
 impl CodexAppServerClient {
@@ -125,6 +144,7 @@ impl CodexAppServerClient {
             next_id: 1,
             sent_messages: Vec::new(),
             received_messages: Vec::new(),
+            stall_window: agent_stall_window(),
         })
     }
 
@@ -184,6 +204,7 @@ impl CodexAppServerClient {
             next_id: 1,
             sent_messages: Vec::new(),
             received_messages: Vec::new(),
+            stall_window: agent_stall_window(),
         })
     }
 
@@ -341,7 +362,14 @@ impl CodexAppServerClient {
         if let Some(message) = self.buffer.pop_front() {
             return Ok(message);
         }
-        match self.receiver.recv_timeout(deadline - now) {
+        // Two separate concerns: the overall `deadline` (generous per-turn cap) and
+        // a shorter no-progress `stall_window`. Wait until whichever comes first.
+        // A wedged app-server (idle after turn/start, no further output) trips the
+        // stall window — surfacing a distinct, actionable error long before the
+        // full budget — while a slow-but-streaming turn keeps resetting it.
+        let stall_at = now + self.stall_window;
+        let wait_until = deadline.min(stall_at);
+        match self.receiver.recv_timeout(wait_until.saturating_duration_since(now)) {
             Ok(result) => match result {
                 Ok(message) => {
                     self.received_messages.push(message.clone());
@@ -349,10 +377,20 @@ impl CodexAppServerClient {
                 }
                 Err(error) => Err(error),
             },
-            Err(RecvTimeoutError::Timeout) => Err(OptimizerError::Proposer(format!(
-                "codex app-server timed out waiting for response{}",
-                self.stderr_tail_suffix()
-            ))),
+            Err(RecvTimeoutError::Timeout) => {
+                if Instant::now() >= deadline {
+                    Err(OptimizerError::Proposer(format!(
+                        "codex app-server timed out waiting for response{}",
+                        self.stderr_tail_suffix()
+                    )))
+                } else {
+                    Err(OptimizerError::Proposer(format!(
+                        "codex app-server stalled: no output for {}s (likely wedged after turn/start); per-turn budget not yet exhausted{}",
+                        self.stall_window.as_secs(),
+                        self.stderr_tail_suffix()
+                    )))
+                }
+            }
             Err(RecvTimeoutError::Disconnected) => Err(OptimizerError::Proposer(format!(
                 "codex app-server stdout closed{}",
                 self.stderr_tail_suffix()

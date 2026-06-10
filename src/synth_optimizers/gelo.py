@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .hosted import ContainerPoolTarget
+from .tunnels import TunnelProvider, tunnel_provider_value
 
 
 class GeloCacheMode(StrEnum):
@@ -37,6 +38,12 @@ class GeloRewardMode(StrEnum):
 class GeloCheckpointSemantics(StrEnum):
     TRUE_ENV_SNAPSHOT = "true_environment_snapshot"
     REQUEST_SNAPSHOT = "request_snapshot"
+
+
+class GeloPluginKind(StrEnum):
+    SFT = "sft"
+    RLVR = "rlvr"
+    OPSD = "opsd"
 
 
 class GeloPresetName(StrEnum):
@@ -202,6 +209,18 @@ class GeloDiskBudgetSection:
 
 
 @dataclass(frozen=True, slots=True)
+class GeloPluginSection:
+    kind: GeloPluginKind | str
+    status: str = "beta"
+    config: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class GeloPluginsSection:
+    lanes: tuple[GeloPluginSection, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True, slots=True)
 class GeloProposerSection:
     model: str
     provider: str
@@ -229,6 +248,7 @@ class GeloHostedConfig:
     proposers: Mapping[GeloProposerRole, GeloProposerSection]
     cache: GeloCacheSection | None = None
     disk_budget: GeloDiskBudgetSection | None = None
+    plugins: GeloPluginsSection | Mapping[str, Any] | None = None
 
     def to_config_json(self) -> dict[str, Any]:
         payload = _clean_config_value(self)
@@ -812,11 +832,20 @@ def _container_section_from_target(target: Any) -> GeloContainerSection:
 
 def _container_section_from_tunnel(container_tunnel: Any) -> GeloContainerSection:
     section = _container_section_from_target(container_tunnel.container_config())
+    provider = tunnel_provider_value(getattr(container_tunnel, "provider", None))
+    if provider != TunnelProvider.SYNTH_TUNNEL.value:
+        return section
+    headers = {
+        name: value
+        for name, value in section.headers.items()
+        if name.strip().lower() not in {"authorization", "x-api-key", "x-api-keys"}
+    }
     lease_id = _text_or_none(getattr(container_tunnel, "lease_id", None))
     if lease_id is None:
-        raise GeloMaterializeError("container_tunnel must expose lease_id for auth refresh")
+        raise GeloMaterializeError("SynthTunnel container_tunnel must expose lease_id")
     return replace(
         section,
+        headers=headers,
         auth_refresh={
             "provider": "synth_tunnel",
             "lease_id": lease_id,
@@ -850,6 +879,78 @@ def _validate_container_inputs(
         raise GeloMaterializeError(
             "container_url, container_pool, and container_tunnel are mutually exclusive"
         )
+
+
+_GELO_SUPPORTED_PLUGIN_KINDS = frozenset({GeloPluginKind.SFT.value})
+_GELO_FUTURE_PLUGIN_KINDS = frozenset(
+    {GeloPluginKind.RLVR.value, GeloPluginKind.OPSD.value}
+)
+_GELO_PLUGIN_KIND_KEYS = frozenset({"kind", "type", "plugin_kind"})
+_GELO_PLUGIN_COLLECTION_KEYS = frozenset({"lanes", "items"})
+_GELO_PLUGIN_METADATA_KEYS = frozenset({"enabled", "status", "version", "config"})
+
+
+def _plugin_key(value: Any) -> str:
+    return str(value).strip().lower().replace("_", "-")
+
+
+def _validate_plugin_kind(kind: Any, *, path: str) -> None:
+    normalized = _plugin_key(kind)
+    if normalized in _GELO_SUPPORTED_PLUGIN_KINDS:
+        return
+    if normalized in _GELO_FUTURE_PLUGIN_KINDS:
+        raise GeloMaterializeError(
+            f"GELO plugin lane {normalized!r} is not supported yet; "
+            "only 'sft' is accepted as a beta plugin lane"
+        )
+    raise GeloMaterializeError(
+        f"GELO plugin lane {kind!r} at {path} is unsupported; "
+        "only 'sft' is accepted as a beta plugin lane"
+    )
+
+
+def _validate_plugin_declaration(value: Any, *, path: str) -> None:
+    if not isinstance(value, Mapping):
+        raise GeloMaterializeError(f"GELO plugin declaration at {path} must be an object")
+    for key in _GELO_PLUGIN_KIND_KEYS:
+        if key in value:
+            _validate_plugin_kind(value[key], path=f"{path}.{key}")
+            return
+    raise GeloMaterializeError(
+        f"GELO plugin declaration at {path} must include kind='sft'"
+    )
+
+
+def _validate_plugin_collection(value: Any, *, path: str) -> None:
+    if isinstance(value, tuple | list):
+        for index, item in enumerate(value):
+            _validate_plugin_declaration(item, path=f"{path}[{index}]")
+        return
+    if not isinstance(value, Mapping):
+        raise GeloMaterializeError(f"GELO plugins section at {path} must be an object")
+    if any(key in value for key in _GELO_PLUGIN_KIND_KEYS):
+        _validate_plugin_declaration(value, path=path)
+        return
+    for key, item in value.items():
+        normalized_key = _plugin_key(key)
+        if normalized_key in _GELO_SUPPORTED_PLUGIN_KINDS | _GELO_FUTURE_PLUGIN_KINDS:
+            _validate_plugin_kind(normalized_key, path=f"{path}.{key}")
+        elif normalized_key in _GELO_PLUGIN_COLLECTION_KEYS:
+            _validate_plugin_collection(item, path=f"{path}.{key}")
+        elif normalized_key in _GELO_PLUGIN_METADATA_KEYS:
+            continue
+        else:
+            raise GeloMaterializeError(
+                f"GELO plugin key {key!r} at {path} is unsupported; "
+                "use plugins.lanes=[{kind='sft'}] or plugins.sft"
+            )
+
+
+def _validate_plugin_lanes(config: Mapping[str, Any]) -> None:
+    plugins = config.get("plugins")
+    if plugins is None:
+        return
+    _validate_plugin_collection(plugins, path="plugins")
 
 
 def _validate_materialized_config(config: Mapping[str, Any]) -> None:
@@ -896,6 +997,7 @@ def _validate_materialized_config(config: Mapping[str, Any]) -> None:
         raise GeloMaterializeError("GELO config requires go_ex.max_rollouts > 0")
     if int(go_ex.get("proposer_rounds") or 0) <= 0:
         raise GeloMaterializeError("GELO config requires go_ex.proposer_rounds > 0")
+    _validate_plugin_lanes(config)
     proposers = _mapping(config.get("proposers"))
     for role_name, role_config in proposers.items():
         if not isinstance(role_config, Mapping):

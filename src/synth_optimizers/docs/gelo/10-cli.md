@@ -69,6 +69,7 @@ export SYNTH_API_KEY="..."
 synth-optimizers gelo submit \
   --config .out/crafter_goex_rust.json \
   --tunnel-url http://127.0.0.1:8943 \
+  --tunnel-provider synth_tunnel \
   --follow
 ```
 
@@ -84,7 +85,8 @@ synth-optimizers gelo submit \
 | `--idempotency-key` | — | Idempotent resubmit. |
 | `--project-id` | — | Optional project scope. |
 | `--container-url` | config value | Override direct container URL. Mutually exclusive with pool and tunnel. |
-| `--tunnel-url` | — | Open a SynthTunnel lease to a local container before submit. Mutually exclusive with direct URL and pool. |
+| `--tunnel-url` | — | Open a tunnel to a local container before submit. Mutually exclusive with direct URL and pool. |
+| `--tunnel-provider` | `synth_tunnel` | Tunnel provider: `auto`, `synth_tunnel`, `cloudflared`, or `ngrok`. |
 | `--container-pool` | — | Hosted pool id. Mutually exclusive with direct URL and tunnel. |
 | `--container-task-id` | — | Optional task id for `--container-pool`. |
 | `--proposer-rounds` | preset default | Override preset proposer rounds. |
@@ -93,10 +95,16 @@ synth-optimizers gelo submit \
 | `--max-rollouts` | preset default | Override preset rollout cap. |
 | `--policy-model` | preset default | Override preset rollout policy model. |
 | `--timeout-seconds` | `120` | HTTP client timeout. |
+| `--disable-usage-registration` | off | Do not send the best-effort package usage-registration event. |
 | `--follow` | off | Stream `/events` until terminal status. |
 | `--json` | off | Print submit/terminal JSON. |
 
 Uses `HostedOptimizerClient.submit_gelo()`.
+
+Usage registration sends only coarse package/run-start metadata. It does not
+send prompts, config, code, artifacts, repo paths, run ids, or user content; the
+backend derives source IP. You can also disable it with
+`SYNTH_OPTIMIZERS_DISABLE_USAGE_REGISTRATION=1`.
 
 ## `gelo watch`
 

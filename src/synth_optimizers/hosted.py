@@ -7,12 +7,20 @@ import time
 import tomllib
 import urllib.error
 import urllib.request
-import uuid
+from importlib.metadata import PackageNotFoundError, version
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
-from urllib.parse import quote, urlencode, urljoin, urlparse
+from urllib.parse import quote, urlencode, urljoin
+
+from .tunnels import (
+    SynthTunnelLease,
+    TunnelLease,
+    TunnelProvider,
+    create_tunnel_lease,
+    tunnel_provider_value,
+)
 
 
 class HostedOptimizerError(RuntimeError):
@@ -24,12 +32,16 @@ _PRIVATE_ERROR_KEYS = frozenset(
         "access_token",
         "auth_json_b64",
         "authorization",
+        "access_client_secret",
         "codex_auth_material",
+        "cloudflare_token",
         "credential_ref",
         "credential_refs",
         "id_token",
+        "ngrok_authtoken",
         "refresh_token",
         "service_token",
+        "tunnel_token",
         "token_bundle",
         "worker_token",
         "x-api-key",
@@ -56,6 +68,8 @@ _PRIVATE_ERROR_UNQUOTED_KEY_RE = re.compile(
 )
 _BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
 _SECRETISH_RE = re.compile(r"(?i)\b(?:sk|sess|eyJ)[A-Za-z0-9._~+/=-]{16,}")
+_PACKAGE_NAME = "synth-optimizers"
+_USAGE_REGISTRATION_TIMEOUT_SECONDS = 2.0
 
 
 class OptimizerAlgorithmSlug(StrEnum):
@@ -126,21 +140,6 @@ class ContainerPoolTarget:
         payload: dict[str, Any] = {"pool_id": self.pool_id}
         if self.task_id is not None:
             payload["task_id"] = self.task_id
-        return payload
-
-
-@dataclass(frozen=True, slots=True)
-class ContainerDirectTarget:
-    url: str
-    headers: Mapping[str, str] = field(default_factory=dict)
-    auth_bearer_env: str | None = None
-
-    def to_config_json(self) -> dict[str, Any]:
-        payload: dict[str, Any] = {"url": self.url}
-        if self.headers:
-            payload["headers"] = dict(self.headers)
-        if self.auth_bearer_env:
-            payload["auth_bearer_env"] = self.auth_bearer_env
         return payload
 
 
@@ -216,61 +215,24 @@ class OptimizerRunRecord:
 
 
 @dataclass(slots=True)
-class SynthTunnelLease:
-    lease_id: str
-    public_url: str
-    worker_token: str
-    client: "HostedOptimizerClient | None" = field(default=None, repr=False)
-    route_token: str | None = None
-    agent_connect: Mapping[str, Any] | None = None
-    expires_at: str | None = None
-
-    def container_config(self) -> ContainerDirectTarget:
-        return ContainerDirectTarget(
-            url=self.public_url,
-            headers={"authorization": f"Bearer {self.worker_token}"},
-        )
-
-    def refresh_worker_token(self) -> str:
-        if self.client is None:
-            raise HostedOptimizerError("SynthTunnelLease has no client for token refresh")
-        payload = self.client._json_request(
-            "POST", f"/api/v1/synthtunnel/leases/{self.lease_id}/token:refresh"
-        )
-        self.worker_token = str(payload.get("worker_token") or "")
-        if not self.worker_token:
-            raise HostedOptimizerError("SynthTunnel token refresh returned no worker_token")
-        return self.worker_token
-
-    def close(self) -> None:
-        if self.client is not None:
-            self.client._json_request(
-                "DELETE",
-                f"/api/v1/synthtunnel/leases/{self.lease_id}",
-                context="Synth tunnel lease close response",
-                allow_empty=True,
-            )
-
-    def __enter__(self) -> "SynthTunnelLease":
-        return self
-
-    def __exit__(self, *exc: object) -> None:
-        self.close()
-
-
-@dataclass(slots=True)
 class HostedOptimizerClient:
     backend_url: str | None = None
     api_key: str | None = None
     timeout_seconds: float = 300.0
+    register_usage: bool | None = None
+    usage_registration_surface: str = "sdk"
+    require_api_key: bool = True
 
     def __post_init__(self) -> None:
         self.backend_url = (
             self.backend_url or os.environ.get("SYNTH_BACKEND_URL") or "https://api.usesynth.ai"
         ).rstrip("/")
-        self.api_key = self.api_key or os.environ.get("SYNTH_API_KEY")
-        if not self.api_key:
+        if self.api_key is None:
+            self.api_key = os.environ.get("SYNTH_API_KEY")
+        if not self.api_key and self.require_api_key:
             raise HostedOptimizerError("SYNTH_API_KEY is required for hosted optimizer requests")
+        if self.register_usage is None:
+            self.register_usage = _usage_registration_default_enabled()
 
     def startup(self) -> OptimizerStartupCatalog:
         payload = self._json_request("GET", "/api/v1/optimizers/startup")
@@ -330,7 +292,7 @@ class HostedOptimizerClient:
         idempotency_key: str | None = None,
         project_id: str | None = None,
         container_pool: ContainerPoolTarget | Mapping[str, Any] | None = None,
-        container_tunnel: SynthTunnelLease | None = None,
+        container_tunnel: TunnelLease | None = None,
     ) -> OptimizerRunSubmitResponse:
         config_toml = _required_text(
             config_toml,
@@ -341,11 +303,13 @@ class HostedOptimizerClient:
             raise HostedOptimizerError(
                 "container_pool and container_tunnel are mutually exclusive"
             )
+        usage_registration_enabled = _usage_registration_enabled_from_toml(config_toml)
         if container_tunnel is not None:
             try:
                 config_json = tomllib.loads(config_toml)
             except tomllib.TOMLDecodeError as exc:
                 raise HostedOptimizerError(f"invalid GEPA config_toml: {exc}") from exc
+            usage_registration_enabled = _usage_registration_enabled_from_config(config_json)
             config_json = _with_tunnel_container(config_json, container_tunnel)
             payload: dict[str, Any] = {
                 "algorithm": OptimizerAlgorithmSlug.GEPA.value,
@@ -364,13 +328,16 @@ class HostedOptimizerClient:
             container_pool=container_pool,
         )
         response = self._json_request("POST", "/api/v1/optimizers/runs", payload)
-        return OptimizerRunSubmitResponse.from_payload(response)
+        submit_response = OptimizerRunSubmitResponse.from_payload(response)
+        if usage_registration_enabled:
+            self.register_usage_submit(algorithm=OptimizerAlgorithmSlug.GEPA)
+        return submit_response
 
     def submit_gepa_tunnel_toml(
         self,
         config_toml: str,
         *,
-        container_tunnel: SynthTunnelLease,
+        container_tunnel: TunnelLease,
         run_id: str | None = None,
         idempotency_key: str | None = None,
         project_id: str | None = None,
@@ -489,37 +456,39 @@ class HostedOptimizerClient:
         metadata: Mapping[str, Any] | None = None,
         capabilities: Mapping[str, Any] | None = None,
     ) -> SynthTunnelLease:
-        parsed = urlparse(local_base_url)
-        host = parsed.hostname or "127.0.0.1"
-        port = parsed.port
-        if port is None:
-            port = 443 if parsed.scheme == "https" else 80
-        payload = {
-            "client_instance_id": f"synth-optimizers-{uuid.uuid4().hex[:16]}",
-            "local_target": {"host": host, "port": port},
-            "requested_ttl_seconds": requested_ttl_seconds,
-            "metadata": dict(metadata or {}),
-            "capabilities": dict(capabilities or {}),
-        }
-        response = self._json_request("POST", "/api/v1/synthtunnel/leases", payload)
-        context = "Synth tunnel lease response"
-        return SynthTunnelLease(
-            lease_id=_required_text(response.get("lease_id"), field="lease_id", context=context),
-            public_url=_required_text(
-                response.get("public_url"),
-                field="public_url",
-                context=context,
-            ),
-            worker_token=_required_text(
-                response.get("worker_token"),
-                field="worker_token",
-                context=context,
-            ),
-            client=self,
-            route_token=_str_or_none(response.get("route_token")),
-            agent_connect=_mapping_or_none(response.get("agent_connect")),
-            expires_at=_str_or_none(response.get("expires_at")),
+        lease = self.open_tunnel(
+            local_base_url,
+            provider=TunnelProvider.SYNTH_TUNNEL,
+            requested_ttl_seconds=requested_ttl_seconds,
+            metadata=metadata,
+            capabilities=capabilities,
         )
+        if not isinstance(lease, SynthTunnelLease):
+            raise HostedOptimizerError("open_synth_tunnel did not return a SynthTunnel lease")
+        return lease
+
+    def open_tunnel(
+        self,
+        local_base_url: str,
+        *,
+        provider: TunnelProvider | str = TunnelProvider.AUTO,
+        requested_ttl_seconds: int = 3600,
+        metadata: Mapping[str, Any] | None = None,
+        capabilities: Mapping[str, Any] | None = None,
+        wait_ready: bool = True,
+    ) -> TunnelLease:
+        try:
+            return create_tunnel_lease(
+                self,
+                local_base_url,
+                provider=provider,
+                requested_ttl_seconds=requested_ttl_seconds,
+                metadata=metadata,
+                capabilities=capabilities,
+                wait_ready=wait_ready,
+            )
+        except RuntimeError as exc:
+            raise HostedOptimizerError(_public_error_text(str(exc))) from exc
 
     def _submit(
         self,
@@ -530,13 +499,14 @@ class HostedOptimizerClient:
         idempotency_key: str | None = None,
         project_id: str | None = None,
         container_pool: ContainerPoolTarget | Mapping[str, Any] | None = None,
-        container_tunnel: SynthTunnelLease | None = None,
+        container_tunnel: TunnelLease | None = None,
     ) -> OptimizerRunSubmitResponse:
         if container_pool is not None and container_tunnel is not None:
             raise HostedOptimizerError(
                 "container_pool and container_tunnel are mutually exclusive"
             )
         config_json = _config_to_json(config)
+        usage_registration_enabled = _usage_registration_enabled_from_config(config_json)
         if container_tunnel is not None:
             config_json = _with_tunnel_container(config_json, container_tunnel)
         payload: dict[str, Any] = {
@@ -551,7 +521,36 @@ class HostedOptimizerClient:
             container_pool=container_pool,
         )
         response = self._json_request("POST", "/api/v1/optimizers/runs", payload)
-        return OptimizerRunSubmitResponse.from_payload(response)
+        submit_response = OptimizerRunSubmitResponse.from_payload(response)
+        if usage_registration_enabled:
+            self.register_usage_submit(algorithm=algorithm)
+        return submit_response
+
+    def register_usage_submit(
+        self,
+        *,
+        algorithm: OptimizerAlgorithmSlug,
+    ) -> None:
+        if not self.register_usage:
+            return
+        payload: dict[str, Any] = {
+            "algorithm": algorithm.value,
+            "event_name": "run_submit",
+            "client_surface": _usage_registration_surface(self.usage_registration_surface),
+            "package_name": _PACKAGE_NAME,
+            "package_version": _package_version(),
+        }
+        try:
+            self._json_request(
+                "POST",
+                "/api/v1/optimizers/usage/registrations",
+                payload,
+                context="optimizer usage registration",
+                include_auth=False,
+                timeout_seconds=_USAGE_REGISTRATION_TIMEOUT_SECONDS,
+            )
+        except HostedOptimizerError:
+            return
 
     def _add_submit_metadata(
         self,
@@ -583,12 +582,13 @@ class HostedOptimizerClient:
         *,
         context: str = "hosted optimizer JSON response",
         allow_empty: bool = False,
+        include_auth: bool = True,
+        timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
         body = None if payload is None else json.dumps(payload).encode("utf-8")
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Accept": "application/json",
-        }
+        headers = {"Accept": "application/json"}
+        if include_auth and self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
         if body is not None:
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(
@@ -598,7 +598,8 @@ class HostedOptimizerClient:
             method=method,
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+            timeout = self.timeout_seconds if timeout_seconds is None else timeout_seconds
+            with urllib.request.urlopen(request, timeout=timeout) as response:
                 text = response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             detail = _public_error_detail(exc.read())
@@ -622,7 +623,7 @@ class HostedOptimizerClient:
     def _bytes_request(self, method: str, path: str, *, context: str) -> bytes:
         request = urllib.request.Request(
             _api_endpoint(self.backend_url or "", path),
-            headers={"Authorization": f"Bearer {self.api_key}"},
+            headers=({"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}),
             method=method,
         )
         try:
@@ -708,8 +709,59 @@ def _api_endpoint(base_url: str, path: str) -> str:
     return urljoin(base, path.lstrip("/"))
 
 
+def _usage_registration_default_enabled() -> bool:
+    disabled = os.environ.get("SYNTH_OPTIMIZERS_DISABLE_USAGE_REGISTRATION")
+    if disabled is not None and _env_flag(disabled):
+        return False
+    enabled = os.environ.get("SYNTH_OPTIMIZERS_REGISTER_USAGE")
+    if enabled is None:
+        return True
+    return _env_flag(enabled)
+
+
+def _env_flag(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _usage_registration_surface(raw: str) -> str:
+    normalized = raw.strip().lower()
+    if normalized in {"sdk", "cli"}:
+        return normalized
+    return "unknown"
+
+
+def _usage_registration_enabled_from_toml(config_toml: str) -> bool:
+    try:
+        config_json = tomllib.loads(config_toml)
+    except tomllib.TOMLDecodeError:
+        return True
+    return _usage_registration_enabled_from_config(config_json)
+
+
+def _usage_registration_enabled_from_config(config_json: Mapping[str, Any]) -> bool:
+    raw_section = config_json.get("usage_registration")
+    if not isinstance(raw_section, Mapping):
+        return True
+    raw_enabled = raw_section.get("enabled")
+    if isinstance(raw_enabled, bool):
+        return raw_enabled
+    if isinstance(raw_enabled, str):
+        return _env_flag(raw_enabled)
+    return True
+
+
+def _package_version() -> str | None:
+    try:
+        return version(_PACKAGE_NAME)
+    except PackageNotFoundError:
+        return None
+
+
 def _public_error_detail(body: bytes) -> str:
-    text = body.decode("utf-8", errors="replace")
+    return _public_error_text(body.decode("utf-8", errors="replace"))
+
+
+def _public_error_text(text: str) -> str:
     for marker in _PRIVATE_PATH_MARKERS:
         if marker in text:
             text = " ".join(
@@ -743,7 +795,7 @@ def _config_to_json(config: Mapping[str, Any] | Any) -> dict[str, Any]:
     return data
 
 
-def _with_tunnel_container(config_json: dict[str, Any], lease: SynthTunnelLease) -> dict[str, Any]:
+def _with_tunnel_container(config_json: dict[str, Any], lease: TunnelLease) -> dict[str, Any]:
     config_json = dict(config_json)
     raw_container = config_json.get("container")
     if raw_container is None:
@@ -765,28 +817,49 @@ def _with_tunnel_container(config_json: dict[str, Any], lease: SynthTunnelLease)
     raw_headers = container.get("headers") or {}
     if not isinstance(raw_headers, Mapping):
         raise HostedOptimizerError("hosted optimizer config container.headers must be an object")
+    target = _container_target_payload(lease.container_config())
+    target_headers = target.get("headers") or {}
+    if not isinstance(target_headers, Mapping):
+        raise HostedOptimizerError("container_tunnel.container_config().headers must be an object")
     headers = {
         str(name): str(value)
-        for name, value in raw_headers.items()
+        for name, value in {**dict(raw_headers), **dict(target_headers)}.items()
         if str(name).strip().lower() not in {"authorization", "x-api-key"}
     }
     container["url"] = _required_text(
-        lease.public_url,
+        target.get("url"),
         field="public_url",
-        context="Synth tunnel lease",
+        context="tunnel lease",
     )
-    container["headers"] = headers
-    container["auth_refresh"] = {
-        "provider": "synth_tunnel",
-        "lease_id": _required_text(
-            lease.lease_id,
-            field="lease_id",
-            context="Synth tunnel lease",
-        ),
-        "refresh_interval_seconds": 900,
-    }
+    if headers:
+        container["headers"] = headers
+    else:
+        container.pop("headers", None)
+    auth_bearer_env = str(target.get("auth_bearer_env") or "").strip()
+    if auth_bearer_env:
+        container["auth_bearer_env"] = auth_bearer_env
+    if tunnel_provider_value(getattr(lease, "provider", None)) == TunnelProvider.SYNTH_TUNNEL.value:
+        container["auth_refresh"] = {
+            "provider": "synth_tunnel",
+            "lease_id": _required_text(
+                lease.lease_id,
+                field="lease_id",
+                context="Synth tunnel lease",
+            ),
+            "refresh_interval_seconds": 900,
+        }
+    else:
+        container.pop("auth_refresh", None)
     config_json["container"] = container
     return config_json
+
+
+def _container_target_payload(target: Any) -> Mapping[str, Any]:
+    if hasattr(target, "to_config_json"):
+        target = target.to_config_json()
+    if not isinstance(target, Mapping):
+        raise HostedOptimizerError("container_tunnel.container_config() must return an object")
+    return dict(target)
 
 
 def _json_default(value: Any) -> Any:

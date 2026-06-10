@@ -112,6 +112,15 @@ class RunSettingsTomlSection(BaseModel):
         )
 
 
+class UsageRegistrationTomlSection(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = True
+
+    def to_domain(self) -> "UsageRegistrationConfig":
+        return UsageRegistrationConfig(enabled=self.enabled)
+
+
 class TasksetTomlSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -472,6 +481,9 @@ class GepaTomlDocument(BaseModel):
     policy: PolicyTomlSection = Field(default_factory=PolicyTomlSection)
     gepa: GepaTomlSection = Field(default_factory=GepaTomlSection)
     cache: CacheTomlSection = Field(default_factory=CacheTomlSection)
+    usage_registration: UsageRegistrationTomlSection = Field(
+        default_factory=UsageRegistrationTomlSection
+    )
     candidate: CandidateTomlSection = Field(default_factory=CandidateTomlSection)
     seed_candidate: dict[str, str] = Field(default_factory=dict)
 
@@ -490,6 +502,7 @@ class GepaTomlDocument(BaseModel):
             pipeline=self.gepa.pipeline_config(),
             budget=self.gepa.budget_config(),
             cache=self.cache.to_domain(),
+            usage_registration=self.usage_registration.to_domain(),
             target_modules=list(self.candidate.target_modules),
             seed_candidate=dict(self.seed_candidate),
             _source_path=source_path,
@@ -541,6 +554,14 @@ class RunSettings:
             "output_dir": str(self.output_dir),
             "seed": int(self.seed),
         }
+
+
+@dataclass(slots=True)
+class UsageRegistrationConfig:
+    enabled: bool = True
+
+    def to_toml(self) -> dict[str, Any]:
+        return {"enabled": bool(self.enabled)}
 
 
 @dataclass(slots=True)
@@ -1098,6 +1119,9 @@ class GepaConfig:
     pipeline: GepaPipeline = field(default_factory=GepaPipeline)
     budget: BudgetConfig = field(default_factory=BudgetConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
+    usage_registration: UsageRegistrationConfig = field(
+        default_factory=UsageRegistrationConfig
+    )
     output: OutputConfig | None = None
     target_modules: list[str] | None = None
     seed_candidate: dict[str, str] | None = None
@@ -1159,6 +1183,7 @@ class GepaConfig:
         gepa["task_pools"] = self.task_pools.to_toml()
         payload["gepa"] = gepa
         payload["cache"] = self.cache.to_toml()
+        payload["usage_registration"] = self.usage_registration.to_toml()
         return payload
 
     def write_toml(self, path: str | Path | None = None) -> Path:
@@ -1176,9 +1201,31 @@ class GepaConfig:
         return path
 
     def execute(self) -> GepaRunResult:
+        self._register_usage_submit()
         self._preflight_container_capabilities()
         config_path = self.write_toml()
         return _NativeGepaRun.from_toml(str(config_path)).execute()
+
+    def _register_usage_submit(self) -> None:
+        if not self.usage_registration.enabled:
+            return
+        from .hosted import (
+            HostedOptimizerClient,
+            HostedOptimizerError,
+            OptimizerAlgorithmSlug,
+        )
+
+        try:
+            client = HostedOptimizerClient(
+                api_key="",
+                register_usage=None,
+                require_api_key=False,
+            )
+            client.register_usage_submit(
+                algorithm=OptimizerAlgorithmSlug.GEPA,
+            )
+        except HostedOptimizerError:
+            return
 
     def _preflight_container_capabilities(self) -> None:
         metadata = ContainerMetadataPayload.model_validate(

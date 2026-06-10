@@ -45,6 +45,9 @@ from .gelo import (
     GeloHostedConfig,
     GeloMaterializeError,
     GeloMaterializer,
+    GeloPluginKind,
+    GeloPluginSection,
+    GeloPluginsSection,
     GeloPolicySection,
     GeloPreset,
     GeloPresetName,
@@ -58,7 +61,6 @@ from .gelo import (
 from .hosted import (
     AlgorithmCatalogEntry,
     AlgorithmCatalogStatus,
-    ContainerDirectTarget,
     ContainerPoolTarget,
     ContainerTargetKind,
     HostedOptimizerClient,
@@ -69,7 +71,6 @@ from .hosted import (
     OptimizerRunSubmitResponse,
     OptimizerStartupCatalog,
     RunStatus as HostedRunStatus,
-    SynthTunnelLease,
 )
 from .o11y import (
     LiveProgress,
@@ -82,6 +83,17 @@ from .o11y import (
     project_run_events,
 )
 from .sdk import OptimizerConfig, OptimizerRun
+from .tunnels import (
+    CloudflaredTunnelLease,
+    ContainerDirectTarget,
+    ManagedTunnelLease,
+    NgrokTunnelLease,
+    SynthTunnelLease,
+    TunnelError,
+    TunnelLease,
+    TunnelLocalTarget,
+    TunnelProvider,
+)
 
 _GEPA_EXPORTS = {
     "BudgetConfig",
@@ -103,6 +115,7 @@ _GEPA_EXPORTS = {
     "ProposerPromptConfig",
     "RunSettings",
     "TasksetSelection",
+    "UsageRegistrationConfig",
 }
 
 
@@ -127,6 +140,7 @@ __all__ = [
     "CacheFullError",
     "CacheMissError",
     "CancelledError",
+    "CloudflaredTunnelLease",
     "ConfigError",
     "ContainerContractError",
     "EventCompareError",
@@ -150,6 +164,9 @@ __all__ = [
     "GeloHostedConfig",
     "GeloMaterializeError",
     "GeloMaterializer",
+    "GeloPluginKind",
+    "GeloPluginSection",
+    "GeloPluginsSection",
     "GeloPolicySection",
     "GeloPreset",
     "GeloPresetName",
@@ -202,6 +219,13 @@ __all__ = [
     "SynthTunnelLease",
     "SynthOptimizerError",
     "TasksetSelection",
+    "TunnelLease",
+    "TunnelError",
+    "TunnelLocalTarget",
+    "TunnelProvider",
+    "UsageRegistrationConfig",
+    "ManagedTunnelLease",
+    "NgrokTunnelLease",
     "project_run_events",
     "__version__",
     "events_compare",

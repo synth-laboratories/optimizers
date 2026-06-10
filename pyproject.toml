@@ -1,6 +1,6 @@
 [project]
 name = "synth-optimizers"
-version = "0.2.1.dev202606092146"
+version = "0.2.1.20260610"
 description = "Public Synth optimizer tooling with a Rust GEPA core."
 authors = [{name = "Synth Laboratories", email = "josh@usesynth.ai"}]
 readme = "README.md"
@@ -9,6 +9,7 @@ license = "Apache-2.0"
 dependencies = [
     "pydantic>=2.0.0",
     "synth-containers==0.2.0.20260604",
+    "websocket-client>=1.8.0",
 ]
 
 [project.optional-dependencies]

@@ -38,12 +38,14 @@ Auth: **`SYNTH_API_KEY` only** on public routes.
 Hosted workers on Railway cannot reach `127.0.0.1` on your laptop. For local development:
 
 ```python
-with client.open_synth_tunnel("http://127.0.0.1:8943") as tunnel:
+with client.open_tunnel("http://127.0.0.1:8943", provider="synth_tunnel") as tunnel:
     config = materialize_with_tunnel(tunnel)
-    client.submit_gelo(config, container_tunnel=tunnel)
+    client.submit_gelo(config)
 ```
 
-CLI: `--tunnel-url http://127.0.0.1:8943` on `gelo submit`.
+CLI: `--tunnel-url http://127.0.0.1:8943 --tunnel-provider synth_tunnel` on `gelo submit`.
+Supported providers are `synth_tunnel`, `cloudflared`, and `ngrok`. Only SynthTunnel emits
+`container.auth_refresh`; cloudflared and ngrok submit as public container URLs.
 
 Container must be up and pass `GET /health` before submit.
 

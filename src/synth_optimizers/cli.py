@@ -29,6 +29,7 @@ from .hosted import (
     HostedOptimizerClient,
     HostedOptimizerError,
 )
+from .tunnels import TunnelError, TunnelProvider
 
 
 def _duration_seconds(value: str | None) -> float | None:
@@ -145,6 +146,10 @@ def _hosted_client(args: argparse.Namespace) -> HostedOptimizerClient:
         backend_url=args.base_url,
         api_key=os.environ.get(args.api_key_env),
         timeout_seconds=args.timeout_seconds,
+        register_usage=False
+        if bool(getattr(args, "disable_usage_registration", False))
+        else None,
+        usage_registration_surface="cli",
     )
 
 
@@ -158,6 +163,32 @@ def _container_pool_from_args(args: argparse.Namespace) -> ContainerPoolTarget |
     return ContainerPoolTarget(pool_id=pool_id, task_id=task_id)
 
 
+def _tunnel_provider_from_args(args: argparse.Namespace) -> TunnelProvider:
+    raw = getattr(args, "tunnel_provider", None) or TunnelProvider.SYNTH_TUNNEL.value
+    try:
+        return TunnelProvider(raw)
+    except ValueError as exc:
+        raise SystemExit(
+            "--tunnel-provider must be auto, synth_tunnel, cloudflared, or ngrok"
+        ) from exc
+
+
+def _tunnel_ttl_seconds_from_args(args: argparse.Namespace) -> int:
+    value = int(getattr(args, "tunnel_ttl_seconds", 86400) or 86400)
+    if value < 60 or value > 86400:
+        raise SystemExit("--tunnel-ttl-seconds must be between 60 and 86400")
+    return value
+
+
+def _close_tunnel_quietly(tunnel: Any | None) -> None:
+    if tunnel is None:
+        return
+    try:
+        tunnel.close()
+    except Exception as exc:
+        print(f"warning: tunnel close failed: {exc}", file=sys.stderr)
+
+
 def _validate_container_args(args: argparse.Namespace) -> None:
     has_container_url = bool(getattr(args, "container_url", None))
     has_container_pool = bool(getattr(args, "container_pool", None))
@@ -166,6 +197,14 @@ def _validate_container_args(args: argparse.Namespace) -> None:
         raise SystemExit("--container-url and --container-pool are mutually exclusive")
     if has_tunnel_url and (has_container_url or has_container_pool):
         raise SystemExit("--tunnel-url cannot be combined with --container-url or --container-pool")
+
+
+def _require_tunnel_follow(args: argparse.Namespace) -> None:
+    if getattr(args, "tunnel_url", None) and not bool(getattr(args, "follow", False)):
+        raise SystemExit(
+            "--tunnel-url requires --follow so the CLI keeps the tunnel open until "
+            "the hosted run reaches a terminal status"
+        )
 
 
 def _gelo_preset_overrides(args: argparse.Namespace) -> dict[str, Any]:
@@ -183,24 +222,35 @@ def _gelo_preset_overrides(args: argparse.Namespace) -> dict[str, Any]:
     return overrides
 
 
-def _gelo_materialized_config(args: argparse.Namespace) -> dict[str, Any]:
+def _gelo_materialized_config(
+    args: argparse.Namespace,
+    *,
+    container_tunnel: Any | None = None,
+) -> dict[str, Any]:
     _validate_container_args(args)
-    container_url = getattr(args, "container_url", None) or getattr(args, "tunnel_url", None)
+    container_url = getattr(args, "container_url", None)
+    if container_tunnel is None:
+        container_url = container_url or getattr(args, "tunnel_url", None)
     container_pool = _container_pool_from_args(args)
     if getattr(args, "preset", None):
         try:
             return GeloPreset.from_name(args.preset, **_gelo_preset_overrides(args)).materialize(
                 container_url=container_url,
                 container_pool=container_pool,
+                container_tunnel=container_tunnel,
                 run_id=getattr(args, "run_id", None),
             )
         except GeloMaterializeError as exc:
             raise SystemExit(str(exc)) from exc
     if getattr(args, "toml", None):
         try:
-            return GeloMaterializer.from_paths(args.toml, getattr(args, "overlay", None)).materialize(
+            return GeloMaterializer.from_paths(
+                args.toml,
+                getattr(args, "overlay", None),
+            ).materialize(
                 container_url=container_url,
                 container_pool=container_pool,
+                container_tunnel=container_tunnel,
                 run_id=getattr(args, "run_id", None),
             )
         except GeloMaterializeError as exc:
@@ -210,6 +260,7 @@ def _gelo_materialized_config(args: argparse.Namespace) -> dict[str, Any]:
             return GeloMaterializer(_json_file_object(args.config)).materialize(
                 container_url=container_url,
                 container_pool=container_pool,
+                container_tunnel=container_tunnel,
                 run_id=getattr(args, "run_id", None),
             )
         except GeloMaterializeError as exc:
@@ -283,23 +334,26 @@ def _submit_hosted_gepa(args: argparse.Namespace) -> int:
         config_text = Path(args.config).read_text(encoding="utf-8")
     except OSError as exc:
         raise SystemExit(f"cannot read {args.config}: {exc}") from exc
+    tunnel: Any | None = None
     try:
+        _validate_container_args(args)
+        _require_tunnel_follow(args)
         client = _hosted_client(args)
         container_pool = _container_pool_from_args(args)
-        if getattr(args, "tunnel_url", None) and container_pool is not None:
-            raise SystemExit("--tunnel-url and --container-pool are mutually exclusive")
         if getattr(args, "tunnel_url", None):
-            with client.open_synth_tunnel(
+            tunnel = client.open_tunnel(
                 args.tunnel_url,
+                provider=_tunnel_provider_from_args(args),
+                requested_ttl_seconds=_tunnel_ttl_seconds_from_args(args),
                 metadata={"optimizer": "gepa", "run_id": args.run_id or ""},
-            ) as tunnel:
-                submit = client.submit_gepa_toml(
-                    config_text,
-                    run_id=args.run_id,
-                    idempotency_key=args.idempotency_key,
-                    project_id=args.project_id,
-                    container_tunnel=tunnel,
-                )
+            )
+            submit = client.submit_gepa_toml(
+                config_text,
+                run_id=args.run_id,
+                idempotency_key=args.idempotency_key,
+                project_id=args.project_id,
+                container_tunnel=tunnel,
+            )
         else:
             submit = client.submit_gepa_toml(
                 config_text,
@@ -308,18 +362,15 @@ def _submit_hosted_gepa(args: argparse.Namespace) -> int:
                 project_id=args.project_id,
                 container_pool=container_pool,
             )
-    except HostedOptimizerError as exc:
-        raise SystemExit(str(exc)) from exc
-    if args.json and not args.follow:
-        print(json.dumps(dict(submit.raw), indent=2, sort_keys=True))
-        return 0
+        if args.json and not args.follow:
+            print(json.dumps(dict(submit.raw), indent=2, sort_keys=True))
+            return 0
 
-    print(f"submitted run_id={submit.run_id} status={submit.status.value}")
-    if submit.events_url:
-        print(f"events: {_api_endpoint(args.base_url, submit.events_url)}")
+        print(f"submitted run_id={submit.run_id} status={submit.status.value}")
+        if submit.events_url:
+            print(f"events: {_api_endpoint(args.base_url, submit.events_url)}")
 
-    if args.follow:
-        try:
+        if args.follow:
             for event in client.events(submit.run_id):
                 event_type = str(event.get("event_type") or "event")
                 status = str(event.get("status") or "")
@@ -327,17 +378,19 @@ def _submit_hosted_gepa(args: argparse.Namespace) -> int:
                 if status in {"succeeded", "failed", "cancelled"}:
                     break
             final_record = client.get_run(submit.run_id)
-        except HostedOptimizerError as exc:
-            raise SystemExit(str(exc)) from exc
-        if args.json:
-            print(json.dumps(dict(final_record.raw), indent=2, sort_keys=True))
-        else:
-            print(f"final status={final_record.status.value}")
-            if final_record.error:
-                print(f"error: {final_record.error}")
-        if final_record.status.value == "failed":
-            return 1
-    return 0
+            if args.json:
+                print(json.dumps(dict(final_record.raw), indent=2, sort_keys=True))
+            else:
+                print(f"final status={final_record.status.value}")
+                if final_record.error:
+                    print(f"error: {final_record.error}")
+            if final_record.status.value == "failed":
+                return 1
+        return 0
+    except (HostedOptimizerError, TunnelError) as exc:
+        raise SystemExit(str(exc)) from exc
+    finally:
+        _close_tunnel_quietly(tunnel)
 
 
 def _json_file_object(path: str) -> dict:
@@ -353,23 +406,28 @@ def _json_file_object(path: str) -> dict:
 
 
 def _submit_hosted_gelo(args: argparse.Namespace) -> int:
+    tunnel: Any | None = None
     try:
+        _validate_container_args(args)
+        _require_tunnel_follow(args)
         client = _hosted_client(args)
-        config = _gelo_materialized_config(args)
         container_pool = _container_pool_from_args(args)
         if args.tunnel_url:
-            with client.open_synth_tunnel(
+            tunnel = client.open_tunnel(
                 args.tunnel_url,
+                provider=_tunnel_provider_from_args(args),
+                requested_ttl_seconds=_tunnel_ttl_seconds_from_args(args),
                 metadata={"optimizer": "gelo", "run_id": args.run_id or ""},
-            ) as tunnel:
-                submit = client.submit_gelo(
-                    config,
-                    run_id=args.run_id,
-                    idempotency_key=args.idempotency_key,
-                    project_id=args.project_id,
-                    container_tunnel=tunnel,
-                )
+            )
+            config = _gelo_materialized_config(args, container_tunnel=tunnel)
+            submit = client.submit_gelo(
+                config,
+                run_id=args.run_id,
+                idempotency_key=args.idempotency_key,
+                project_id=args.project_id,
+            )
         else:
+            config = _gelo_materialized_config(args)
             submit = client.submit_gelo(
                 config,
                 run_id=args.run_id,
@@ -377,18 +435,15 @@ def _submit_hosted_gelo(args: argparse.Namespace) -> int:
                 project_id=args.project_id,
                 container_pool=container_pool,
             )
-    except HostedOptimizerError as exc:
-        raise SystemExit(str(exc)) from exc
-    if args.json and not args.follow:
-        print(json.dumps(dict(submit.raw), indent=2, sort_keys=True))
-        return 0
+        if args.json and not args.follow:
+            print(json.dumps(dict(submit.raw), indent=2, sort_keys=True))
+            return 0
 
-    print(f"submitted run_id={submit.run_id} status={submit.status.value}")
-    if submit.events_url:
-        print(f"events: {_api_endpoint(args.base_url, submit.events_url)}")
+        print(f"submitted run_id={submit.run_id} status={submit.status.value}")
+        if submit.events_url:
+            print(f"events: {_api_endpoint(args.base_url, submit.events_url)}")
 
-    if args.follow:
-        try:
+        if args.follow:
             for event in client.events(submit.run_id):
                 event_type = str(event.get("event_type") or "event")
                 status = str(event.get("status") or "")
@@ -396,17 +451,19 @@ def _submit_hosted_gelo(args: argparse.Namespace) -> int:
                 if status in {"succeeded", "failed", "cancelled"}:
                     break
             final_record = client.get_run(submit.run_id)
-        except HostedOptimizerError as exc:
-            raise SystemExit(str(exc)) from exc
-        if args.json:
-            print(json.dumps(dict(final_record.raw), indent=2, sort_keys=True))
-        else:
-            print(f"final status={final_record.status.value}")
-            if final_record.error:
-                print(f"error: {final_record.error}")
-        if final_record.status.value == "failed":
-            return 1
-    return 0
+            if args.json:
+                print(json.dumps(dict(final_record.raw), indent=2, sort_keys=True))
+            else:
+                print(f"final status={final_record.status.value}")
+                if final_record.error:
+                    print(f"error: {final_record.error}")
+            if final_record.status.value == "failed":
+                return 1
+        return 0
+    except (HostedOptimizerError, TunnelError) as exc:
+        raise SystemExit(str(exc)) from exc
+    finally:
+        _close_tunnel_quietly(tunnel)
 
 
 def _materialize_hosted_gelo(args: argparse.Namespace) -> int:
@@ -669,6 +726,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print the full result JSON instead of the terminal progress view.",
     )
+    gepa_run.add_argument(
+        "--disable-usage-registration",
+        action="store_true",
+        help="Do not send the best-effort package usage registration event.",
+    )
     gepa_submit = gepa_subcommands.add_parser("submit")
     gepa_submit.add_argument("--config", required=True)
     gepa_submit.add_argument(
@@ -685,9 +747,26 @@ def build_parser() -> argparse.ArgumentParser:
     gepa_submit.add_argument("--idempotency-key")
     gepa_submit.add_argument("--project-id")
     gepa_submit.add_argument("--tunnel-url")
+    gepa_submit.add_argument(
+        "--tunnel-provider",
+        choices=[provider.value for provider in TunnelProvider],
+        default=TunnelProvider.SYNTH_TUNNEL.value,
+        help="Tunnel provider for --tunnel-url. Defaults to synth_tunnel.",
+    )
+    gepa_submit.add_argument(
+        "--tunnel-ttl-seconds",
+        type=int,
+        default=86400,
+        help="Lease TTL for --tunnel-url, in seconds. Defaults to 86400.",
+    )
     gepa_submit.add_argument("--container-pool")
     gepa_submit.add_argument("--container-task-id")
     gepa_submit.add_argument("--timeout-seconds", type=float, default=120.0)
+    gepa_submit.add_argument(
+        "--disable-usage-registration",
+        action="store_true",
+        help="Do not send the best-effort package usage registration event.",
+    )
     gepa_submit.add_argument("--follow", action="store_true")
     gepa_submit.add_argument("--json", action="store_true")
 
@@ -796,6 +875,18 @@ def build_parser() -> argparse.ArgumentParser:
     gelo_submit.add_argument("--project-id")
     gelo_submit.add_argument("--container-url")
     gelo_submit.add_argument("--tunnel-url")
+    gelo_submit.add_argument(
+        "--tunnel-provider",
+        choices=[provider.value for provider in TunnelProvider],
+        default=TunnelProvider.SYNTH_TUNNEL.value,
+        help="Tunnel provider for --tunnel-url. Defaults to synth_tunnel.",
+    )
+    gelo_submit.add_argument(
+        "--tunnel-ttl-seconds",
+        type=int,
+        default=86400,
+        help="Lease TTL for --tunnel-url, in seconds. Defaults to 86400.",
+    )
     gelo_submit.add_argument("--container-pool")
     gelo_submit.add_argument("--container-task-id")
     gelo_submit.add_argument("--proposer-rounds", type=int)
@@ -804,6 +895,11 @@ def build_parser() -> argparse.ArgumentParser:
     gelo_submit.add_argument("--max-rollouts", type=int)
     gelo_submit.add_argument("--policy-model")
     gelo_submit.add_argument("--timeout-seconds", type=float, default=120.0)
+    gelo_submit.add_argument(
+        "--disable-usage-registration",
+        action="store_true",
+        help="Do not send the best-effort package usage registration event.",
+    )
     gelo_submit.add_argument("--follow", action="store_true")
     gelo_submit.add_argument("--json", action="store_true")
 
@@ -997,7 +1093,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "gepa" and args.gepa_command == "run":
-        from .gepa import GepaRun
+        from .gepa import GepaRun, UsageRegistrationConfig
 
         old_terminal = os.environ.get("SYNTH_OPTIMIZERS_TERMINAL")
         old_proposer_execution_mode = os.environ.get("SYNTH_OPTIMIZERS_PROPOSER_EXECUTION_MODE")
@@ -1025,7 +1121,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.proposer_codex_home:
             os.environ["SYNTH_OPTIMIZERS_PROPOSER_CODEX_HOME"] = args.proposer_codex_home
         try:
-            result = GepaRun.from_toml(args.config).execute()
+            gepa_run = GepaRun.from_toml(args.config)
+            if args.disable_usage_registration:
+                gepa_run.config.usage_registration = UsageRegistrationConfig(enabled=False)
+            result = gepa_run.execute()
         except SynthOptimizerError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1

@@ -5,7 +5,14 @@ Public GELO surface is **hosted**: `HostedOptimizerClient` + typed config sectio
 
 ```python
 from synth_optimizers.hosted import HostedOptimizerClient
-from synth_optimizers.gelo import GeloHostedConfig, GeloPreset, GeloProposerRole  # noqa
+from synth_optimizers.gelo import (  # noqa
+    GeloHostedConfig,
+    GeloPluginKind,
+    GeloPluginSection,
+    GeloPluginsSection,
+    GeloPreset,
+    GeloProposerRole,
+)
 ```
 
 ## Quickstart (hosted)
@@ -18,7 +25,10 @@ client = HostedOptimizerClient()  # SYNTH_API_KEY, optional SYNTH_BACKEND_URL
 catalog = client.startup()
 assert "go-ex" in [a.value for a in catalog.submit_supported]
 
-with client.open_synth_tunnel("http://127.0.0.1:8943") as tunnel:
+with client.open_tunnel(
+    "http://127.0.0.1:8943",
+    provider="synth_tunnel",
+) as tunnel:
     config = GeloPreset.crafter_smoke().materialize(container_tunnel=tunnel)
     resp = client.submit_gelo(config)
     record = client.wait_for_run(resp.run_id, timeout_seconds=3600)
@@ -39,9 +49,19 @@ frontier = client.get_artifact(resp.run_id, "checkpoint_frontier")
 | `get_state()` | Run cursor |
 | `get_state_slice(slice)` | `board`, `themes`, `candidates`, `frontier`, … |
 | `goex_events` / `goex_event_stream` | Incremental GELO NDJSON/SSE |
-| `open_synth_tunnel(local_url)` | Expose local container to hosted worker |
+| `open_tunnel(local_url, provider=...)` | Expose local container with `synth_tunnel`, `cloudflared`, or `ngrok` |
+| `open_synth_tunnel(local_url)` | Compatibility wrapper for `open_tunnel(..., provider="synth_tunnel")` |
 
 Submit kwargs: `run_id`, `idempotency_key`, `project_id`, `container_pool`, `container_tunnel`.
+
+Usage registration is on by default for hosted submits. It sends only coarse
+package/run-start metadata (`algorithm`, `client_surface`, package name/version);
+it does not send prompts, config, code, artifacts, repo paths, run ids, or user
+content. The backend derives source IP. Disable it with:
+
+```python
+client = HostedOptimizerClient(register_usage=False)
+```
 
 ## `GeloHostedConfig`
 
@@ -54,9 +74,25 @@ Wire shape for `config_json` on submit. Sections:
 - `go_ex` — engine: `max_rollouts`, `proposer_rounds`, checkpoint cadence/budget, concurrency
 - `seed_candidate` — baseline `react_system_prompt`
 - `proposers` — map of `GeloProposerRole` → proposer config
+- `plugins` — optional plugin lanes; SFT beta is accepted, RLVR/OPSD fail closed
 - `cache`, `disk_budget` — optional
 
 `.to_config_json()` serializes for submit.
+
+## Plugin lanes
+
+GELO exposes typed plugin-lane config so public SDK code can name the extension
+point without implying every backend exists. SFT is the only accepted beta lane
+in this release; RLVR, OPSD, and unknown plugin kinds are rejected by the SDK
+materializer and backend submit validation.
+
+```python
+from synth_optimizers.gelo import GeloPluginKind, GeloPluginSection, GeloPluginsSection
+
+plugins = GeloPluginsSection(
+    lanes=(GeloPluginSection(kind=GeloPluginKind.SFT),),
+)
+```
 
 ## `GeloPreset` and `GeloMaterializer`
 
@@ -75,9 +111,10 @@ config_from_toml = GeloMaterializer.from_paths(
 
 Public presets currently ship `crafter_smoke` and `crafter`. Other preset names are reserved
 and fail loudly until their hosted configs are release-ready. `materialize()` accepts exactly
-one container authority: `container_url`, `container_pool`, or `container_tunnel`. Tunnel
-materialization includes `container.auth_refresh` so the hosted worker can refresh SynthTunnel
-auth during long GELO runs.
+one container authority: `container_url`, `container_pool`, or `container_tunnel`. SynthTunnel
+materialization includes `container.auth_refresh` so the hosted worker can refresh auth during
+long GELO runs. Cloudflared and ngrok materialize as public URLs without
+`container.auth_refresh`.
 
 Materialize from TOML + overlay without hand-editing JSON copied from internal overlays.
 

@@ -20,7 +20,7 @@ from enum import StrEnum
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
-from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.parse import urlencode, urljoin, urlparse, urlunparse
 
 
 class TunnelError(RuntimeError):
@@ -51,6 +51,8 @@ _HOP_BY_HOP_HEADERS = {
     "upgrade",
 }
 _LOCAL_ONLY_AUTH_HEADERS = {"authorization", "x-api-key", "x-api-keys"}
+_CLOUDFLARED_READY_TIMEOUT_SECONDS = 180.0
+_TUNNEL_USER_AGENT = "synth-optimizers tunnel-client"
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,23 +209,30 @@ class ManagedTunnelLease(TunnelLease):
         if self.heartbeat is not None:
             self.heartbeat.stop()
             self.heartbeat = None
-        _terminate_process(self.process)
-        self.process = None
-        if self.client is not None and self.lease_id:
-            try:
-                self.client._json_request(
-                    "POST",
-                    f"/v1/tunnels/lease/{self.lease_id}/release",
-                    context="Tunnel lease release response",
-                    allow_empty=True,
-                )
-            except Exception:
-                return
-
+        try:
+            if self.client is not None and self.lease_id:
+                try:
+                    self.client._json_request(
+                        "POST",
+                        f"/v1/tunnels/lease/{self.lease_id}/release",
+                        context="Tunnel lease release response",
+                        allow_empty=True,
+                    )
+                except Exception:
+                    return
+        finally:
+            _terminate_process(self.process)
+            self.process = None
 
 @dataclass(slots=True, kw_only=True)
 class CloudflaredTunnelLease(ManagedTunnelLease):
     gateway: "_GatewayServer | None" = field(default=None, repr=False)
+
+    def container_config(self) -> ContainerDirectTarget:
+        return ContainerDirectTarget(
+            url=_required_text(self.public_url, "tunnel public_url"),
+            headers=_cloudflared_request_headers(),
+        )
 
     def wait_ready(self, timeout_seconds: float = 60.0) -> None:
         self.preflight()
@@ -243,10 +252,19 @@ class CloudflaredTunnelLease(ManagedTunnelLease):
             gateway_ready=True,
             local_ready=True,
         )
-        _wait_for_http_ok(_join_health_url(self.public_url), timeout_seconds=timeout_seconds)
+        ready_timeout = max(timeout_seconds, _CLOUDFLARED_READY_TIMEOUT_SECONDS)
+        _wait_for_public_dns(
+            _required_hostname(self.public_url, "cloudflared public_url"),
+            timeout_seconds=min(ready_timeout, 90.0),
+        )
+        _wait_for_http_ok(
+            _join_health_url(self.public_url),
+            headers=_cloudflared_request_headers(),
+            timeout_seconds=ready_timeout,
+        )
 
     def close(self) -> None:
-        super().close()
+        ManagedTunnelLease.close(self)
         if self.gateway is not None:
             self.gateway.stop()
             self.gateway = None
@@ -1107,8 +1125,51 @@ def _wait_for_http_ok(
     raise TunnelError(f"timed out waiting for {url}: {last_error}")
 
 
+def _wait_for_public_dns(hostname: str, *, timeout_seconds: float) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    last_error = "no DNS answer"
+    while time.monotonic() < deadline:
+        try:
+            if _cloudflare_dns_has_address(hostname):
+                return
+            last_error = "no A/AAAA answer"
+        except Exception as exc:
+            last_error = str(exc)
+        time.sleep(1.0)
+    raise TunnelError(f"timed out waiting for DNS for {hostname}: {last_error}")
+
+
+def _cloudflare_dns_has_address(hostname: str) -> bool:
+    for query_type in ("A", "AAAA"):
+        query = urlencode({"name": hostname, "type": query_type})
+        request = urllib.request.Request(
+            f"https://cloudflare-dns.com/dns-query?{query}",
+            headers={"accept": "application/dns-json"},
+            method="GET",
+        )
+        with urllib.request.urlopen(request, timeout=5.0) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        if int(payload.get("Status") or 0) != 0:
+            continue
+        answers = payload.get("Answer")
+        if isinstance(answers, list) and answers:
+            return True
+    return False
+
+
+def _cloudflared_request_headers() -> dict[str, str]:
+    return {"User-Agent": _TUNNEL_USER_AGENT}
+
+
 def _join_health_url(base_url: str) -> str:
     return urljoin(base_url.rstrip("/") + "/", "health")
+
+
+def _required_hostname(url: str, context: str) -> str:
+    hostname = urlparse(url).hostname
+    if not hostname:
+        raise TunnelError(f"{context} did not include a hostname")
+    return hostname
 
 
 def _local_upstream_url(target: TunnelLocalTarget, path: str, query: str) -> str:

@@ -653,7 +653,7 @@ class _SynthTunnelAgent:
                         self._handle_frame(payload)
             except Exception as exc:
                 if not self._ready.is_set():
-                    self._startup_error = str(exc)
+                    self._startup_error = f"{self._url}: {exc}"
                 if self._stop.wait(1.0):
                     break
             finally:

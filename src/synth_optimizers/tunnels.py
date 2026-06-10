@@ -8,6 +8,7 @@ import re
 import shutil
 import socket
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.error
@@ -931,18 +932,36 @@ def _required_binary(name: str, provider: TunnelProvider) -> str:
 def _start_cloudflared(binary: str, tunnel_token: str) -> subprocess.Popen[str]:
     if not tunnel_token.strip():
         raise TunnelError("cloudflared tunnel lease response did not include tunnel_token")
+    # cloudflared does not read `--token` from stdin (a bare `-` is taken as the
+    # literal token value). Pass the token via `--token-file`, which is the
+    # documented way to supply it without exposing it in the process argv. The
+    # file is created 0600 and removed once cloudflared has consumed it.
+    token_fd = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".txt", prefix="synth-cloudflared-", delete=False
+    )
+    try:
+        os.chmod(token_fd.name, 0o600)
+        token_fd.write(tunnel_token)
+        token_fd.flush()
+    finally:
+        token_fd.close()
     process = subprocess.Popen(
-        [binary, "tunnel", "run", "--token", "-"],
-        stdin=subprocess.PIPE,
+        [binary, "tunnel", "run", "--token-file", token_fd.name],
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         text=True,
     )
-    if process.stdin is not None:
-        process.stdin.write(tunnel_token)
-        process.stdin.close()
     time.sleep(1.0)
-    _ensure_process_running(process, "cloudflared")
+    try:
+        _ensure_process_running(process, "cloudflared")
+    finally:
+        # cloudflared reads the token file at startup; safe to remove after the
+        # liveness check so the secret does not linger on disk.
+        try:
+            os.unlink(token_fd.name)
+        except OSError:
+            pass
     return process
 
 
@@ -977,14 +996,29 @@ def _start_ngrok(
         raise TunnelError("ngrok tunnel lease response did not include tunnel_token")
     env = dict(os.environ)
     env["NGROK_AUTHTOKEN"] = authtoken
+    # ngrok v3 removed the `--web-addr` CLI flag; the inspection web/API address
+    # is now configured under `agent.web_addr` in a config file. We write a
+    # minimal v3 config so each lease gets an isolated inspection API port (the
+    # authtoken still comes from NGROK_AUTHTOKEN in the env). The `http` command
+    # forwards to a host:port target, not a full URL.
+    config_fd = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".yml", prefix="synth-ngrok-", delete=False
+    )
+    try:
+        config_fd.write(f'version: "3"\nagent:\n  web_addr: {api_addr}\n')
+        config_fd.flush()
+    finally:
+        config_fd.close()
+    forward_target = local_base_url.split("://", 1)[-1].rstrip("/")
     process = subprocess.Popen(
         [
             binary,
             "http",
             "--log=stdout",
             "--log-format=json",
-            f"--web-addr={api_addr}",
-            local_base_url,
+            "--config",
+            config_fd.name,
+            forward_target,
         ],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,

@@ -50,6 +50,9 @@ class ContainerTomlSection(BaseModel):
     headers: dict[str, str] = Field(default_factory=dict)
     auth_bearer_env: str | None = None
     pool: "ContainerPoolTomlSection | None" = None
+    command: list[str] = Field(default_factory=list)
+    cwd: str | Path | None = None
+    startup_timeout_seconds: int | None = None
 
     def to_connection(self) -> ContainerConnection:
         return ContainerConnection(url=self.resolved_url())
@@ -492,6 +495,9 @@ class GepaTomlDocument(BaseModel):
             container=self.container.to_connection(),
             container_headers=dict(self.container.headers),
             container_auth_bearer_env=self.container.resolved_auth_bearer_env(),
+            container_command=list(self.container.command),
+            container_cwd=self.container.cwd,
+            container_startup_timeout_seconds=self.container.startup_timeout_seconds,
             taskset=self.taskset.to_domain(),
             run=self.run.to_domain(),
             objectives=self.gepa.objective_config(),
@@ -1110,6 +1116,9 @@ class GepaConfig:
     task_pools: GepaTaskPools
     container_headers: dict[str, str] = field(default_factory=dict)
     container_auth_bearer_env: str | None = None
+    container_command: list[str] = field(default_factory=list)
+    container_cwd: str | Path | None = None
+    container_startup_timeout_seconds: int | None = None
     run: RunSettings = field(default_factory=RunSettings)
     program: PromptProgram | None = None
     objectives: ObjectiveConfig | None = None
@@ -1158,6 +1167,14 @@ class GepaConfig:
             container_payload["headers"] = dict(self.container_headers)
         if self.container_auth_bearer_env is not None:
             container_payload["auth_bearer_env"] = self.container_auth_bearer_env
+        if self.container_command:
+            container_payload["command"] = list(self.container_command)
+        if self.container_cwd is not None:
+            container_payload["cwd"] = str(self.container_cwd)
+        if self.container_startup_timeout_seconds is not None:
+            container_payload["startup_timeout_seconds"] = int(
+                self.container_startup_timeout_seconds
+            )
         payload["container"] = container_payload
         payload["taskset"] = self.taskset.to_toml()
         if self.target_modules is not None:
@@ -1183,7 +1200,6 @@ class GepaConfig:
         gepa["task_pools"] = self.task_pools.to_toml()
         payload["gepa"] = gepa
         payload["cache"] = self.cache.to_toml()
-        payload["usage_registration"] = self.usage_registration.to_toml()
         return payload
 
     def write_toml(self, path: str | Path | None = None) -> Path:
@@ -1202,7 +1218,8 @@ class GepaConfig:
 
     def execute(self) -> GepaRunResult:
         self._register_usage_submit()
-        self._preflight_container_capabilities()
+        if not self.container_command:
+            self._preflight_container_capabilities()
         config_path = self.write_toml()
         return _NativeGepaRun.from_toml(str(config_path)).execute()
 

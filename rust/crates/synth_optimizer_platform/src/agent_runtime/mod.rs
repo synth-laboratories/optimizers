@@ -8,6 +8,7 @@ pub mod app_server;
 pub mod codex_home;
 pub mod daytona;
 pub mod docker;
+mod jsonrpc_read_window;
 pub mod limits;
 pub mod local;
 pub mod role_agent;

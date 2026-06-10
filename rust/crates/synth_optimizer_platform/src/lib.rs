@@ -1,4 +1,5 @@
 pub mod agent_runtime;
+pub mod artifact_store;
 pub mod artifacts;
 pub mod cache;
 pub mod candidates;
@@ -43,6 +44,7 @@ pub use agent_runtime::{
     CodexAppServerProcessLaunch, CodexTurnRequest, ExecutionSubstrate, ProposerCodexLaunch,
     ResolvedRoleAgentConfig, RoleAgentConfig, RoleAgentTurnRequestInput, SupervisorReceipt,
 };
+pub use artifact_store::{LocalDevStore, RunArtifactStore, StoredRunArtifact};
 pub use artifacts::{ArtifactPaths, ArtifactRef, GepaRunResult};
 pub use cache::{
     normalize_for_cache_profile, stable_json_hash, CacheAccessRecord, CacheEntry, CacheMode,

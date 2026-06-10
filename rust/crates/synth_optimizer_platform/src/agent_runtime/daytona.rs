@@ -11,7 +11,10 @@ use serde_json::{json, Value};
 use crate::{OptimizerError, ProposerConfig, ProposerDaytonaConfig, Result};
 
 use super::app_server::{ensure_turn_completed, extract_thread_id};
-use super::codex_home::prepare_proposer_codex_launch;
+use super::codex_home::{
+    persist_refreshed_chatgpt_codex_auth_bytes, prepare_proposer_codex_launch,
+};
+use super::jsonrpc_read_window::JsonRpcReadWindow;
 use super::limits;
 use super::session::{AgentRuntimeSubstrate, AgentTurnOutcome, CodexTurnRequest};
 use super::supervisor::SupervisorReceipt;
@@ -20,6 +23,7 @@ use super::usage::{usage_from_message, usage_from_messages};
 const STDOUT_PREFIX: &[u8] = b"\x01\x01\x01";
 const STDERR_PREFIX: &[u8] = b"\x02\x02\x02";
 const UPLOAD_BATCH_SIZE: usize = 64;
+const STAGING_RUN_ID_MARKER_FILE: &str = ".synth_optimizer_run_id";
 
 pub struct DaytonaCodexSubstrate;
 
@@ -144,6 +148,11 @@ fn run_daytona_with_staged_workspace(
         Duration::from_millis(daytona.poll_interval_ms),
     );
     let result = run_daytona_jsonrpc_turn(&mut client, request, Some(receipt.clone()));
+    let auth_sync_result = if result.is_ok() {
+        client.sync_refreshed_codex_auth(&daytona.remote_workspace_dir, &launch_state)
+    } else {
+        Ok(false)
+    };
     let output_sync_result = if result.is_ok() {
         client.sync_output_files(&daytona.remote_workspace_dir, staged_workspace)
     } else {
@@ -176,6 +185,7 @@ fn run_daytona_with_staged_workspace(
         );
     }
     let mut outcome = result?;
+    auth_sync_result?;
     output_sync_result?;
     if let Err(error) = terminate_result {
         outcome.shutdown_warning = Some(error.to_string());
@@ -250,12 +260,48 @@ fn bootstrap_command(
     }
     parts.push("bash".to_string());
     parts.push("-c".to_string());
-    parts.push(format!(
-        "cd {} && exec {}",
-        shell_quote(&daytona.remote_workspace_dir),
-        shell_join(&inner_codex_command(proposer))
-    ));
+    let inner_command = inner_codex_command(proposer);
+    let mut shell_command = format!("cd {}", shell_quote(&daytona.remote_workspace_dir));
+    if let Some(arg0_bootstrap) = remote_codex_arg0_bootstrap(&inner_command) {
+        shell_command.push_str(" && ");
+        shell_command.push_str(&arg0_bootstrap);
+    }
+    shell_command.push_str(" && exec ");
+    shell_command.push_str(&shell_join(&inner_command));
+    parts.push(shell_command);
     shell_join(&parts)
+}
+
+fn remote_codex_arg0_bootstrap(command: &[String]) -> Option<String> {
+    let command0 = command.first()?;
+    let command_name = Path::new(command0).file_name()?.to_str()?;
+    if command_name != "codex" && command_name != "codex.js" {
+        return None;
+    }
+    let command0 = shell_quote(command0);
+    let mut script = String::new();
+    script.push_str("command_name=");
+    script.push_str(&command0);
+    script.push_str("; command_name=\"${command_name##*/}\"; ");
+    script.push_str("if [ \"$command_name\" = \"codex.js\" ]; then echo \"codex.js app-server command cannot provide native unified-exec helpers in daytona substrate\" >&2; exit 1; fi; ");
+    script.push_str("codex_bin=\"$(command -v ");
+    script.push_str(&command0);
+    script.push_str(" 2>/dev/null || true)\"; ");
+    script.push_str("if [ -z \"$codex_bin\" ] && [ -x ");
+    script.push_str(&command0);
+    script.push_str(" ]; then codex_bin=");
+    script.push_str(&command0);
+    script.push_str("; fi; ");
+    script.push_str("if [ -z \"$codex_bin\" ]; then echo \"could not resolve Codex binary for app-server command: ");
+    script.push_str(&command0);
+    script.push_str("\" >&2; exit 1; fi; ");
+    script.push_str("helper_dir=\"${CODEX_HOME:?CODEX_HOME missing}/tmp/arg0/codex-arg0-$$\"; ");
+    script.push_str("mkdir -p \"$helper_dir\"; ");
+    script.push_str("ln -sf \"$codex_bin\" \"$helper_dir/codex-execve-wrapper\"; ");
+    script.push_str("ln -sf \"$codex_bin\" \"$helper_dir/apply_patch\"; ");
+    script.push_str("ln -sf \"$codex_bin\" \"$helper_dir/applypatch\"; ");
+    script.push_str("export PATH=\"$helper_dir:${PATH:-}\"");
+    Some(script)
 }
 
 fn run_daytona_jsonrpc_turn(
@@ -273,12 +319,20 @@ fn run_daytona_jsonrpc_turn(
             }
         }),
     )?;
-    client.wait_for_response(initialize_id, Duration::from_secs(60))?;
+    client.wait_for_response(
+        initialize_id,
+        Duration::from_secs(60),
+        request.message_stall_timeout,
+    )?;
     client.send_notification("initialized", Value::Null)?;
 
     let thread_request_id =
         client.send_request("thread/start", request.thread_start_params.clone())?;
-    let thread_response = client.wait_for_response(thread_request_id, Duration::from_secs(60))?;
+    let thread_response = client.wait_for_response(
+        thread_request_id,
+        Duration::from_secs(60),
+        request.message_stall_timeout,
+    )?;
     let thread_id = extract_thread_id(&thread_response).ok_or_else(|| {
         OptimizerError::Proposer(format!(
             "daytona codex app-server thread/start response missing thread id: {thread_response}"
@@ -289,8 +343,13 @@ fn run_daytona_jsonrpc_turn(
         "turn/start",
         turn_start_params_with_thread_id(request.turn_start_params.clone(), &thread_id)?,
     )?;
-    let turn_id = client.wait_for_turn_started(turn_request_id, Duration::from_secs(60))?;
-    let final_turn = client.wait_for_turn(&turn_id, request.timeout)?;
+    let turn_id = client.wait_for_turn_started(
+        turn_request_id,
+        Duration::from_secs(60),
+        request.message_stall_timeout,
+    )?;
+    let final_turn =
+        client.wait_for_turn(&turn_id, request.timeout, request.message_stall_timeout)?;
     ensure_turn_completed(&final_turn)?;
     let usage = usage_from_messages(client.received_messages(), &turn_id)
         .or_else(|| usage_from_message(&final_turn));
@@ -383,11 +442,35 @@ impl DaytonaAppServerClient {
         Ok(())
     }
 
-    fn wait_for_response(&mut self, id: u64, timeout: Duration) -> Result<Value> {
-        let deadline = Instant::now() + timeout;
+    fn wait_for_response(
+        &mut self,
+        id: u64,
+        timeout: Duration,
+        message_stall_timeout: Duration,
+    ) -> Result<Value> {
+        let window = JsonRpcReadWindow::new(timeout, message_stall_timeout);
+        let stderr_tail = self.stderr_tail_suffix();
         let mut deferred = Vec::new();
         loop {
-            let message = self.read_next(deadline)?;
+            if window.overall_expired() {
+                return Err(JsonRpcReadWindow::overall_timeout_error(
+                    "daytona codex app-server",
+                    &stderr_tail,
+                ));
+            }
+            let read_deadline = window.per_read_deadline();
+            let message = match self.read_next(read_deadline) {
+                Ok(message) => message,
+                Err(error) => {
+                    return Err(window.map_read_error(
+                        "daytona codex app-server",
+                        &format!("response to request {id}"),
+                        read_deadline,
+                        &stderr_tail,
+                        error,
+                    ));
+                }
+            };
             if message.get("id").and_then(Value::as_u64) == Some(id)
                 && message.get("method").is_none()
             {
@@ -403,11 +486,35 @@ impl DaytonaAppServerClient {
         }
     }
 
-    fn wait_for_turn_started(&mut self, request_id: u64, timeout: Duration) -> Result<String> {
-        let deadline = Instant::now() + timeout;
+    fn wait_for_turn_started(
+        &mut self,
+        request_id: u64,
+        timeout: Duration,
+        message_stall_timeout: Duration,
+    ) -> Result<String> {
+        let window = JsonRpcReadWindow::new(timeout, message_stall_timeout);
+        let stderr_tail = self.stderr_tail_suffix();
         let mut deferred = Vec::new();
         loop {
-            let message = self.read_next(deadline)?;
+            if window.overall_expired() {
+                return Err(JsonRpcReadWindow::overall_timeout_error(
+                    "daytona codex app-server",
+                    &stderr_tail,
+                ));
+            }
+            let read_deadline = window.per_read_deadline();
+            let message = match self.read_next(read_deadline) {
+                Ok(message) => message,
+                Err(error) => {
+                    return Err(window.map_read_error(
+                        "daytona codex app-server",
+                        "turn/started",
+                        read_deadline,
+                        &stderr_tail,
+                        error,
+                    ));
+                }
+            };
             if message.get("id").and_then(Value::as_u64) == Some(request_id)
                 && message.get("method").is_none()
             {
@@ -434,10 +541,34 @@ impl DaytonaAppServerClient {
         }
     }
 
-    fn wait_for_turn(&mut self, turn_id: &str, timeout: Duration) -> Result<Value> {
-        let deadline = Instant::now() + timeout;
+    fn wait_for_turn(
+        &mut self,
+        turn_id: &str,
+        timeout: Duration,
+        message_stall_timeout: Duration,
+    ) -> Result<Value> {
+        let window = JsonRpcReadWindow::new(timeout, message_stall_timeout);
+        let stderr_tail = self.stderr_tail_suffix();
         loop {
-            let message = self.read_next(deadline)?;
+            if window.overall_expired() {
+                return Err(JsonRpcReadWindow::overall_timeout_error(
+                    "daytona codex app-server",
+                    &stderr_tail,
+                ));
+            }
+            let read_deadline = window.per_read_deadline();
+            let message = match self.read_next(read_deadline) {
+                Ok(message) => message,
+                Err(error) => {
+                    return Err(window.map_read_error(
+                        "daytona codex app-server",
+                        "turn/completed|turn/failed|turn/interrupted",
+                        read_deadline,
+                        &stderr_tail,
+                        error,
+                    ));
+                }
+            };
             if message_matches_turn(&message, turn_id) {
                 if is_terminal_turn_event(&message) {
                     return Ok(message);
@@ -448,6 +579,25 @@ impl DaytonaAppServerClient {
 
     fn terminate(&mut self) -> Result<()> {
         self.toolbox.delete_session(&self.session_id)
+    }
+
+    fn sync_refreshed_codex_auth(
+        &self,
+        remote_workspace: &str,
+        launch_state: &super::codex_home::ProposerCodexLaunch,
+    ) -> Result<bool> {
+        let (Some(relative_home), Some(source_home)) = (
+            launch_state.codex_home_workspace_relative_path.as_ref(),
+            launch_state.auth_home_refresh_source.as_ref(),
+        ) else {
+            return Ok(false);
+        };
+        let remote_auth_path = remote_join(remote_workspace, &relative_home.join("auth.json"));
+        let Some(content) = self.toolbox.read_text_file_if_exists(&remote_auth_path)? else {
+            return Ok(false);
+        };
+        persist_refreshed_chatgpt_codex_auth_bytes(source_home, content.as_bytes())?;
+        Ok(true)
     }
 
     fn sync_output_files(&self, remote_workspace: &str, local_workspace: &Path) -> Result<()> {
@@ -464,6 +614,21 @@ impl DaytonaAppServerClient {
                 .map_err(|source| OptimizerError::io(&local_path, source))?;
         }
         Ok(())
+    }
+
+    fn stderr_tail_suffix(&self) -> String {
+        if self.stderr_tail.is_empty() {
+            return String::new();
+        }
+        format!(
+            "; stderr_tail={}",
+            self.stderr_tail
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("")
+                .trim()
+        )
     }
 
     fn read_next(&mut self, deadline: Instant) -> Result<Value> {
@@ -783,11 +948,7 @@ impl DaytonaControlClient {
         if response.status().is_success() {
             Ok(())
         } else {
-            let status = response.status();
-            let body = response.text().unwrap_or_default();
-            Err(OptimizerError::Proposer(format!(
-                "daytona sandbox delete failed status={status}: {body}"
-            )))
+            Err(daytona_response_error("daytona sandbox delete", response))
         }
     }
 
@@ -936,11 +1097,10 @@ impl DaytonaToolboxClient {
         if response.status().is_success() {
             Ok(response.bytes()?.to_vec())
         } else {
-            let status = response.status();
-            let body = response.text().unwrap_or_default();
-            Err(OptimizerError::Proposer(format!(
-                "daytona toolbox GET {path} failed status={status}: {body}"
-            )))
+            Err(daytona_response_error(
+                format!("daytona toolbox GET {path}"),
+                response,
+            ))
         }
     }
 
@@ -964,11 +1124,10 @@ impl DaytonaToolboxClient {
         if response.status().is_success() || response.status().as_u16() == 404 {
             Ok(())
         } else {
-            let status = response.status();
-            let body = response.text().unwrap_or_default();
-            Err(OptimizerError::Proposer(format!(
-                "daytona toolbox DELETE {path} failed status={status}: {body}"
-            )))
+            Err(daytona_response_error(
+                format!("daytona toolbox DELETE {path}"),
+                response,
+            ))
         }
     }
 
@@ -1001,11 +1160,7 @@ impl DaytonaToolboxClient {
                 .multipart(form)
                 .send()?;
             if !response.status().is_success() {
-                let status = response.status();
-                let body = response.text().unwrap_or_default();
-                return Err(OptimizerError::Proposer(format!(
-                    "daytona workspace upload failed status={status}: {body}"
-                )));
+                return Err(daytona_response_error("daytona workspace upload", response));
             }
         }
         Ok(())
@@ -1091,12 +1246,23 @@ fn json_response(path: &str, response: reqwest::blocking::Response) -> Result<Va
             Ok(serde_json::from_str(&body)?)
         }
     } else {
-        let status = response.status();
-        let body = response.text().unwrap_or_default();
-        Err(OptimizerError::Proposer(format!(
-            "daytona request {path} failed status={status}: {body}"
-        )))
+        Err(daytona_response_error(
+            format!("daytona request {path}"),
+            response,
+        ))
     }
+}
+
+fn daytona_response_error(
+    context: impl Into<String>,
+    response: reqwest::blocking::Response,
+) -> OptimizerError {
+    let status = response.status();
+    let body = match response.text() {
+        Ok(body) => body,
+        Err(error) => format!("<failed to read response body: {error}>"),
+    };
+    OptimizerError::Proposer(format!("{} failed status={status}: {body}", context.into()))
 }
 
 fn header_map(headers: &BTreeMap<String, String>) -> Result<reqwest::header::HeaderMap> {
@@ -1121,8 +1287,19 @@ fn stage_workspace(original_workspace: &Path, run_id: &str) -> Result<PathBuf> {
         uuid::Uuid::new_v4().simple()
     ));
     fs::create_dir_all(&staging_dir).map_err(|source| OptimizerError::io(&staging_dir, source))?;
-    copy_dir_contents(original_workspace, &staging_dir, true)?;
+    write_staging_run_id_marker(&staging_dir, run_id)?;
+    if let Err(error) = copy_dir_contents(original_workspace, &staging_dir, true) {
+        let _ = write_staging_run_id_marker(&staging_dir, run_id);
+        return Err(error);
+    }
+    write_staging_run_id_marker(&staging_dir, run_id)?;
     Ok(staging_dir)
+}
+
+fn write_staging_run_id_marker(staging_dir: &Path, run_id: &str) -> Result<()> {
+    let marker_path = staging_dir.join(STAGING_RUN_ID_MARKER_FILE);
+    fs::write(&marker_path, format!("{run_id}\n"))
+        .map_err(|source| OptimizerError::io(&marker_path, source))
 }
 
 fn sync_workspace_back(staged_workspace: &Path, original_workspace: &Path) -> Result<()> {
@@ -1224,7 +1401,10 @@ fn copy_dir_contents(source: &Path, destination: &Path, exclude_runtime_auth: bo
 fn excluded_workspace_entry(name: &str) -> bool {
     matches!(
         name,
-        ".codex_api_key_home" | ".codex_home" | ".codex_app_server_entrypoint.sh"
+        ".codex_api_key_home"
+            | ".codex_home"
+            | ".codex_app_server_entrypoint.sh"
+            | STAGING_RUN_ID_MARKER_FILE
     )
 }
 
@@ -1298,7 +1478,9 @@ fn safe_fragment(value: &str) -> String {
 }
 
 fn demux_log(data: &[u8]) -> (Vec<u8>, Vec<u8>) {
-    if !data.windows(STDOUT_PREFIX.len()).any(|window| window == STDOUT_PREFIX)
+    if !data
+        .windows(STDOUT_PREFIX.len())
+        .any(|window| window == STDOUT_PREFIX)
         && !data
             .windows(STDERR_PREFIX.len())
             .any(|window| window == STDERR_PREFIX)

@@ -60,6 +60,8 @@ pub(crate) fn run_codex_app_server_proposer(input: CodexProposerInput<'_>) -> Re
         .clone()
         .unwrap_or_else(|| "gpt-5.4-mini".to_string());
     let timeout = Duration::from_secs(input.config.proposer.timeout_seconds.max(1));
+    let message_stall_timeout =
+        Duration::from_secs(input.config.proposer.message_stall_timeout_seconds.max(1));
     let outcome = run_turn(CodexTurnRequest {
         run_id: &input.config.run.run_id,
         proposer: &input.config.proposer,
@@ -71,6 +73,7 @@ pub(crate) fn run_codex_app_server_proposer(input: CodexProposerInput<'_>) -> Re
         thread_start_params: thread_start_params(&input, &model),
         turn_start_params: turn_start_params(&input, &model)?,
         timeout,
+        message_stall_timeout,
     })?;
     build_response_from_outcome(&input, &model, outcome)
 }
@@ -92,6 +95,8 @@ pub(crate) fn run_codex_staleness_reviewer(
         .clone()
         .unwrap_or_else(|| "gpt-5.4-mini".to_string());
     let timeout = Duration::from_secs(input.config.proposer.timeout_seconds.max(1));
+    let message_stall_timeout =
+        Duration::from_secs(input.config.proposer.message_stall_timeout_seconds.max(1));
     let outcome = run_turn(CodexTurnRequest {
         run_id: &input.config.run.run_id,
         proposer: &input.config.proposer,
@@ -103,6 +108,7 @@ pub(crate) fn run_codex_staleness_reviewer(
         thread_start_params: staleness_thread_start_params(&input, &model),
         turn_start_params: staleness_turn_start_params(&input, &model),
         timeout,
+        message_stall_timeout,
     })?;
     build_staleness_review_response(&input, &model, outcome)
 }
@@ -746,11 +752,9 @@ fn materialize_workspace(input: &CodexProposerInput<'_>) -> Result<()> {
     ));
     let proposer_readme = proposer_readme_read_model();
     let reflective_frames = reflective_frames_read_model(input);
-    let proposer_task_info = sanitize_proposer_workspace_value(
-        task_info_value(input).cloned().unwrap_or(Value::Null),
-    );
-    let proposer_program =
-        sanitize_proposer_workspace_value(serde_json::to_value(input.program)?);
+    let proposer_task_info =
+        sanitize_proposer_workspace_value(task_info_value(input).cloned().unwrap_or(Value::Null));
+    let proposer_program = sanitize_proposer_workspace_value(serde_json::to_value(input.program)?);
     write_json(
         &state_dir.join("run_context.json"),
         &json!({
@@ -764,10 +768,7 @@ fn materialize_workspace(input: &CodexProposerInput<'_>) -> Result<()> {
             "parent_candidate_id": input.parent.candidate_id,
         }),
     )?;
-    write_json(
-        &state_dir.join("task_info.json"),
-        &proposer_task_info,
-    )?;
+    write_json(&state_dir.join("task_info.json"), &proposer_task_info)?;
     write_json(
         &state_dir.join("program_contract.json"),
         &json!({

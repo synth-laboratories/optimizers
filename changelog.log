@@ -1,5 +1,20 @@
 # synth-optimizers changelog
 
+## 2026-06-09
+
+* Prepared `0.2.1.dev202606092146` for hosted optimizer SDK/CLI launch-readiness; no PyPI publish yet.
+* Added hosted GELO public authoring APIs: `GeloHostedConfig`, typed sections, `GeloPreset`, and `GeloMaterializer`.
+* Added hosted GELO CLI paths: `gelo startup`, `gelo materialize`, `gelo submit`, `gelo watch`, and bundled `gelo console` docs.
+* Moved GEPA hosted submit/watch onto `HostedOptimizerClient`, including SynthTunnel and pool submit support.
+* Added strict hosted client parsing for startup catalogs, run statuses, billing feature readiness, NDJSON, and SSE payloads.
+* Added `HostedOptimizerClient.event_backfill()` for finite lifecycle event proof; streaming `events()` remains for monitoring.
+* Made hosted client artifact, lifecycle event backfill, and Go-Ex event backfill errors name the failing surface.
+* Made GELO public config materialization reject retired proposer backend aliases instead of remapping them silently.
+* Made hosted CLI help/startup import without eager GEPA local runtime dependencies; GEPA symbols now fail loudly only when used.
+* Added public hosted GEPA/GELO docs and linked them from the package README.
+* Added the `banking77` optional extra for repeatable hosted GEPA proof dependencies.
+* Blocked release items remain: staging/live hosted proofs, positive-cost billing evidence or waiver, deploy-target proof, and no-secret log review.
+
 ## 2026-06-04
 
 * Started the `0.2.1.dev` cycle (post-release dev).

@@ -378,7 +378,11 @@ pub struct RolloutResponse {
 }
 
 impl RolloutResponse {
-    pub fn from_value(value: Value) -> Result<Self> {
+    pub fn from_value(mut value: Value) -> Result<Self> {
+        // Some containers emit explicit null for optional collection objects. The
+        // typed contract treats null as omitted; serde(default) only applies when
+        // the field is absent, so normalize before parsing.
+        drop_explicit_null_object_fields(&mut value);
         Ok(serde_json::from_value(value)?)
     }
 
@@ -414,6 +418,33 @@ impl RolloutResponse {
             .and_then(|trace| trace.get("schema_version"))
             .and_then(Value::as_str)
             == Some(TRACE_SCHEMA_VERSION_NAME)
+    }
+}
+
+fn drop_explicit_null_object_fields(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            for key in ["created_at", "updated_at"] {
+                if let Some(timestamp) = object.get_mut(key) {
+                    if timestamp.is_number() {
+                        *timestamp = Value::String(timestamp.to_string());
+                    }
+                }
+            }
+            object.retain(|_, child| {
+                if child.is_null() {
+                    return false;
+                }
+                drop_explicit_null_object_fields(child);
+                true
+            });
+        }
+        Value::Array(items) => {
+            for item in items {
+                drop_explicit_null_object_fields(item);
+            }
+        }
+        _ => {}
     }
 }
 

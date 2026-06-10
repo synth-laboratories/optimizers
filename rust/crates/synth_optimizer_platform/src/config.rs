@@ -127,6 +127,10 @@ fn default_timeout_seconds() -> u64 {
     300
 }
 
+fn default_message_stall_timeout_seconds() -> u64 {
+    120
+}
+
 fn default_max_generations() -> usize {
     2
 }
@@ -764,6 +768,8 @@ pub struct ContainerConfig {
     #[serde(default)]
     pub auth_bearer_env: Option<String>,
     #[serde(default)]
+    pub auth_refresh: Option<ContainerAuthRefreshConfig>,
+    #[serde(default)]
     pub command: Vec<String>,
     #[serde(default)]
     pub cwd: Option<PathBuf>,
@@ -816,6 +822,15 @@ impl ContainerConfig {
         }
         Ok(())
     }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContainerAuthRefreshConfig {
+    pub provider: String,
+    pub lease_id: String,
+    #[serde(default)]
+    pub refresh_interval_seconds: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -966,6 +981,10 @@ pub struct ProposerConfig {
     pub api_key_env: Option<String>,
     #[serde(default = "default_timeout_seconds")]
     pub timeout_seconds: u64,
+    /// Max gap between JSON-RPC messages before a turn is flagged as stalled.
+    /// Independent of [`Self::timeout_seconds`], the overall turn budget.
+    #[serde(default = "default_message_stall_timeout_seconds")]
+    pub message_stall_timeout_seconds: u64,
     #[serde(default)]
     pub model: Option<String>,
     /// Opt out of the curated OpenRouter model allowlist so any OpenRouter
@@ -1000,6 +1019,7 @@ impl Default for ProposerConfig {
             codex_home: None,
             api_key_env: None,
             timeout_seconds: default_timeout_seconds(),
+            message_stall_timeout_seconds: default_message_stall_timeout_seconds(),
             model: None,
             allow_unverified_model: false,
             prompt: ProposerPromptConfig::default(),
@@ -1134,6 +1154,16 @@ pub fn resolve_proposer_auth_launch_mode(
         "api_key" => Ok(ProposerAuthLaunchMode::ApiKey),
         "chatgpt" => Ok(ProposerAuthLaunchMode::Chatgpt),
         "auto" => {
+            if proposer_model_requires_chatgpt_auth(proposer) {
+                if proposer.codex_home.is_some() {
+                    return Ok(ProposerAuthLaunchMode::Chatgpt);
+                }
+                return Err(OptimizerError::Config(
+                    "proposer.auth_mode = \"auto\" did not resolve: ChatGPT-subscription \
+                     proposer models require proposer.codex_home for ChatGPT subscription auth"
+                        .to_string(),
+                ));
+            }
             if api_key_present {
                 Ok(ProposerAuthLaunchMode::ApiKey)
             } else if proposer.codex_home.is_some() {
@@ -1152,6 +1182,14 @@ pub fn resolve_proposer_auth_launch_mode(
              (legacy host maps to chatgpt)"
         ))),
     }
+}
+
+fn proposer_model_requires_chatgpt_auth(proposer: &ProposerConfig) -> bool {
+    proposer
+        .model
+        .as_deref()
+        .map(normalize_chatgpt_proposer_model_id)
+        .is_some_and(|model| CHATGPT_PROPOSER_MODELS.contains(&model.as_str()))
 }
 
 pub fn validate_chatgpt_proposer_model(model: &str) -> Result<()> {

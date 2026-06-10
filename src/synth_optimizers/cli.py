@@ -5,20 +5,29 @@ import json
 import os
 import sys
 import time
-import urllib.error
-import urllib.request
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Sequence
+from typing import Any
 from urllib.parse import urljoin
 
-from . import (
-    GepaRun,
+from ._synth_optimizers import (
     SynthOptimizerError,
     events_compare,
     events_replay,
     gepa_compact_run_storage,
     gepa_delete_run_storage,
     gepa_serve,
+)
+from .gelo import (
+    GeloMaterializeError,
+    GeloMaterializer,
+    GeloPreset,
+    GeloPresetName,
+)
+from .hosted import (
+    ContainerPoolTarget,
+    HostedOptimizerClient,
+    HostedOptimizerError,
 )
 
 
@@ -45,8 +54,10 @@ def _run_manifest_status(run_dir: Path) -> str | None:
         return None
     try:
         data = json.loads(manifest.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return "terminal"
+    except OSError as exc:
+        raise SystemExit(f"cannot read {manifest}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"{manifest} is not valid JSON: {exc}") from exc
     status = data.get("status") or data.get("final_status") or data.get("run_status")
     return str(status) if status else "terminal"
 
@@ -129,145 +140,485 @@ def _api_endpoint(base_url: str, path: str) -> str:
     return urljoin(base, path.lstrip("/"))
 
 
-def _hosted_api_key(api_key_env: str) -> str:
-    token = os.environ.get(api_key_env, "").strip()
-    if not token:
-        raise SystemExit(f"{api_key_env} is required for hosted optimizer submit")
-    return token
-
-
-def _hosted_json_request(
-    *,
-    method: str,
-    url: str,
-    api_key: str,
-    payload: dict | None = None,
-    timeout: float = 120.0,
-) -> dict:
-    body = None
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Accept": "application/json",
-    }
-    if payload is not None:
-        body = json.dumps(payload).encode("utf-8")
-        headers["Content-Type"] = "application/json"
-    request = urllib.request.Request(url, data=body, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            text = response.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise SystemExit(f"hosted optimizer request failed: {exc.code} {detail}") from exc
-    except urllib.error.URLError as exc:
-        raise SystemExit(f"hosted optimizer request failed: {exc}") from exc
-    if not text:
-        return {}
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise SystemExit(f"hosted optimizer returned non-JSON response: {text[:500]}") from exc
-    if not isinstance(data, dict):
-        raise SystemExit("hosted optimizer returned non-object JSON response")
-    return data
-
-
-def _follow_hosted_events(
-    *,
-    base_url: str,
-    events_url: str,
-    api_key: str,
-) -> None:
-    url = _api_endpoint(base_url, events_url)
-    request = urllib.request.Request(
-        url,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Accept": "text/event-stream",
-        },
-        method="GET",
+def _hosted_client(args: argparse.Namespace) -> HostedOptimizerClient:
+    return HostedOptimizerClient(
+        backend_url=args.base_url,
+        api_key=os.environ.get(args.api_key_env),
+        timeout_seconds=args.timeout_seconds,
     )
-    data_lines: list[str] = []
+
+
+def _container_pool_from_args(args: argparse.Namespace) -> ContainerPoolTarget | None:
+    pool_id = getattr(args, "container_pool", None)
+    task_id = getattr(args, "container_task_id", None)
+    if task_id and not pool_id:
+        raise SystemExit("--container-task-id requires --container-pool")
+    if not pool_id:
+        return None
+    return ContainerPoolTarget(pool_id=pool_id, task_id=task_id)
+
+
+def _validate_container_args(args: argparse.Namespace) -> None:
+    has_container_url = bool(getattr(args, "container_url", None))
+    has_container_pool = bool(getattr(args, "container_pool", None))
+    has_tunnel_url = bool(getattr(args, "tunnel_url", None))
+    if has_container_url and has_container_pool:
+        raise SystemExit("--container-url and --container-pool are mutually exclusive")
+    if has_tunnel_url and (has_container_url or has_container_pool):
+        raise SystemExit("--tunnel-url cannot be combined with --container-url or --container-pool")
+
+
+def _gelo_preset_overrides(args: argparse.Namespace) -> dict[str, Any]:
+    overrides: dict[str, Any] = {}
+    for attr in (
+        "proposer_rounds",
+        "train_seed_count",
+        "heldout_seed_count",
+        "max_rollouts",
+        "policy_model",
+    ):
+        value = getattr(args, attr, None)
+        if value is not None:
+            overrides[attr] = value
+    return overrides
+
+
+def _gelo_materialized_config(args: argparse.Namespace) -> dict[str, Any]:
+    _validate_container_args(args)
+    container_url = getattr(args, "container_url", None) or getattr(args, "tunnel_url", None)
+    container_pool = _container_pool_from_args(args)
+    if getattr(args, "preset", None):
+        try:
+            return GeloPreset.from_name(args.preset, **_gelo_preset_overrides(args)).materialize(
+                container_url=container_url,
+                container_pool=container_pool,
+                run_id=getattr(args, "run_id", None),
+            )
+        except GeloMaterializeError as exc:
+            raise SystemExit(str(exc)) from exc
+    if getattr(args, "toml", None):
+        try:
+            return GeloMaterializer.from_paths(args.toml, getattr(args, "overlay", None)).materialize(
+                container_url=container_url,
+                container_pool=container_pool,
+                run_id=getattr(args, "run_id", None),
+            )
+        except GeloMaterializeError as exc:
+            raise SystemExit(str(exc)) from exc
+    if getattr(args, "config", None):
+        try:
+            return GeloMaterializer(_json_file_object(args.config)).materialize(
+                container_url=container_url,
+                container_pool=container_pool,
+                run_id=getattr(args, "run_id", None),
+            )
+        except GeloMaterializeError as exc:
+            raise SystemExit(str(exc)) from exc
+    raise SystemExit("one of --config, --preset, or --toml is required")
+
+
+def _startup_catalog_payload(catalog: Any) -> dict[str, Any]:
+    return {
+        "available_algorithms": [
+            {
+                "algorithm": entry.algorithm.value,
+                "candidate_kinds": list(entry.candidate_kinds),
+                "status": entry.status.value,
+                "submit_supported": entry.submit_supported,
+            }
+            for entry in catalog.available_algorithms
+        ],
+        "submit_supported": [algorithm.value for algorithm in catalog.submit_supported],
+        "org_id": catalog.org_id,
+        "optimizers_beta_configured": catalog.optimizers_beta_configured,
+        "billing_feature_ids": {
+            algorithm: {
+                "feature_id": config.feature_id,
+                "env_override": config.env_override,
+            }
+            for algorithm, config in catalog.billing_feature_ids.items()
+        },
+        "billing_feature_ids_configured": dict(catalog.billing_feature_ids_configured),
+    }
+
+
+def _print_hosted_startup(catalog: Any, json_output: bool) -> None:
+    payload = _startup_catalog_payload(catalog)
+    if json_output:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    print(
+        "startup "
+        f"org_id={payload['org_id'] or '-'} "
+        f"optimizers_beta_configured={payload['optimizers_beta_configured']}"
+    )
+    configured = payload["billing_feature_ids_configured"]
+    print(
+        "billing_feature_ids_configured "
+        f"gepa={configured.get('gepa')} "
+        f"go_ex={configured.get('go_ex')}"
+    )
+    for entry in payload["available_algorithms"]:
+        candidates = ",".join(entry["candidate_kinds"]) or "-"
+        print(
+            "algorithm "
+            f"{entry['algorithm']} "
+            f"status={entry['status']} "
+            f"submit_supported={entry['submit_supported']} "
+            f"candidate_kinds={candidates}"
+        )
+
+
+def _gelo_startup(args: argparse.Namespace) -> int:
     try:
-        with urllib.request.urlopen(request, timeout=1200.0) as response:
-            for raw_line in response:
-                line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
-                if line.startswith("data:"):
-                    data_lines.append(line.removeprefix("data:").strip())
-                    continue
-                if line:
-                    continue
-                if not data_lines:
-                    continue
-                payload_text = "\n".join(data_lines)
-                data_lines.clear()
-                try:
-                    event = json.loads(payload_text)
-                except json.JSONDecodeError:
-                    continue
-                event_type = str(event.get("event_type") or "event")
-                status = str(event.get("status") or "")
-                print(f"event {event_type} status={status}")
-                if status in {"succeeded", "failed"}:
-                    return
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise SystemExit(f"hosted optimizer events failed: {exc.code} {detail}") from exc
-    except urllib.error.URLError as exc:
-        raise SystemExit(f"hosted optimizer events failed: {exc}") from exc
+        catalog = _hosted_client(args).startup()
+    except HostedOptimizerError as exc:
+        raise SystemExit(str(exc)) from exc
+    _print_hosted_startup(catalog, args.json)
+    return 0
 
 
 def _submit_hosted_gepa(args: argparse.Namespace) -> int:
-    config_text = Path(args.config).read_text(encoding="utf-8")
-    api_key = _hosted_api_key(args.api_key_env)
-    caller: dict[str, str] = {}
-    if args.run_id:
-        caller["backend_run_id"] = args.run_id
-    request = {
-        "algorithm": "gepa",
-        "config_toml": config_text,
-    }
-    if caller:
-        request["caller"] = caller
-    if args.idempotency_key:
-        request["idempotency_key"] = args.idempotency_key
-
-    submit = _hosted_json_request(
-        method="POST",
-        url=_api_endpoint(args.base_url, "/api/v1/optimizers/runs"),
-        api_key=api_key,
-        payload=request,
-    )
+    try:
+        config_text = Path(args.config).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise SystemExit(f"cannot read {args.config}: {exc}") from exc
+    try:
+        client = _hosted_client(args)
+        container_pool = _container_pool_from_args(args)
+        if getattr(args, "tunnel_url", None) and container_pool is not None:
+            raise SystemExit("--tunnel-url and --container-pool are mutually exclusive")
+        if getattr(args, "tunnel_url", None):
+            with client.open_synth_tunnel(
+                args.tunnel_url,
+                metadata={"optimizer": "gepa", "run_id": args.run_id or ""},
+            ) as tunnel:
+                submit = client.submit_gepa_toml(
+                    config_text,
+                    run_id=args.run_id,
+                    idempotency_key=args.idempotency_key,
+                    project_id=args.project_id,
+                    container_tunnel=tunnel,
+                )
+        else:
+            submit = client.submit_gepa_toml(
+                config_text,
+                run_id=args.run_id,
+                idempotency_key=args.idempotency_key,
+                project_id=args.project_id,
+                container_pool=container_pool,
+            )
+    except HostedOptimizerError as exc:
+        raise SystemExit(str(exc)) from exc
     if args.json and not args.follow:
-        print(json.dumps(submit, indent=2, sort_keys=True))
+        print(json.dumps(dict(submit.raw), indent=2, sort_keys=True))
         return 0
 
-    run_id = str(submit.get("run_id") or "")
-    status = submit.get("status")
-    print(f"submitted run_id={run_id} status={status}")
-    events_url = str(submit.get("events_url") or "")
-    if events_url:
-        print(f"events: {_api_endpoint(args.base_url, events_url)}")
+    print(f"submitted run_id={submit.run_id} status={submit.status.value}")
+    if submit.events_url:
+        print(f"events: {_api_endpoint(args.base_url, submit.events_url)}")
 
     if args.follow:
-        if not run_id:
-            raise SystemExit("hosted optimizer submit did not return run_id")
-        if events_url:
-            _follow_hosted_events(base_url=args.base_url, events_url=events_url, api_key=api_key)
-        final_record = _hosted_json_request(
-            method="GET",
-            url=_api_endpoint(args.base_url, f"/api/v1/optimizers/runs/{run_id}"),
-            api_key=api_key,
-        )
+        try:
+            for event in client.events(submit.run_id):
+                event_type = str(event.get("event_type") or "event")
+                status = str(event.get("status") or "")
+                print(f"event {event_type} status={status}")
+                if status in {"succeeded", "failed", "cancelled"}:
+                    break
+            final_record = client.get_run(submit.run_id)
+        except HostedOptimizerError as exc:
+            raise SystemExit(str(exc)) from exc
         if args.json:
-            print(json.dumps(final_record, indent=2, sort_keys=True))
+            print(json.dumps(dict(final_record.raw), indent=2, sort_keys=True))
         else:
-            print(f"final status={final_record.get('status')}")
-            if final_record.get("error"):
-                print(f"error: {final_record['error']}")
-        if final_record.get("status") == "failed":
+            print(f"final status={final_record.status.value}")
+            if final_record.error:
+                print(f"error: {final_record.error}")
+        if final_record.status.value == "failed":
             return 1
     return 0
+
+
+def _json_file_object(path: str) -> dict:
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise SystemExit(f"cannot read {path}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"{path} is not valid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise SystemExit(f"{path} must contain a JSON object")
+    return data
+
+
+def _submit_hosted_gelo(args: argparse.Namespace) -> int:
+    try:
+        client = _hosted_client(args)
+        config = _gelo_materialized_config(args)
+        container_pool = _container_pool_from_args(args)
+        if args.tunnel_url:
+            with client.open_synth_tunnel(
+                args.tunnel_url,
+                metadata={"optimizer": "gelo", "run_id": args.run_id or ""},
+            ) as tunnel:
+                submit = client.submit_gelo(
+                    config,
+                    run_id=args.run_id,
+                    idempotency_key=args.idempotency_key,
+                    project_id=args.project_id,
+                    container_tunnel=tunnel,
+                )
+        else:
+            submit = client.submit_gelo(
+                config,
+                run_id=args.run_id,
+                idempotency_key=args.idempotency_key,
+                project_id=args.project_id,
+                container_pool=container_pool,
+            )
+    except HostedOptimizerError as exc:
+        raise SystemExit(str(exc)) from exc
+    if args.json and not args.follow:
+        print(json.dumps(dict(submit.raw), indent=2, sort_keys=True))
+        return 0
+
+    print(f"submitted run_id={submit.run_id} status={submit.status.value}")
+    if submit.events_url:
+        print(f"events: {_api_endpoint(args.base_url, submit.events_url)}")
+
+    if args.follow:
+        try:
+            for event in client.events(submit.run_id):
+                event_type = str(event.get("event_type") or "event")
+                status = str(event.get("status") or "")
+                print(f"event {event_type} status={status}")
+                if status in {"succeeded", "failed", "cancelled"}:
+                    break
+            final_record = client.get_run(submit.run_id)
+        except HostedOptimizerError as exc:
+            raise SystemExit(str(exc)) from exc
+        if args.json:
+            print(json.dumps(dict(final_record.raw), indent=2, sort_keys=True))
+        else:
+            print(f"final status={final_record.status.value}")
+            if final_record.error:
+                print(f"error: {final_record.error}")
+        if final_record.status.value == "failed":
+            return 1
+    return 0
+
+
+def _materialize_hosted_gelo(args: argparse.Namespace) -> int:
+    config = _gelo_materialized_config(args)
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(config, indent=2, sort_keys=True), encoding="utf-8")
+    if args.json:
+        print(json.dumps(config, indent=2, sort_keys=True))
+    else:
+        print(f"wrote {out}")
+    return 0
+
+
+def _as_mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _slice_data(slice_payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    data = slice_payload.get("data")
+    return data if isinstance(data, Mapping) else slice_payload
+
+
+def _text_field(value: Any, default: str = "-") -> str:
+    if value is None:
+        return default
+    text = str(value)
+    return text if text else default
+
+
+def _json_line(payload: Mapping[str, Any]) -> None:
+    print(json.dumps(dict(payload), sort_keys=True, default=str))
+
+
+def _print_gepa_watch_snapshot(*, record: Any, json_output: bool) -> None:
+    if json_output:
+        _json_line({"type": "snapshot", "run": dict(record.raw)})
+        return
+    created = _text_field(getattr(record, "created_at", None))
+    updated = _text_field(getattr(record, "updated_at", None))
+    finalize = _text_field(getattr(record, "finalize_state", None))
+    print(
+        f"run_id={record.run_id} status={record.status.value} "
+        f"finalize_state={finalize} created_at={created} updated_at={updated}"
+    )
+    if record.error:
+        print(f"error: {record.error}")
+
+
+def _gepa_watch(args: argparse.Namespace) -> int:
+    try:
+        client = _hosted_client(args)
+        record = client.get_run(args.run_id)
+        _print_gepa_watch_snapshot(record=record, json_output=args.json)
+        if args.once:
+            return 0
+        if args.events:
+            for event in client.events(args.run_id):
+                if args.json:
+                    _json_line({"type": "event", "event": dict(event)})
+                else:
+                    event_type = _text_field(event.get("event_type"), "event")
+                    status = _text_field(event.get("status"))
+                    seq = _text_field(event.get("seq") or event.get("_seq"))
+                    print(f"event seq={seq} event_type={event_type} status={status}")
+                if str(event.get("status") or "") in {"succeeded", "failed", "cancelled"}:
+                    break
+            record = client.get_run(args.run_id)
+            if args.json:
+                _json_line({"type": "final", "run": dict(record.raw)})
+            else:
+                print(f"final status={record.status.value}")
+                if record.error:
+                    print(f"error: {record.error}")
+            return 1 if record.status.value == "failed" else 0
+        while record.status.value not in {"succeeded", "failed", "cancelled"}:
+            time.sleep(max(0.1, args.poll_seconds))
+            record = client.get_run(args.run_id)
+            _print_gepa_watch_snapshot(record=record, json_output=args.json)
+    except HostedOptimizerError as exc:
+        raise SystemExit(str(exc)) from exc
+    return 1 if record.status.value == "failed" else 0
+
+
+def _compact_json(payload: Mapping[str, Any]) -> str:
+    return json.dumps(dict(payload), sort_keys=True, default=str, separators=(",", ":"))
+
+
+def _print_gelo_watch_snapshot(
+    *,
+    record: Any,
+    state: Mapping[str, Any],
+    slice_name: str | None,
+    slice_payload: Mapping[str, Any] | None,
+    json_output: bool,
+) -> None:
+    if json_output:
+        payload: dict[str, Any] = {
+            "type": "snapshot",
+            "run": dict(record.raw),
+            "state": dict(state),
+        }
+        if slice_name is not None and slice_payload is not None:
+            payload["slice"] = {
+                "name": slice_name,
+                "payload": dict(slice_payload),
+            }
+        _json_line(payload)
+        return
+
+    phase = _text_field(state.get("phase"))
+    tick = _text_field(state.get("tick_index"))
+    event_seq = _text_field(state.get("event_seq_high_water"))
+    finalize = _text_field(getattr(record, "finalize_state", None))
+    print(
+        f"run_id={record.run_id} status={record.status.value} "
+        f"phase={phase} tick={tick} event_seq={event_seq} finalize_state={finalize}"
+    )
+    if record.error:
+        print(f"error: {record.error}")
+    if slice_name is not None and slice_payload is not None:
+        _print_gelo_slice(slice_name, slice_payload)
+
+
+def _print_gelo_slice(slice_name: str, slice_payload: Mapping[str, Any]) -> None:
+    data = _slice_data(slice_payload)
+    if slice_name == "board":
+        summary = _as_mapping(data.get("summary"))
+        print(
+            "board "
+            f"status={_text_field(summary.get('status'))} "
+            f"phase={_text_field(summary.get('phase'))} "
+            f"tick={_text_field(summary.get('tick_index'))} "
+            f"promotions={_text_field(summary.get('promotion_count'))}"
+        )
+        themes = data.get("themes")
+        if isinstance(themes, list):
+            print(f"themes ({len(themes)})")
+            for raw_theme in themes:
+                theme = _as_mapping(raw_theme)
+                print(
+                    "  "
+                    f"{_text_field(theme.get('theme_id'))} "
+                    f"status={_text_field(theme.get('status'))} "
+                    f"saturated={_text_field(theme.get('saturated'))} "
+                    f"score={_text_field(theme.get('objective_score'))} "
+                    f"candidates={_text_field(theme.get('candidate_count'))} "
+                    f"name={_text_field(theme.get('name'))}"
+                )
+            return
+    print(f"{slice_name} {_compact_json(data)}")
+
+
+def _gelo_watch(args: argparse.Namespace) -> int:
+    try:
+        client = _hosted_client(args)
+        record = client.get_run(args.run_id)
+        state = client.get_state(args.run_id)
+        slice_payload = client.get_state_slice(args.run_id, args.slice) if args.slice else None
+        _print_gelo_watch_snapshot(
+            record=record,
+            state=state,
+            slice_name=args.slice,
+            slice_payload=slice_payload,
+            json_output=args.json,
+        )
+        if args.once:
+            return 0
+        if args.goex_events:
+            for event in client.goex_event_stream(
+                args.run_id,
+                after_seq=args.after_seq,
+                limit=args.limit,
+            ):
+                if args.json:
+                    _json_line({"type": "goex_event", "event": dict(event)})
+                else:
+                    event_type = _text_field(event.get("event_type"), "goex.event")
+                    seq = _text_field(event.get("_seq"))
+                    phase = _text_field(event.get("phase"))
+                    status = _text_field(event.get("status"))
+                    print(
+                        f"goex_event seq={seq} "
+                        f"event_type={event_type} "
+                        f"phase={phase} "
+                        f"status={status}"
+                    )
+                if event.get("event_type") == "optimizer.events_unavailable":
+                    payload = _as_mapping(event.get("payload"))
+                    error = _text_field(payload.get("error"), "event stream unavailable")
+                    raise HostedOptimizerError(error)
+                if event.get("event_type") in {"goex.run_finished", "goex.run_failed"}:
+                    break
+            final_record = client.get_run(args.run_id)
+            if final_record.status.value == "failed":
+                return 1
+            return 0
+        while record.status.value not in {"succeeded", "failed", "cancelled"}:
+            time.sleep(max(0.1, args.poll_seconds))
+            record = client.get_run(args.run_id)
+            state = client.get_state(args.run_id)
+            slice_payload = client.get_state_slice(args.run_id, args.slice) if args.slice else None
+            _print_gelo_watch_snapshot(
+                record=record,
+                state=state,
+                slice_name=args.slice,
+                slice_payload=slice_payload,
+                json_output=args.json,
+            )
+    except HostedOptimizerError as exc:
+        raise SystemExit(str(exc)) from exc
+    return 1 if record.status.value == "failed" else 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -332,8 +683,141 @@ def build_parser() -> argparse.ArgumentParser:
     )
     gepa_submit.add_argument("--run-id")
     gepa_submit.add_argument("--idempotency-key")
+    gepa_submit.add_argument("--project-id")
+    gepa_submit.add_argument("--tunnel-url")
+    gepa_submit.add_argument("--container-pool")
+    gepa_submit.add_argument("--container-task-id")
+    gepa_submit.add_argument("--timeout-seconds", type=float, default=120.0)
     gepa_submit.add_argument("--follow", action="store_true")
     gepa_submit.add_argument("--json", action="store_true")
+
+    gepa_watch = gepa_subcommands.add_parser("watch")
+    gepa_watch.add_argument("run_id")
+    gepa_watch.add_argument(
+        "--base-url",
+        default=os.environ.get("SYNTH_BACKEND_URL", "https://api.usesynth.ai"),
+        help="Synth API base URL. Defaults to SYNTH_BACKEND_URL or https://api.usesynth.ai.",
+    )
+    gepa_watch.add_argument(
+        "--api-key-env",
+        default="SYNTH_API_KEY",
+        help="Environment variable containing the Synth API key.",
+    )
+    gepa_watch.add_argument("--timeout-seconds", type=float, default=120.0)
+    gepa_watch.add_argument(
+        "--events",
+        action="store_true",
+        help="Tail lifecycle SSE events after the initial run snapshot.",
+    )
+    gepa_watch.add_argument("--poll-seconds", type=float, default=2.0)
+    gepa_watch.add_argument("--once", action="store_true")
+    gepa_watch.add_argument("--json", action="store_true")
+
+    gelo = subcommands.add_parser("gelo")
+    gelo_subcommands = gelo.add_subparsers(dest="gelo_command", required=True)
+    gelo_startup = gelo_subcommands.add_parser("startup")
+    gelo_startup.add_argument(
+        "--base-url",
+        default=os.environ.get("SYNTH_BACKEND_URL", "https://api.usesynth.ai"),
+        help="Synth API base URL. Defaults to SYNTH_BACKEND_URL or https://api.usesynth.ai.",
+    )
+    gelo_startup.add_argument(
+        "--api-key-env",
+        default="SYNTH_API_KEY",
+        help="Environment variable containing the Synth API key.",
+    )
+    gelo_startup.add_argument("--timeout-seconds", type=float, default=120.0)
+    gelo_startup.add_argument("--json", action="store_true")
+
+    gelo_watch = gelo_subcommands.add_parser("watch")
+    gelo_watch.add_argument("run_id")
+    gelo_watch.add_argument(
+        "--base-url",
+        default=os.environ.get("SYNTH_BACKEND_URL", "https://api.usesynth.ai"),
+        help="Synth API base URL. Defaults to SYNTH_BACKEND_URL or https://api.usesynth.ai.",
+    )
+    gelo_watch.add_argument(
+        "--api-key-env",
+        default="SYNTH_API_KEY",
+        help="Environment variable containing the Synth API key.",
+    )
+    gelo_watch.add_argument("--timeout-seconds", type=float, default=120.0)
+    gelo_watch.add_argument(
+        "--slice",
+        choices=("agents", "board", "candidates", "data-engine", "frontier", "themes"),
+        help="Fetch and print a GELO state slice with each watch snapshot.",
+    )
+    gelo_watch.add_argument(
+        "--goex-events",
+        action="store_true",
+        help="Tail the GELO event SSE stream after the initial state snapshot.",
+    )
+    gelo_watch.add_argument("--after-seq", type=int, default=0)
+    gelo_watch.add_argument("--limit", type=int, default=500)
+    gelo_watch.add_argument("--poll-seconds", type=float, default=2.0)
+    gelo_watch.add_argument("--once", action="store_true")
+    gelo_watch.add_argument("--json", action="store_true")
+
+    gelo_materialize = gelo_subcommands.add_parser("materialize")
+    materialize_source = gelo_materialize.add_mutually_exclusive_group(required=True)
+    materialize_source.add_argument("--preset", choices=[name.value for name in GeloPresetName])
+    materialize_source.add_argument("--toml", help="Structured public GELO TOML or JSON config.")
+    gelo_materialize.add_argument("--overlay", help="Structured TOML/JSON overlay.")
+    gelo_materialize.add_argument("--container-url")
+    gelo_materialize.add_argument("--container-pool")
+    gelo_materialize.add_argument("--container-task-id")
+    gelo_materialize.add_argument("--run-id")
+    gelo_materialize.add_argument("--proposer-rounds", type=int)
+    gelo_materialize.add_argument("--train-seed-count", type=int)
+    gelo_materialize.add_argument("--heldout-seed-count", type=int)
+    gelo_materialize.add_argument("--max-rollouts", type=int)
+    gelo_materialize.add_argument("--policy-model")
+    gelo_materialize.add_argument("-o", "--out", required=True)
+    gelo_materialize.add_argument("--json", action="store_true")
+
+    gelo_submit = gelo_subcommands.add_parser("submit")
+    submit_source = gelo_submit.add_mutually_exclusive_group(required=True)
+    submit_source.add_argument("--config", help="Path to hosted GELO config JSON.")
+    submit_source.add_argument("--preset", choices=[name.value for name in GeloPresetName])
+    submit_source.add_argument("--toml", help="Structured public GELO TOML or JSON config.")
+    gelo_submit.add_argument("--overlay", help="Structured TOML/JSON overlay for --toml.")
+    gelo_submit.add_argument(
+        "--base-url",
+        default=os.environ.get("SYNTH_BACKEND_URL", "https://api.usesynth.ai"),
+        help="Synth API base URL. Defaults to SYNTH_BACKEND_URL or https://api.usesynth.ai.",
+    )
+    gelo_submit.add_argument(
+        "--api-key-env",
+        default="SYNTH_API_KEY",
+        help="Environment variable containing the Synth API key.",
+    )
+    gelo_submit.add_argument("--run-id")
+    gelo_submit.add_argument("--idempotency-key")
+    gelo_submit.add_argument("--project-id")
+    gelo_submit.add_argument("--container-url")
+    gelo_submit.add_argument("--tunnel-url")
+    gelo_submit.add_argument("--container-pool")
+    gelo_submit.add_argument("--container-task-id")
+    gelo_submit.add_argument("--proposer-rounds", type=int)
+    gelo_submit.add_argument("--train-seed-count", type=int)
+    gelo_submit.add_argument("--heldout-seed-count", type=int)
+    gelo_submit.add_argument("--max-rollouts", type=int)
+    gelo_submit.add_argument("--policy-model")
+    gelo_submit.add_argument("--timeout-seconds", type=float, default=120.0)
+    gelo_submit.add_argument("--follow", action="store_true")
+    gelo_submit.add_argument("--json", action="store_true")
+
+    gelo_console = gelo_subcommands.add_parser("console")
+    gelo_console.add_argument("--title", default="GELO")
+    gelo_console.add_argument("--host", default="127.0.0.1")
+    gelo_console.add_argument("--port", type=int, default=8767)
+    gelo_console.add_argument(
+        "--docs",
+        help="Override the docs directory (defaults to the bundled GELO docs).",
+    )
+    gelo_console.add_argument(
+        "--docs-set", default="gelo", help="Bundled docs set to serve (default: gelo)."
+    )
 
     # The standing HTTP service is the public worker/workspace surface: queueing,
     # claiming, and lifecycle control happen over the /runs and /workspace routes.
@@ -513,6 +997,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "gepa" and args.gepa_command == "run":
+        from .gepa import GepaRun
+
         old_terminal = os.environ.get("SYNTH_OPTIMIZERS_TERMINAL")
         old_proposer_execution_mode = os.environ.get("SYNTH_OPTIMIZERS_PROPOSER_EXECUTION_MODE")
         old_proposer_model = os.environ.get("SYNTH_OPTIMIZERS_PROPOSER_MODEL")
@@ -586,6 +1072,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.command == "gepa" and args.gepa_command == "submit":
         return _submit_hosted_gepa(args)
+    if args.command == "gepa" and args.gepa_command == "watch":
+        return _gepa_watch(args)
+    if args.command == "gelo" and args.gelo_command == "startup":
+        return _gelo_startup(args)
+    if args.command == "gelo" and args.gelo_command == "watch":
+        return _gelo_watch(args)
+    if args.command == "gelo" and args.gelo_command == "materialize":
+        return _materialize_hosted_gelo(args)
+    if args.command == "gelo" and args.gelo_command == "submit":
+        return _submit_hosted_gelo(args)
+    if args.command == "gelo" and args.gelo_command == "console":
+        from .board_server import AggregateSource
+        from .docs_server import DocsSource, bundled_docs_root, serve_console
+
+        docs_root = Path(args.docs) if args.docs else bundled_docs_root(args.docs_set)
+        board = AggregateSource([], title=f"{args.title} — hosted")
+        docs = DocsSource([docs_root], title=args.title)
+        serve_console(board, docs, host=args.host, port=args.port)
+        return 0
     if args.command == "gepa" and args.gepa_command == "service":
         gepa_serve(args.db, args.bind, args.worker_id, args.lease_seconds, args.workers)
         return 0

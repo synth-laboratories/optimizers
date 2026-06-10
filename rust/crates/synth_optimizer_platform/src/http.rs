@@ -19,6 +19,7 @@ pub struct ContainerClient {
     base_url: String,
     client: Client,
     headers: HeaderMap,
+    bearer_env: Option<String>,
 }
 
 impl ContainerClient {
@@ -33,10 +34,27 @@ impl ContainerClient {
         Self::with_headers_and_bearer_env(base_url, headers, None)
     }
 
+    pub fn with_headers_and_timeout(
+        base_url: impl Into<String>,
+        headers: BTreeMap<String, String>,
+        timeout_seconds: Option<f64>,
+    ) -> Result<Self> {
+        Self::with_headers_bearer_env_and_timeout(base_url, headers, None, timeout_seconds)
+    }
+
     pub fn with_headers_and_bearer_env(
         base_url: impl Into<String>,
         headers: BTreeMap<String, String>,
         bearer_env: Option<&str>,
+    ) -> Result<Self> {
+        Self::with_headers_bearer_env_and_timeout(base_url, headers, bearer_env, None)
+    }
+
+    pub fn with_headers_bearer_env_and_timeout(
+        base_url: impl Into<String>,
+        headers: BTreeMap<String, String>,
+        bearer_env: Option<&str>,
+        timeout_seconds: Option<f64>,
     ) -> Result<Self> {
         let base_url = base_url.into().trim_end_matches('/').to_string();
         if base_url.is_empty() {
@@ -44,20 +62,25 @@ impl ContainerClient {
                 "container url is required".to_string(),
             ));
         }
-        let timeout_seconds = env::var("SYNTH_OPTIMIZERS_CONTAINER_HTTP_TIMEOUT_SECONDS")
-            .ok()
-            .and_then(|value| value.trim().parse::<u64>().ok())
-            .filter(|value| *value > 0)
-            .unwrap_or(120);
+        let timeout_seconds = container_http_timeout_seconds(
+            timeout_seconds.unwrap_or_else(default_container_timeout_seconds),
+        )?;
         let client = Client::builder()
-            .timeout(Duration::from_secs(timeout_seconds))
+            .timeout(Duration::from_secs_f64(timeout_seconds))
             .build()?;
-        let mut headers = parse_headers(headers)?;
-        apply_bearer_env(&mut headers, bearer_env)?;
+        let headers = parse_headers(headers)?;
+        if !headers.contains_key("authorization") {
+            let mut probe = headers.clone();
+            apply_bearer_env(&mut probe, bearer_env)?;
+        }
         Ok(Self {
             base_url,
             client,
             headers,
+            bearer_env: bearer_env
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string),
         })
     }
 
@@ -120,13 +143,28 @@ impl ContainerClient {
         checkpoint_id: &str,
         request: &Value,
     ) -> Result<Value> {
+        let target_rollout_id = request
+            .get("rollout_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty() && !value.starts_with('$'))
+            .or_else(|| {
+                request
+                    .get("trace_correlation_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty() && !value.starts_with('$'))
+            })
+            .ok_or_else(|| {
+                OptimizerError::Container(
+                    "resume_rollout requires concrete request.rollout_id or trace_correlation_id for target_rollout_id".to_string(),
+                )
+            })?;
         self.post(
             &format!("/rollouts/{parent_rollout_id}/resume"),
             &json!({
                 "checkpoint_id": checkpoint_id,
-                "target_rollout_id": request
-                    .get("trace_correlation_id")
-                    .and_then(Value::as_str),
+                "target_rollout_id": target_rollout_id,
                 "overrides": request,
             }),
         )
@@ -176,19 +214,39 @@ impl ContainerClient {
 
     fn get(&self, path: &str) -> Result<Value> {
         let url = format!("{}{}", self.base_url, path);
-        let response = self.client.get(url).headers(self.headers.clone()).send()?;
-        Self::json_response(path, response)
+        let headers = self.headers()?;
+        let (status, body) = send_with_transient_retry(|| {
+            let response = self.client.get(&url).headers(headers.clone()).send()?;
+            // Read the body INSIDE the retry: a connection reset mid-transfer
+            // surfaces here (reqwest "error decoding response body"), not at send().
+            let status = response.status();
+            let body = response.text()?;
+            Ok((status, body))
+        })?;
+        Self::json_from_status_body(path, status, body)
     }
 
     fn post(&self, path: &str, request: &Value) -> Result<Value> {
         let url = format!("{}{}", self.base_url, path);
-        let response = self
-            .client
-            .post(url)
-            .headers(self.headers.clone())
-            .json(request)
-            .send()?;
-        Self::json_response(path, response)
+        let headers = self.headers()?;
+        let (status, body) = send_with_transient_retry(|| {
+            let response = self
+                .client
+                .post(&url)
+                .headers(headers.clone())
+                .json(request)
+                .send()?;
+            let status = response.status();
+            let body = response.text()?;
+            Ok((status, body))
+        })?;
+        Self::json_from_status_body(path, status, body)
+    }
+
+    fn headers(&self) -> Result<HeaderMap> {
+        let mut headers = self.headers.clone();
+        apply_bearer_env(&mut headers, self.bearer_env.as_deref())?;
+        Ok(headers)
     }
 
     fn get_typed<T>(&self, path: &str) -> Result<T>
@@ -207,9 +265,11 @@ impl ContainerClient {
         Ok(serde_json::from_value(self.post(path, &request)?)?)
     }
 
-    fn json_response(path: &str, response: reqwest::blocking::Response) -> Result<Value> {
-        let status = response.status();
-        let text = response.text()?;
+    fn json_from_status_body(
+        path: &str,
+        status: reqwest::StatusCode,
+        text: String,
+    ) -> Result<Value> {
         if !status.is_success() {
             return Err(OptimizerError::ContainerHttpStatus {
                 path: path.to_string(),
@@ -221,6 +281,65 @@ impl ContainerClient {
             return Ok(Value::Object(Default::default()));
         }
         Ok(serde_json::from_str(&text)?)
+    }
+}
+
+/// Retry a single HTTP send on TRANSIENT transport failures only — a connection
+/// reset / connect failure / timeout under heavy concurrent container load (the
+/// 20-wide full-rollout lane momentarily saturating the crafter app-server). This
+/// is NOT a data fallback: it re-issues the identical request and never degrades or
+/// fabricates a response. An HTTP error STATUS (4xx/5xx) is a real server reply and
+/// is returned as-is (handled by `json_response`), never retried here. Without this,
+/// one momentary `error sending request` kills an entire multi-round optimization.
+fn send_with_transient_retry<F, T>(mut attempt: F) -> reqwest::Result<T>
+where
+    F: FnMut() -> reqwest::Result<T>,
+{
+    const MAX_ATTEMPTS: usize = 4;
+    let mut backoff = Duration::from_millis(250);
+    let mut last_error: Option<reqwest::Error> = None;
+    for attempt_index in 0..MAX_ATTEMPTS {
+        match attempt() {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                // Transient transport failures under heavy concurrent container
+                // load: connect failure, timeout, request-build, or a connection
+                // reset mid-body (is_body/is_decode → reqwest "error decoding
+                // response body"). An HTTP error STATUS is NOT a reqwest::Error here
+                // (it is surfaced later by json_from_status_body), so 4xx/5xx are
+                // never retried by this wrapper.
+                let transient = error.is_connect()
+                    || error.is_timeout()
+                    || error.is_request()
+                    || error.is_body()
+                    || error.is_decode();
+                if !transient || attempt_index + 1 == MAX_ATTEMPTS {
+                    return Err(error);
+                }
+                last_error = Some(error);
+                std::thread::sleep(backoff);
+                backoff = (backoff * 2).min(Duration::from_secs(2));
+            }
+        }
+    }
+    Err(last_error.expect("retry loop recorded no error"))
+}
+
+fn default_container_timeout_seconds() -> f64 {
+    env::var("SYNTH_OPTIMIZERS_CONTAINER_HTTP_TIMEOUT_SECONDS")
+        .ok()
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(120.0)
+}
+
+fn container_http_timeout_seconds(value: f64) -> Result<f64> {
+    if value.is_finite() && value > 0.0 {
+        Ok(value)
+    } else {
+        Err(OptimizerError::Config(
+            "container HTTP timeout must be a finite positive number".to_string(),
+        ))
     }
 }
 

@@ -79,10 +79,27 @@ impl ResolvedRoleAgentConfig {
         Duration::from_secs(self.proposer.timeout_seconds.max(1))
     }
 
+    pub fn message_stall_timeout(&self) -> Duration {
+        Duration::from_secs(self.proposer.message_stall_timeout_seconds.max(1))
+    }
+
     pub fn codex_turn_request<'a>(
         &'a self,
         input: RoleAgentTurnRequestInput<'a>,
     ) -> CodexTurnRequest<'a> {
+        let mut thread_start_params =
+            self.thread_start_params(input.thread_instructions, input.thread_metadata);
+        set_object_string(
+            &mut thread_start_params,
+            "cwd",
+            input.workspace_dir.display().to_string(),
+        );
+        let mut turn_start_params = self.turn_start_params(input.turn_input);
+        set_object_string(
+            &mut turn_start_params,
+            "cwd",
+            input.workspace_dir.display().to_string(),
+        );
         CodexTurnRequest {
             run_id: input.run_id,
             proposer: &self.proposer,
@@ -91,10 +108,10 @@ impl ResolvedRoleAgentConfig {
             client_name: input.client_name,
             client_title: input.client_title,
             client_version: input.client_version,
-            thread_start_params: self
-                .thread_start_params(input.thread_instructions, input.thread_metadata),
-            turn_start_params: self.turn_start_params(input.turn_input),
+            thread_start_params,
+            turn_start_params,
             timeout: input.timeout.unwrap_or_else(|| self.timeout()),
+            message_stall_timeout: self.message_stall_timeout(),
         }
     }
 
@@ -106,7 +123,7 @@ impl ResolvedRoleAgentConfig {
         let mut params = Map::new();
         params.insert("model".to_string(), Value::String(self.model.clone()));
         params.insert(
-            "instructions".to_string(),
+            "developerInstructions".to_string(),
             Value::String(instructions.as_ref().to_string()),
         );
         if let Some(approval_policy) = non_empty(self.proposer.approval_policy.as_deref()) {
@@ -175,7 +192,7 @@ pub fn text_turn_input(text: impl Into<String>) -> Value {
     Value::Array(vec![json!({
         "type": "text",
         "text": text.into(),
-        "textElements": [],
+        "text_elements": [],
     })])
 }
 
@@ -199,6 +216,12 @@ fn normalize_turn_input(input: Value) -> Value {
         Value::String(text) => text_turn_input(text),
         Value::Array(_) => input,
         other => Value::Array(vec![other]),
+    }
+}
+
+fn set_object_string(value: &mut Value, key: &str, item: String) {
+    if let Value::Object(object) = value {
+        object.insert(key.to_string(), Value::String(item));
     }
 }
 

@@ -141,6 +141,7 @@ fn run_docker_with_staged_workspace(
         current_dir: staged_workspace.to_path_buf(),
         env_map: docker_process_env,
         auth_home_to_cleanup: launch_state.auth_home_to_cleanup,
+        auth_home_refresh_source: launch_state.auth_home_refresh_source,
         process_label,
         execution_mode: "local_process".to_string(),
     })?;
@@ -231,7 +232,31 @@ fn write_entrypoint(workspace: &Path) -> Result<()> {
     let path = workspace.join(".codex_app_server_entrypoint.sh");
     fs::write(
         &path,
-        "#!/bin/sh\nset -eu\ncd \"${SYNTH_WORKSPACE:-/workspace}\"\nexec \"$@\"\n",
+        "#!/bin/sh\n\
+set -eu\n\
+cd \"${SYNTH_WORKSPACE:-/workspace}\"\n\
+command_name=\"${1##*/}\"\n\
+if [ \"$command_name\" = \"codex\" ] || [ \"$command_name\" = \"codex.js\" ]; then\n\
+  codex_bin=\"$(command -v \"$1\" 2>/dev/null || true)\"\n\
+  if [ -z \"$codex_bin\" ] && [ -x \"$1\" ]; then\n\
+    codex_bin=\"$1\"\n\
+  fi\n\
+  if [ -z \"$codex_bin\" ]; then\n\
+    echo \"could not resolve Codex binary for app-server command: $1\" >&2\n\
+    exit 1\n\
+  fi\n\
+  if [ \"$command_name\" = \"codex.js\" ]; then\n\
+    echo \"codex.js app-server command cannot provide native unified-exec helpers in docker substrate\" >&2\n\
+    exit 1\n\
+  fi\n\
+  helper_dir=\"${CODEX_HOME:?CODEX_HOME missing}/tmp/arg0/codex-arg0-$$\"\n\
+  mkdir -p \"$helper_dir\"\n\
+  ln -sf \"$codex_bin\" \"$helper_dir/codex-execve-wrapper\"\n\
+  ln -sf \"$codex_bin\" \"$helper_dir/apply_patch\"\n\
+  ln -sf \"$codex_bin\" \"$helper_dir/applypatch\"\n\
+  export PATH=\"$helper_dir:${PATH:-}\"\n\
+fi\n\
+exec \"$@\"\n",
     )
     .map_err(|source| OptimizerError::io(&path, source))?;
     #[cfg(unix)]

@@ -579,12 +579,8 @@ fn write_service_heartbeat(
     service_url: &str,
     started_at: &str,
 ) -> Result<()> {
-    let payload = service_identity_payload(
-        config,
-        service_url,
-        started_at,
-        Some(crate::rfc3339_now()),
-    );
+    let payload =
+        service_identity_payload(config, service_url, started_at, Some(crate::rfc3339_now()));
     let tmp = path.with_extension("json.tmp");
     fs::write(&tmp, serde_json::to_vec_pretty(&payload)?)
         .map_err(|source| OptimizerError::io(&tmp, source))?;
@@ -622,7 +618,13 @@ fn service_identity_payload(
 
 fn service_id_for_db(db_path: &Path) -> String {
     let mut hasher = Sha256::new();
-    Sha2Digest::update(&mut hasher, crate::absolute_path(db_path).display().to_string().as_bytes());
+    Sha2Digest::update(
+        &mut hasher,
+        crate::absolute_path(db_path)
+            .display()
+            .to_string()
+            .as_bytes(),
+    );
     format!("{:x}", Sha2Digest::finalize(hasher))
 }
 
@@ -717,8 +719,10 @@ fn tick_cancelled_run_request_workspace(
                 request_id: request.request_id.clone(),
                 lease_id: None,
                 lease_seconds,
+                in_process: None,
             }),
             owning_service_url: None,
+            artifact_store: None,
         },
         GepaAdvanceMode::ServiceTick,
     )?;
@@ -789,8 +793,10 @@ fn tick_active_run_request(
                 request_id: request.request_id.clone(),
                 lease_id: Some(lease_id.clone()),
                 lease_seconds,
+                in_process: None,
             }),
             owning_service_url: owning_service_url.map(str::to_string),
+            artifact_store: None,
         },
         GepaAdvanceMode::ServiceTick,
     ) {
@@ -1002,8 +1008,10 @@ fn execute_gepa_job(input: ExecuteGepaJobInput<'_>) -> Result<GepaTickOutcome> {
                 request_id: request.request_id.clone(),
                 lease_id: Some(request_lease_id.to_string()),
                 lease_seconds,
+                in_process: None,
             }),
             owning_service_url: None,
+            artifact_store: None,
         },
     );
     let mut updated_job = run_store.optimizer_job(&request.run_id, &job.job_id)?;
@@ -1497,21 +1505,14 @@ fn route_request(request: HttpRequest, runtime: GepaServiceRuntime) -> HttpRespo
         ("GET", ["health"]) => json_response(200, &json!({"status": "ok"})),
         ("GET", ["whoami"]) => json_response(
             200,
-            &service_identity_payload(
-                config,
-                &runtime.service_url,
-                &runtime.started_at,
-                None,
-            ),
+            &service_identity_payload(config, &runtime.service_url, &runtime.started_at, None),
         ),
         ("GET", ["openapi.yaml"]) => {
             text_response(200, "application/yaml", GEPA_SERVICE_OPENAPI_YAML)
         }
         ("GET", ["workspace"]) => result_response(workspace_summary(config), 200),
         ("GET", ["workspace", "usage"]) => result_response(workspace_usage(config), 200),
-        ("POST", ["workspace", "prune"]) => {
-            result_response(prune_workspace(config, &request), 200)
-        }
+        ("POST", ["workspace", "prune"]) => result_response(prune_workspace(config, &request), 200),
         ("POST", ["workspace", "compact"]) => {
             result_response(compact_workspace_response(config, &request), 200)
         }
@@ -1523,9 +1524,7 @@ fn route_request(request: HttpRequest, runtime: GepaServiceRuntime) -> HttpRespo
         ("GET", ["runs", run_id, "timings"]) => run_timings_response(config, run_id),
         ("GET", ["runs", run_id, "stats"]) => run_stats_response(config, run_id),
         ("DELETE", ["runs", run_id]) => delete_run_response(config, run_id),
-        ("POST", ["runs", run_id, "compact"]) => {
-            compact_run_response(config, run_id, &request)
-        }
+        ("POST", ["runs", run_id, "compact"]) => compact_run_response(config, run_id, &request),
         ("POST", ["runs", run_id, "cancel"]) => {
             control_run_response(&runtime, run_id, "cancel", &request)
         }
@@ -2253,10 +2252,7 @@ fn default_compact_profile() -> String {
     "compact".to_string()
 }
 
-fn compact_workspace_response(
-    config: &GepaServiceConfig,
-    request: &HttpRequest,
-) -> Result<Value> {
+fn compact_workspace_response(config: &GepaServiceConfig, request: &HttpRequest) -> Result<Value> {
     let body = storage_maintenance_request(request)?;
     let profile = StorageMaintenanceProfile::parse(&body.profile)?;
     let statuses = body
@@ -2308,9 +2304,7 @@ fn compact_run_response(
     }) {
         Ok(Some(report)) => json_response(200, &report),
         Ok(None) => run_not_found_response(run_id),
-        Err(OptimizerError::Config(message)) => {
-            error_response(409, "not_terminal", &message, None)
-        }
+        Err(OptimizerError::Config(message)) => error_response(409, "not_terminal", &message, None),
         Err(error) => optimizer_error_response(error),
     }
 }
@@ -3648,12 +3642,8 @@ fn project_run_transition_stats(request: &WorkspaceRunRequestStatus) -> Result<V
         "archived",
     ];
     let rollout_terminal_states = ["completed", "failed", "cached", "cancelled"];
-    let rollout_count = distinct_entity_count_any(
-        &transitions,
-        "rollout",
-        &rollout_terminal_states,
-        false,
-    );
+    let rollout_count =
+        distinct_entity_count_any(&transitions, "rollout", &rollout_terminal_states, false);
     let rollout_spans = state_spans(
         &transitions,
         "rollout",
@@ -3661,16 +3651,20 @@ fn project_run_transition_stats(request: &WorkspaceRunRequestStatus) -> Result<V
         &rollout_terminal_states,
         false,
     );
-    let proposer_generation_spans =
-        state_spans(&transitions, "proposer_round", "generating", &["returned"], false);
-    let proposer_lifecycle_spans =
-        state_spans(
-            &transitions,
-            "proposer_round",
-            "requested",
-            &["closed", "parse_failed"],
-            false,
-        );
+    let proposer_generation_spans = state_spans(
+        &transitions,
+        "proposer_round",
+        "generating",
+        &["returned"],
+        false,
+    );
+    let proposer_lifecycle_spans = state_spans(
+        &transitions,
+        "proposer_round",
+        "requested",
+        &["closed", "parse_failed"],
+        false,
+    );
     let candidate_lifecycle_spans = state_spans(
         &transitions,
         "candidate",
@@ -3692,7 +3686,8 @@ fn project_run_transition_stats(request: &WorkspaceRunRequestStatus) -> Result<V
         distinct_generated_entity_count(&transitions, "candidate", "accepted_minibatch");
     let minibatch_rejected =
         distinct_generated_entity_count(&transitions, "candidate", "rejected_minibatch");
-    let accepted_full_train = distinct_generated_entity_count(&transitions, "candidate", "accepted");
+    let accepted_full_train =
+        distinct_generated_entity_count(&transitions, "candidate", "accepted");
     let proposer_round_count = distinct_entity_type_count(&transitions, "proposer_round");
     let upstream_429_count = transitions
         .iter()
@@ -3880,7 +3875,10 @@ fn state_spans(
     let mut by_entity: BTreeMap<&str, Vec<&TransitionRow>> = BTreeMap::new();
     for row in transitions {
         if row.entity_type == entity_type {
-            by_entity.entry(row.entity_id.as_str()).or_default().push(row);
+            by_entity
+                .entry(row.entity_id.as_str())
+                .or_default()
+                .push(row);
         }
     }
     let mut spans = Vec::new();
@@ -3938,9 +3936,7 @@ fn distinct_generated_candidate_count(transitions: &[TransitionRow]) -> usize {
     transitions
         .iter()
         .filter(|row| {
-            row.entity_type == "candidate"
-                && row.trigger == "registered"
-                && row.parent_id.is_some()
+            row.entity_type == "candidate" && row.trigger == "registered" && row.parent_id.is_some()
         })
         .map(|row| row.entity_id.as_str())
         .collect::<BTreeSet<_>>()

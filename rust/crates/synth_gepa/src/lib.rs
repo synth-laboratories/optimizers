@@ -3,6 +3,10 @@ use std::fmt::Write as _;
 use std::fs::{self, OpenOptions};
 use std::io::Write as IoWrite;
 use std::path::{Path, PathBuf};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -29,12 +33,13 @@ use synth_optimizer_platform::{
     OptimizerTransition, OptimizerTransitionTrigger, ParetoComparisonRecord, PlanLinkInput,
     PlanLinkRecord, PromptCandidatePayload, PromptProgram, PromptProgramSnapshotInput,
     PromptProgramSnapshotRecord, RequestCache, ResolvedRunConfigInput, ResolvedRunConfigRecord,
-    Result, RetryPolicy, RolloutMaterializationIdentity, RunPhaseTimingInput, RunRegistry,
-    RunRegistryEntry, RuntimeEffectInput, RuntimeEffectRecord, ScoreRecord, ScoreVectorRecord,
-    SensorFrame, SensorScoreRecords, StateMachineEntity, StopperStateInput, StopperStateRecord,
-    SynthOptimizerConfig, TasksetResponse, TasksetSnapshotInput, TasksetSnapshotRecord,
-    TasksetTasksRequest, TasksetTasksResponse, TransitionInput, TransitionLog, TransitionSink,
-    UsageLedgerInput, UsageLedgerRecord, WorkspaceStore, LIMIT_ENGINE_SCHEMA_VERSION,
+    Result, RetryPolicy, RolloutMaterializationIdentity, RunArtifactStore, RunPhaseTimingInput,
+    RunRegistry, RunRegistryEntry, RuntimeEffectInput, RuntimeEffectRecord, ScoreRecord,
+    ScoreVectorRecord, SensorFrame, SensorScoreRecords, StateMachineEntity, StopperStateInput,
+    StopperStateRecord, SynthOptimizerConfig, TasksetResponse, TasksetSnapshotInput,
+    TasksetSnapshotRecord, TasksetTasksRequest, TasksetTasksResponse, TransitionInput,
+    TransitionLog, TransitionSink, UsageLedgerInput, UsageLedgerRecord, WorkspaceStore,
+    LIMIT_ENGINE_SCHEMA_VERSION,
 };
 
 mod codex_app_server;
@@ -652,6 +657,7 @@ struct GepaStepResources {
 pub struct GepaExecutionOptions {
     pub cancellation: Option<GepaCancellationSource>,
     pub owning_service_url: Option<String>,
+    pub artifact_store: Option<Arc<dyn RunArtifactStore>>,
 }
 
 #[derive(Clone, Debug)]
@@ -660,6 +666,7 @@ pub struct GepaCancellationSource {
     pub request_id: String,
     pub lease_id: Option<String>,
     pub lease_seconds: u64,
+    pub in_process: Option<Arc<AtomicBool>>,
 }
 
 pub(crate) fn gepa_home_dir() -> PathBuf {
@@ -1371,7 +1378,15 @@ fn open_gepa_run_context(
     // initializing an unusable run.
     let disk_budget = DiskBudget::new(config.disk_budget.clone(), &config.run.output_dir)?;
     disk_budget.require_below_soft()?;
-    let paths = ArtifactPaths::new(&config.run.output_dir, &config.run.run_id);
+    let paths = if let Some(artifact_store) = options.artifact_store.clone() {
+        ArtifactPaths::with_artifact_store(
+            &config.run.output_dir,
+            &config.run.run_id,
+            artifact_store,
+        )
+    } else {
+        ArtifactPaths::new(&config.run.output_dir, &config.run.run_id)
+    };
     paths.create()?;
     let transition_log = TransitionLog::open(&paths.run_dir)?;
     let transitions = transition_log.sink();
@@ -18157,6 +18172,18 @@ fn check_cancelled(cancellation: Option<&GepaCancellationSource>) -> Result<()> 
     let Some(cancellation) = cancellation else {
         return Ok(());
     };
+    if cancellation
+        .in_process
+        .as_ref()
+        .is_some_and(|token| token.load(Ordering::SeqCst))
+    {
+        return Err(OptimizerError::Cancelled {
+            request_id: cancellation.request_id.clone(),
+        });
+    }
+    if cancellation.service_db_path.as_os_str().is_empty() {
+        return Ok(());
+    }
     let store = WorkspaceStore::open_existing(&cancellation.service_db_path)?;
     let status = store.run_request_status(&cancellation.request_id)?;
     if status.as_deref() == Some("cancelled") {

@@ -22,6 +22,8 @@ const OPENROUTER_GROK43_MODEL: &str = "x-ai/grok-4.3";
 const OPENROUTER_GROK43_INPUT_USD_PER_MILLION: f64 = 1.25;
 const OPENROUTER_GROK43_CACHED_INPUT_USD_PER_MILLION: f64 = 0.20;
 const OPENROUTER_GROK43_OUTPUT_USD_PER_MILLION: f64 = 2.50;
+const DEEPSEEK_INPUT_USD_PER_MILLION: f64 = 0.27;
+const DEEPSEEK_OUTPUT_USD_PER_MILLION: f64 = 1.10;
 
 pub(crate) struct CodexProposerInput<'a> {
     pub config: &'a SynthOptimizerConfig,
@@ -250,6 +252,7 @@ pub(crate) fn run_deepseek_chat_proposer(input: CodexProposerInput<'_>) -> Resul
     let usage = chat_response.get("usage").cloned().ok_or_else(|| {
         OptimizerError::Proposer("DeepSeek chat proposer response missing usage".to_string())
     })?;
+    let usage = normalize_proposer_usage(input.config, &model, usage);
     write_deepseek_chat_artifacts(&input, &request, &chat_response)?;
     write_workspace_pack_manifest(&input.workspace_dir)?;
     Ok(json!({
@@ -445,14 +448,50 @@ fn build_response_from_outcome(
 }
 
 fn normalize_proposer_usage(config: &SynthOptimizerConfig, model: &str, usage: Value) -> Value {
-    if !config.proposer.provider.eq_ignore_ascii_case("openrouter")
-        || model.trim().to_ascii_lowercase() != OPENROUTER_GROK43_MODEL
-    {
-        return usage;
-    }
     let Some(mut usage_map) = usage.as_object().cloned() else {
         return usage;
     };
+    let provider = config.proposer.provider.trim().to_ascii_lowercase();
+    let model_lower = model.trim().to_ascii_lowercase();
+    let reported_cost = usage_f64_from_map(&usage_map, "cost_usd")
+        .filter(|value| value.is_finite() && *value > 0.0);
+    if provider.eq_ignore_ascii_case("openrouter") && model_lower == OPENROUTER_GROK43_MODEL {
+        return normalize_openrouter_grok43_usage(model, usage_map);
+    }
+    if provider.eq_ignore_ascii_case("deepseek") || model_lower.contains("deepseek") {
+        usage_map.insert(
+            "provider".to_string(),
+            Value::String("deepseek".to_string()),
+        );
+        usage_map.insert("model".to_string(), Value::String(model.to_string()));
+        if reported_cost.is_none() {
+            let prompt_tokens = usage_u64_from_any(&usage_map, &["prompt_tokens", "input_tokens"]);
+            let completion_tokens =
+                usage_u64_from_any(&usage_map, &["completion_tokens", "output_tokens"]);
+            if prompt_tokens == 0 && completion_tokens == 0 {
+                return Value::Object(usage_map);
+            }
+            let cost_usd = prompt_tokens as f64 * DEEPSEEK_INPUT_USD_PER_MILLION / 1_000_000.0
+                + completion_tokens as f64 * DEEPSEEK_OUTPUT_USD_PER_MILLION / 1_000_000.0;
+            usage_map.insert("cost_usd".to_string(), json!(cost_usd));
+            usage_map.insert(
+                "cost_source".to_string(),
+                Value::String("deepseek_static_price".to_string()),
+            );
+            usage_map.insert(
+                "cost_pricing".to_string(),
+                json!({
+                    "input_usd_per_million": DEEPSEEK_INPUT_USD_PER_MILLION,
+                    "output_usd_per_million": DEEPSEEK_OUTPUT_USD_PER_MILLION,
+                }),
+            );
+        }
+        return Value::Object(usage_map);
+    }
+    Value::Object(usage_map)
+}
+
+fn normalize_openrouter_grok43_usage(model: &str, mut usage_map: Map<String, Value>) -> Value {
     usage_map.insert(
         "provider".to_string(),
         Value::String("openrouter".to_string()),
@@ -462,8 +501,9 @@ fn normalize_proposer_usage(config: &SynthOptimizerConfig, model: &str, usage: V
         .filter(|value| value.is_finite() && *value > 0.0)
         .is_none()
     {
-        let prompt_tokens = usage_u64_from_map(&usage_map, "prompt_tokens");
-        let completion_tokens = usage_u64_from_map(&usage_map, "completion_tokens");
+        let prompt_tokens = usage_u64_from_any(&usage_map, &["prompt_tokens", "input_tokens"]);
+        let completion_tokens =
+            usage_u64_from_any(&usage_map, &["completion_tokens", "output_tokens"]);
         let cached_prompt_tokens =
             usage_u64_from_map(&usage_map, "cached_prompt_tokens").min(prompt_tokens);
         let billable_prompt_tokens = prompt_tokens.saturating_sub(cached_prompt_tokens);
@@ -499,8 +539,33 @@ fn normalize_proposer_usage(config: &SynthOptimizerConfig, model: &str, usage: V
     Value::Object(usage_map)
 }
 
+fn usage_u64_from_any(map: &Map<String, Value>, keys: &[&str]) -> u64 {
+    keys.iter()
+        .find_map(|key| {
+            let value = map.get(*key)?;
+            value
+                .as_u64()
+                .or_else(|| {
+                    value
+                        .as_f64()
+                        .filter(|v| v.is_finite() && *v >= 0.0)
+                        .map(|v| v as u64)
+                })
+                .or_else(|| {
+                    let text = value.as_str()?;
+                    text.parse::<u64>().ok().or_else(|| {
+                        text.parse::<f64>()
+                            .ok()
+                            .filter(|v| v.is_finite() && *v >= 0.0)
+                            .map(|v| v as u64)
+                    })
+                })
+        })
+        .unwrap_or(0)
+}
+
 fn usage_u64_from_map(map: &Map<String, Value>, key: &str) -> u64 {
-    map.get(key).and_then(Value::as_u64).unwrap_or(0)
+    usage_u64_from_any(map, &[key])
 }
 
 fn usage_f64_from_map(map: &Map<String, Value>, key: &str) -> Option<f64> {
@@ -513,10 +578,13 @@ fn build_staleness_review_response(
     model: &str,
     outcome: AgentTurnOutcome,
 ) -> Result<Value> {
-    let usage = outcome
-        .usage
-        .clone()
-        .unwrap_or_else(|| json!({"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}));
+    let usage = normalize_proposer_usage(
+        input.config,
+        model,
+        outcome.usage.clone().unwrap_or_else(
+            || json!({"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}),
+        ),
+    );
     let verdict_path = input.workspace_dir.join("review").join("verdict.json");
     let verdict = read_staleness_verdict_json(&verdict_path)?;
     validate_staleness_verdict(&verdict)?;

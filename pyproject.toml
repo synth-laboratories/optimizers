@@ -9,6 +9,7 @@ license = "Apache-2.0"
 dependencies = [
     "pydantic>=2.0.0",
     "synth-containers==0.2.0.20260604",
+    "websocket-client>=1.8.0",
 ]
 
 [project.optional-dependencies]

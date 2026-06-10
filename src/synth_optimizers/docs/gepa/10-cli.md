@@ -29,6 +29,7 @@ synth-optimizers gepa run --config gepa.toml
 | `--proposer-service-tier` | `default` `fast` | Override the Codex service tier. `fast` uses Codex Fast mode and requires ChatGPT auth. |
 | `--proposer-auth-mode` | `auto` `api_key` `chatgpt` `host` | Override `[proposer].auth_mode`. |
 | `--proposer-codex-home` | path | Override `[proposer].codex_home` for ChatGPT-authenticated Codex runs. |
+| `--disable-usage-registration` | flag | Do not send the best-effort package usage-registration event. |
 | `--json` | flag | Print the full result JSON instead of the terminal progress view. |
 
 Set `SYNTH_OPTIMIZERS_TERMINAL=1` for a live token/cost split in the terminal while the
@@ -43,6 +44,7 @@ export SYNTH_API_KEY="..."
 synth-optimizers gepa submit \
   --config gepa.toml \
   --tunnel-url http://127.0.0.1:8765 \
+  --tunnel-provider synth_tunnel \
   --follow
 ```
 
@@ -54,14 +56,22 @@ synth-optimizers gepa submit \
 | `--run-id` | auto | Optional client run id hint. |
 | `--idempotency-key` | — | Idempotent resubmit. |
 | `--project-id` | — | Optional project scope. |
-| `--tunnel-url` | — | Open a SynthTunnel lease to a local container before submit. Mutually exclusive with pool. |
+| `--tunnel-url` | — | Open a tunnel to a local container before submit. Mutually exclusive with pool. |
+| `--tunnel-provider` | `synth_tunnel` | Tunnel provider: `auto`, `synth_tunnel`, `cloudflared`, or `ngrok`. |
 | `--container-pool` | — | Hosted pool id. Mutually exclusive with tunnel. |
 | `--container-task-id` | — | Optional task id for `--container-pool`. |
 | `--timeout-seconds` | `120` | HTTP client timeout. |
+| `--disable-usage-registration` | off | Do not send the best-effort package usage-registration event. |
 | `--follow` | off | Stream `/events` until terminal status. |
 | `--json` | off | Print submit/terminal JSON. |
 
 Uses `HostedOptimizerClient.submit_gepa_toml()`.
+
+Usage registration sends only coarse package/run-start metadata. It does not
+send prompts, config, code, artifacts, repo paths, run ids, or user content; the
+backend derives source IP. Disable it in local TOML with
+`[usage_registration] enabled = false` or globally with
+`SYNTH_OPTIMIZERS_DISABLE_USAGE_REGISTRATION=1`.
 
 ## `gepa watch`
 

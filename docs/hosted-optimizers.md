@@ -5,6 +5,15 @@ client and CLI submit to `/api/v1/optimizers/runs`; the backend owns auth,
 billing, durable run status, events, and artifacts. No public workflow requires
 `OPTIMIZERS_BETA_SERVICE_TOKEN`.
 
+By default, `synth-optimizers` also sends a best-effort usage-registration event
+when an optimizer run is kicked off. The event is intentionally content-free:
+it sends only the optimizer algorithm, client surface, package name, and package
+version. It does not send prompts, config, code, artifacts, repo paths, run ids,
+or user content; the backend derives source IP from the request context. Disable
+it with `SYNTH_OPTIMIZERS_DISABLE_USAGE_REGISTRATION=1`,
+`HostedOptimizerClient(register_usage=False)`, `[usage_registration] enabled =
+false` for local GEPA TOML, or the CLI `--disable-usage-registration` flag.
+
 ## GEPA
 
 GEPA supports both local execution and hosted jobs.
@@ -15,13 +24,17 @@ export SYNTH_API_KEY="..."
 synth-optimizers gepa submit \
   --config gepa.toml \
   --tunnel-url http://127.0.0.1:8765 \
+  --tunnel-provider synth_tunnel \
   --follow
 
 synth-optimizers gepa watch gepa_... --events
 ```
 
-Use `--container-pool POOL_ID` instead of `--tunnel-url` when the task container
-is already hosted in a pool. The options are mutually exclusive.
+Use `--tunnel-provider synth_tunnel`, `cloudflared`, or `ngrok` to choose the
+tunnel provider for a local task container. `--tunnel-url` and
+`--container-pool POOL_ID` are mutually exclusive.
+RunPod can host the task container for proofs; start the selected tunnel
+connector in the RunPod pod so `127.0.0.1` resolves to that task service.
 
 Python:
 
@@ -52,6 +65,7 @@ synth-optimizers gelo materialize \
 synth-optimizers gelo submit \
   --config .out/crafter_goex.json \
   --tunnel-url http://127.0.0.1:8943 \
+  --tunnel-provider synth_tunnel \
   --follow
 
 synth-optimizers gelo watch goex_... --slice board --goex-events
@@ -65,7 +79,7 @@ from synth_optimizers.hosted import HostedOptimizerClient
 
 client = HostedOptimizerClient()
 
-with client.open_synth_tunnel("http://127.0.0.1:8943") as tunnel:
+with client.open_tunnel("http://127.0.0.1:8943", provider="synth_tunnel") as tunnel:
     config = GeloPreset.crafter_smoke().materialize(container_tunnel=tunnel)
     response = client.submit_gelo(config)
     record = client.wait_for_run(response.run_id, timeout_seconds=3600)
@@ -73,6 +87,13 @@ with client.open_synth_tunnel("http://127.0.0.1:8943") as tunnel:
 board = client.get_state_slice(response.run_id, "board")
 events = list(client.event_backfill(response.run_id, limit=3))
 ```
+
+### Plugin lanes
+
+GELO exposes typed plugin-lane config for roadmap compatibility, but the public
+launch accepts only the SFT beta lane. RLVR, OPSD, and unknown plugin kinds are
+rejected fail-closed by the SDK materializer and backend submit validation until
+their hosted backends are explicitly enabled.
 
 ## Launch Evidence
 

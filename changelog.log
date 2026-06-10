@@ -1,5 +1,12 @@
 # synth-optimizers changelog
 
+## 2026-06-10
+
+* Added privacy-first optimizer usage registration on hosted submit/local GEPA start; no prompts, config, code, artifacts, repo paths, or run ids are sent.
+* Added opt-outs for usage registration via client config, `SYNTH_OPTIMIZERS_DISABLE_USAGE_REGISTRATION=1`, `[usage_registration] enabled = false`, and CLI `--disable-usage-registration`.
+* Added typed GELO plugin-lane abstractions; SFT is the only accepted beta lane, while RLVR, OPSD, and unknown plugin kinds fail closed.
+* Backend PR/release and PyPI publish remain pending; local route/client proof passed against slot Postgres.
+
 ## 2026-06-09
 
 * Prepared `0.2.1.dev202606092146` for hosted optimizer SDK/CLI launch-readiness; no PyPI publish yet.

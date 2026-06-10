@@ -41,7 +41,7 @@ from the hosted worker — usually via [SynthTunnel](#/hosted#tunnel) during loc
 
 ```
 GeloPreset / materialized config_json
-  ├─ container.url or SynthTunnel lease
+  ├─ container.url or tunnel handle
   ├─ taskset train/heldout seeds
   ├─ policy (in-container rollout LLM)
   ├─ go_ex engine knobs (rounds, budgets, checkpoint cadence)

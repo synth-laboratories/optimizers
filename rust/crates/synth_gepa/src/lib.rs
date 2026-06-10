@@ -3,6 +3,10 @@ use std::fmt::Write as _;
 use std::fs::{self, OpenOptions};
 use std::io::Write as IoWrite;
 use std::path::{Path, PathBuf};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -15,27 +19,27 @@ use synth_optimizer_platform::limits::{
     RuntimeEffectAdmissionInput, RuntimeEffectAdmissionRecord, RuntimeEffectBudgetEstimate,
 };
 use synth_optimizer_platform::{
-    budget_limit_engine_input, normalize_event_feed, stable_json_hash, task_identity, ArtifactPaths, ArtifactRef,
-    CacheMode, CacheProfileRecord, CandidateOverlay, CheckpointInput, CheckpointRecord,
-    ConfiguredGepaRunLimits, ContainerClient, ContainerContractSnapshotInput,
+    budget_limit_engine_input, normalize_event_feed, stable_json_hash, task_identity,
+    ArtifactPaths, ArtifactRef, CacheMode, CacheProfileRecord, CandidateOverlay, CheckpointInput,
+    CheckpointRecord, ConfiguredGepaRunLimits, ContainerClient, ContainerContractSnapshotInput,
     ContainerContractSnapshotRecord, DiskBudget, EvaluationCacheRecord, EvaluationCacheRecordInput,
-    EventStreamRecord, EventWriter, EvidenceFrame, FailurePayload, GepaBatchSamplerConfig,
-    ForecastConfidence, GepaCandidateSelectorConfig, GepaObjectiveAcceptanceConfig,
+    EventStreamRecord, EventWriter, EvidenceFrame, FailurePayload, ForecastConfidence,
+    GepaBatchSamplerConfig, GepaCandidateSelectorConfig, GepaObjectiveAcceptanceConfig,
     GepaPipelineMode, GepaRunResult, LeverBundle, LeverKind, LeverManifest, LimitDefinition,
     LimitEngine, LimitEngineInput, LimitForecast, LimitKind, LimitObservation, LimitSnapshot,
-    LimitStatus, ManagedContainerProcess,
-    MaterializationRecord, MaterializationRecordInput, ObjectiveScore, ObjectiveSetRecord,
-    ObjectiveSpec, OptimizerError, OptimizerJob, OptimizerJobKind, OptimizerJobStatus,
-    OptimizerRunState, OptimizerStateMachine, OptimizerTransition, OptimizerTransitionTrigger,
-    ParetoComparisonRecord, PlanLinkInput, PlanLinkRecord, PromptCandidatePayload, PromptProgram,
-    PromptProgramSnapshotInput, PromptProgramSnapshotRecord, RequestCache, ResolvedRunConfigInput,
-    ResolvedRunConfigRecord, Result, RetryPolicy, RolloutMaterializationIdentity,
-    RunPhaseTimingInput, RunRegistry, RunRegistryEntry, RuntimeEffectInput, RuntimeEffectRecord,
-    ScoreRecord, ScoreVectorRecord, SensorFrame, SensorScoreRecords, StateMachineEntity,
-    StopperStateInput, StopperStateRecord, SynthOptimizerConfig, TasksetResponse,
-    TasksetSnapshotInput, TasksetSnapshotRecord, TasksetTasksRequest, TasksetTasksResponse,
-    TransitionInput, TransitionLog, TransitionSink, UsageLedgerInput, UsageLedgerRecord,
-    WorkspaceStore, LIMIT_ENGINE_SCHEMA_VERSION,
+    LimitStatus, ManagedContainerProcess, MaterializationRecord, MaterializationRecordInput,
+    ObjectiveScore, ObjectiveSetRecord, ObjectiveSpec, OptimizerError, OptimizerJob,
+    OptimizerJobKind, OptimizerJobStatus, OptimizerRunState, OptimizerStateMachine,
+    OptimizerTransition, OptimizerTransitionTrigger, ParetoComparisonRecord, PlanLinkInput,
+    PlanLinkRecord, PromptCandidatePayload, PromptProgram, PromptProgramSnapshotInput,
+    PromptProgramSnapshotRecord, RequestCache, ResolvedRunConfigInput, ResolvedRunConfigRecord,
+    Result, RetryPolicy, RolloutMaterializationIdentity, RunArtifactStore, RunPhaseTimingInput,
+    RunRegistry, RunRegistryEntry, RuntimeEffectInput, RuntimeEffectRecord, ScoreRecord,
+    ScoreVectorRecord, SensorFrame, SensorScoreRecords, StateMachineEntity, StopperStateInput,
+    StopperStateRecord, SynthOptimizerConfig, TasksetResponse, TasksetSnapshotInput,
+    TasksetSnapshotRecord, TasksetTasksRequest, TasksetTasksResponse, TransitionInput,
+    TransitionLog, TransitionSink, UsageLedgerInput, UsageLedgerRecord, WorkspaceStore,
+    LIMIT_ENGINE_SCHEMA_VERSION,
 };
 
 mod codex_app_server;
@@ -653,6 +657,7 @@ struct GepaStepResources {
 pub struct GepaExecutionOptions {
     pub cancellation: Option<GepaCancellationSource>,
     pub owning_service_url: Option<String>,
+    pub artifact_store: Option<Arc<dyn RunArtifactStore>>,
 }
 
 #[derive(Clone, Debug)]
@@ -661,6 +666,7 @@ pub struct GepaCancellationSource {
     pub request_id: String,
     pub lease_id: Option<String>,
     pub lease_seconds: u64,
+    pub in_process: Option<Arc<AtomicBool>>,
 }
 
 pub(crate) fn gepa_home_dir() -> PathBuf {
@@ -871,7 +877,11 @@ fn gepa_generation_phase_forecast(
             completed_durations.iter().sum::<f64>() / completed_durations.len() as f64,
         )
     } else if current_elapsed >= 1.0 {
-        ("phase_elapsed_fallback", ForecastConfidence::Low, current_elapsed)
+        (
+            "phase_elapsed_fallback",
+            ForecastConfidence::Low,
+            current_elapsed,
+        )
     } else {
         return None;
     };
@@ -1368,7 +1378,15 @@ fn open_gepa_run_context(
     // initializing an unusable run.
     let disk_budget = DiskBudget::new(config.disk_budget.clone(), &config.run.output_dir)?;
     disk_budget.require_below_soft()?;
-    let paths = ArtifactPaths::new(&config.run.output_dir, &config.run.run_id);
+    let paths = if let Some(artifact_store) = options.artifact_store.clone() {
+        ArtifactPaths::with_artifact_store(
+            &config.run.output_dir,
+            &config.run.run_id,
+            artifact_store,
+        )
+    } else {
+        ArtifactPaths::new(&config.run.output_dir, &config.run.run_id)
+    };
     paths.create()?;
     let transition_log = TransitionLog::open(&paths.run_dir)?;
     let transitions = transition_log.sink();
@@ -1470,9 +1488,10 @@ fn ensure_container_inputs(context: &mut GepaRunContext) -> Result<GepaContainer
         .url
         .clone()
         .ok_or_else(|| OptimizerError::Config("container.url is required".to_string()))?;
-    let client = ContainerClient::with_headers(
+    let client = ContainerClient::with_headers_and_bearer_env(
         container_url.clone(),
         context.config.container.headers.clone(),
+        context.config.container.auth_bearer_env.as_deref(),
     )?;
     let metadata = client.verify_gepa_contract()?;
     let gepa_contract = metadata.resolved_gepa_contract()?;
@@ -2084,10 +2103,9 @@ fn limit_estimate_update_is_major(events: &[EventStreamRecord], payload: &Value)
         }
         (None, None) => {}
     }
-    let utilization_delta =
-        (json_f64(current, "utilization").unwrap_or(0.0)
-            - json_f64(previous, "utilization").unwrap_or(0.0))
-        .abs();
+    let utilization_delta = (json_f64(current, "utilization").unwrap_or(0.0)
+        - json_f64(previous, "utilization").unwrap_or(0.0))
+    .abs();
     if utilization_delta >= 0.05 {
         return true;
     }
@@ -12140,9 +12158,10 @@ fn stopped_by_value(config: &SynthOptimizerConfig, state: &GepaRunState) -> Valu
 }
 
 pub fn execute_gepa_with_options(
-    config: SynthOptimizerConfig,
+    mut config: SynthOptimizerConfig,
     options: GepaExecutionOptions,
 ) -> Result<GepaRunResult> {
+    config.resolve_runtime_targets()?;
     let mut context = open_gepa_run_context(config, &options)?;
     let mut state = restore_gepa_run_state(&mut context)?;
     loop {
@@ -18153,6 +18172,18 @@ fn check_cancelled(cancellation: Option<&GepaCancellationSource>) -> Result<()> 
     let Some(cancellation) = cancellation else {
         return Ok(());
     };
+    if cancellation
+        .in_process
+        .as_ref()
+        .is_some_and(|token| token.load(Ordering::SeqCst))
+    {
+        return Err(OptimizerError::Cancelled {
+            request_id: cancellation.request_id.clone(),
+        });
+    }
+    if cancellation.service_db_path.as_os_str().is_empty() {
+        return Ok(());
+    }
     let store = WorkspaceStore::open_existing(&cancellation.service_db_path)?;
     let status = store.run_request_status(&cancellation.request_id)?;
     if status.as_deref() == Some("cancelled") {

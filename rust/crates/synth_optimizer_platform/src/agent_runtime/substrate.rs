@@ -9,6 +9,7 @@ pub enum ExecutionSubstrate {
     #[default]
     Local,
     Docker,
+    Daytona,
 }
 
 impl ExecutionSubstrate {
@@ -16,6 +17,7 @@ impl ExecutionSubstrate {
         match self {
             Self::Local => "local",
             Self::Docker => "docker",
+            Self::Daytona => "daytona",
         }
     }
 }

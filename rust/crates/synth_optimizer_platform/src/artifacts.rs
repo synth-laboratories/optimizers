@@ -1,11 +1,13 @@
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use crate::artifact_store::{LocalDevStore, RunArtifactStore};
 use crate::error::{OptimizerError, Result};
 
 #[derive(Clone, Debug)]
@@ -21,11 +23,23 @@ pub struct ArtifactPaths {
     pub score_chart_path: PathBuf,
     pub run_registry_path: PathBuf,
     pub workspace_db_path: PathBuf,
+    artifact_store: Arc<dyn RunArtifactStore>,
 }
 
 impl ArtifactPaths {
     pub fn new(output_dir: impl AsRef<Path>, run_id: &str) -> Self {
-        let run_dir = output_dir.as_ref().join(run_id);
+        let output_dir = output_dir.as_ref();
+        let run_dir = output_dir.join(run_id);
+        Self::with_artifact_store(output_dir, run_id, Arc::new(LocalDevStore::new(run_dir)))
+    }
+
+    pub fn with_artifact_store(
+        output_dir: impl AsRef<Path>,
+        run_id: &str,
+        artifact_store: Arc<dyn RunArtifactStore>,
+    ) -> Self {
+        let output_dir = output_dir.as_ref();
+        let run_dir = output_dir.join(run_id);
         Self {
             manifest_path: run_dir.join("result_manifest.json"),
             event_feed_path: run_dir.join("events.jsonl"),
@@ -35,8 +49,9 @@ impl ArtifactPaths {
             candidate_registry_path: run_dir.join("candidate_registry.json"),
             frontier_path: run_dir.join("frontier.json"),
             score_chart_path: run_dir.join("score_chart.svg"),
-            run_registry_path: output_dir.as_ref().join("run_registry.jsonl"),
+            run_registry_path: output_dir.join("run_registry.jsonl"),
             workspace_db_path: run_dir.join("workspace.sqlite"),
+            artifact_store,
             run_dir,
         }
     }
@@ -46,17 +61,44 @@ impl ArtifactPaths {
             .map_err(|source| OptimizerError::io(&self.run_dir, source))
     }
 
+    pub fn artifact_store(&self) -> &dyn RunArtifactStore {
+        self.artifact_store.as_ref()
+    }
+
     pub fn write_json(&self, path: &Path, value: &Value) -> Result<()> {
+        if let Some(path_key) = self.path_key_for_path(path) {
+            self.artifact_store.write_json(&path_key, value)?;
+            return Ok(());
+        }
         let text = serde_json::to_string_pretty(value)?;
         fs::write(path, format!("{text}\n")).map_err(|source| OptimizerError::io(path, source))
     }
 
     pub fn write_text(&self, path: &Path, value: &str) -> Result<()> {
+        if let Some(path_key) = self.path_key_for_path(path) {
+            self.artifact_store
+                .write_bytes(&path_key, value.as_bytes())?;
+            return Ok(());
+        }
         fs::write(path, value).map_err(|source| OptimizerError::io(path, source))
     }
 
     pub fn artifact_ref(&self, path: &Path, kind: &str, retention: &str) -> Result<ArtifactRef> {
         artifact_ref(path, kind, retention)
+    }
+
+    fn path_key_for_path(&self, path: &Path) -> Option<String> {
+        let relative = path.strip_prefix(&self.run_dir).ok()?;
+        let key = relative
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
+        if key.is_empty() {
+            None
+        } else {
+            Some(key)
+        }
     }
 }
 

@@ -3,7 +3,8 @@
 <p align="center">
 <a href="https://pypi.org/project/synth-optimizers/">PyPI</a> ·
 <a href="https://github.com/synth-laboratories/containers">Containers</a> ·
-<a href="https://github.com/synth-laboratories/synth-cookbooks-public/tree/main/cookbooks/optimizers/gepa">Cookbooks</a>
+<a href="https://github.com/synth-laboratories/synth-cookbooks-public/tree/main/cookbooks/optimizers/gepa">Cookbooks</a> ·
+<a href="docs/hosted-optimizers.md">Hosted jobs</a>
 </p>
 
 `synth-optimizers` provides a shared Rust optimizer core for running search
@@ -19,11 +20,13 @@ contract.
 
 | Algorithm | Status | In this repo | Paper & docs |
 | --- | --- | --- | --- |
-| **GEPA** — reflective prompt evolution | Supported | [`rust/crates/synth_gepa/`](rust/crates/synth_gepa/) (Rust engine + service), [`src/synth_optimizers/gepa.py`](src/synth_optimizers/gepa.py) (Python API), [`skills/gepa/SKILL.md`](skills/gepa/SKILL.md) (agent runbook) | [Paper](https://arxiv.org/abs/2507.19457) · [gepa-ai docs](https://gepa-ai.github.io/gepa/) |
+| **GEPA** — reflective prompt evolution | Supported | [`rust/crates/synth_gepa/`](rust/crates/synth_gepa/) (Rust engine + service), [`src/synth_optimizers/gepa.py`](src/synth_optimizers/gepa.py) (Python API), [`skills/gepa/SKILL.md`](skills/gepa/SKILL.md) (agent runbook) | [Paper](https://arxiv.org/abs/2507.19457) · [gepa-ai docs](https://gepa-ai.github.io/gepa/) · bundled HTML via `gepa console` |
+| **GELO** — Go-Explore in prompt space (hosted) | Hosted submit | [`src/synth_optimizers/gelo.py`](src/synth_optimizers/gelo.py), [`skills/gelo/SKILL.md`](skills/gelo/SKILL.md), [`GELO_HOSTED_SDK_CLI_SPEC.md`](GELO_HOSTED_SDK_CLI_SPEC.md) | Bundled HTML via `gelo console` — [`src/synth_optimizers/docs/gelo/`](src/synth_optimizers/docs/gelo/) |
 
 The shared [`synth_optimizer_platform`](rust/crates/synth_optimizer_platform/)
-crate is the substrate for optimizer implementations; GEPA is the first
-algorithm built on top of it.
+crate is the substrate for optimizer implementations; GEPA is the first public
+local algorithm; GELO is hosted-only in the public package (execution in optimizers-beta).
+Hosted GEPA/GELO submission is covered in [`docs/hosted-optimizers.md`](docs/hosted-optimizers.md).
 
 ## Install
 

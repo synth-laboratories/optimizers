@@ -19,6 +19,10 @@ fn default_startup_timeout_seconds() -> u64 {
     30
 }
 
+fn default_container_pool_api_key_env() -> String {
+    "SYNTH_API_KEY".to_string()
+}
+
 fn default_train_split() -> String {
     "train".to_string()
 }
@@ -79,12 +83,52 @@ fn default_docker_network() -> String {
     crate::agent_runtime::limits::DOCKER_NETWORK.to_string()
 }
 
+fn default_daytona_api_key_env() -> String {
+    "DAYTONA_API_KEY".to_string()
+}
+
+fn default_daytona_api_url() -> String {
+    "https://app.daytona.io/api".to_string()
+}
+
+fn default_daytona_language() -> String {
+    "python".to_string()
+}
+
+fn default_daytona_sandbox_name_prefix() -> String {
+    "synth-optimizer-proposer".to_string()
+}
+
+fn default_daytona_remote_workspace_dir() -> String {
+    crate::agent_runtime::limits::DOCKER_WORKSPACE_MOUNT_PATH.to_string()
+}
+
+fn default_daytona_auto_stop_interval_minutes() -> u64 {
+    30
+}
+
+fn default_daytona_startup_timeout_seconds() -> u64 {
+    120
+}
+
+fn default_daytona_poll_interval_ms() -> u64 {
+    250
+}
+
+fn default_daytona_public() -> bool {
+    true
+}
+
 fn default_proposer_auth_mode() -> String {
     "auto".to_string()
 }
 
 fn default_timeout_seconds() -> u64 {
     300
+}
+
+fn default_message_stall_timeout_seconds() -> u64 {
+    120
 }
 
 fn default_max_generations() -> usize {
@@ -271,6 +315,7 @@ impl SynthOptimizerConfig {
         let mut config: Self = toml::from_str(&text)?;
         config.apply_env_overrides()?;
         config.resolve_relative_paths(path.parent().unwrap_or_else(|| Path::new(".")));
+        config.resolve_runtime_targets()?;
         config.validate()?;
         Ok(config)
     }
@@ -447,20 +492,29 @@ impl SynthOptimizerConfig {
         resolve_command_path_args(base_dir, &mut self.proposer.command);
     }
 
+    pub fn resolve_runtime_targets(&mut self) -> Result<()> {
+        self.container.resolve_pool_target()
+    }
+
     pub fn validate(&self) -> Result<()> {
         if self.run.run_id.trim().is_empty() {
             return Err(OptimizerError::Config("run.run_id is required".to_string()));
         }
-        if self
+        let has_container_url = !self
             .container
             .url
             .as_deref()
             .unwrap_or_default()
             .trim()
-            .is_empty()
-        {
+            .is_empty();
+        let has_pool_target = self
+            .container
+            .pool
+            .as_ref()
+            .is_some_and(|pool| !pool.pool_id.trim().is_empty());
+        if !has_container_url && !has_pool_target {
             return Err(OptimizerError::Config(
-                "container.url is required".to_string(),
+                "container.url or container.pool.pool_id is required".to_string(),
             ));
         }
         if self.taskset.train_ids.is_empty() {
@@ -708,13 +762,98 @@ pub struct ContainerConfig {
     #[serde(default)]
     pub url: Option<String>,
     #[serde(default)]
+    pub pool: Option<ContainerPoolTargetConfig>,
+    #[serde(default)]
     pub headers: BTreeMap<String, String>,
+    #[serde(default)]
+    pub auth_bearer_env: Option<String>,
+    #[serde(default)]
+    pub auth_refresh: Option<ContainerAuthRefreshConfig>,
     #[serde(default)]
     pub command: Vec<String>,
     #[serde(default)]
     pub cwd: Option<PathBuf>,
     #[serde(default = "default_startup_timeout_seconds")]
     pub startup_timeout_seconds: u64,
+}
+
+impl ContainerConfig {
+    pub fn resolve_pool_target(&mut self) -> Result<()> {
+        let Some(pool) = &self.pool else {
+            return Ok(());
+        };
+        let pool_id = pool.pool_id.trim();
+        if pool_id.is_empty() {
+            return Err(OptimizerError::Config(
+                "container.pool.pool_id is required when container.pool is set".to_string(),
+            ));
+        }
+        reject_path_segment("container.pool.pool_id", pool_id)?;
+        let task_id = pool
+            .task_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        if let Some(task_id) = task_id {
+            reject_path_segment("container.pool.task_id", task_id)?;
+        }
+
+        let base_url_source = pool
+            .backend_base_url
+            .clone()
+            .or_else(resolve_backend_base_url_from_env)
+            .unwrap_or_else(|| "https://api.usesynth.ai".to_string());
+        let base_url = normalize_backend_base_url(&base_url_source);
+        self.url = Some(match task_id {
+            Some(task_id) => {
+                format!("{base_url}/v1/pools/{pool_id}/tasks/{task_id}/container")
+            }
+            None => format!("{base_url}/v1/pools/{pool_id}/container"),
+        });
+        if self
+            .auth_bearer_env
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
+            && !headers_contain_authorization(&self.headers)
+        {
+            self.auth_bearer_env = Some(pool.api_key_env.clone());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContainerAuthRefreshConfig {
+    pub provider: String,
+    pub lease_id: String,
+    #[serde(default)]
+    pub refresh_interval_seconds: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContainerPoolTargetConfig {
+    pub pool_id: String,
+    #[serde(default)]
+    pub task_id: Option<String>,
+    #[serde(default)]
+    pub backend_base_url: Option<String>,
+    #[serde(default = "default_container_pool_api_key_env")]
+    pub api_key_env: String,
+}
+
+impl Default for ContainerPoolTargetConfig {
+    fn default() -> Self {
+        Self {
+            pool_id: String::new(),
+            task_id: None,
+            backend_base_url: None,
+            api_key_env: default_container_pool_api_key_env(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -842,6 +981,10 @@ pub struct ProposerConfig {
     pub api_key_env: Option<String>,
     #[serde(default = "default_timeout_seconds")]
     pub timeout_seconds: u64,
+    /// Max gap between JSON-RPC messages before a turn is flagged as stalled.
+    /// Independent of [`Self::timeout_seconds`], the overall turn budget.
+    #[serde(default = "default_message_stall_timeout_seconds")]
+    pub message_stall_timeout_seconds: u64,
     #[serde(default)]
     pub model: Option<String>,
     /// Opt out of the curated OpenRouter model allowlist so any OpenRouter
@@ -853,6 +996,8 @@ pub struct ProposerConfig {
     pub prompt: ProposerPromptConfig,
     #[serde(default)]
     pub docker: Option<ProposerDockerConfig>,
+    #[serde(default)]
+    pub daytona: Option<ProposerDaytonaConfig>,
 }
 
 impl Default for ProposerConfig {
@@ -874,10 +1019,12 @@ impl Default for ProposerConfig {
             codex_home: None,
             api_key_env: None,
             timeout_seconds: default_timeout_seconds(),
+            message_stall_timeout_seconds: default_message_stall_timeout_seconds(),
             model: None,
             allow_unverified_model: false,
             prompt: ProposerPromptConfig::default(),
             docker: None,
+            daytona: None,
         }
     }
 }
@@ -901,6 +1048,69 @@ impl Default for ProposerDockerConfig {
             image: None,
             workspace_mount_path: default_docker_workspace_mount_path(),
             network: default_docker_network(),
+            extra_env: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProposerDaytonaConfig {
+    #[serde(default = "default_daytona_api_url")]
+    pub api_url: String,
+    #[serde(default = "default_daytona_api_key_env")]
+    pub api_key_env: String,
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub image: Option<String>,
+    #[serde(default)]
+    pub snapshot: Option<String>,
+    #[serde(default)]
+    pub dockerfile_content: Option<String>,
+    #[serde(default = "default_daytona_language")]
+    pub language: String,
+    #[serde(default = "default_daytona_sandbox_name_prefix")]
+    pub sandbox_name_prefix: String,
+    #[serde(default = "default_daytona_remote_workspace_dir")]
+    pub remote_workspace_dir: String,
+    #[serde(default = "default_daytona_auto_stop_interval_minutes")]
+    pub auto_stop_interval_minutes: u64,
+    #[serde(default = "default_daytona_startup_timeout_seconds")]
+    pub startup_timeout_seconds: u64,
+    #[serde(default = "default_daytona_poll_interval_ms")]
+    pub poll_interval_ms: u64,
+    #[serde(default = "default_daytona_public")]
+    pub public: bool,
+    #[serde(default)]
+    pub keep_sandbox: bool,
+    #[serde(default)]
+    pub sync_workspace_back: bool,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    #[serde(default)]
+    pub extra_env: BTreeMap<String, String>,
+}
+
+impl Default for ProposerDaytonaConfig {
+    fn default() -> Self {
+        Self {
+            api_url: default_daytona_api_url(),
+            api_key_env: default_daytona_api_key_env(),
+            target: None,
+            image: None,
+            snapshot: None,
+            dockerfile_content: None,
+            language: default_daytona_language(),
+            sandbox_name_prefix: default_daytona_sandbox_name_prefix(),
+            remote_workspace_dir: default_daytona_remote_workspace_dir(),
+            auto_stop_interval_minutes: default_daytona_auto_stop_interval_minutes(),
+            startup_timeout_seconds: default_daytona_startup_timeout_seconds(),
+            poll_interval_ms: default_daytona_poll_interval_ms(),
+            public: default_daytona_public(),
+            keep_sandbox: false,
+            sync_workspace_back: false,
+            env: BTreeMap::new(),
             extra_env: BTreeMap::new(),
         }
     }
@@ -944,6 +1154,16 @@ pub fn resolve_proposer_auth_launch_mode(
         "api_key" => Ok(ProposerAuthLaunchMode::ApiKey),
         "chatgpt" => Ok(ProposerAuthLaunchMode::Chatgpt),
         "auto" => {
+            if proposer_model_requires_chatgpt_auth(proposer) {
+                if proposer.codex_home.is_some() {
+                    return Ok(ProposerAuthLaunchMode::Chatgpt);
+                }
+                return Err(OptimizerError::Config(
+                    "proposer.auth_mode = \"auto\" did not resolve: ChatGPT-subscription \
+                     proposer models require proposer.codex_home for ChatGPT subscription auth"
+                        .to_string(),
+                ));
+            }
             if api_key_present {
                 Ok(ProposerAuthLaunchMode::ApiKey)
             } else if proposer.codex_home.is_some() {
@@ -962,6 +1182,14 @@ pub fn resolve_proposer_auth_launch_mode(
              (legacy host maps to chatgpt)"
         ))),
     }
+}
+
+fn proposer_model_requires_chatgpt_auth(proposer: &ProposerConfig) -> bool {
+    proposer
+        .model
+        .as_deref()
+        .map(normalize_chatgpt_proposer_model_id)
+        .is_some_and(|model| CHATGPT_PROPOSER_MODELS.contains(&model.as_str()))
 }
 
 pub fn validate_chatgpt_proposer_model(model: &str) -> Result<()> {
@@ -1108,6 +1336,7 @@ fn validate_proposer_runtime_substrate_config(proposer: &ProposerConfig) -> Resu
     match proposer.runtime_substrate {
         ExecutionSubstrate::Local => Ok(()),
         ExecutionSubstrate::Docker => validate_proposer_docker_config(proposer),
+        ExecutionSubstrate::Daytona => validate_proposer_daytona_config(proposer),
     }
 }
 
@@ -1121,7 +1350,8 @@ fn validate_chat_completions_proposer_config(proposer: &ProposerConfig) -> Resul
     }
     if proposer_auth_mode_normalized(&proposer.auth_mode) != "api_key" {
         return Err(OptimizerError::Config(
-            "chat-completions proposer backend requires proposer.auth_mode = \"api_key\"".to_string(),
+            "chat-completions proposer backend requires proposer.auth_mode = \"api_key\""
+                .to_string(),
         ));
     }
     if !matches!(proposer.runtime_substrate, ExecutionSubstrate::Local) {
@@ -1250,6 +1480,94 @@ fn validate_proposer_docker_config(proposer: &ProposerConfig) -> Result<()> {
         if container_key.trim().is_empty() || host_key.trim().is_empty() {
             return Err(OptimizerError::Config(
                 "proposer.docker.extra_env entries must map non-empty container env names to non-empty host env names".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_proposer_daytona_config(proposer: &ProposerConfig) -> Result<()> {
+    let daytona = proposer.daytona.as_ref().ok_or_else(|| {
+        OptimizerError::Config(
+            "proposer.runtime_substrate = \"daytona\" requires [proposer.daytona]".to_string(),
+        )
+    })?;
+    if daytona.api_url.trim().is_empty() {
+        return Err(OptimizerError::Config(
+            "proposer.daytona.api_url must be non-empty".to_string(),
+        ));
+    }
+    if daytona.api_key_env.trim().is_empty() {
+        return Err(OptimizerError::Config(
+            "proposer.daytona.api_key_env must name the environment variable holding the Daytona API key".to_string(),
+        ));
+    }
+    let dockerfile_content = daytona
+        .dockerfile_content
+        .as_deref()
+        .unwrap_or_default()
+        .trim();
+    let image = daytona.image.as_deref().unwrap_or_default().trim();
+    let snapshot = daytona.snapshot.as_deref().unwrap_or_default().trim();
+    if dockerfile_content.is_empty() && image.is_empty() && snapshot.is_empty() {
+        return Err(OptimizerError::Config(
+            "proposer.runtime_substrate = \"daytona\" requires [proposer.daytona].dockerfile_content, [proposer.daytona].image, or [proposer.daytona].snapshot".to_string(),
+        ));
+    }
+    if !image.is_empty() && (image.ends_with(":latest") || image == "latest") {
+        return Err(OptimizerError::Config(
+            "proposer.daytona.image must be pinned to a non-latest tag or digest".to_string(),
+        ));
+    }
+    if daytona.language.trim().is_empty() {
+        return Err(OptimizerError::Config(
+            "proposer.daytona.language must be non-empty".to_string(),
+        ));
+    }
+    if daytona.sandbox_name_prefix.trim().is_empty() {
+        return Err(OptimizerError::Config(
+            "proposer.daytona.sandbox_name_prefix must be non-empty".to_string(),
+        ));
+    }
+    if !daytona.remote_workspace_dir.starts_with('/') {
+        return Err(OptimizerError::Config(format!(
+            "proposer.daytona.remote_workspace_dir must be an absolute path; got {:?}",
+            daytona.remote_workspace_dir
+        )));
+    }
+    if daytona.startup_timeout_seconds == 0 {
+        return Err(OptimizerError::Config(
+            "proposer.daytona.startup_timeout_seconds must be greater than zero".to_string(),
+        ));
+    }
+    if daytona.poll_interval_ms == 0 {
+        return Err(OptimizerError::Config(
+            "proposer.daytona.poll_interval_ms must be greater than zero".to_string(),
+        ));
+    }
+    if proposer.execution_mode.trim() != "local_process"
+        && proposer.execution_mode.trim() != "stdio"
+    {
+        return Err(OptimizerError::Config(
+            "proposer.runtime_substrate = \"daytona\" requires proposer.execution_mode = \"local_process\" or \"stdio\"; websocket mode is local-process only".to_string(),
+        ));
+    }
+    if proposer_uses_chatgpt_auth(&proposer.auth_mode) {
+        return Err(OptimizerError::Config(
+            "proposer.runtime_substrate = \"daytona\" does not support auth_mode = \"chatgpt\" in v1; use api_key proposer auth".to_string(),
+        ));
+    }
+    for (key, value) in &daytona.env {
+        if key.trim().is_empty() || value.trim().is_empty() {
+            return Err(OptimizerError::Config(
+                "proposer.daytona.env entries must have non-empty keys and values".to_string(),
+            ));
+        }
+    }
+    for (container_key, host_key) in &daytona.extra_env {
+        if container_key.trim().is_empty() || host_key.trim().is_empty() {
+            return Err(OptimizerError::Config(
+                "proposer.daytona.extra_env entries must map non-empty sandbox env names to non-empty host env names".to_string(),
             ));
         }
     }
@@ -1724,6 +2042,53 @@ fn absolutize(base_dir: &Path, path: &Path) -> PathBuf {
         };
         base_dir.join(path)
     }
+}
+
+fn headers_contain_authorization(headers: &BTreeMap<String, String>) -> bool {
+    headers
+        .keys()
+        .any(|name| name.trim().eq_ignore_ascii_case("authorization"))
+}
+
+fn reject_path_segment(field: &str, value: &str) -> Result<()> {
+    if value.contains('/') || value.contains('?') || value.contains('#') {
+        return Err(OptimizerError::Config(format!(
+            "{field} must be a single URL path segment"
+        )));
+    }
+    Ok(())
+}
+
+fn resolve_backend_base_url_from_env() -> Option<String> {
+    for name in [
+        "SYNTH_BACKEND_URL_OVERRIDE",
+        "SYNTH_BACKEND_URL",
+        "SYNTH_API_URL",
+        "DEV_SYNTH_BACKEND_URL",
+        "DEV_BACKEND_URL",
+        "PROD_SYNTH_BACKEND_URL",
+        "PROD_BACKEND_URL",
+        "BACKEND_URL",
+    ] {
+        if let Ok(value) = env::var(name) {
+            let value = value.trim().to_string();
+            if !value.is_empty() {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+fn normalize_backend_base_url(raw: &str) -> String {
+    let mut base = raw.trim().trim_end_matches('/').to_string();
+    for suffix in ["/v1", "/api"] {
+        if base.ends_with(suffix) {
+            base.truncate(base.len() - suffix.len());
+            break;
+        }
+    }
+    base
 }
 
 fn resolve_command_path_args(base_dir: &Path, command: &mut [String]) {

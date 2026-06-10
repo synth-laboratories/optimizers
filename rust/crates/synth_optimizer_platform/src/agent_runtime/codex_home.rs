@@ -5,6 +5,8 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+use serde_json::Value;
+
 use crate::{
     resolve_chatgpt_codex_home_source, resolve_proposer_auth_launch_mode, OptimizerError,
     ProposerAuthLaunchMode, ProposerConfig, Result,
@@ -14,6 +16,7 @@ use crate::{
 pub struct ProposerCodexLaunch {
     pub env_map: BTreeMap<String, String>,
     pub auth_home_to_cleanup: Option<PathBuf>,
+    pub auth_home_refresh_source: Option<PathBuf>,
     pub codex_home_host_path: Option<PathBuf>,
     pub codex_home_workspace_relative_path: Option<PathBuf>,
 }
@@ -31,56 +34,137 @@ pub fn prepare_proposer_codex_launch(
         .filter(|api_key| !api_key.trim().is_empty());
     let launch_mode = resolve_proposer_auth_launch_mode(proposer, proposer_api_key.is_some())?;
     let mut env_map = env_map;
-    let (auth_home_to_cleanup, codex_home_host_path, codex_home_workspace_relative_path) =
-        match launch_mode {
-            ProposerAuthLaunchMode::ApiKey => {
-                let api_key = proposer_api_key.ok_or_else(|| {
-                    OptimizerError::Proposer(format!(
+    let (
+        auth_home_to_cleanup,
+        auth_home_refresh_source,
+        codex_home_host_path,
+        codex_home_workspace_relative_path,
+    ) = match launch_mode {
+        ProposerAuthLaunchMode::ApiKey => {
+            let api_key = proposer_api_key.ok_or_else(|| {
+                OptimizerError::Proposer(format!(
                     "proposer.auth_mode = \"api_key\" requires non-empty {proposer_api_key_env}"
                 ))
-                })?;
-                let codex_home_relative = PathBuf::from(".codex_api_key_home");
-                let codex_home = workspace_dir.join(&codex_home_relative);
-                // Codex speaks the Responses wire only (chat wire was removed upstream:
-                // github.com/openai/codex/discussions/7782). Providers that serve only
-                // chat-completions (NVIDIA direct) must use the chat_completions proposer
-                // backend instead; OpenRouter proxies the Responses wire so it works here.
-                prepare_api_key_codex_home(
-                    &codex_home,
-                    &proposer.provider,
-                    proposer.base_url.as_deref(),
-                    model,
-                    &api_key,
-                )?;
-                env_map.insert("CODEX_HOME".to_string(), codex_home.display().to_string());
-                // Codex reads OPENAI_API_KEY from the subprocess environment even when the
-                // operator supplied the secret via another env var (for example OPENROUTER_API_KEY).
-                env_map.insert("OPENAI_API_KEY".to_string(), api_key);
-                (
-                    Some(codex_home.clone()),
-                    Some(codex_home),
-                    Some(codex_home_relative),
-                )
-            }
-            ProposerAuthLaunchMode::Chatgpt => {
-                let source = resolve_chatgpt_codex_home_source(proposer)?;
-                let codex_home_relative = PathBuf::from(".codex_home");
-                let codex_home = workspace_dir.join(&codex_home_relative);
-                copy_codex_home(&source, &codex_home)?;
-                env_map.insert("CODEX_HOME".to_string(), codex_home.display().to_string());
-                (
-                    Some(codex_home.clone()),
-                    Some(codex_home),
-                    Some(codex_home_relative),
-                )
-            }
-        };
+            })?;
+            let codex_home_relative = PathBuf::from(".codex_api_key_home");
+            let codex_home = workspace_dir.join(&codex_home_relative);
+            // Codex speaks the Responses wire only (chat wire was removed upstream:
+            // github.com/openai/codex/discussions/7782). Providers that serve only
+            // chat-completions (NVIDIA direct) must use the chat_completions proposer
+            // backend instead; OpenRouter proxies the Responses wire so it works here.
+            prepare_api_key_codex_home(
+                &codex_home,
+                &proposer.provider,
+                proposer.base_url.as_deref(),
+                model,
+                &api_key,
+            )?;
+            env_map.insert("CODEX_HOME".to_string(), codex_home.display().to_string());
+            // Codex reads OPENAI_API_KEY from the subprocess environment even when the
+            // operator supplied the secret via another env var (for example OPENROUTER_API_KEY).
+            env_map.insert("OPENAI_API_KEY".to_string(), api_key);
+            (
+                Some(codex_home.clone()),
+                None,
+                Some(codex_home),
+                Some(codex_home_relative),
+            )
+        }
+        ProposerAuthLaunchMode::Chatgpt => {
+            let source = resolve_chatgpt_codex_home_source(proposer)?;
+            let codex_home_relative = PathBuf::from(".codex_home");
+            let codex_home = workspace_dir.join(&codex_home_relative);
+            copy_codex_home(&source, &codex_home)?;
+            env_map.insert("CODEX_HOME".to_string(), codex_home.display().to_string());
+            // Keep ChatGPT-token launches hermetic when the hosting process also
+            // carries an unrelated OpenAI API key for policies or other services.
+            env_map.remove("OPENAI_API_KEY");
+            (
+                Some(codex_home.clone()),
+                Some(source),
+                Some(codex_home),
+                Some(codex_home_relative),
+            )
+        }
+    };
     Ok(ProposerCodexLaunch {
         env_map,
         auth_home_to_cleanup,
+        auth_home_refresh_source,
         codex_home_host_path,
         codex_home_workspace_relative_path,
     })
+}
+
+pub fn persist_refreshed_chatgpt_codex_auth(
+    staged_codex_home: &Path,
+    source_codex_home: &Path,
+) -> Result<bool> {
+    let staged_auth_path = staged_codex_home.join("auth.json");
+    if !staged_auth_path.is_file() {
+        return Ok(false);
+    }
+    let content = fs::read(&staged_auth_path)
+        .map_err(|source| OptimizerError::io(&staged_auth_path, source))?;
+    persist_refreshed_chatgpt_codex_auth_bytes(source_codex_home, &content)?;
+    Ok(true)
+}
+
+pub fn persist_refreshed_chatgpt_codex_auth_bytes(
+    source_codex_home: &Path,
+    content: &[u8],
+) -> Result<()> {
+    validate_chatgpt_auth_json_bytes(content)?;
+    fs::create_dir_all(source_codex_home)
+        .map_err(|source| OptimizerError::io(source_codex_home, source))?;
+    let auth_path = source_codex_home.join("auth.json");
+    let tmp_path =
+        source_codex_home.join(format!(".auth.json.tmp.{}", uuid::Uuid::new_v4().simple()));
+    fs::write(&tmp_path, content).map_err(|source| OptimizerError::io(&tmp_path, source))?;
+    #[cfg(unix)]
+    fs::set_permissions(&tmp_path, fs::Permissions::from_mode(0o600))
+        .map_err(|source| OptimizerError::io(&tmp_path, source))?;
+    fs::rename(&tmp_path, &auth_path).map_err(|source| OptimizerError::io(&auth_path, source))
+}
+
+fn validate_chatgpt_auth_json_bytes(content: &[u8]) -> Result<()> {
+    let value: Value = serde_json::from_slice(content).map_err(|source| {
+        OptimizerError::Proposer(format!(
+            "refreshed ChatGPT Codex auth.json is not valid JSON: {source}"
+        ))
+    })?;
+    if !value.is_object() {
+        return Err(OptimizerError::Proposer(
+            "refreshed ChatGPT Codex auth.json must be a JSON object".to_string(),
+        ));
+    }
+    if json_string_present(value.get("OPENAI_API_KEY")) {
+        return Err(OptimizerError::Proposer(
+            "refreshed ChatGPT Codex auth.json unexpectedly contains API-key auth".to_string(),
+        ));
+    }
+    let tokens = value
+        .get("tokens")
+        .or_else(|| value.get("openai").and_then(|openai| openai.get("tokens")))
+        .ok_or_else(|| {
+            OptimizerError::Proposer(
+                "refreshed ChatGPT Codex auth.json is missing token bundle".to_string(),
+            )
+        })?;
+    for key in ["access_token", "id_token", "refresh_token", "account_id"] {
+        if !json_string_present(tokens.get(key)) {
+            return Err(OptimizerError::Proposer(format!(
+                "refreshed ChatGPT Codex auth.json is missing tokens.{key}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn json_string_present(value: Option<&Value>) -> bool {
+    value
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
 }
 
 fn copy_codex_home(source: &Path, destination: &Path) -> Result<()> {

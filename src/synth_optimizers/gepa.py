@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
 import tomllib
 from collections.abc import Mapping
 from contextlib import closing
@@ -45,10 +46,55 @@ class GepaStalenessPolicy(StrEnum):
 class ContainerTomlSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    url: str = Field(min_length=1)
+    url: str | None = None
+    headers: dict[str, str] = Field(default_factory=dict)
+    auth_bearer_env: str | None = None
+    pool: "ContainerPoolTomlSection | None" = None
 
     def to_connection(self) -> ContainerConnection:
-        return ContainerConnection(url=self.url)
+        return ContainerConnection(url=self.resolved_url())
+
+    def resolved_url(self) -> str:
+        if self.pool is None:
+            url = (self.url or "").strip()
+            if not url:
+                raise ValueError("container.url or container.pool.pool_id is required")
+            return url
+        return self.pool.resolved_url()
+
+    def resolved_headers(self) -> dict[str, str]:
+        headers = dict(self.headers)
+        if self.auth_bearer_env:
+            headers.setdefault("authorization", _bearer_header_from_env(self.auth_bearer_env))
+        elif self.pool is not None and not _has_authorization_header(headers):
+            headers["authorization"] = _bearer_header_from_env(self.pool.api_key_env)
+        return headers
+
+    def resolved_auth_bearer_env(self) -> str | None:
+        if self.auth_bearer_env:
+            return self.auth_bearer_env
+        if self.pool is not None and not _has_authorization_header(self.headers):
+            return self.pool.api_key_env
+        return None
+
+
+class ContainerPoolTomlSection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pool_id: str = Field(min_length=1)
+    task_id: str | None = None
+    backend_base_url: str | None = None
+    api_key_env: str = "SYNTH_API_KEY"
+
+    def resolved_url(self) -> str:
+        pool_id = _path_segment(self.pool_id, "container.pool.pool_id")
+        backend_base = _normalize_backend_base_url(
+            self.backend_base_url or _backend_base_url_from_env() or "https://api.usesynth.ai"
+        )
+        if self.task_id:
+            task_id = _path_segment(self.task_id, "container.pool.task_id")
+            return f"{backend_base}/v1/pools/{pool_id}/tasks/{task_id}/container"
+        return f"{backend_base}/v1/pools/{pool_id}/container"
 
 
 class RunSettingsTomlSection(BaseModel):
@@ -432,6 +478,8 @@ class GepaTomlDocument(BaseModel):
     def to_config(self, source_path: Path) -> "GepaConfig":
         return GepaConfig(
             container=self.container.to_connection(),
+            container_headers=dict(self.container.headers),
+            container_auth_bearer_env=self.container.resolved_auth_bearer_env(),
             taskset=self.taskset.to_domain(),
             run=self.run.to_domain(),
             objectives=self.gepa.objective_config(),
@@ -1039,6 +1087,8 @@ class GepaConfig:
     container: ContainerConnection
     taskset: TasksetSelection
     task_pools: GepaTaskPools
+    container_headers: dict[str, str] = field(default_factory=dict)
+    container_auth_bearer_env: str | None = None
     run: RunSettings = field(default_factory=RunSettings)
     program: PromptProgram | None = None
     objectives: ObjectiveConfig | None = None
@@ -1079,7 +1129,12 @@ class GepaConfig:
     def to_toml_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {}
         payload["run"] = self.run.to_toml()
-        payload["container"] = {"url": self.container.url.rstrip("/")}
+        container_payload: dict[str, Any] = {"url": self.container.url.rstrip("/")}
+        if self.container_headers:
+            container_payload["headers"] = dict(self.container_headers)
+        if self.container_auth_bearer_env is not None:
+            container_payload["auth_bearer_env"] = self.container_auth_bearer_env
+        payload["container"] = container_payload
         payload["taskset"] = self.taskset.to_toml()
         if self.target_modules is not None:
             payload["candidate"] = {"target_modules": list(self.target_modules)}
@@ -1127,7 +1182,12 @@ class GepaConfig:
 
     def _preflight_container_capabilities(self) -> None:
         metadata = ContainerMetadataPayload.model_validate(
-            _http_json(self.container.url, "/metadata")
+            _http_json(
+                self.container.url,
+                "/metadata",
+                headers=self.container_headers,
+                auth_bearer_env=self.container_auth_bearer_env,
+            )
         )
         if self.policy is None and not metadata.capabilities.metadata.policy_ready:
             raise ValueError(
@@ -1135,7 +1195,14 @@ class GepaConfig:
                 "metadata.capabilities.metadata.policy_ready"
             )
         if self.program is None:
-            ProgramPayload.model_validate(_http_json(self.container.url, "/program"))
+            ProgramPayload.model_validate(
+                _http_json(
+                    self.container.url,
+                    "/program",
+                    headers=self.container_headers,
+                    auth_bearer_env=self.container_auth_bearer_env,
+                )
+            )
 
 
 class GepaRun:
@@ -1151,7 +1218,14 @@ class GepaRun:
         return self.config.execute()
 
 
-def _http_json(base_url: str, path: str, *, timeout_seconds: float = 10.0) -> dict[str, Any]:
+def _http_json(
+    base_url: str,
+    path: str,
+    *,
+    timeout_seconds: float = 10.0,
+    headers: Mapping[str, str] | None = None,
+    auth_bearer_env: str | None = None,
+) -> dict[str, Any]:
     parsed = urlparse(base_url.rstrip("/"))
     if parsed.scheme not in {"http", "https"}:
         raise ValueError(f"unsupported container URL scheme: {parsed.scheme!r}")
@@ -1162,7 +1236,11 @@ def _http_json(base_url: str, path: str, *, timeout_seconds: float = 10.0) -> di
     if parsed.path and parsed.path != "/":
         request_path = f"{parsed.path.rstrip('/')}{path}"
     with closing(connection_cls(parsed.netloc, timeout=timeout_seconds)) as connection:
-        connection.request("GET", request_path)
+        connection.request(
+            "GET",
+            request_path,
+            headers=_http_headers(headers or {}, auth_bearer_env),
+        )
         response = connection.getresponse()
         body = response.read()
     if response.status >= 400:
@@ -1171,6 +1249,58 @@ def _http_json(base_url: str, path: str, *, timeout_seconds: float = 10.0) -> di
     if not isinstance(payload, dict):
         raise ValueError(f"container GET {path} did not return a JSON object")
     return payload
+
+
+def _http_headers(headers: Mapping[str, str], auth_bearer_env: str | None) -> dict[str, str]:
+    resolved = dict(headers)
+    if auth_bearer_env and not _has_authorization_header(resolved):
+        resolved["authorization"] = _bearer_header_from_env(auth_bearer_env)
+    return resolved
+
+
+def _has_authorization_header(headers: Mapping[str, str]) -> bool:
+    return any(name.strip().lower() == "authorization" for name in headers)
+
+
+def _bearer_header_from_env(env_name: str) -> str:
+    token = os.getenv(env_name, "").strip()
+    if not token:
+        raise ValueError(f"container auth references missing environment variable {env_name!r}")
+    return f"Bearer {token}"
+
+
+def _backend_base_url_from_env() -> str | None:
+    for name in (
+        "SYNTH_BACKEND_URL_OVERRIDE",
+        "SYNTH_BACKEND_URL",
+        "SYNTH_API_URL",
+        "DEV_SYNTH_BACKEND_URL",
+        "DEV_BACKEND_URL",
+        "PROD_SYNTH_BACKEND_URL",
+        "PROD_BACKEND_URL",
+        "BACKEND_URL",
+    ):
+        value = os.getenv(name, "").strip()
+        if value:
+            return value
+    return None
+
+
+def _normalize_backend_base_url(url: str) -> str:
+    base = url.strip().rstrip("/")
+    for suffix in ("/v1", "/api"):
+        if base.endswith(suffix):
+            return base[: -len(suffix)]
+    return base
+
+
+def _path_segment(value: str, field: str) -> str:
+    segment = value.strip()
+    if not segment:
+        raise ValueError(f"{field} is required")
+    if any(char in segment for char in "/?#"):
+        raise ValueError(f"{field} must be a single URL path segment")
+    return segment
 
 
 def _drop_none(payload: dict[str, Any]) -> dict[str, Any]:

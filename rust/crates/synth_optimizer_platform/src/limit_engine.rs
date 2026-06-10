@@ -193,7 +193,13 @@ impl LimitEngine {
                 .filter(|event| event.limit_id == definition.limit_id)
                 .cloned()
                 .collect::<Vec<_>>();
-            let forecast = forecast_limit(&definition, current.0, remaining, &event_series, &generated_at);
+            let forecast = forecast_limit(
+                &definition,
+                current.0,
+                remaining,
+                &event_series,
+                &generated_at,
+            );
             statuses.push(LimitStatus {
                 definition,
                 spent: current.0,
@@ -205,7 +211,12 @@ impl LimitEngine {
         }
         let nearest_limit = statuses
             .iter()
-            .filter_map(|status| status.forecast.seconds_to_limit.map(|seconds| (seconds, &status.forecast)))
+            .filter_map(|status| {
+                status
+                    .forecast
+                    .seconds_to_limit
+                    .map(|seconds| (seconds, &status.forecast))
+            })
             .min_by(|left, right| left.0.partial_cmp(&right.0).unwrap_or(Ordering::Equal))
             .map(|(_, forecast)| forecast.clone());
         LimitSnapshot {
@@ -399,7 +410,11 @@ fn append_commit_observations(
     observations: &mut Vec<LimitObservation>,
 ) {
     let mut sorted = commits.to_vec();
-    sorted.sort_by(|left, right| left.committed_at.cmp(&right.committed_at).then_with(|| left.budget_commit_id.cmp(&right.budget_commit_id)));
+    sorted.sort_by(|left, right| {
+        left.committed_at
+            .cmp(&right.committed_at)
+            .then_with(|| left.budget_commit_id.cmp(&right.budget_commit_id))
+    });
     let mut cost_usd = 0.0;
     let mut prompt_tokens = 0.0;
     let mut completion_tokens = 0.0;
@@ -486,17 +501,27 @@ fn append_timing_observations(
         return;
     };
     let mut sorted = timings.to_vec();
-    sorted.sort_by(|left, right| left.started_at.cmp(&right.started_at).then_with(|| left.timing_id.cmp(&right.timing_id)));
+    sorted.sort_by(|left, right| {
+        left.started_at
+            .cmp(&right.started_at)
+            .then_with(|| left.timing_id.cmp(&right.timing_id))
+    });
     let mut wall_seconds = 0.0;
     for timing in sorted {
-        let Some(seconds) = timing.wall_seconds.filter(|value| value.is_finite() && *value > 0.0) else {
+        let Some(seconds) = timing
+            .wall_seconds
+            .filter(|value| value.is_finite() && *value > 0.0)
+        else {
             continue;
         };
         wall_seconds += seconds;
         observations.push(LimitObservation {
             run_id: run_id.to_string(),
             limit_id: definition.limit_id.clone(),
-            timestamp: timing.finished_at.clone().unwrap_or(timing.recorded_at.clone()),
+            timestamp: timing
+                .finished_at
+                .clone()
+                .unwrap_or(timing.recorded_at.clone()),
             spent: wall_seconds,
             reserved: 0.0,
             source_kind: "run_phase_timing".to_string(),
@@ -556,7 +581,10 @@ fn progress_events(
             source_kind: observation.source_kind.clone(),
             source_id: observation.source_id.clone(),
         };
-        previous.insert(observation.limit_id.clone(), (observation.spent, observation.reserved));
+        previous.insert(
+            observation.limit_id.clone(),
+            (observation.spent, observation.reserved),
+        );
         events.push(event);
     }
     events
@@ -717,7 +745,11 @@ fn forecast_rate(rates: &[f64]) -> (String, Option<f64>, ForecastConfidence) {
     };
     let last = rates.last().copied().unwrap_or(mean);
     let predicted = (mean + phi * (last - mean)).max(0.0);
-    let rate = if predicted > 0.0 { predicted } else { ewma(rates, 0.35) };
+    let rate = if predicted > 0.0 {
+        predicted
+    } else {
+        ewma(rates, 0.35)
+    };
     let confidence = if rates.len() >= 8 {
         ForecastConfidence::High
     } else {

@@ -5,6 +5,8 @@ Every command is a subcommand of `synth-optimizers`; GEPA lives under `gepa`.
 
 ```bash
 synth-optimizers gepa run --config gepa.toml
+synth-optimizers gepa submit --config gepa.toml --tunnel-url http://127.0.0.1:8765 --follow
+synth-optimizers gepa watch gepa_...
 synth-optimizers gepa service --db service.sqlite
 synth-optimizers gepa board ~/.gepa/runs --serve
 synth-optimizers events compare --left a.jsonl --right b.jsonl
@@ -31,6 +33,56 @@ synth-optimizers gepa run --config gepa.toml
 
 Set `SYNTH_OPTIMIZERS_TERMINAL=1` for a live token/cost split in the terminal while the
 run progresses.
+
+## `gepa submit`
+
+Submit a hosted GEPA job through the Synth API (`SYNTH_API_KEY`).
+
+```bash
+export SYNTH_API_KEY="..."
+synth-optimizers gepa submit \
+  --config gepa.toml \
+  --tunnel-url http://127.0.0.1:8765 \
+  --follow
+```
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--config` | required | GEPA run config TOML. |
+| `--base-url` | `SYNTH_BACKEND_URL` or `https://api.usesynth.ai` | Synth API base. |
+| `--api-key-env` | `SYNTH_API_KEY` | Env var holding the API key. |
+| `--run-id` | auto | Optional client run id hint. |
+| `--idempotency-key` | — | Idempotent resubmit. |
+| `--project-id` | — | Optional project scope. |
+| `--tunnel-url` | — | Open a SynthTunnel lease to a local container before submit. Mutually exclusive with pool. |
+| `--container-pool` | — | Hosted pool id. Mutually exclusive with tunnel. |
+| `--container-task-id` | — | Optional task id for `--container-pool`. |
+| `--timeout-seconds` | `120` | HTTP client timeout. |
+| `--follow` | off | Stream `/events` until terminal status. |
+| `--json` | off | Print submit/terminal JSON. |
+
+Uses `HostedOptimizerClient.submit_gepa_toml()`.
+
+## `gepa watch`
+
+Watch a hosted GEPA run through the public run/status and lifecycle event routes.
+
+```bash
+synth-optimizers gepa watch gepa_... --events
+```
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `RUN_ID` | required | Hosted GEPA run id. |
+| `--base-url` | `SYNTH_BACKEND_URL` or `https://api.usesynth.ai` | Synth API base. |
+| `--api-key-env` | `SYNTH_API_KEY` | Env var holding the API key. |
+| `--timeout-seconds` | `120` | HTTP client timeout. |
+| `--events` | off | Tail lifecycle SSE after the first run snapshot. |
+| `--poll-seconds` | `2` | Poll interval when not tailing SSE. |
+| `--once` | off | Print one run snapshot and exit. |
+| `--json` | off | Print newline-delimited JSON records. |
+
+Uses `HostedOptimizerClient.get_run()` and `events()`.
 
 ## `gepa service`
 

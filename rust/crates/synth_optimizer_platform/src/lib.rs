@@ -1,4 +1,5 @@
 pub mod agent_runtime;
+pub mod artifact_store;
 pub mod artifacts;
 pub mod cache;
 pub mod candidates;
@@ -38,10 +39,12 @@ pub mod workspace;
 
 pub use agent_runtime::{
     ensure_turn_completed, extract_thread_id, prepare_proposer_codex_launch, run_turn,
-    usage_from_message, usage_from_messages, AgentRuntimeSubstrate, AgentTurnOutcome,
-    CodexAppServerClient, CodexAppServerLaunch, CodexAppServerProcessLaunch, CodexTurnRequest,
-    ExecutionSubstrate, ProposerCodexLaunch, SupervisorReceipt,
+    sandbox_policy_for_mode, text_turn_input, usage_from_message, usage_from_messages,
+    AgentRuntimeSubstrate, AgentTurnOutcome, CodexAppServerClient, CodexAppServerLaunch,
+    CodexAppServerProcessLaunch, CodexTurnRequest, ExecutionSubstrate, ProposerCodexLaunch,
+    ResolvedRoleAgentConfig, RoleAgentConfig, RoleAgentTurnRequestInput, SupervisorReceipt,
 };
+pub use artifact_store::{LocalDevStore, RunArtifactStore, StoredRunArtifact};
 pub use artifacts::{ArtifactPaths, ArtifactRef, GepaRunResult};
 pub use cache::{
     normalize_for_cache_profile, stable_json_hash, CacheAccessRecord, CacheEntry, CacheMode,
@@ -57,10 +60,11 @@ pub use config::{
     proposer_auth_mode_normalized, proposer_uses_chatgpt_auth, resolve_chatgpt_codex_home_source,
     resolve_proposer_auth_launch_mode, validate_chatgpt_proposer_config,
     validate_chatgpt_proposer_model, CacheConfig, CandidateConfig, ContainerConfig,
-    GepaAdaptiveRolloutConcurrencyConfig, GepaAdaptiveStageWorkersConfig, GepaBatchSamplerConfig,
-    GepaCandidateSelectorConfig, GepaConfig, GepaObjectiveAcceptanceConfig, GepaPipelineConfig,
-    GepaPipelineMode, GepaPipelineWorkers, GepaSpeculativeCompletionConfig, GepaStalenessPolicy,
-    GepaTaskPoolsConfig, PolicyConfig, ProposerAuthLaunchMode, ProposerConfig,
+    ContainerPoolTargetConfig, GepaAdaptiveRolloutConcurrencyConfig,
+    GepaAdaptiveStageWorkersConfig, GepaBatchSamplerConfig, GepaCandidateSelectorConfig,
+    GepaConfig, GepaObjectiveAcceptanceConfig, GepaPipelineConfig, GepaPipelineMode,
+    GepaPipelineWorkers, GepaSpeculativeCompletionConfig, GepaStalenessPolicy, GepaTaskPoolsConfig,
+    PolicyConfig, ProposerAuthLaunchMode, ProposerConfig, ProposerDaytonaConfig,
     ProposerDockerConfig, ProposerPromptConfig, RunConfig, SynthOptimizerConfig, TasksetConfig,
     CHATGPT_PROPOSER_MODELS,
 };
@@ -105,8 +109,7 @@ pub use levers::{LeverBundle, LeverKind, LeverManifest, LeverSpec};
 pub use limit_engine::{
     budget_limit_engine_input, budget_limit_snapshot, ForecastConfidence, LimitDefinition,
     LimitEngine, LimitEngineInput, LimitForecast, LimitKind, LimitObservation, LimitProgressEvent,
-    LimitSnapshot, LimitStatus,
-    LIMIT_ENGINE_SCHEMA_VERSION,
+    LimitSnapshot, LimitStatus, LIMIT_ENGINE_SCHEMA_VERSION,
 };
 pub use limits::{
     BudgetCommitInput, BudgetCommitRecord, BudgetLedgerSnapshot, BudgetLedgerTotals,
@@ -149,8 +152,9 @@ pub use storage_maintenance::{
 };
 pub use usage::{UsageLedgerInput, UsageLedgerRecord};
 pub use workspace::{
-    workspace_status, WorkspaceEntityCounts, WorkspaceRunRequestStatus, WorkspaceRunStatus,
-    WorkspaceStateTransitionStatus, WorkspaceStatus, WorkspaceStore, WorkspaceView,
+    workspace_status, OptimizationRunStartedInput, WorkspaceEntityCounts,
+    WorkspaceRunRequestStatus, WorkspaceRunStatus, WorkspaceStateTransitionStatus, WorkspaceStatus,
+    WorkspaceStore, WorkspaceView,
 };
 
 pub const GEPA_OPTIMIZER_CONTRACT_VERSION: &str = "synth_optimizers.gepa.v2";

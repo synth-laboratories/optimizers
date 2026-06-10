@@ -4,6 +4,9 @@ The HTTP service (`gepa_serve`) is the public surface. Raw worker/workspace
 PyO3 exports were demoted in the v2 service rebuild and are no longer importable.
 """
 
+import importlib
+from typing import Any
+
 from ._synth_optimizers import (
     BudgetExceededError,
     CacheCorruptError,
@@ -32,26 +35,41 @@ from ._synth_optimizers import (
     gepa_delete_run_storage,
     gepa_serve,
 )
-from .gepa import (
-    BudgetConfig,
-    CacheConfig,
-    GepaBudgetConfig,
-    GepaConfig,
-    GepaDefaults,
-    GepaPipeline,
-    GepaPipelineMode,
-    GepaRun,
-    GepaStalenessPolicy,
-    GepaTaskPools,
-    ObjectiveConfig,
-    OutputConfig,
-    PolicyConfig,
-    PolicyType,
-    ProposerDefaults,
-    ProposerConfig,
-    ProposerPromptConfig,
-    RunSettings,
-    TasksetSelection,
+from .gelo import (
+    GeloCacheMode,
+    GeloCacheSection,
+    GeloCheckpointSemantics,
+    GeloContainerSection,
+    GeloDiskBudgetSection,
+    GeloEngineSection,
+    GeloHostedConfig,
+    GeloMaterializeError,
+    GeloMaterializer,
+    GeloPolicySection,
+    GeloPreset,
+    GeloPresetName,
+    GeloProposerRole,
+    GeloProposerSection,
+    GeloRewardMode,
+    GeloRunSection,
+    GeloSeedCandidateSection,
+    GeloTasksetSection,
+)
+from .hosted import (
+    AlgorithmCatalogEntry,
+    AlgorithmCatalogStatus,
+    ContainerDirectTarget,
+    ContainerPoolTarget,
+    ContainerTargetKind,
+    HostedOptimizerClient,
+    HostedOptimizerError,
+    OptimizerBillingFeatureConfig,
+    OptimizerAlgorithmSlug,
+    OptimizerRunRecord,
+    OptimizerRunSubmitResponse,
+    OptimizerStartupCatalog,
+    RunStatus as HostedRunStatus,
+    SynthTunnelLease,
 )
 from .o11y import (
     LiveProgress,
@@ -64,6 +82,44 @@ from .o11y import (
     project_run_events,
 )
 from .sdk import OptimizerConfig, OptimizerRun
+
+_GEPA_EXPORTS = {
+    "BudgetConfig",
+    "CacheConfig",
+    "GepaBudgetConfig",
+    "GepaConfig",
+    "GepaDefaults",
+    "GepaPipeline",
+    "GepaPipelineMode",
+    "GepaRun",
+    "GepaStalenessPolicy",
+    "GepaTaskPools",
+    "ObjectiveConfig",
+    "OutputConfig",
+    "PolicyConfig",
+    "PolicyType",
+    "ProposerConfig",
+    "ProposerDefaults",
+    "ProposerPromptConfig",
+    "RunSettings",
+    "TasksetSelection",
+}
+
+
+def __getattr__(name: str) -> Any:
+    if name not in _GEPA_EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    try:
+        gepa_module = importlib.import_module(".gepa", __name__)
+    except ImportError as exc:
+        raise ImportError(
+            f"synth_optimizers.{name} requires the local GEPA runtime dependencies; "
+            "install the package with the matching synth-containers version"
+        ) from exc
+    value = getattr(gepa_module, name)
+    globals()[name] = value
+    return value
+
 
 __all__ = [
     "BudgetExceededError",
@@ -85,11 +141,42 @@ __all__ = [
     "GepaRunResult",
     "GepaStalenessPolicy",
     "GepaTaskPools",
+    "GeloCacheMode",
+    "GeloCacheSection",
+    "GeloCheckpointSemantics",
+    "GeloContainerSection",
+    "GeloDiskBudgetSection",
+    "GeloEngineSection",
+    "GeloHostedConfig",
+    "GeloMaterializeError",
+    "GeloMaterializer",
+    "GeloPolicySection",
+    "GeloPreset",
+    "GeloPresetName",
+    "GeloProposerRole",
+    "GeloProposerSection",
+    "GeloRewardMode",
+    "GeloRunSection",
+    "GeloSeedCandidateSection",
+    "GeloTasksetSection",
+    "AlgorithmCatalogEntry",
+    "AlgorithmCatalogStatus",
+    "ContainerDirectTarget",
+    "ContainerPoolTarget",
+    "ContainerTargetKind",
+    "HostedOptimizerClient",
+    "HostedOptimizerError",
+    "HostedRunStatus",
     "InvariantError",
     "LiveProgress",
     "ObjectiveConfig",
     "OptimizerConfig",
+    "OptimizerAlgorithmSlug",
+    "OptimizerBillingFeatureConfig",
     "OptimizerRun",
+    "OptimizerRunRecord",
+    "OptimizerRunSubmitResponse",
+    "OptimizerStartupCatalog",
     "OptimizerDiskBudgetError",
     "OptimizerHttpError",
     "OptimizerIoError",
@@ -112,6 +199,7 @@ __all__ = [
     "RunStatus",
     "RunUsage",
     "StateTransitionError",
+    "SynthTunnelLease",
     "SynthOptimizerError",
     "TasksetSelection",
     "project_run_events",

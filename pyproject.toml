@@ -1,6 +1,6 @@
 [project]
 name = "synth-optimizers"
-version = "0.2.1.dev202606041907"
+version = "0.2.1.dev202606092146"
 description = "Public Synth optimizer tooling with a Rust GEPA core."
 authors = [{name = "Synth Laboratories", email = "josh@usesynth.ai"}]
 readme = "README.md"
@@ -12,6 +12,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+banking77 = [
+    "datasets>=2.19.0",
+    "openai>=1.0.0",
+]
 dev = [
     "maturin>=1.7.0",
     "ruff>=0.6.0",

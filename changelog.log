@@ -1,5 +1,9 @@
 # synth-optimizers changelog
 
+## 2026-06-10b
+
+* Fixed managed tunnel providers for current binaries (ngrok v3, cloudflared 2025.11): ngrok now sets the inspection address via `agent.web_addr` config instead of the removed `--web-addr` flag and forwards a host:port target; cloudflared now passes the tunnel token via `--token-file` (a bare `--token -` was taken as the literal token, not stdin). Verified ngrok end-to-end (lease -> public URL -> proxy -> cleanup). Bumped to `0.2.2.20260610`.
+
 ## 2026-06-10
 
 * Added privacy-first optimizer usage registration on hosted submit/local GEPA start; no prompts, config, code, artifacts, repo paths, or run ids are sent.

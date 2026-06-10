@@ -1,5 +1,9 @@
 # synth-optimizers changelog
 
+## 2026-06-10c
+
+* Hardened cloudflared tunnel readiness and cleanup: wait for public DNS before first hostname fetch, send a stable SDK User-Agent through readiness/container config to avoid Cloudflare 1010, and fix slotted-dataclass cleanup so failed readiness releases leases. Bumped to `0.2.3.20260610`.
+
 ## 2026-06-10b
 
 * Fixed managed tunnel providers for current binaries (ngrok v3, cloudflared 2025.11): ngrok now sets the inspection address via `agent.web_addr` config instead of the removed `--web-addr` flag and forwards a host:port target; cloudflared now passes the tunnel token via `--token-file` (a bare `--token -` was taken as the literal token, not stdin). Verified ngrok end-to-end (lease -> public URL -> proxy -> cleanup). Bumped to `0.2.2.20260610`.

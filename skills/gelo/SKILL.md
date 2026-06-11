@@ -336,6 +336,20 @@ synth-optimizers gelo submit --preset crafter_smoke --tunnel-url http://127.0.0.
 
 Public walkthrough: `https://github.com/synth-laboratories/cookbooks/tree/main/code/training/prompt_learning/gelo`.
 
+## Launch promo
+
+The GELO launch promo gives the **first 20 organizations** a **$500** hosted Go-Ex
+proposer-spend grant, valid **14 days** from claim. Hosted `go-ex` submits auto-claim
+when slots remain; the five paid proposer roles must use GPT-family models
+(`theme_verifier_agent` / `terminator_agent` are exempt). One run in `queued`/`running`
+at a time per org while on the promo. Not covered: in-container policy LLM calls and
+the Managed Research $500 credit (separate offer).
+
+Check slots before promising a customer run:
+`GET /api/v1/optimizers/gelo-launch-promo/status` (claim: `POST .../claim`).
+Full terms: the hosted docs page (`synth-optimizers gelo console` -> hosted) and the
+public cookbook walkthrough above.
+
 **Container URL reachability:** the optimizers-beta worker must reach the container
 (from Railway: use SynthTunnel or hosted pool — not `127.0.0.1` on the user's laptop
 unless tunneled).

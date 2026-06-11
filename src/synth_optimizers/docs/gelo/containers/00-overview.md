@@ -8,18 +8,22 @@ embed your environment.
 
 | Tier | What you get | GELO algorithm use |
 |------|--------------|-------------------|
-| **A** | `POST /rollout` only | Smoke / measurement; **not** full flywheel |
-| **B** | + `POST /rollout/checkpoint` (async) | Intermittent checkpoint mining |
-| **C** | + `GET /rollout/{id}`, resume, `scheduled_checkpoints` | **Full** Tier B/C algorithm path |
+| **A** | `/health`, `POST /rollout`, `GET /rollouts/{id}`, `GET /rollouts/{id}/state` | Fresh scoring and smoke measurement; **not** full flywheel |
+| **B** | + `checkpoint_schedule`, terminal `scheduled_checkpoints`, `POST /rollouts/{id}/checkpoints`, `POST /rollouts/{parent}/resume`, `POST /rollouts/{id}/terminate` | Checkpoint manufacture and resume branches |
+| **C** | + `/metadata`, `/task_info`, `/program`, `/compatibility`, task catalog | **Full** hosted GELO algorithm path |
 
 Blog and hosted product claims for "Go-Explore in prompt space" assume **Tier C** on at least
 one reference env (e.g. Crafter).
+
+Public sharing note: this docs bundle intentionally does not include private Crafter source.
+Use a public Tier C container implementation or a documented SynthTunnel target before
+publishing a runnable Crafter walkthrough.
 
 ## Reference implementations
 
 | Env | Notes |
 |-----|--------|
-| Crafter | Primary hosted E2E reference; Rust chart path for Tier C |
+| Crafter | Primary hosted E2E reference; public source/publish path must be confirmed before sharing |
 | NetHack | Validity cohort; `acceptance.rs` scoring bug is P0 before trust |
 | VendingBench | Application lane; separate publish bar |
 | Harvey-LAB | Application lane |

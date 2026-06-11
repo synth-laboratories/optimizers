@@ -143,7 +143,7 @@ terminal snapshot (VendingBench fix pattern in `react_loop.py`).
 
 Reference implementations:
 
-- Crafter: `synth-cookbooks-private/containers/crafter/synth_service_app.py` (`_llm_react_rollout`, ~per_llm_call block)
+- Crafter: `src/synth_optimizers/docs/gelo/containers/00-overview.md` (per-LLM checkpoint contract; no private repo dependency)
 - VendingBench: `optimizers-beta/evals/vending_bench/agent/react_loop.py`
 - Vending store: `optimizers-beta/evals/vending_bench/service/checkpoints.py`
 
@@ -333,6 +333,8 @@ with client.open_synth_tunnel("http://127.0.0.1:8943") as tunnel:
 ```bash
 synth-optimizers gelo submit --preset crafter_smoke --tunnel-url http://127.0.0.1:8943 --follow
 ```
+
+Public walkthrough: `https://github.com/synth-laboratories/cookbooks/tree/main/code/training/prompt_learning/gelo`.
 
 **Container URL reachability:** the optimizers-beta worker must reach the container
 (from Railway: use SynthTunnel or hosted pool — not `127.0.0.1` on the user's laptop

@@ -17,10 +17,28 @@ Durable status, events, and artifacts land in backend PG/Redis/S3 (see storage s
 [container contract](#/containers/contract)). **Env checkpoint blobs for resume stay in your
 container** — hosted storage does not replace them.
 
+## Launch promo
+
+The GELO launch promo gives the first 20 organizations a `$500` hosted Go-Ex proposer
+spend grant, valid for 14 days after claim. Hosted `go-ex` submits auto-claim the grant
+when slots remain, attach the Autumn product `gelo_launch_promo`, and preflight at least
+`$1` of `optimizer_go_ex_llm_spend` headroom before the run is queued. In-container policy
+LLM calls are still owned by the task container.
+
+The promo grant is reused for repeat submits from the same organization. Each organization
+may have one hosted GELO run in `queued` or `running` status at once while using the promo.
+
+Promo submits require GPT models for the five paid proposer roles:
+`core_proposer`, `aux_hill_climb_proposer`, `aux_data_miner_proposer`,
+`aux_consolidate_proposer`, and `aux_consolidate_hill_climb_proposer`.
+`theme_verifier_agent` and `terminator_agent` are intentionally exempt.
+
 ## Public API routes
 
 | Route | GELO use |
 |-------|----------|
+| `GET /api/v1/optimizers/gelo-launch-promo/status` | Slots, grant status, expiry, and headroom snapshot |
+| `POST /api/v1/optimizers/gelo-launch-promo/claim` | Explicit promo claim; first submit also auto-claims |
 | `GET /api/v1/optimizers/startup` | `go-ex` available + submit_supported |
 | `POST /api/v1/optimizers/runs` | Submit job |
 | `GET .../runs/{id}` | Status, `finalize_state`, result |

@@ -10,19 +10,23 @@ Normative requirements for GELO-compatible task containers. Consolidates the age
 | Method | Path | Purpose |
 |--------|------|---------|
 | `GET` | `/health` | Liveness before submit |
-| `POST` | `/rollout` | Synchronous rollout; returns terminal `RolloutRecord` |
+| `POST` | `/rollout` | Start a rollout; sync callers may receive a terminal record, async callers receive a stable `rollout_id` |
+| `GET` | `/rollouts/{rollout_id}/state` | Lightweight status poll while the rollout is running |
+| `GET` | `/rollouts/{rollout_id}` | Full rollout record; terminal body must be a parseable `RolloutRecord` |
 
 ### Tier B+
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `POST` | `/rollout/checkpoint` | Start async rollout with checkpoint schedule |
-| `GET` | `/rollout/{rollout_id}` | Poll status; terminal body is full `RolloutRecord` |
+| `POST` | `/rollouts/{rollout_id}/checkpoints` | Create an explicit branch checkpoint after a rollout |
+| `POST` | `/rollouts/{parent_rollout_id}/resume` | Start a child rollout from a parent checkpoint |
+| `POST` | `/rollouts/{rollout_id}/terminate` | Request cancellation for a running rollout |
 
-Resume and checkpoint bytes are env-specific — often `POST /rollout/resume` or embedded in
-checkpoint payloads. Document your env's resume entrypoint in container metadata.
+Tier C containers also expose capability metadata used by hosted gating and docs:
+`GET /metadata`, `GET /task_info`, `GET /program`, `GET /compatibility?target=go_ex`,
+and a task catalog or taskset endpoint.
 
-## `scheduled_checkpoints` (per-LLM-call)
+## `checkpoint_schedule` request and `scheduled_checkpoints` terminal data
 
 Tier C containers should emit checkpoints on a **per-LLM-call** cadence (or equivalent
 decision-point schedule), not only episode end.
@@ -31,7 +35,8 @@ Wire shape (in rollout request / config):
 
 ```json
 {
-  "scheduled_checkpoints": {
+  "submission_mode": "async",
+  "checkpoint_schedule": {
     "mode": "per_llm_call",
     "max_checkpoints": 64,
     "include_prompt_snapshot": true
@@ -41,28 +46,45 @@ Wire shape (in rollout request / config):
 
 **Lifecycle:**
 
-1. `POST /rollout/checkpoint` returns `rollout_id` immediately (`status: running`).
-2. Worker polls `GET /rollout/{id}` until `status` is terminal (`completed` | `failed` | `cancelled`).
-3. Terminal JSON must parse as `RolloutRecord` with `checkpoints[]` populated when mining is on.
+1. `POST /rollout` returns `rollout_id` immediately (`status: running`) when
+   `submission_mode` is `async`.
+2. The container runs the policy loop in the background and snapshots true env state after
+   policy LLM calls.
+3. Worker polls `GET /rollouts/{id}/state` until `status` is terminal
+   (`completed` | `failed` | `cancelled`).
+4. Worker fetches `GET /rollouts/{id}` for the full terminal record. Hosted GELO must not
+   score a degraded `/state` payload as a successful terminal rollout.
+5. Terminal JSON must parse as `RolloutRecord` with `scheduled_checkpoints[]` populated
+   when `checkpoint_schedule.mode = "per_llm_call"`.
 
 Each checkpoint entry should carry enough state to **resume** from that decision point
 (observation, action history, RNG seed, env-specific snapshot bytes).
 
 ## Rollout record
 
-Terminal response (sync `/rollout` or async poll) must include:
+Terminal response (sync `/rollout` or async terminal fetch) must include:
 
 | Field | Required | Notes |
 |-------|----------|-------|
 | `status` | yes | `completed` / `failed` / … |
-| `reward` / `score` | yes | Env-native scalar for hill-climb |
-| `achievement` | yes | Ladder step for taskset targets |
-| `trajectory` or `events` | Tier B+ | For theme labeling |
-| `checkpoints` | Tier B+ | Ordered; stable ids |
-| `metadata` | recommended | `env`, `seed`, `policy_model`, compatibility tags |
+| `rollout_id` | yes | Stable id used by `/state`, terminal fetch, checkpoints, and resume |
+| `outcome_reward` or nested `reward_info.outcome_reward` / `summary.outcome_reward` | yes | Numeric terminal score for hill-climb |
+| `summary`, `usage`, `turns`, `events` | yes | Use `{}` or `[]`; do not emit JSON `null` |
+| `scheduled_checkpoints` | Tier B+ when requested | Non-null array for `checkpoint_schedule.mode = "per_llm_call"` |
+| `final_achievements` | Tier B+ when requested | Terminal milestone labels |
+| `metadata` | yes | Use `{}` not JSON `null`; include `env`, `seed`, `policy_model`, compatibility tags when available |
 
 **Parse rules:** Hosted worker must not treat HTTP 200 with malformed JSON as success. Failed
 rollouts must not be scored as successes (NetHack `acceptance.rs` bug is a counterexample).
+
+Per checkpoint entry, include:
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `checkpoint_id` | yes | Stable id resolvable by `POST /rollouts/{parent}/resume` |
+| `policy_llm_call_index` | yes | Consistent policy-turn index |
+| `reward` | yes | Numeric progress signal at that decision point |
+| `achievements` | yes | Array of milestone ids unlocked so far; may be empty |
 
 ## Resume / true snapshot
 
@@ -71,6 +93,10 @@ rollouts must not be scored as successes (NetHack `acceptance.rs` bug is a count
 - "True snapshot" means bytes the env can reload — not just a prompt string.
 - Optimizer may request partial rollouts from checkpoint mid-trajectory; env must support
   truncated horizons and consistent scoring.
+- Resume route is `POST /rollouts/{parent_rollout_id}/resume`; the request carries the
+  `checkpoint_id` and candidate policy. It returns a new child `rollout_id`.
+- Resume children should not re-emit per-LLM-call schedules unless explicitly requested for a
+  new full-lane child.
 
 ## Three-layer storage
 
@@ -87,8 +113,9 @@ Retention: cap checkpoint count per rollout (`max_checkpoints`); prune old runs 
 
 ## Achievement ladder
 
-Tasksets reference `target_achievement` steps. Container must report `achievement` consistently
-across train and heldout seeds. Heldout seeds are **measurement only** — not used for search.
+Tasksets reference `target_achievement` steps. Container must report
+`scheduled_checkpoints[].achievements` and `final_achievements` consistently across train and
+heldout seeds. Heldout seeds are **measurement only** — not used for search.
 
 ## Dispatch kinds
 
@@ -104,9 +131,10 @@ prompt from the request without mixing in optimizer-internal system text.
 
 Expose in `/health` or rollout metadata:
 
-- `gepa_geolo_compat` / tier self-report
+- `gelo_compat` / tier self-report
 - env name, version, max horizon
-- supported `scheduled_checkpoints.mode` values
+- supported `checkpoint_schedule.mode` values
+- `GET /compatibility?target=go_ex` with `supported: true` for Tier B/C containers
 
 Hosted worker uses this for capability gating.
 
@@ -121,12 +149,16 @@ Hosted worker uses this for capability gating.
 
 - [ ] `GET /health` 200 before job submit
 - [ ] Tier declared (A/B/C) matches implemented routes
-- [ ] `scheduled_checkpoints` honored for Tier C
+- [ ] `POST /rollout`, `GET /rollouts/{id}/state`, and `GET /rollouts/{id}` agree on terminal status and reward
+- [ ] `checkpoint_schedule: {"mode": "per_llm_call"}` honored for Tier C
+- [ ] Terminal record includes non-null `scheduled_checkpoints`
+- [ ] `POST /rollouts/{id}/checkpoints` and `POST /rollouts/{parent}/resume` work without fallback to fresh rollout
 - [ ] Terminal `RolloutRecord` schema validated
 - [ ] Failed rollouts score as failures
 - [ ] Resume from checkpoint reproduces state (smoke test)
 - [ ] `react_system_prompt` overlay applied correctly
 - [ ] Achievement ladder consistent on train + heldout
+- [ ] `GET /compatibility?target=go_ex` reports the implemented tier and resume support
 - [ ] SynthTunnel E2E with hosted submit (local dev)
 - [ ] Evidence artifact: sample `checkpoint_frontier` row with real checkpoint ids
 

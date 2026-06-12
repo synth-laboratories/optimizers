@@ -159,9 +159,9 @@ impl ContainerClient {
                 OptimizerError::Container(
                     "resume_rollout requires concrete request.rollout_id or trace_correlation_id for target_rollout_id".to_string(),
                 )
-            })?;
+        })?;
         self.post(
-            &format!("/rollouts/{parent_rollout_id}/resume"),
+            &format!("/rollouts/{parent_rollout_id}/resume_async"),
             &json!({
                 "checkpoint_id": checkpoint_id,
                 "target_rollout_id": target_rollout_id,

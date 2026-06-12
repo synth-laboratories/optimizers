@@ -16,7 +16,10 @@ use super::codex_home::{
 };
 use super::jsonrpc_read_window::JsonRpcReadWindow;
 use super::limits;
-use super::session::{AgentRuntimeSubstrate, AgentTurnOutcome, CodexTurnRequest};
+use super::session::{
+    command_exec_params, AgentCommandExecOutcome, AgentRuntimeSubstrate, AgentTurnOutcome,
+    CodexCommandExecRequest, CodexTurnRequest,
+};
 use super::supervisor::SupervisorReceipt;
 use super::usage::{usage_from_message, usage_from_messages};
 
@@ -30,6 +33,13 @@ pub struct DaytonaCodexSubstrate;
 impl AgentRuntimeSubstrate for DaytonaCodexSubstrate {
     fn run_codex_turn(&self, request: CodexTurnRequest<'_>) -> Result<AgentTurnOutcome> {
         run_daytona_codex_turn(request)
+    }
+
+    fn run_codex_command_exec(
+        &self,
+        request: CodexCommandExecRequest<'_>,
+    ) -> Result<AgentCommandExecOutcome> {
+        run_daytona_codex_command_exec(request)
     }
 }
 
@@ -80,6 +90,66 @@ fn run_daytona_codex_turn(request: CodexTurnRequest<'_>) -> Result<AgentTurnOutc
         (Err(error), Ok(()), Ok(())) => Err(error),
         (result, sync, cleanup) => Err(OptimizerError::Proposer(format!(
             "daytona proposer workspace cleanup failed: run_result={}; sync_result={}; cleanup_result={}",
+            result_status(&result),
+            result_status(&sync),
+            result_status(&cleanup)
+        ))),
+    }
+}
+
+fn run_daytona_codex_command_exec(
+    request: CodexCommandExecRequest<'_>,
+) -> Result<AgentCommandExecOutcome> {
+    let daytona = request.proposer.daytona.as_ref().ok_or_else(|| {
+        OptimizerError::Config(
+            "proposer.runtime_substrate = \"daytona\" requires [proposer.daytona]".to_string(),
+        )
+    })?;
+    let original_workspace = fs::canonicalize(request.workspace_dir)
+        .map_err(|source| OptimizerError::io(request.workspace_dir, source))?;
+    let staged_workspace = stage_workspace(&original_workspace, request.run_id)?;
+    let mut receipt = SupervisorReceipt {
+        substrate: "daytona".to_string(),
+        process_id: None,
+        container_name: None,
+        image: daytona.image.clone(),
+        staging_dir: Some(staged_workspace.display().to_string()),
+        workspace_mount_path: Some(daytona.remote_workspace_dir.clone()),
+        cleanup_status: "pending".to_string(),
+        sandbox_id: None,
+        sandbox_name: None,
+        daytona_target: daytona.target.clone(),
+        command_id: None,
+        toolbox_url: None,
+    };
+    let run_result = run_daytona_command_with_staged_workspace(
+        request,
+        daytona,
+        &staged_workspace,
+        &mut receipt,
+    );
+    let sync_result = if daytona.sync_workspace_back {
+        sync_workspace_back(&staged_workspace, &original_workspace)
+    } else if run_result.is_ok() {
+        sync_workspace_output_files(&staged_workspace, &original_workspace)
+    } else {
+        Ok(())
+    };
+    let cleanup_result = cleanup_staged_workspace(&staged_workspace);
+    match (run_result, sync_result, cleanup_result) {
+        (Ok(mut outcome), Ok(()), Ok(())) => {
+            if let Some(receipt) = outcome.supervisor_receipt.as_mut() {
+                receipt.cleanup_status = if daytona.keep_sandbox {
+                    "sandbox_kept".to_string()
+                } else {
+                    "cleaned".to_string()
+                };
+            }
+            Ok(outcome)
+        }
+        (Err(error), Ok(()), Ok(())) => Err(error),
+        (result, sync, cleanup) => Err(OptimizerError::Proposer(format!(
+            "daytona proposer command/exec workspace cleanup failed: run_result={}; sync_result={}; cleanup_result={}",
             result_status(&result),
             result_status(&sync),
             result_status(&cleanup)
@@ -148,6 +218,126 @@ fn run_daytona_with_staged_workspace(
         Duration::from_millis(daytona.poll_interval_ms),
     );
     let result = run_daytona_jsonrpc_turn(&mut client, request, Some(receipt.clone()));
+    let auth_sync_result = if result.is_ok() {
+        client.sync_refreshed_codex_auth(&daytona.remote_workspace_dir, &launch_state)
+    } else {
+        Ok(false)
+    };
+    let output_sync_result = if result.is_ok() {
+        client.sync_output_files(&daytona.remote_workspace_dir, staged_workspace)
+    } else {
+        Ok(())
+    };
+    let terminate_result = if daytona.keep_sandbox {
+        Ok(())
+    } else {
+        client.terminate()
+    };
+    let delete_result = if daytona.keep_sandbox {
+        Ok(())
+    } else {
+        daytona_client.delete_sandbox(&sandbox.id)
+    };
+    if daytona.keep_sandbox {
+        eprintln!(
+            "[gepa-proposer] daytona sandbox kept run_id={} sandbox={} command={}",
+            run_id_for_log, sandbox.id, command_id_for_log
+        );
+    } else if let Err(error) = &delete_result {
+        eprintln!(
+            "[gepa-proposer] daytona sandbox cleanup failed run_id={} sandbox={} command={} error={}",
+            run_id_for_log, sandbox.id, command_id_for_log, error
+        );
+    } else {
+        eprintln!(
+            "[gepa-proposer] daytona sandbox cleaned run_id={} sandbox={} command={}",
+            run_id_for_log, sandbox.id, command_id_for_log
+        );
+    }
+    let mut outcome = result?;
+    auth_sync_result?;
+    output_sync_result?;
+    if let Err(error) = terminate_result {
+        outcome.shutdown_warning = Some(error.to_string());
+    }
+    if let Err(error) = delete_result {
+        outcome.shutdown_warning = Some(match outcome.shutdown_warning.take() {
+            Some(existing) => format!("{existing}; daytona sandbox delete failed: {error}"),
+            None => format!("daytona sandbox delete failed: {error}"),
+        });
+        if let Some(receipt) = outcome.supervisor_receipt.as_mut() {
+            receipt.cleanup_status = "sandbox_delete_failed".to_string();
+        }
+    }
+    Ok(outcome)
+}
+
+fn run_daytona_command_with_staged_workspace(
+    request: CodexCommandExecRequest<'_>,
+    daytona: &ProposerDaytonaConfig,
+    staged_workspace: &Path,
+    receipt: &mut SupervisorReceipt,
+) -> Result<AgentCommandExecOutcome> {
+    let api_key = env::var(&daytona.api_key_env)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            OptimizerError::Config(format!(
+                "proposer.runtime_substrate = \"daytona\" requires non-empty {}",
+                daytona.api_key_env
+            ))
+        })?;
+    let mut host_env = env::vars().collect::<BTreeMap<_, _>>();
+    let launch_state = prepare_proposer_codex_launch(
+        request.proposer,
+        staged_workspace,
+        request.model,
+        host_env.clone(),
+    )?;
+    host_env.extend(launch_state.env_map.clone());
+    let daytona_client = DaytonaControlClient::new(daytona, api_key)?;
+    let sandbox = daytona_client.create_sandbox(request.run_id, &sandbox_env(daytona)?)?;
+    receipt.sandbox_id = Some(sandbox.id.clone());
+    receipt.sandbox_name = sandbox.name.clone();
+    receipt.daytona_target = sandbox.target.clone().or_else(|| daytona.target.clone());
+    daytona_client.wait_for_started(&sandbox.id)?;
+    let toolbox_url = daytona_client.toolbox_url(&sandbox.id)?;
+    receipt.toolbox_url = Some(toolbox_url.clone());
+    let toolbox = DaytonaToolboxClient::new(
+        toolbox_url,
+        sandbox.id.clone(),
+        daytona_client.auth_headers(),
+    );
+    toolbox.exec_shell(&format!(
+        "rm -rf {workspace} && mkdir -p {workspace}",
+        workspace = shell_quote(&daytona.remote_workspace_dir)
+    ))?;
+    toolbox.upload_workspace(staged_workspace, &daytona.remote_workspace_dir)?;
+    let session_id = format!("codex-app-server-{}", safe_fragment(request.run_id));
+    toolbox.create_session(&session_id)?;
+    let remote_env = remote_codex_env(daytona, &launch_state, &host_env)?;
+    let command = bootstrap_command(daytona, request.proposer, &remote_env);
+    let command_id = toolbox.execute_session_command(&session_id, &command, true)?;
+    receipt.command_id = Some(command_id.clone());
+    let run_id_for_log = request.run_id.to_string();
+    let command_id_for_log = command_id.clone();
+    eprintln!(
+        "[gepa-proposer] daytona command/exec substrate started run_id={} sandbox={} command={} workspace={}",
+        request.run_id, sandbox.id, command_id, daytona.remote_workspace_dir
+    );
+
+    let mut client = DaytonaAppServerClient::new(
+        toolbox,
+        session_id,
+        command_id,
+        Duration::from_millis(daytona.poll_interval_ms),
+    );
+    let result = run_daytona_jsonrpc_command_exec(
+        &mut client,
+        request,
+        &daytona.remote_workspace_dir,
+        Some(receipt.clone()),
+    );
     let auth_sync_result = if result.is_ok() {
         client.sync_refreshed_codex_auth(&daytona.remote_workspace_dir, &launch_state)
     } else {
@@ -359,6 +549,49 @@ fn run_daytona_jsonrpc_turn(
         thread_response,
         final_turn,
         usage,
+        sent_messages: client.sent_messages().to_vec(),
+        received_messages: client.received_messages().to_vec(),
+        supervisor_receipt,
+        shutdown_warning: None,
+    })
+}
+
+fn run_daytona_jsonrpc_command_exec(
+    client: &mut DaytonaAppServerClient,
+    request: CodexCommandExecRequest<'_>,
+    remote_workspace_dir: &str,
+    supervisor_receipt: Option<SupervisorReceipt>,
+) -> Result<AgentCommandExecOutcome> {
+    let initialize_id = client.send_request(
+        "initialize",
+        json!({
+            "clientInfo": {
+                "name": request.client_name,
+                "title": request.client_title,
+                "version": request.client_version,
+            }
+        }),
+    )?;
+    client.wait_for_response(
+        initialize_id,
+        Duration::from_secs(60),
+        request.message_stall_timeout,
+    )?;
+    client.send_notification("initialized", Value::Null)?;
+
+    let command_cwd = request
+        .command_cwd
+        .clone()
+        .unwrap_or_else(|| remote_workspace_dir.to_string());
+    let command_request_id =
+        client.send_request("command/exec", command_exec_params(&request, command_cwd))?;
+    let response = client.wait_for_response(
+        command_request_id,
+        request.timeout,
+        request.message_stall_timeout,
+    )?;
+    Ok(AgentCommandExecOutcome {
+        response,
         sent_messages: client.sent_messages().to_vec(),
         received_messages: client.received_messages().to_vec(),
         supervisor_receipt,

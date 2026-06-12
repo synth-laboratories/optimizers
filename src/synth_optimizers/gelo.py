@@ -537,7 +537,7 @@ def _crafter_engine(preset: GeloPreset) -> GeloEngineSection:
         segment_steps=100,
         resume_segment_steps=60,
         full_rollout_lane_enabled=True,
-        data_miner_authority=True,
+        data_miner_authority=False if smoke else True,
         full_rollout_initial_budget=8 if smoke else 50,
         full_rollout_budget_per_round=0 if smoke else 45,
         full_rollout_cadence=1,

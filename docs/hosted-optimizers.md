@@ -39,12 +39,15 @@ connector in the RunPod pod so `127.0.0.1` resolves to that task service.
 Python:
 
 ```python
+from synth_optimizers import GepaConfig
 from synth_optimizers.hosted import HostedOptimizerClient
 
 client = HostedOptimizerClient()
-response = client.submit_gepa_toml(open("gepa.toml", encoding="utf-8").read())
+response = client.submit(GepaConfig.from_toml("gepa.toml"))
 record = client.wait_for_run(response.run_id, timeout_seconds=3600)
 events = list(client.event_backfill(response.run_id, limit=3))
+candidates = client.get_state_slice(response.run_id, "candidates")
+frontier_events = list(client.algorithm_events(response.run_id, limit=10))
 ```
 
 ## GELO
@@ -80,13 +83,29 @@ from synth_optimizers.hosted import HostedOptimizerClient
 client = HostedOptimizerClient()
 
 with client.open_tunnel("http://127.0.0.1:8943", provider="synth_tunnel") as tunnel:
-    config = GeloPreset.crafter_smoke().materialize(container_tunnel=tunnel)
-    response = client.submit_gelo(config)
+    config = GeloPreset.crafter_smoke().to_config(container_tunnel=tunnel)
+    response = client.submit(config)
     record = client.wait_for_run(response.run_id, timeout_seconds=3600)
 
 board = client.get_state_slice(response.run_id, "board")
 events = list(client.event_backfill(response.run_id, limit=3))
 ```
+
+GELO submit defaults to launch-promo billing. Use `billing_mode="paid"` in
+`client.submit(...)` / `client.submit_gelo(...)`, or `--billing-mode paid` in the
+CLI, for normal paid hosted GELO without launch-promo model and concurrency gates.
+
+## Streaming and state
+
+Hosted GEPA and GELO share the generic optimizer observability routes:
+
+- `events()` / `event_backfill()` for lifecycle events.
+- `algorithm_event_stream()` / `algorithm_events()` for normalized algorithm events.
+- `get_state()` for the latest cursor.
+- `get_state_slice("candidates")` and `get_state_slice("frontier")` for live search state.
+
+GELO also exposes compatibility aliases `goex_events()` and `goex_event_stream()`.
+Prefer the generic `algorithm_*` methods for new SDK and CLI integrations.
 
 ### Plugin lanes
 

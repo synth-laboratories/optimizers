@@ -23,12 +23,19 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Sequence
 from urllib.error import HTTPError
 from urllib.parse import parse_qs, quote, unquote, urlencode
 from urllib.request import Request, urlopen
 
+from ._synth_optimizers import (
+    gepa_compact_run_storage,
+    gepa_delete_run_storage,
+    gepa_inspect_run_storage,
+    gepa_workspace_storage_health,
+)
 from .discovery import (
     gepa_home,
     latest_run_index,
@@ -56,6 +63,7 @@ class ServiceRunBoard:
     scheduler: dict | None = None
     workspace_runs: dict | None = None
     run_status: dict | None = None
+    storage_health: dict | None = None
 
     @property
     def total(self) -> int:
@@ -130,6 +138,7 @@ class ServiceRunBoard:
             },
             "scheduler": scheduler,
             "run_status": run_status,
+            "storage_health": self.storage_health or {},
             "runs": self.runs,
         }
 
@@ -144,6 +153,7 @@ class ServiceBoardSource:
         self._service_url = service_url
         self._title = title
         self._source_id = f"service:{service_url}"
+        self._storage_cache: tuple[float, dict] | None = None
 
     @property
     def source_id(self) -> str:
@@ -176,6 +186,7 @@ class ServiceBoardSource:
             run["events_url"] = f"{EVENTS_BASE}/{quote(run['run_id'], safe='')}/events"
             run["timings_url"] = f"{EVENTS_BASE}/{quote(run['run_id'], safe='')}/timings"
             run["limits_url"] = f"{EVENTS_BASE}/{quote(run['run_id'], safe='')}/limits"
+            run["storage_url"] = f"{EVENTS_BASE}/{quote(run['run_id'], safe='')}/storage"
             if run.get("state") in {"queued", "running", "paused"}:
                 self._enrich_run_eta(run)
             if run.get("state") == "running":
@@ -187,6 +198,7 @@ class ServiceBoardSource:
             workspace.get("scheduler") or {},
             workspace.get("run_status") or {},
         )
+        storage_health = self.workspace_storage()
         runs.sort(key=_board_sort_key, reverse=True)
         return ServiceRunBoard(
             runs,
@@ -194,6 +206,7 @@ class ServiceBoardSource:
             workspace.get("scheduler") or {},
             workspace.get("runs") or {},
             workspace.get("run_status") or {},
+            storage_health,
         ).to_data()
 
     def run_events(self, run_id: str, *, since: int = 0) -> list[dict]:
@@ -230,6 +243,31 @@ class ServiceBoardSource:
             return limits
         return {"run_id": run_id, "limits": [], "events": [], "nearest_limit": None}
 
+    def run_storage(self, run_id: str) -> dict:
+        path = f"/runs/{quote(run_id, safe='')}/storage"
+        storage = self._get_json(path)
+        return storage if isinstance(storage, dict) else {"run_id": run_id}
+
+    def workspace_storage(self) -> dict:
+        now = time.monotonic()
+        if self._storage_cache and now - self._storage_cache[0] < 60.0:
+            return self._storage_cache[1]
+        try:
+            storage = self._get_json("/workspace/storage")
+        except Exception as exc:
+            storage = {"error": str(exc), "alerts": [], "summary": {"alert_count": 0}}
+        self._storage_cache = (now, storage)
+        return storage
+
+    def compact_run_storage(self, run_id: str, *, profile: str, dry_run: bool) -> dict:
+        path = f"/runs/{quote(run_id, safe='')}/compact"
+        return self._send_json(path, method="POST", body={"profile": profile, "dry_run": dry_run})
+
+    def delete_run_storage(self, run_id: str) -> dict:
+        path = f"/runs/{quote(run_id, safe='')}"
+        self._send_json(path, method="DELETE", body=None)
+        return {"run_id": run_id, "deleted": True}
+
     def _get_json(self, path: str, *, query: dict[str, str] | None = None) -> dict:
         text = self._get_text(path, query=query)
         return json.loads(text)
@@ -239,6 +277,21 @@ class ServiceBoardSource:
         request = Request(url, headers={"Accept": "application/json"})
         with urlopen(request, timeout=10.0) as response:
             return response.read().decode("utf-8")
+
+    def _send_json(self, path: str, *, method: str, body: dict | None) -> dict:
+        data = None if body is None else json.dumps(body).encode("utf-8")
+        request = Request(
+            self._url(path),
+            data=data,
+            method=method,
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
+        )
+        with urlopen(request, timeout=30.0) as response:
+            text = response.read().decode("utf-8")
+        if not text:
+            return {}
+        value = json.loads(text)
+        return value if isinstance(value, dict) else {}
 
     def _url(self, path: str, *, query: dict[str, str] | None = None) -> str:
         url = f"{self._service_url}{path}"
@@ -451,6 +504,8 @@ class RegistryDirSource:
         self._live_within_seconds = live_within_seconds
         self._records = {}
         self._index = {}
+        self._storage_roots: list[Path] = []
+        self._storage_cache: tuple[float, dict] | None = None
 
     @property
     def source_id(self) -> str:
@@ -464,7 +519,9 @@ class RegistryDirSource:
         entries = read_run_index(self._home)
         self._index = latest_run_index(entries)
         roots = [*self._explicit_roots, *registry_roots_from_index(entries)]
+        self._storage_roots = roots
         records = latest_registry_records(roots)
+        records = {run_id: record for run_id, record in records.items() if record.run_dir.exists()}
         self._records = records
         board = RunBoard(
             [
@@ -479,6 +536,7 @@ class RegistryDirSource:
             run["events_url"] = f"{EVENTS_BASE}/{quote(run['run_id'], safe='')}/events"
             run["timings_url"] = f"{EVENTS_BASE}/{quote(run['run_id'], safe='')}/timings"
             run["limits_url"] = f"{EVENTS_BASE}/{quote(run['run_id'], safe='')}/limits"
+            run["storage_url"] = f"{EVENTS_BASE}/{quote(run['run_id'], safe='')}/storage"
             index = self._index.get(run["run_id"])
             if index and index.owning_service_url and run.get("state") == "running":
                 run["service_url"] = index.owning_service_url
@@ -489,6 +547,7 @@ class RegistryDirSource:
                     run["state"] = "unknown"
         data["runs"].sort(key=_board_sort_key, reverse=True)
         data["summary"] = _summary_from_runs(data["runs"])
+        data["storage_health"] = self.workspace_storage()
         return data
 
     def run_events(self, run_id: str, *, since: int = 0) -> list[dict]:
@@ -503,6 +562,49 @@ class RegistryDirSource:
 
     def run_limits(self, run_id: str) -> dict:
         return {"run_id": run_id, "limits": [], "events": [], "nearest_limit": None}
+
+    def run_storage(self, run_id: str) -> dict:
+        record = self._record(run_id)
+        terminal = _resolve_registry_record(record, self._live_within_seconds).state.value in {
+            "succeeded",
+            "failed",
+        }
+        return gepa_inspect_run_storage(str(record.run_dir), run_id=run_id, terminal=terminal)
+
+    def workspace_storage(self) -> dict:
+        now = time.monotonic()
+        if self._storage_cache and now - self._storage_cache[0] < 60.0:
+            return self._storage_cache[1]
+        roots = self._storage_roots or self._explicit_roots
+        storage = gepa_workspace_storage_health([str(root) for root in roots])
+        self._storage_cache = (now, storage)
+        return storage
+
+    def compact_run_storage(self, run_id: str, *, profile: str, dry_run: bool) -> dict:
+        report = self.run_storage(run_id)
+        if not report.get("terminal"):
+            raise ValueError(f"run {run_id} is not terminal")
+        return gepa_compact_run_storage(
+            str(self._record(run_id).run_dir),
+            run_id=run_id,
+            profile=profile,
+            dry_run=dry_run,
+        )
+
+    def delete_run_storage(self, run_id: str) -> dict:
+        report = self.run_storage(run_id)
+        if not report.get("terminal"):
+            raise ValueError(f"run {run_id} is not terminal")
+        return gepa_delete_run_storage(str(self._record(run_id).run_dir), dry_run=False)
+
+    def _record(self, run_id: str):
+        record = self._records.get(run_id)
+        if record is None:
+            self.snapshot()
+            record = self._records.get(run_id)
+        if record is None:
+            raise KeyError(f"run {run_id} not found")
+        return record
 
 
 class AggregateSource:
@@ -543,6 +645,7 @@ class AggregateSource:
         source_by_run: dict[str, BoardSource] = {}
         snapshots: list[dict] = []
         errors: list[dict] = []
+        storage_reports: list[dict] = []
         for source in sources:
             try:
                 data = source.snapshot()
@@ -550,6 +653,8 @@ class AggregateSource:
                 errors.append({"source_id": source.source_id, "error": str(exc)})
                 continue
             snapshots.append(data)
+            if isinstance(data.get("storage_health"), dict) and data.get("storage_health"):
+                storage_reports.append(data["storage_health"])
             for run in data.get("runs") or []:
                 run_id = run.get("run_id")
                 if not run_id:
@@ -569,6 +674,7 @@ class AggregateSource:
             "summary": _aggregate_summary(runs, snapshots),
             "scheduler": _first_non_empty(snapshots, "scheduler"),
             "run_status": _first_non_empty(snapshots, "run_status"),
+            "storage_health": _merge_storage_health(storage_reports),
             "sources": [
                 {
                     "source_id": source.source_id,
@@ -601,6 +707,41 @@ class AggregateSource:
             self.snapshot()
             source = self._sources_by_run.get(run_id)
         return source.run_limits(run_id) if source else {"run_id": run_id, "limits": [], "events": [], "nearest_limit": None}
+
+    def workspace_storage(self) -> dict:
+        sources = self._sources or self._discover_sources()
+        reports = []
+        for source in sources:
+            if hasattr(source, "workspace_storage"):
+                reports.append(source.workspace_storage())
+        return _merge_storage_health(reports)
+
+    def run_storage(self, run_id: str) -> dict:
+        source = self._sources_by_run.get(run_id)
+        if source is None:
+            self.snapshot()
+            source = self._sources_by_run.get(run_id)
+        if not source:
+            raise KeyError(f"run {run_id} not found")
+        return source.run_storage(run_id)
+
+    def compact_run_storage(self, run_id: str, *, profile: str, dry_run: bool) -> dict:
+        source = self._sources_by_run.get(run_id)
+        if source is None:
+            self.snapshot()
+            source = self._sources_by_run.get(run_id)
+        if not source:
+            raise KeyError(f"run {run_id} not found")
+        return source.compact_run_storage(run_id, profile=profile, dry_run=dry_run)
+
+    def delete_run_storage(self, run_id: str) -> dict:
+        source = self._sources_by_run.get(run_id)
+        if source is None:
+            self.snapshot()
+            source = self._sources_by_run.get(run_id)
+        if not source:
+            raise KeyError(f"run {run_id} not found")
+        return source.delete_run_storage(run_id)
 
     def _discover_sources(self) -> list[BoardSource]:
         sources: list[BoardSource] = []
@@ -689,6 +830,51 @@ def _first_non_empty(snapshots: list[dict], key: str) -> dict:
         if isinstance(value, dict) and value:
             return value
     return {}
+
+
+def _merge_storage_health(reports: list[dict]) -> dict:
+    roots_by_path: dict[str, dict] = {}
+    alerts: list[dict] = []
+    thresholds = {}
+    generated_at = None
+    for report in reports:
+        if not isinstance(report, dict) or report.get("error"):
+            continue
+        if isinstance(report.get("thresholds"), dict) and not thresholds:
+            thresholds = report["thresholds"]
+        generated_at = report.get("generated_at_unix_seconds") or generated_at
+        for root in report.get("roots") or []:
+            if not isinstance(root, dict):
+                continue
+            key = str(root.get("root") or "")
+            if not key:
+                continue
+            existing = roots_by_path.get(key)
+            if existing is None or int(root.get("bytes") or 0) >= int(existing.get("bytes") or 0):
+                roots_by_path[key] = root
+    roots = list(roots_by_path.values())
+    roots.sort(key=lambda root: int(root.get("bytes") or 0), reverse=True)
+    for root in roots:
+        alerts.extend(alert for alert in root.get("alerts") or [] if isinstance(alert, dict))
+    summary = {
+        "root_count": len(roots),
+        "run_count": sum(int(root.get("run_count") or 0) for root in roots),
+        "terminal_run_count": sum(int(root.get("terminal_run_count") or 0) for root in roots),
+        "partial_count": sum(int(root.get("partial_count") or 0) for root in roots),
+        "bytes": sum(int(root.get("bytes") or 0) for root in roots),
+        "reclaimable_bytes": sum(int(root.get("reclaimable_bytes") or 0) for root in roots),
+        "partial_bytes": sum(int(root.get("partial_bytes") or 0) for root in roots),
+        "stale_partial_bytes": sum(int(root.get("stale_partial_bytes") or 0) for root in roots),
+        "alert_count": len(alerts),
+    }
+    return {
+        "schema": "synth.optimizer.storage_health.v1",
+        "generated_at_unix_seconds": generated_at,
+        "thresholds": thresholds,
+        "summary": summary,
+        "alerts": alerts,
+        "roots": roots,
+    }
 
 
 def _run_preferred(candidate: dict, existing: dict) -> bool:
@@ -814,6 +1000,26 @@ def write_json(handler: BaseHTTPRequestHandler, data: dict) -> None:
     write_bytes(handler, json.dumps(data).encode(), "application/json")
 
 
+def write_json_status(handler: BaseHTTPRequestHandler, status: int, data: dict) -> None:
+    body = json.dumps(data).encode()
+    handler.send_response(status)
+    handler.send_header("Content-Type", "application/json")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+def read_json_body(handler: BaseHTTPRequestHandler) -> dict:
+    length = int(handler.headers.get("Content-Length") or "0")
+    if length <= 0:
+        return {}
+    body = handler.rfile.read(length)
+    if not body:
+        return {}
+    value = json.loads(body.decode("utf-8"))
+    return value if isinstance(value, dict) else {}
+
+
 def render_board_page(hub: _Hub, source: BoardSource) -> str:
     from .o11y import render_board_html
 
@@ -857,20 +1063,41 @@ def handle_board_request(
     source: BoardSource,
 ) -> bool:
     """Serve the shared board API routes; return True if the path was handled."""
-    if raw_path == "/api/runs":
+    method = handler.command
+    if method == "GET" and raw_path == "/api/runs":
         write_json(handler, hub.latest)
-    elif raw_path == STREAM_PATH:
+    elif method == "GET" and raw_path == "/api/storage":
+        write_json(handler, source.workspace_storage())
+    elif method == "GET" and raw_path == STREAM_PATH:
         stream_board(handler, hub)
-    elif raw_path.startswith(EVENTS_BASE + "/") and raw_path.endswith("/events"):
+    elif method == "GET" and raw_path.startswith(EVENTS_BASE + "/") and raw_path.endswith("/events"):
         run_id = unquote(raw_path[len(EVENTS_BASE) + 1 : -len("/events")])
         since = int(query.get("since", ["0"])[0])
         write_json(handler, {"run_id": run_id, "events": source.run_events(run_id, since=since)})
-    elif raw_path.startswith(EVENTS_BASE + "/") and raw_path.endswith("/timings"):
+    elif method == "GET" and raw_path.startswith(EVENTS_BASE + "/") and raw_path.endswith("/timings"):
         run_id = unquote(raw_path[len(EVENTS_BASE) + 1 : -len("/timings")])
         write_json(handler, source.run_timings(run_id))
-    elif raw_path.startswith(EVENTS_BASE + "/") and raw_path.endswith("/limits"):
+    elif method == "GET" and raw_path.startswith(EVENTS_BASE + "/") and raw_path.endswith("/limits"):
         run_id = unquote(raw_path[len(EVENTS_BASE) + 1 : -len("/limits")])
         write_json(handler, source.run_limits(run_id))
+    elif method == "GET" and raw_path.startswith(EVENTS_BASE + "/") and raw_path.endswith("/storage"):
+        run_id = unquote(raw_path[len(EVENTS_BASE) + 1 : -len("/storage")])
+        write_json(handler, source.run_storage(run_id))
+    elif method == "POST" and raw_path.startswith(EVENTS_BASE + "/") and raw_path.endswith("/compact"):
+        run_id = unquote(raw_path[len(EVENTS_BASE) + 1 : -len("/compact")])
+        body = read_json_body(handler)
+        profile = str(body.get("profile") or "compact")
+        dry_run = bool(body.get("dry_run", True))
+        write_json(
+            handler,
+            source.compact_run_storage(run_id, profile=profile, dry_run=dry_run),
+        )
+    elif method == "DELETE" and raw_path.startswith(EVENTS_BASE + "/"):
+        suffix = raw_path[len(EVENTS_BASE) + 1 :]
+        if "/" in suffix:
+            return False
+        run_id = unquote(suffix)
+        write_json(handler, source.delete_run_storage(run_id))
     else:
         return False
     return True
@@ -883,15 +1110,38 @@ def _handler_factory(hub: _Hub, source: BoardSource):
         def log_message(self, *_args) -> None:
             pass
 
-        def do_GET(self) -> None:
+        def _dispatch(self) -> None:
             raw_path = self.path.split("?", 1)[0]
             query = parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
-            if raw_path == "/":
-                write_html(self, render_board_page(hub, source))
-            elif handle_board_request(self, raw_path, query, hub, source):
-                pass
-            else:
-                self.send_error(404, "not found")
+            try:
+                if self.command == "GET" and raw_path == "/":
+                    write_html(self, render_board_page(hub, source))
+                elif handle_board_request(self, raw_path, query, hub, source):
+                    pass
+                else:
+                    self.send_error(404, "not found")
+            except HTTPError as exc:
+                text = exc.read().decode("utf-8", errors="replace")
+                try:
+                    payload = json.loads(text) if text else {}
+                except json.JSONDecodeError:
+                    payload = {"error": text or exc.reason}
+                if not isinstance(payload, dict):
+                    payload = {"error": str(payload)}
+                write_json_status(self, exc.code, payload)
+            except (KeyError, ValueError) as exc:
+                write_json_status(self, 409, {"error": str(exc)})
+            except Exception as exc:
+                write_json_status(self, 500, {"error": str(exc)})
+
+        def do_GET(self) -> None:
+            self._dispatch()
+
+        def do_POST(self) -> None:
+            self._dispatch()
+
+        def do_DELETE(self) -> None:
+            self._dispatch()
 
     return Handler
 

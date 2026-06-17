@@ -17,7 +17,7 @@ use crate::candidates::{
     CandidatePayloadInput, CandidatePayloadRecord, FrontierCellInput, FrontierCellRecord,
     PlanLinkInput, PlanLinkRecord,
 };
-use crate::checkpoints::CheckpointRecord;
+use crate::checkpoints::{CheckpointRecord, CheckpointSummaryRecord};
 use crate::config::SynthOptimizerConfig;
 use crate::data_models::{
     materialization_record_json, record_json, EvaluationCacheRecord, MaterializationRecord,
@@ -179,6 +179,7 @@ pub struct WorkspaceEntityCounts {
     pub budget_commits: u64,
     pub budget_releases: u64,
     pub candidates: u64,
+    pub candidate_seed_rewards: u64,
     pub candidate_payloads: u64,
     pub candidate_deltas: u64,
     pub acceptance_decisions: u64,
@@ -264,6 +265,7 @@ struct RunHealthCounts {
     candidates: u64,
     parented_candidates: u64,
     train_frontier_candidates: u64,
+    candidate_seed_rewards: u64,
     candidate_payloads: u64,
     candidate_deltas: u64,
     acceptance_decisions: u64,
@@ -2759,6 +2761,7 @@ impl WorkspaceStore {
             {
                 let frame: SensorFrame = serde_json::from_value(frame)?;
                 upsert_sensor_frame_tx(&tx, run_id, &frame)?;
+                upsert_candidate_seed_reward_tx(&tx, run_id, &frame)?;
                 upsert_plan_link_tx(
                     &tx,
                     run_id,
@@ -3190,6 +3193,7 @@ impl WorkspaceStore {
     pub fn record_sensor_frame(&mut self, run_id: &str, frame: &SensorFrame) -> Result<()> {
         let tx = self.conn.transaction()?;
         upsert_sensor_frame_tx(&tx, run_id, frame)?;
+        upsert_candidate_seed_reward_tx(&tx, run_id, frame)?;
         upsert_rollout_job_tx(&tx, run_id, frame)?;
         let rollout_records = SensorRolloutRecords::from_sensor_frame(frame);
         upsert_rollout_record_tx(&tx, run_id, &rollout_records.rollout)?;
@@ -3255,6 +3259,27 @@ impl WorkspaceStore {
         Ok(())
     }
 
+    pub fn record_checkpoint_compacting_previous(
+        &mut self,
+        run_id: &str,
+        record: &CheckpointRecord,
+    ) -> Result<()> {
+        let previous = self.latest_checkpoint(run_id, &record.checkpoint_kind)?;
+        self.record_checkpoint(run_id, record)?;
+        let Some(previous) = previous else {
+            return Ok(());
+        };
+        if previous.checkpoint_id == record.checkpoint_id
+            || previous.sequence_number >= record.sequence_number
+            || previous.is_storage_compacted()
+        {
+            return Ok(());
+        }
+        let original_snapshot_bytes = serde_json::to_vec(&previous.snapshot)?.len() as u64;
+        let compacted = previous.storage_compacted_summary(original_snapshot_bytes);
+        self.record_checkpoint(run_id, &compacted)
+    }
+
     pub fn vacuum(&self) -> Result<()> {
         self.conn.execute_batch("VACUUM")?;
         Ok(())
@@ -3318,6 +3343,62 @@ impl WorkspaceStore {
             records.push(serde_json::from_str(&raw)?);
         }
         Ok(records)
+    }
+
+    pub fn checkpoint_summary_history(
+        &self,
+        run_id: &str,
+        checkpoint_kind: Option<&str>,
+    ) -> Result<Vec<CheckpointSummaryRecord>> {
+        let mut records = Vec::new();
+        if let Some(kind) = checkpoint_kind {
+            let mut stmt = self.conn.prepare(
+                r#"
+                SELECT checkpoint_id, sequence_number, checkpoint_kind, status, run_state,
+                       generation, candidate_count, frontier_count, rollout_count, cost_usd,
+                       created_at
+                FROM checkpoints
+                WHERE run_id = ?1 AND checkpoint_kind = ?2
+                ORDER BY sequence_number ASC, created_at ASC
+                "#,
+            )?;
+            let mut rows = stmt.query(params![run_id, kind])?;
+            while let Some(row) = rows.next()? {
+                records.push(checkpoint_summary_record_from_row(row)?);
+            }
+            return Ok(records);
+        }
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT checkpoint_id, sequence_number, checkpoint_kind, status, run_state,
+                   generation, candidate_count, frontier_count, rollout_count, cost_usd,
+                   created_at
+            FROM checkpoints
+            WHERE run_id = ?1
+            ORDER BY sequence_number ASC, created_at ASC
+            "#,
+        )?;
+        let mut rows = stmt.query(params![run_id])?;
+        while let Some(row) = rows.next()? {
+            records.push(checkpoint_summary_record_from_row(row)?);
+        }
+        Ok(records)
+    }
+
+    pub fn run_manifest(&self, run_id: &str) -> Result<Option<Value>> {
+        self.conn
+            .query_row(
+                r#"
+                SELECT manifest_json
+                FROM manifests
+                WHERE run_id = ?1
+                "#,
+                params![run_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|raw| serde_json::from_str(&raw).map_err(OptimizerError::from))
+            .transpose()
     }
 
     pub fn event_stream_history(&self, run_id: &str) -> Result<Vec<EventStreamRecord>> {
@@ -3857,6 +3938,31 @@ impl WorkspaceStore {
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY(run_id, candidate_payload_id),
                 FOREIGN KEY(run_id, candidate_id) REFERENCES candidates(run_id, candidate_id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS candidate_seed_rewards (
+                run_id TEXT NOT NULL,
+                candidate_id TEXT NOT NULL,
+                seed_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                example_id TEXT NOT NULL,
+                split TEXT NOT NULL,
+                evaluation_stage TEXT NOT NULL,
+                status TEXT NOT NULL,
+                reward REAL NOT NULL,
+                sensor_frame_id TEXT NOT NULL,
+                rollout_id TEXT,
+                objective_scores_json TEXT NOT NULL,
+                actionable_side_info_json TEXT NOT NULL,
+                usage_json TEXT NOT NULL,
+                trace_digest_json TEXT,
+                failure_json TEXT,
+                metadata_json TEXT NOT NULL,
+                reward_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(run_id, candidate_id, evaluation_stage, seed_id),
+                FOREIGN KEY(run_id, candidate_id) REFERENCES candidates(run_id, candidate_id) ON DELETE CASCADE,
+                FOREIGN KEY(run_id, sensor_frame_id) REFERENCES sensor_frames(run_id, sensor_frame_id) ON DELETE CASCADE
             );
 
             CREATE TABLE IF NOT EXISTS candidate_deltas (
@@ -4642,6 +4748,12 @@ impl WorkspaceStore {
             CREATE INDEX IF NOT EXISTS idx_sensor_frames_run_candidate
             ON sensor_frames(run_id, candidate_id);
 
+            CREATE INDEX IF NOT EXISTS idx_candidate_seed_rewards_run_candidate
+            ON candidate_seed_rewards(run_id, candidate_id);
+
+            CREATE INDEX IF NOT EXISTS idx_candidate_seed_rewards_run_seed
+            ON candidate_seed_rewards(run_id, seed_id, split, evaluation_stage);
+
             CREATE INDEX IF NOT EXISTS idx_rollouts_run_status
             ON rollouts(run_id, status);
 
@@ -4700,6 +4812,37 @@ impl WorkspaceStore {
         self.ensure_run_request_schema()?;
         self.ensure_runtime_schema()?;
         self.ensure_runtime_indexes()?;
+        self.backfill_candidate_seed_rewards()?;
+        Ok(())
+    }
+
+    fn backfill_candidate_seed_rewards(&self) -> Result<()> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT run_id, frame_json
+            FROM sensor_frames sf
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM candidate_seed_rewards csr
+                WHERE csr.run_id = sf.run_id
+                  AND csr.candidate_id = sf.candidate_id
+                  AND csr.evaluation_stage = sf.evaluation_stage
+                  AND csr.seed_id = sf.task_id
+            )
+            "#,
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut frames = Vec::<(String, SensorFrame)>::new();
+        while let Some(row) = rows.next()? {
+            let run_id: String = row.get(0)?;
+            let raw: String = row.get(1)?;
+            frames.push((run_id, serde_json::from_str(&raw)?));
+        }
+        drop(rows);
+        drop(stmt);
+        for (run_id, frame) in frames {
+            upsert_candidate_seed_reward_conn(&self.conn, &run_id, &frame)?;
+        }
         Ok(())
     }
 
@@ -5158,6 +5301,7 @@ impl WorkspaceStore {
                 "#,
                 run_id,
             )?,
+            candidate_seed_rewards: self.count_where("candidate_seed_rewards", run_id)?,
             candidate_payloads: self.count_where("candidate_payloads", run_id)?,
             candidate_deltas: self.count_where("candidate_deltas", run_id)?,
             acceptance_decisions: self.count_where("acceptance_decisions", run_id)?,
@@ -5379,6 +5523,7 @@ impl WorkspaceStore {
             budget_commits: self.count_where("budget_commits", run_id)?,
             budget_releases: self.count_where("budget_releases", run_id)?,
             candidates: self.count_where("candidates", run_id)?,
+            candidate_seed_rewards: self.count_where("candidate_seed_rewards", run_id)?,
             candidate_payloads: self.count_where("candidate_payloads", run_id)?,
             candidate_deltas: self.count_where("candidate_deltas", run_id)?,
             acceptance_decisions: self.count_where("acceptance_decisions", run_id)?,
@@ -5729,6 +5874,24 @@ fn rendered_block_status(
     }
 }
 
+fn checkpoint_summary_record_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<CheckpointSummaryRecord> {
+    Ok(CheckpointSummaryRecord {
+        checkpoint_id: row.get(0)?,
+        sequence_number: row.get::<_, i64>(1)? as u64,
+        checkpoint_kind: row.get(2)?,
+        status: row.get(3)?,
+        run_state: row.get(4)?,
+        generation: row.get::<_, Option<i64>>(5)?.map(|value| value as u64),
+        candidate_count: row.get::<_, i64>(6)? as u64,
+        frontier_count: row.get::<_, i64>(7)? as u64,
+        rollout_count: row.get::<_, i64>(8)? as u64,
+        cost_usd: row.get(9)?,
+        created_at: row.get(10)?,
+    })
+}
+
 fn rendered_terminal_status(run_phase: &str) -> Option<String> {
     match run_phase {
         "completed" => Some("success".to_string()),
@@ -6025,6 +6188,25 @@ impl<'a> WorkspaceView<'a> {
             ORDER BY updated_at, candidate_payload_id
             "#,
         )
+    }
+
+    pub fn candidate_seed_reward_records(&self, run_id: &str) -> Result<Vec<Value>> {
+        let records: Vec<Value> = self.json_records(
+            run_id,
+            r#"
+            SELECT reward_json
+            FROM candidate_seed_rewards
+            WHERE run_id = ?1
+            ORDER BY candidate_id, split, evaluation_stage, seed_id
+            "#,
+        )?;
+        if !records.is_empty() {
+            return Ok(records);
+        }
+        self.sensor_frames(run_id)?
+            .iter()
+            .map(|frame| candidate_seed_reward_record(run_id, frame))
+            .collect()
     }
 
     pub fn candidate_delta_records(&self, run_id: &str) -> Result<Vec<CandidateDeltaRecord>> {
@@ -7331,6 +7513,115 @@ fn upsert_sensor_frame_tx(
     Ok(())
 }
 
+fn upsert_candidate_seed_reward_tx(
+    tx: &rusqlite::Transaction<'_>,
+    run_id: &str,
+    frame: &SensorFrame,
+) -> Result<()> {
+    upsert_candidate_seed_reward_conn(tx, run_id, frame)
+}
+
+fn upsert_candidate_seed_reward_conn(
+    conn: &Connection,
+    run_id: &str,
+    frame: &SensorFrame,
+) -> Result<()> {
+    let trace_digest = frame
+        .trace_digest
+        .as_ref()
+        .map(serde_json::to_value)
+        .transpose()?;
+    let failure = frame
+        .failure
+        .as_ref()
+        .map(serde_json::to_value)
+        .transpose()?;
+    let objective_scores = serde_json::to_value(&frame.objective_scores)?;
+    let metadata = Value::Object(frame.metadata.clone());
+    let reward_record = candidate_seed_reward_record(run_id, frame)?;
+    conn.execute(
+        r#"
+        INSERT INTO candidate_seed_rewards(
+            run_id, candidate_id, seed_id, task_id, example_id, split,
+            evaluation_stage, status, reward, sensor_frame_id, rollout_id,
+            objective_scores_json, actionable_side_info_json, usage_json,
+            trace_digest_json, failure_json, metadata_json, reward_json, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, datetime('now'))
+        ON CONFLICT(run_id, candidate_id, evaluation_stage, seed_id) DO UPDATE SET
+            task_id = excluded.task_id,
+            example_id = excluded.example_id,
+            split = excluded.split,
+            status = excluded.status,
+            reward = excluded.reward,
+            sensor_frame_id = excluded.sensor_frame_id,
+            rollout_id = excluded.rollout_id,
+            objective_scores_json = excluded.objective_scores_json,
+            actionable_side_info_json = excluded.actionable_side_info_json,
+            usage_json = excluded.usage_json,
+            trace_digest_json = excluded.trace_digest_json,
+            failure_json = excluded.failure_json,
+            metadata_json = excluded.metadata_json,
+            reward_json = excluded.reward_json,
+            updated_at = datetime('now')
+        "#,
+        params![
+            run_id,
+            &frame.candidate_id,
+            &frame.task_id,
+            &frame.task_id,
+            &frame.example_id,
+            &frame.split,
+            &frame.evaluation_stage,
+            &frame.status,
+            frame.reward,
+            &frame.sensor_frame_id,
+            &frame.rollout_id,
+            stable_json(&objective_scores),
+            stable_json(frame.actionable_side_info.as_ref().unwrap_or(&Value::Null)),
+            stable_json(&frame.usage),
+            trace_digest.as_ref().map(stable_json),
+            failure.as_ref().map(stable_json),
+            stable_json(&metadata),
+            stable_json(&reward_record),
+        ],
+    )?;
+    Ok(())
+}
+
+fn candidate_seed_reward_record(run_id: &str, frame: &SensorFrame) -> Result<Value> {
+    let trace_digest = frame
+        .trace_digest
+        .as_ref()
+        .map(serde_json::to_value)
+        .transpose()?;
+    let failure = frame
+        .failure
+        .as_ref()
+        .map(serde_json::to_value)
+        .transpose()?;
+    Ok(json!({
+        "schema_version": "candidate_seed_reward.v1",
+        "run_id": run_id,
+        "candidate_id": &frame.candidate_id,
+        "seed_id": &frame.task_id,
+        "task_id": &frame.task_id,
+        "example_id": &frame.example_id,
+        "split": &frame.split,
+        "evaluation_stage": &frame.evaluation_stage,
+        "status": &frame.status,
+        "success_status": &frame.success_status,
+        "reward": frame.reward,
+        "sensor_frame_id": &frame.sensor_frame_id,
+        "rollout_id": &frame.rollout_id,
+        "objective_scores": &frame.objective_scores,
+        "actionable_side_info": &frame.actionable_side_info,
+        "usage": &frame.usage,
+        "trace_digest": &trace_digest,
+        "failure": &failure,
+        "metadata": &frame.metadata,
+    }))
+}
+
 fn upsert_rollout_job_tx(
     tx: &rusqlite::Transaction<'_>,
     run_id: &str,
@@ -8054,6 +8345,15 @@ fn run_projection_freshness(
         ),
         ProjectionFreshnessRecord::exact_count(
             run_id,
+            "candidate_seed_rewards_from_sensor_frames",
+            "sensor_frames",
+            counts.sensor_frames,
+            "candidate_seed_rewards",
+            counts.candidate_seed_rewards,
+            checked_at,
+        ),
+        ProjectionFreshnessRecord::exact_count(
+            run_id,
             "evaluation_cache_from_materialization_cache_keys",
             "materializations.distinct_cache_key",
             counts.evaluation_cache_expected,
@@ -8357,6 +8657,15 @@ fn build_run_invariant_report(
         counts.cache_profile_access_total,
         "cache_accesses",
         counts.cache_accesses,
+    );
+    push_exact_count_violation(
+        &mut violations,
+        run_id,
+        "candidate_seed_rewards_match_sensor_frames",
+        "sensor_frames",
+        counts.sensor_frames,
+        "candidate_seed_rewards",
+        counts.candidate_seed_rewards,
     );
     push_exact_count_violation(
         &mut violations,
@@ -8750,6 +9059,7 @@ fn build_run_invariant_report(
                 "candidates": counts.candidates,
                 "parented_candidates": counts.parented_candidates,
                 "train_frontier_candidates": counts.train_frontier_candidates,
+                "candidate_seed_rewards": counts.candidate_seed_rewards,
                 "candidate_payloads": counts.candidate_payloads,
                 "candidate_deltas": counts.candidate_deltas,
                 "acceptance_decisions": counts.acceptance_decisions,

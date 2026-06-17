@@ -98,6 +98,8 @@ pub struct RunRegistryEntry {
     pub best_candidate_id: Option<String>,
     pub cost_usd: Option<f64>,
     pub usage: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage: Option<Value>,
 }
 
 impl RunRegistryEntry {
@@ -118,11 +120,13 @@ impl RunRegistryEntry {
         best_candidate_id: String,
         cost_usd: f64,
         usage: Value,
+        storage: Option<Value>,
     ) -> Self {
         let mut entry = Self::new(paths, config, cache_mode, cache_namespace, "finished", None);
         entry.best_candidate_id = Some(best_candidate_id);
         entry.cost_usd = Some(cost_usd);
         entry.usage = Some(usage);
+        entry.storage = storage;
         entry
     }
 
@@ -133,10 +137,12 @@ impl RunRegistryEntry {
         cache_namespace: &str,
         cost_usd: f64,
         usage: Value,
+        storage: Option<Value>,
     ) -> Self {
         let mut entry = Self::new(paths, config, cache_mode, cache_namespace, "failed", None);
         entry.cost_usd = Some(cost_usd);
         entry.usage = Some(usage);
+        entry.storage = storage;
         entry
     }
 
@@ -147,6 +153,7 @@ impl RunRegistryEntry {
         cache_namespace: &str,
         cost_usd: f64,
         usage: Value,
+        storage: Option<Value>,
     ) -> Self {
         let mut entry = Self::new(
             paths,
@@ -158,6 +165,7 @@ impl RunRegistryEntry {
         );
         entry.cost_usd = Some(cost_usd);
         entry.usage = Some(usage);
+        entry.storage = storage;
         entry
     }
 
@@ -189,6 +197,7 @@ impl RunRegistryEntry {
             best_candidate_id: None,
             cost_usd: None,
             usage,
+            storage: None,
         }
     }
 }

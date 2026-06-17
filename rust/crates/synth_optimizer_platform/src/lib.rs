@@ -21,6 +21,7 @@ pub mod jobs;
 pub mod levers;
 pub mod limit_engine;
 pub mod limits;
+pub mod observability;
 pub mod operations;
 pub mod process;
 pub mod projections;
@@ -56,7 +57,7 @@ pub use candidates::{
     CandidatePayloadInput, CandidatePayloadRecord, FrontierCellInput, FrontierCellRecord,
     PlanLinkInput, PlanLinkRecord,
 };
-pub use checkpoints::{CheckpointInput, CheckpointRecord};
+pub use checkpoints::{CheckpointInput, CheckpointRecord, CheckpointSummaryRecord};
 pub use config::{
     proposer_auth_mode_normalized, proposer_uses_chatgpt_auth, resolve_chatgpt_codex_home_source,
     resolve_proposer_auth_launch_mode, validate_chatgpt_proposer_config,
@@ -120,6 +121,11 @@ pub use limits::{
     BUDGET_COMMIT_SCHEMA_VERSION, BUDGET_RELEASE_SCHEMA_VERSION, BUDGET_RESERVATION_SCHEMA_VERSION,
     RUNTIME_EFFECT_ADMISSION_SCHEMA_VERSION, RUN_LIMITS_SCHEMA_VERSION,
 };
+pub use observability::{
+    OptimizerAlgorithm as ObservationOptimizerAlgorithm, OptimizerEvent, OptimizerItem,
+    OptimizerItemType, OptimizerLogLevel, OptimizerStateSlice, OptimizerStateSliceKind,
+    OPTIMIZER_EVENT_SCHEMA_VERSION, OPTIMIZER_STATE_SLICE_SCHEMA_VERSION,
+};
 pub use operations::OperationRecord;
 pub use process::ManagedContainerProcess;
 pub use projections::ProjectionFreshnessRecord;
@@ -149,7 +155,10 @@ pub use state_machine::{
 };
 pub use stopper::{StopperStateInput, StopperStateRecord};
 pub use storage_maintenance::{
-    compact_run_storage, delete_run_storage, RunStorageMaintenanceInput, StorageMaintenanceProfile,
+    compact_run_storage, delete_run_storage, inspect_run_storage, inspect_run_storage_summary,
+    inspect_workspace_storage_health, write_run_storage_report, RunStorageInspectionInput,
+    RunStorageMaintenanceInput, StorageHealthThresholds, StorageMaintenanceProfile,
+    WorkspaceStorageHealthInput,
 };
 pub use usage::{UsageLedgerInput, UsageLedgerRecord};
 pub use workspace::{

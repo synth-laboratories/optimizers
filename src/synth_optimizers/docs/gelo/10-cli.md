@@ -43,7 +43,7 @@ synth-optimizers gelo materialize \
 
 | Flag | Default | Purpose |
 |------|---------|---------|
-| `--preset` | source option | Built-in preset. Public presets currently ship `crafter_smoke` and `crafter`. |
+| `--preset` | source option | Built-in preset. Public presets: `sokoban_smoke` (GameBench, recommended), `crafter_smoke`, `crafter` (legacy synth-containers). |
 | `--toml` | source option | Structured public GELO TOML or JSON input. |
 | `--overlay` | — | Structured overlay for `--toml`. |
 | `--container-url` | — | Direct container URL. Mutually exclusive with `--container-pool`. |
@@ -94,6 +94,7 @@ synth-optimizers gelo submit \
 | `--heldout-seed-count` | preset default | Override preset heldout seed count. |
 | `--max-rollouts` | preset default | Override preset rollout cap. |
 | `--policy-model` | preset default | Override preset rollout policy model. |
+| `--billing-mode` | backend default | `promo` for launch-promo gates or `paid` for normal paid GELO. |
 | `--timeout-seconds` | `120` | HTTP client timeout. |
 | `--disable-usage-registration` | off | Do not send the best-effort package usage-registration event. |
 | `--follow` | off | Stream `/events` until terminal status. |

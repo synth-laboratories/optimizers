@@ -75,6 +75,12 @@ class BoardSource(Protocol):
 
     def run_limits(self, run_id: str) -> dict: ...
 
+    def run_storage(self, run_id: str) -> dict: ...
+
+    def compact_run_storage(self, run_id: str, *, profile: str, dry_run: bool) -> dict: ...
+
+    def delete_run_storage(self, run_id: str) -> dict: ...
+
 
 class RunState(StrEnum):
     """Authoritative lifecycle state of a GEPA run.
@@ -891,6 +897,7 @@ def _render_rows(runs: list[dict]) -> str:
             "<td class='num heldout'>{heldout}</td>"
             "<td class='eta'>{eta}</td>"
             "<td class='num dur'>{dur}</td>"
+            "<td class='storage-cell'>{storage}</td>"
             "<td class='num tokens'>{tokens}</td>"
             "<td class='num cost'>${cost}</td>"
             "<td class='ts updated'>{updated}</td>"
@@ -904,12 +911,22 @@ def _render_rows(runs: list[dict]) -> str:
                 heldout=_fmt_reward(run["best_heldout_reward"]),
                 eta=_eta_html(run.get("eta")),
                 dur=_fmt_duration(run["duration_seconds"]),
+                storage=_storage_badge(run),
                 tokens=f"{run['usage']['total_tokens']:,}",
                 cost=f"{run['cost_usd']:.4f}",
                 updated=_fmt_updated(run),
             )
         )
     return "\n".join(rows)
+
+
+def _storage_badge(run: dict) -> str:
+    state = str(run.get("state") or "")
+    if state in {"succeeded", "failed", "cancelled"}:
+        return "<span class='storage-badge ready'>inspect</span>"
+    if state in {"queued", "running", "paused"}:
+        return "<span class='storage-badge live'>live</span>"
+    return "<span class='storage-badge'>unknown</span>"
 
 
 def render_board_html(
@@ -972,7 +989,7 @@ def render_board_html(
   .status-head {{ display:flex; justify-content:space-between; gap:16px; align-items:baseline; margin-bottom:10px; }}
   .status-title {{ color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }}
   .status-note {{ color:var(--muted); font-size:11px; text-align:right; }}
-  .status-grid {{ display:grid; grid-template-columns:repeat(6, minmax(0,1fr)); gap:8px; margin-bottom:12px; }}
+  .status-grid {{ display:grid; grid-template-columns:repeat(auto-fit, minmax(118px,1fr)); gap:8px; margin-bottom:12px; }}
   .status-stat {{ background:var(--inset); border:1px solid var(--border); border-radius:6px; padding:8px 10px; min-width:0; }}
   .status-stat .k {{ color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.04em; white-space:nowrap; }}
   .status-stat .v {{ margin-top:2px; font-size:15px; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }}
@@ -1020,6 +1037,11 @@ def render_board_html(
   .pill.running {{ background:rgba(255,92,0,.13); color:var(--run); }}
   .pill.paused {{ background:rgba(217,119,87,.13); color:var(--stale); }}
   .pill.unknown {{ background:rgba(217,119,87,.13); color:var(--stale); }}
+  .storage-cell {{ white-space:nowrap; }}
+  .storage-badge {{ display:inline-flex; border:1px solid rgba(139,148,158,.35); border-radius:999px;
+    padding:2px 7px; color:var(--muted); font-size:11px; }}
+  .storage-badge.ready {{ color:var(--ok); border-color:rgba(34,197,94,.45); }}
+  .storage-badge.live {{ color:var(--run); border-color:rgba(255,92,0,.45); }}
   .fail {{ color:var(--fail); font-size:11px; margin-top:4px; }}
   .failmsg {{ color:var(--muted); margin-top:2px; max-width:520px; }}
   .phase {{ color:var(--run); font-size:11px; margin-top:4px; }}
@@ -1072,6 +1094,7 @@ def render_board_html(
   .ctl {{ background:var(--inset); color:var(--text); border:1px solid var(--border); border-radius:6px;
     padding:5px 10px; font:inherit; font-size:12px; cursor:pointer; }}
   .ctl:hover {{ border-color:var(--run); }}
+  .ctl[disabled] {{ opacity:.45; cursor:not-allowed; }}
   #btn-stop, #btn-cancel {{ color:var(--fail); }}
   .drawer-conn {{ padding:6px 20px; font-size:11px; color:var(--muted); border-bottom:1px solid var(--border); }}
   .drawer-conn .live {{ color:var(--ok); }}
@@ -1082,6 +1105,13 @@ def render_board_html(
   details.dsec > summary.dsec-h {{ cursor:pointer; }}
   .dcount {{ color:var(--muted); text-transform:none; letter-spacing:0; }}
   .dnone {{ color:var(--muted); font-size:12px; padding:4px 0; }}
+  .storage-actions {{ display:flex; flex-wrap:wrap; gap:6px; margin-top:10px; }}
+  .storage-note {{ color:var(--muted); font-size:11px; margin-top:8px; }}
+  .storage-warning {{ color:var(--fail); font-size:11px; margin-top:8px; }}
+  .storage-list {{ display:flex; flex-direction:column; gap:4px; margin-top:8px; }}
+  .storage-row {{ display:grid; grid-template-columns:80px minmax(0,1fr); gap:8px; font-size:12px;
+    border-bottom:1px solid rgba(31,41,55,.7); padding:3px 0; }}
+  .storage-row .bytes {{ color:var(--muted); text-align:right; font-variant-numeric:tabular-nums; }}
   .dframe {{ display:flex; flex-direction:column; gap:4px; }}
   .frow {{ display:flex; gap:10px; align-items:baseline; font-size:12px; padding:3px 0;
     border-bottom:1px solid rgba(31,41,55,.7); }}
@@ -1144,7 +1174,7 @@ def render_board_html(
   <thead><tr>
     <th>State</th><th>Run</th><th>Domain</th>
     <th class="num">Train</th><th class="num">Heldout</th><th>ETA</th><th class="num">Duration</th>
-    <th class="num">Tokens</th><th class="num">Cost</th><th class="ts">Last Updated</th>
+    <th>Storage</th><th class="num">Tokens</th><th class="num">Cost</th><th class="ts">Last Updated</th>
   </tr></thead>
   <tbody>
 {rows_html}
@@ -1170,6 +1200,9 @@ def render_board_html(
       <div id="d-runstate" class="statgrid"><div class="dnone">no runtime stats yet</div></div>
       <div class="chart-t">Per-limit ETA forecast over time</div>
       <div id="chart-limit-eta" class="chart"><div class="dnone">no limit forecast samples yet</div></div>
+    </div>
+    <div class="dsec"><div class="dsec-h">Storage</div>
+      <div id="d-storage"><div class="dnone">loading storage report…</div></div>
     </div>
     <div class="dsec"><div class="dsec-h">Throughput</div>
       <div id="d-throughput" class="statgrid"><div class="dnone">no throughput stats yet</div></div>
@@ -1383,9 +1416,15 @@ var GepaBoard = (function () {
       ? "<div class='queue-list'>"+c.queuedItems.slice(0,8).map(queuedReasonItem).join('')+"</div>"
       : "<span class='chip'><strong>empty</strong> no queued runs</span>";
     var moreQueued=c.queuedItems.length>8 ? "<span class='chip warn'><strong>+"+esc(c.queuedItems.length-8)+"</strong> more queued</span>" : "";
+    var storage=data.storage_health||{}, storageSummary=storage.summary||{}, storageAlerts=storage.alerts||[];
     var warnings=[];
     if(c.stale) warnings.push(c.stale+' stale lease'+(c.stale===1?'':'s'));
     if(c.blocked) warnings.push(c.blocked+' blocked queued');
+    if(storageAlerts.length){
+      var top=storageAlerts[0]||{};
+      var target=top.run_id || top.root || top.path || 'workspace';
+      warnings.push(storageAlerts.length+' storage alert'+(storageAlerts.length===1?'':'s')+' · '+(top.kind||'storage')+' '+fmtBytes(top.bytes)+' '+target);
+    }
     el.innerHTML="<div class='status-head'><div class='status-title'>Run Status</div>"
       +"<div class='status-note'>last progress "+esc(ageOrDash(s.service_last_progress_at))
       +" · board poll "+esc(ageOrDash(data.generated_at))+"</div></div>"
@@ -1396,6 +1435,8 @@ var GepaBoard = (function () {
       +statusStat('Terminal', c.terminal, c.terminal ? 'ok' : '')
       +statusStat('Workers', activeWorkers+'/'+workerTotal, activeWorkers ? 'run' : '')
       +statusStat('Oldest Queued', fmtDur(s.service_oldest_queued_age_seconds), c.queued ? 'warn' : '')
+      +statusStat('Storage', fmtBytes(storageSummary.bytes), storageAlerts.length ? 'warn' : '')
+      +statusStat('Stale Partials', fmtBytes(storageSummary.stale_partial_bytes), storageSummary.stale_partial_bytes ? 'warn' : '')
       +"</div>"
       +"<div class='status-lanes'><div><div class='status-lane-title'>Worker Occupancy</div>"
       +"<div class='chiprow'>"+workers+"</div></div>"
@@ -1457,9 +1498,19 @@ var GepaBoard = (function () {
       +"<td class='num'>"+fmtReward(r.best_heldout_reward)+"</td>"
       +"<td class='eta'>"+etaHtml(r.eta)+"</td>"
       +"<td class='num'>"+fmtDur(r.duration_seconds)+"</td>"
+      +"<td class='storage-cell'>"+storageBadge(r)+"</td>"
       +"<td class='num'>"+Number(r.usage.total_tokens).toLocaleString()+"</td>"
       +"<td class='num'>$"+Number(r.cost_usd).toFixed(4)+"</td>"
       +"<td class='ts'>"+fmtUpdated(r)+"</td></tr>";
+  }
+  function storageBadge(r){
+    if(r.state==='succeeded' || r.state==='failed' || r.state==='cancelled'){
+      return "<span class='storage-badge ready'>inspect</span>";
+    }
+    if(r.state==='queued' || r.state==='running' || r.state==='paused'){
+      return "<span class='storage-badge live'>live</span>";
+    }
+    return "<span class='storage-badge'>unknown</span>";
   }
   function esc(s){ var d=document.createElement('div'); d.textContent=(s==null?'':String(s)); return d.innerHTML; }
   function apply(){
@@ -1515,7 +1566,7 @@ var GepaBoard = (function () {
   // ---- per-run drill-down -------------------------------------------------
   var drawer, scrim, dlog, dconn, dtitle, dsub, btnStop, btnCancel, ws=null, curRun=null;
   var fileTimer=null, filePollState=null, curRunSummary=null;
-  var D=null, candCountEl, evCountEl, frameEl, candBodyEl, dmeta, runStateEl, queueEl, throughputEl, proposerRoundEl, waterfallEl, limitEtaEl;
+  var D=null, candCountEl, evCountEl, frameEl, candBodyEl, dmeta, runStateEl, queueEl, throughputEl, proposerRoundEl, waterfallEl, limitEtaEl, storageEl, curRunStorage=null;
   var RECENT=14;
   function shortId(id){ if(!id) return '—'; return String(id).replace(/^gepa_/,'').slice(0,10); }
   function newDetail(){ return {
@@ -2669,11 +2720,159 @@ var GepaBoard = (function () {
 	    var base=window.__EVENTS_BASE__;
 	    return base ? base+'/'+encodeURIComponent(runId)+'/timings' : null;
 	  }
-	  function limitsUrlForRun(r, runId){
-	    if(r && r.limits_url) return r.limits_url;
-	    var base=window.__EVENTS_BASE__;
-	    return base ? base+'/'+encodeURIComponent(runId)+'/limits' : null;
-	  }
+  function limitsUrlForRun(r, runId){
+    if(r && r.limits_url) return r.limits_url;
+    var base=window.__EVENTS_BASE__;
+    return base ? base+'/'+encodeURIComponent(runId)+'/limits' : null;
+  }
+  function storageUrlForRun(r, runId){
+    if(r && r.storage_url && window.__EVENTS_BASE__) return r.storage_url;
+    var base=window.__EVENTS_BASE__;
+    return base ? base+'/'+encodeURIComponent(runId)+'/storage' : null;
+  }
+  function runApiUrl(runId, suffix){
+    var base=window.__EVENTS_BASE__;
+    return base ? base+'/'+encodeURIComponent(runId)+(suffix||'') : null;
+  }
+  function fetchJson(url, opts){
+    return fetch(url, opts).then(function(r){
+      return r.text().then(function(text){
+        var data={};
+        if(text){ try{ data=JSON.parse(text); }catch(e){ data={error:text}; } }
+        if(!r.ok){
+          var msg=data.error || data.message || (data.error_code ? data.error_code : r.statusText);
+          throw new Error(msg || ('HTTP '+r.status));
+        }
+        return data;
+      });
+    });
+  }
+  function fmtBytes(v){
+    var n=Number(v||0), units=['B','KB','MB','GB','TB'];
+    for(var i=0;i<units.length;i++){
+      if(n<1024 || i===units.length-1) return units[i]==='B' ? Math.round(n)+'B' : n.toFixed(1)+units[i];
+      n=n/1024;
+    }
+    return n.toFixed(1)+'TB';
+  }
+  function storageList(items, labelKey){
+    if(!items || !items.length) return "<div class='dnone'>none</div>";
+    return "<div class='storage-list'>"+items.slice(0,10).map(function(item){
+      var label=item[labelKey] || item.relative_path || item.name || item.path || 'artifact';
+      return "<div class='storage-row'><div class='bytes'>"+esc(fmtBytes(item.bytes))+"</div>"
+        +"<div title='"+esc(item.path||label)+"'>"+esc(label)+"</div></div>";
+    }).join('')+"</div>";
+  }
+  function renderStorageReport(report, preview){
+    if(!storageEl) return;
+    if(!report || report.error){
+      storageEl.innerHTML="<div class='storage-warning'>"+esc(report&&report.error||'storage report failed')+"</div>";
+      return;
+    }
+    var rec=report.recommendation||{}, terminal=!!report.terminal;
+    var profile=rec.profile || 'compact';
+    var safe=Array.isArray(report.safe_actions) ? report.safe_actions : [];
+    var canCompact=terminal && safe.indexOf('compact')>=0;
+    var canDelete=terminal && safe.indexOf('delete')>=0;
+    var manifest=report.compaction_manifest||{};
+    var checkpoint=report.checkpoint_compaction||{};
+    var body="<div class='statgrid'>"
+      +stat('Size', fmtBytes(report.bytes))
+      +stat('Reclaimable', fmtBytes(report.reclaimable_bytes), report.reclaimable_bytes ? 'ok' : '')
+      +stat('Status', (report.terminal_status||'unknown')+(terminal?' terminal':' live'), terminal?'ok':'run')
+      +stat('Recommended', (rec.action||'none')+(rec.profile?':'+rec.profile:''), rec.action==='compact'?'ok':'')
+      +stat('Runtime homes', fmtBytes(report.generated_runtime&&report.generated_runtime.bytes))
+      +stat('Checkpoint reclaim', fmtBytes(checkpoint.estimated_reclaim_bytes))
+      +"</div>"
+      +"<div class='storage-note'>"+esc(rec.reason||'no recommendation')+"</div>";
+    if(manifest.exists){
+      body+="<div class='storage-note'>last compaction: "+esc(manifest.profile||'profile unknown')
+        +" · reclaimed "+esc(fmtBytes(manifest.actual_reclaim_bytes))+"</div>";
+    }
+    if(preview){
+      body+="<div class='storage-note'>dry run: "+esc(preview.profile||profile)
+        +" would reclaim "+esc(fmtBytes(preview.estimated_reclaim_bytes))+"</div>"
+        +storageList(preview.removed_paths||[], 'path');
+    }
+    body+="<div class='storage-actions'>"
+      +"<button class='ctl' data-storage-action='dry-compact' data-profile='debug' "+(canCompact?'':'disabled')+">dry debug</button>"
+      +"<button class='ctl' data-storage-action='dry-compact' data-profile='compact' "+(canCompact?'':'disabled')+">dry compact</button>"
+      +"<button class='ctl' data-storage-action='dry-compact' data-profile='minimal' "+(canCompact?'':'disabled')+">dry minimal</button>"
+      +"<button class='ctl' data-storage-action='apply-compact' data-profile='"+esc(preview&&preview.profile||profile)+"' "+(preview&&canCompact?'':'disabled')+">apply compact</button>"
+      +"<button class='ctl' data-storage-action='delete' "+(canDelete?'':'disabled')+">delete</button>"
+      +"</div>";
+    if(!terminal) body+="<div class='storage-warning'>cleanup disabled until the run is terminal</div>";
+    body+="<div class='chart-t'>Artifacts</div>"+storageList(report.artifact_summary||[], 'name')
+      +"<div class='chart-t'>Top files</div>"+storageList(report.top_files||[], 'relative_path');
+    var sqlite=report.sqlite||[];
+    if(sqlite.length){
+      body+="<div class='chart-t'>SQLite</div>"+sqlite.map(function(db){
+        var rows=(db.objects||[]).slice(0,8).map(function(obj){
+          return "<div class='storage-row'><div class='bytes'>"+esc(fmtBytes(obj.bytes))+"</div><div>"+esc(obj.name)+"</div></div>";
+        }).join('');
+        return "<div class='storage-note'>"+esc(db.path)+" · "+esc(fmtBytes(db.bytes))+"</div>"
+          +(rows?"<div class='storage-list'>"+rows+"</div>":"<div class='dnone'>dbstat unavailable</div>");
+      }).join('');
+    }
+    storageEl.innerHTML=body;
+  }
+  function loadStorageReport(runId){
+    if(!storageEl) return;
+    var url=storageUrlForRun(curRunSummary, runId);
+    storageEl.innerHTML="<div class='dnone'>loading storage report...</div>";
+    if(!url){ storageEl.innerHTML="<div class='dnone'>storage actions require the live board server</div>"; return; }
+    fetchJson(url).then(function(report){
+      if(curRun!==runId) return;
+      curRunStorage=report;
+      renderStorageReport(report);
+    }).catch(function(error){
+      if(curRun===runId) renderStorageReport({error:error.message});
+    });
+  }
+  function refreshBoardSnapshot(){
+    fetchJson('/api/runs').then(patch).catch(function(error){
+      if(dconn) setConn('board refresh failed: '+error.message);
+    });
+  }
+  function setStorageBusy(busy){
+    if(!storageEl) return;
+    storageEl.querySelectorAll('button').forEach(function(button){ button.disabled=busy || button.disabled; });
+  }
+  function compactStorage(profile, dryRun){
+    if(!curRun) return;
+    var url=runApiUrl(curRun, '/compact');
+    if(!url) return;
+    if(!dryRun && !confirm('Apply '+profile+' compaction to '+curRun+'?')) return;
+    setStorageBusy(true);
+    fetchJson(url, {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({profile:profile, dry_run:dryRun})
+    }).then(function(report){
+      if(curRunStorage && dryRun){
+        renderStorageReport(curRunStorage, report);
+      } else {
+        loadStorageReport(curRun);
+        refreshBoardSnapshot();
+      }
+    }).catch(function(error){
+      renderStorageReport({error:error.message});
+    });
+  }
+  function deleteStorageRun(){
+    if(!curRun) return;
+    var typed=prompt('Type '+curRun+' to delete this terminal run and its local artifacts.');
+    if(typed!==curRun) return;
+    var url=runApiUrl(curRun, '');
+    if(!url) return;
+    setStorageBusy(true);
+    fetchJson(url, {method:'DELETE'}).then(function(){
+      closeDrawer();
+      refreshBoardSnapshot();
+    }).catch(function(error){
+      renderStorageReport({error:error.message});
+    });
+  }
 	  function applyLimitSnapshot(snapshot){
 	    if(!snapshot || typeof snapshot !== 'object') return;
 	    D.limits.snapshot=snapshot;
@@ -2728,7 +2927,7 @@ var GepaBoard = (function () {
     if(ws){ try{ws.close();}catch(e){} ws=null; }
     if(fileTimer){ clearTimeout(fileTimer); fileTimer=null; }
     filePollState=null;
-    curRun=null; drawer.hidden=true; scrim.hidden=true;
+    curRun=null; curRunStorage=null; drawer.hidden=true; scrim.hidden=true;
     btnStop.hidden=true; btnCancel.hidden=true;
   }
   function onEvent(ev){ ingest(ev); D.events.push(ev); }
@@ -2739,6 +2938,7 @@ var GepaBoard = (function () {
     D=newDetail(); curRunSummary=findRun(runId); seedRunSummary(curRunSummary);
     evCountEl.textContent=''; dmeta.textContent='';
     dlog.innerHTML="<div class='dnone'>loading event feed…</div>";
+    if(storageEl) storageEl.innerHTML="<div class='dnone'>loading storage report...</div>";
     renderRunState();
     throughputEl.innerHTML="<div class='dnone'>no throughput stats yet</div>";
     document.getElementById('chart-throughput').innerHTML="<div class='dnone'>no throughput samples yet</div>";
@@ -2752,6 +2952,7 @@ var GepaBoard = (function () {
     waterfallEl.innerHTML="<div class='dnone'>loading candidate trajectories…</div>";
     candBodyEl.innerHTML="<tr><td colspan='7' class='dnone'>loading candidates…</td></tr>";
     candCountEl.textContent='';
+    loadStorageReport(runId);
     var wsUrl=wsUrlForRun(curRunSummary);
     if(wsUrl && state==='running'){ streamWs(wsUrl, runId); }
     else { loadFileEvents(runId, state, eventsUrlForRun(curRunSummary, runId)); }
@@ -2835,12 +3036,20 @@ var GepaBoard = (function () {
     proposerRoundEl=document.getElementById('d-proposer-rounds');
     waterfallEl=document.getElementById('chart-waterfall');
     limitEtaEl=document.getElementById('chart-limit-eta');
+    storageEl=document.getElementById('d-storage');
     [q,st,dm].forEach(function(el){ el.addEventListener('input', apply); });
     document.getElementById('drawer-close').addEventListener('click', closeDrawer);
     scrim.addEventListener('click', closeDrawer);
     document.addEventListener('keydown', function(e){ if(e.key==='Escape') closeDrawer(); });
     btnStop.addEventListener('click', function(){ sendControl('stop'); });
     btnCancel.addEventListener('click', function(){ sendControl('cancel'); });
+    storageEl.addEventListener('click', function(e){
+      var button=e.target.closest('button[data-storage-action]'); if(!button) return;
+      var action=button.dataset.storageAction, profile=button.dataset.profile || 'compact';
+      if(action==='dry-compact') compactStorage(profile, true);
+      else if(action==='apply-compact') compactStorage(profile, false);
+      else if(action==='delete') deleteStorageRun();
+    });
     body.addEventListener('click', function(e){
       var tr=e.target.closest('tr'); if(!tr) return;
       openDrawer(tr.dataset.run, tr.dataset.state);

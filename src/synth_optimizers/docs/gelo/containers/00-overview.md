@@ -23,10 +23,17 @@ publishing a runnable Crafter walkthrough.
 
 | Env | Notes |
 |-----|--------|
-| Crafter | Primary hosted E2E reference; public source/publish path must be confirmed before sharing |
+| **GameBench Sokoban** | **Recommended public reference.** Self-contained react container (in-process gold), Tier B+ checkpoint/resume, `true_environment_snapshot`. Preset: `sokoban_smoke`. Source: `gamebench/tasks/sokoban-singleplayer/containers/react` |
+| GameBench Crafter | In progress (Python + Rust gold); subgoal GELO wiring tracked separately |
+| Crafter (legacy) | Original hosted E2E reference; private synth-containers source — confirm publish path before sharing |
 | NetHack | Validity cohort; `acceptance.rs` scoring bug is P0 before trust |
 | VendingBench | Application lane; separate publish bar |
 | Harvey-LAB | Application lane |
+
+For new container authors, start from the GameBench react containers
+(`gamebench/tasks/*/containers/react`): they implement the HTTP contract below
+(rollout, checkpoint, resume) with an embedded gold engine, so no separate gold
+service is required.
 
 Internal requirements doc (optimizers-beta):
 `evals/vending_bench/GO_EX_CONTAINER_REQUIREMENTS.md`.

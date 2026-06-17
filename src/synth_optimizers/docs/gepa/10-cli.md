@@ -9,6 +9,7 @@ synth-optimizers gepa submit --config gepa.toml --tunnel-url http://127.0.0.1:87
 synth-optimizers gepa watch gepa_...
 synth-optimizers gepa service --db service.sqlite
 synth-optimizers gepa board ~/.gepa/runs --serve
+synth-optimizers gepa runs health --root ~/.gepa/runs
 synth-optimizers events compare --left a.jsonl --right b.jsonl
 ```
 
@@ -113,8 +114,12 @@ synth-optimizers gepa service --db service.sqlite --bind 127.0.0.1:8879 --worker
 
 ## `gepa board`
 
-A local, read-only HTML projection of run evidence — `GEPA_HOME` discovery, explicit
-registry roots, and any live services it finds.
+A local HTML projection of run evidence — `GEPA_HOME` discovery, explicit
+registry roots, and any live services it finds. In `--serve` mode the run drawer
+also exposes local storage inspection, dry-run compaction previews, confirmed
+compaction, and confirmed deletion for terminal runs. The status panel also
+surfaces workspace storage health alerts for oversized roots/runs and stale
+partial artifacts.
 
 ```bash
 # Static HTML file:
@@ -141,6 +146,9 @@ synth-optimizers gepa board --serve --port 8765
 Serve the run **board** and the bundled GEPA docs behind one local port as two tabs
 (`Board` | `Docs`), flippable by click or keyboard (`1`/`2`/`T`). The docs ship with the
 package, so this works from a plain `pip install` with no repo checkout.
+Use this as the local GEPA cockpit when managing prior runs: open a run, inspect
+the Storage section, dry-run `debug` / `compact` / `minimal`, then apply only
+after the confirmation prompt.
 
 ```bash
 # Board defaults to GEPA_HOME discovery; docs to the bundled set:
@@ -174,6 +182,50 @@ synth-optimizers gepa eval-stats --runs run_a/ run_b/
 | `--no-write-json` | Do not write per-run `stats.json` next to `transitions.sqlite`. |
 | `--json` | Print stats JSON instead of the table. |
 
+## `gepa runs health`
+
+Inspect root-level storage health without mutating artifacts.
+
+```bash
+synth-optimizers gepa runs health --root ~/.gepa/runs
+synth-optimizers gepa runs health --root ~/.gepa/runs --json
+```
+
+Default alert thresholds are conservative: 5 GiB per run, 20 GiB per root,
+2 GiB of stale partial artifacts, and partials older than two hours. Override
+them with `--run-warn-bytes`, `--root-warn-bytes`,
+`--stale-partial-warn-bytes`, and `--partial-stale-after`.
+
+| Flag | Purpose |
+|------|---------|
+| `--root` | Runs root to inspect; repeatable and required. |
+| `--run-warn-bytes` | Per-run warning threshold, e.g. `5G`. |
+| `--root-warn-bytes` | Per-root warning threshold, e.g. `20G`. |
+| `--stale-partial-warn-bytes` | Stale partial-artifact warning threshold, e.g. `2G`. |
+| `--partial-stale-after` | Partial artifact age threshold, e.g. `2h`, `30m`. |
+| `--json` | Print the full `synth.optimizer.storage_health.v1` report. |
+
+## `gepa runs list` / `show` / `du` / `doctor`
+
+Inspect prior local runs without mutating artifacts.
+
+```bash
+synth-optimizers gepa runs list --root ~/.gepa/runs
+synth-optimizers gepa runs show gepa_... --root ~/.gepa/runs
+synth-optimizers gepa runs du ./runs/gepa_...
+synth-optimizers gepa runs doctor ./runs/gepa_...
+```
+
+| Command | Purpose |
+|---------|---------|
+| `list` | Table of run id, terminal status, size, reclaimable bytes, and recommendation. |
+| `show` | One-run storage summary. |
+| `du` | Detailed artifact, top-file, and SQLite breakdown. |
+| `doctor` | Detailed breakdown plus the next cleanup command to run. |
+
+All support `--json`; `list` also supports `--root`, `--older-than`, and
+`--status` for bulk scans.
+
 ## `gepa runs compact` / `gepa runs delete`
 
 Maintenance for run storage. Both accept run directories or run IDs, or scan a `--root`.
@@ -195,6 +247,8 @@ synth-optimizers gepa runs delete  --root ~/.gepa/runs --status failed --yes
 | `--json` | both | Machine-readable output. |
 
 > Both default to a dry run. Nothing is compacted or deleted until you pass `--yes`.
+> Cleanup is terminal-only. Use `gepa runs doctor` or the board Storage section
+> to inspect live/non-terminal runs without mutating them.
 
 ## `events replay` / `events compare`
 

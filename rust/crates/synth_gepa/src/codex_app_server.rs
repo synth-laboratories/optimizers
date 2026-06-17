@@ -24,6 +24,9 @@ const OPENROUTER_GROK43_CACHED_INPUT_USD_PER_MILLION: f64 = 0.20;
 const OPENROUTER_GROK43_OUTPUT_USD_PER_MILLION: f64 = 2.50;
 const DEEPSEEK_INPUT_USD_PER_MILLION: f64 = 0.27;
 const DEEPSEEK_OUTPUT_USD_PER_MILLION: f64 = 1.10;
+const CHAT_COMPLETIONS_PROPOSER_MAX_TOKENS: u64 = 8_192;
+const CHAT_COMPLETIONS_PROPOSER_MAX_EVIDENCE_CHARS_PER_FILE: usize = 32_000;
+const CHAT_COMPLETIONS_PROPOSER_MAX_TOTAL_EVIDENCE_CHARS: usize = 160_000;
 
 pub(crate) struct CodexProposerInput<'a> {
     pub config: &'a SynthOptimizerConfig,
@@ -186,9 +189,10 @@ pub(crate) fn run_deepseek_chat_proposer(input: CodexProposerInput<'_>) -> Resul
             }
         ],
         "response_format": {"type": "json_object"},
-        // Manifests for large minibatches can be long; small caps truncate the JSON
-        // mid-string ("EOF while parsing").
-        "max_tokens": 32768,
+        // Keep OpenRouter-compatible requests inside common 128k context windows.
+        // Two GEPA proposals fit comfortably in 8k while 32k can make the
+        // provider reject otherwise-valid evidence packets before generation.
+        "max_tokens": CHAT_COMPLETIONS_PROPOSER_MAX_TOKENS,
         "stream": false
     });
     // DeepSeek-specific switch that suppresses its reasoning channel so `content` is the
@@ -238,7 +242,7 @@ pub(crate) fn run_deepseek_chat_proposer(input: CodexProposerInput<'_>) -> Resul
             Some(pair) => pair,
             None => {
                 return Err(OptimizerError::Proposer(format!(
-                    "DeepSeek chat proposer failed after 3 attempts: {}",
+                    "chat-completions proposer failed after 3 attempts: {}",
                     last_err.unwrap_or_else(|| "unknown error".to_string())
                 )))
             }
@@ -250,13 +254,13 @@ pub(crate) fn run_deepseek_chat_proposer(input: CodexProposerInput<'_>) -> Resul
     let proposals = proposals_from_manifest(&manifest)?;
     let evidence_warnings = manifest_evidence_warnings(&input, &manifest, &proposals);
     let usage = chat_response.get("usage").cloned().ok_or_else(|| {
-        OptimizerError::Proposer("DeepSeek chat proposer response missing usage".to_string())
+        OptimizerError::Proposer("chat-completions proposer response missing usage".to_string())
     })?;
     let usage = normalize_proposer_usage(input.config, &model, usage);
     write_deepseek_chat_artifacts(&input, &request, &chat_response)?;
     write_workspace_pack_manifest(&input.workspace_dir)?;
     Ok(json!({
-        "backend": "deepseek_chat",
+        "backend": input.config.proposer.backend,
         "runtime_substrate": "local",
         "workspace": input.workspace_dir,
         "manifest": manifest,
@@ -275,6 +279,7 @@ fn deepseek_chat_prompt(input: &CodexProposerInput<'_>) -> Result<String> {
     prompt.push_str("\n\nManifest schema:\n");
     prompt.push_str(&proposal_schema(input));
     prompt.push_str("\n\nUse these workspace files as the complete evidence packet.\n");
+    let mut remaining_evidence_chars = CHAT_COMPLETIONS_PROPOSER_MAX_TOTAL_EVIDENCE_CHARS;
     for path in [
         "state/proposer_metadata.json",
         "state/task_info.json",
@@ -290,14 +295,17 @@ fn deepseek_chat_prompt(input: &CodexProposerInput<'_>) -> Result<String> {
         let file_path = input.workspace_dir.join(path);
         let text = fs::read_to_string(&file_path)
             .map_err(|source| OptimizerError::io(&file_path, source))?;
-        // Bound each evidence file so the prompt stays within the model context
-        // window. With large minibatches + accepted candidates, rollouts.json /
-        // scores.json grow past 1M tokens otherwise (DeepSeek 400: context length).
-        const MAX_EVIDENCE_CHARS: usize = 120_000;
-        let text = if text.chars().count() > MAX_EVIDENCE_CHARS {
-            let head: String = text.chars().take(MAX_EVIDENCE_CHARS).collect();
-            format!("{head}\n…[truncated to {MAX_EVIDENCE_CHARS} chars to fit context budget]…")
+        let file_budget =
+            remaining_evidence_chars.min(CHAT_COMPLETIONS_PROPOSER_MAX_EVIDENCE_CHARS_PER_FILE);
+        let text_char_count = text.chars().count();
+        let text = if file_budget == 0 {
+            "[omitted: chat-completions proposer evidence budget exhausted]".to_string()
+        } else if text_char_count > file_budget {
+            let head: String = text.chars().take(file_budget).collect();
+            remaining_evidence_chars = remaining_evidence_chars.saturating_sub(file_budget);
+            format!("{head}\n…[truncated to {file_budget} chars to fit context budget]…")
         } else {
+            remaining_evidence_chars = remaining_evidence_chars.saturating_sub(text_char_count);
             text
         };
         prompt.push_str("\n\n--- ");
@@ -1198,6 +1206,8 @@ Rules:
 - Do not leave required evidence fields empty. `evidence.candidate_comparison` must be a non-empty summary of the parent prompt against observed reflection evidence, and `evidence.example_ids_used` must include at least one concrete example id inspected from the state files.
 - Proposals should aim to generalize. Add structural sections (role, task, output rules, examples) and domain-specific rules only when they are task-valid.
 - {proposal_policy}
+- `proposed_payload` keys must be exactly the mutable target module ids from `state/run_context.json`. Do not use chat-message keys such as `content`, `role`, or `modules` unless one of those strings is literally listed as a target module id.
+- For a single target module, write the target module id directly as the only `proposed_payload` key. For example, if `state/run_context.json.target_modules == ["stage2_system"]`, write `"proposed_payload": {{"stage2_system": "<full replacement instruction>"}}`, not `"content"` and not a `modules` array.
 - At most one proposal may be conservative. The remaining proposals must be very ambitious, high-variance, task-specific updates that could plausibly produce substantially better task performance than the parent, and each rationale must name the failure clusters it attacks.
 - Shoot for large wins. Mild parent clarifications are wasted candidate budget unless they are the single conservative control.
 - Do not waste candidates on generic output-contract polish, canonical-label reminders, or baseline paraphrases unless the dominant failures are actually output-format failures.
@@ -1290,12 +1300,51 @@ fn proposer_visible_frame(
     }
     if !matches!(
         frame.evaluation_stage.as_str(),
-        "candidate_minibatch" | "parent_minibatch_reference" | "reflection"
+        "seed_full_train" | "candidate_minibatch" | "parent_minibatch_reference" | "reflection"
     ) {
         return false;
     }
     let visible_task_ids = proposer_visible_task_ids(input);
     visible_task_ids.is_empty() || visible_task_ids.contains(&frame.task_id)
+}
+
+fn frame_rollout_trace(
+    input: &CodexProposerInput<'_>,
+    frame: &synth_optimizer_platform::SensorFrame,
+) -> Value {
+    let inline = frame
+        .metadata
+        .get("rollout_trace")
+        .cloned()
+        .unwrap_or(Value::Null);
+    if rollout_trace_has_proposer_evidence(&inline) {
+        return inline;
+    }
+    read_frame_rollout_trace_artifact(input, frame).unwrap_or(inline)
+}
+
+fn rollout_trace_has_proposer_evidence(trace: &Value) -> bool {
+    json_path(trace, &["task_payload", "example"])
+        .and_then(Value::as_object)
+        .is_some()
+        || string_path(trace, &["summary", "expected"]).is_some()
+        || string_path(trace, &["summary", "prediction"]).is_some()
+}
+
+fn read_frame_rollout_trace_artifact(
+    input: &CodexProposerInput<'_>,
+    frame: &synth_optimizer_platform::SensorFrame,
+) -> Option<Value> {
+    let sensor_frame_id = frame.sensor_frame_id.trim();
+    if sensor_frame_id.is_empty() {
+        return None;
+    }
+    let run_dir = input.workspace_dir.parent()?.parent()?;
+    let path = run_dir
+        .join("rollout_traces")
+        .join(format!("{sensor_frame_id}.json"));
+    let raw = fs::read_to_string(path).ok()?;
+    serde_json::from_str(&raw).ok()
 }
 
 fn rollouts_read_model(input: &CodexProposerInput<'_>) -> Value {
@@ -1310,11 +1359,11 @@ fn rollouts_read_model(input: &CodexProposerInput<'_>) -> Value {
             if !proposer_visible_frame(input, frame) {
                 continue;
             }
-            let rollout_trace = frame.metadata.get("rollout_trace").unwrap_or(&Value::Null);
-            let summary = json_path(rollout_trace, &["summary"])
+            let rollout_trace = frame_rollout_trace(input, frame);
+            let summary = json_path(&rollout_trace, &["summary"])
                 .cloned()
                 .unwrap_or(Value::Null);
-            let outcome = json_path(rollout_trace, &["outcome"])
+            let outcome = json_path(&rollout_trace, &["outcome"])
                 .cloned()
                 .unwrap_or_else(|| {
                     json!({
@@ -1323,7 +1372,7 @@ fn rollouts_read_model(input: &CodexProposerInput<'_>) -> Value {
                         "reward": frame.reward,
                     })
                 });
-            let example = json_path(rollout_trace, &["task_payload", "example"])
+            let example = json_path(&rollout_trace, &["task_payload", "example"])
                 .cloned()
                 .unwrap_or_else(|| {
                     json!({
@@ -1474,11 +1523,11 @@ fn proposer_example_row(
     candidate: &CandidateRecord,
     frame: &synth_optimizer_platform::SensorFrame,
 ) -> Value {
-    let rollout_trace = frame.metadata.get("rollout_trace").unwrap_or(&Value::Null);
-    let summary = json_path(rollout_trace, &["summary"])
+    let rollout_trace = frame_rollout_trace(input, frame);
+    let summary = json_path(&rollout_trace, &["summary"])
         .cloned()
         .unwrap_or(Value::Null);
-    let outcome = json_path(rollout_trace, &["outcome"])
+    let outcome = json_path(&rollout_trace, &["outcome"])
         .cloned()
         .unwrap_or_else(|| {
             json!({
@@ -1487,7 +1536,7 @@ fn proposer_example_row(
                 "reward": frame.reward,
             })
         });
-    let example = json_path(rollout_trace, &["task_payload", "example"])
+    let example = json_path(&rollout_trace, &["task_payload", "example"])
         .cloned()
         .unwrap_or_else(|| {
             json!({
@@ -2251,10 +2300,8 @@ fn reflective_frame_value(
         .find(|value| !value.trim().is_empty())
         .unwrap_or_default()
         .to_string();
-    let rollout_trace = frame
-        .metadata
-        .get("rollout_trace")
-        .and_then(Value::as_object);
+    let rollout_trace = frame_rollout_trace(input, frame);
+    let rollout_trace = rollout_trace.as_object();
     let trace_summary = rollout_trace
         .and_then(|trace| trace.get("summary"))
         .cloned()

@@ -6,9 +6,11 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use serde_json::{json, Value};
 use synth_optimizer_platform::{
-    compact_run_storage, compare_normalized_event_feeds, delete_run_storage, replay_event_feed,
-    GepaRunResult as RustGepaRunResult, OptimizerError, RunStorageMaintenanceInput,
-    StorageMaintenanceProfile, WorkspaceStore,
+    compact_run_storage, compare_normalized_event_feeds, delete_run_storage, inspect_run_storage,
+    inspect_run_storage_summary, inspect_workspace_storage_health, replay_event_feed,
+    GepaRunResult as RustGepaRunResult, OptimizerError, RunStorageInspectionInput,
+    RunStorageMaintenanceInput, StorageHealthThresholds, StorageMaintenanceProfile,
+    WorkspaceStorageHealthInput, WorkspaceStore,
 };
 
 create_exception!(synth_optimizers_py, SynthOptimizerError, PyRuntimeError);
@@ -129,6 +131,11 @@ impl GepaRunResult {
     }
 
     #[getter]
+    pub fn storage_report_path(&self) -> String {
+        self.inner.storage_report_path.clone()
+    }
+
+    #[getter]
     pub fn run_registry_path(&self) -> String {
         self.inner.run_registry_path.clone()
     }
@@ -179,6 +186,10 @@ impl GepaRunResult {
         )?;
         dict.set_item("frontier_path", self.inner.frontier_path.clone())?;
         dict.set_item("score_chart_path", self.inner.score_chart_path.clone())?;
+        dict.set_item(
+            "storage_report_path",
+            self.inner.storage_report_path.clone(),
+        )?;
         dict.set_item("run_registry_path", self.inner.run_registry_path.clone())?;
         dict.set_item("workspace_db_path", self.inner.workspace_db_path.clone())?;
         dict.set_item("artifact_refs", self.artifact_refs(py)?)?;
@@ -496,12 +507,72 @@ pub fn gepa_compact_run_storage(
     value_to_py(py, &value)
 }
 
-#[pyfunction(signature = (run_dir, dry_run=true))]
-pub fn gepa_delete_run_storage(
+#[pyfunction(signature = (run_dir, run_id=None, terminal=None))]
+pub fn gepa_inspect_run_storage(
     py: Python<'_>,
     run_dir: &str,
-    dry_run: bool,
+    run_id: Option<&str>,
+    terminal: Option<bool>,
 ) -> PyResult<PyObject> {
+    let value = inspect_run_storage(RunStorageInspectionInput {
+        run_dir: run_dir.into(),
+        run_id: run_id.map(str::to_string),
+        terminal,
+    })
+    .map_err(py_error)?;
+    value_to_py(py, &value)
+}
+
+#[pyfunction(signature = (run_dir, run_id=None, terminal=None))]
+pub fn gepa_inspect_run_storage_summary(
+    py: Python<'_>,
+    run_dir: &str,
+    run_id: Option<&str>,
+    terminal: Option<bool>,
+) -> PyResult<PyObject> {
+    let value = inspect_run_storage_summary(RunStorageInspectionInput {
+        run_dir: run_dir.into(),
+        run_id: run_id.map(str::to_string),
+        terminal,
+    })
+    .map_err(py_error)?;
+    value_to_py(py, &value)
+}
+
+#[pyfunction(signature = (
+    roots,
+    run_warn_bytes=None,
+    root_warn_bytes=None,
+    stale_partial_warn_bytes=None,
+    partial_stale_after_seconds=None,
+))]
+pub fn gepa_workspace_storage_health(
+    py: Python<'_>,
+    roots: Vec<String>,
+    run_warn_bytes: Option<u64>,
+    root_warn_bytes: Option<u64>,
+    stale_partial_warn_bytes: Option<u64>,
+    partial_stale_after_seconds: Option<i64>,
+) -> PyResult<PyObject> {
+    let default_thresholds = StorageHealthThresholds::default();
+    let value = inspect_workspace_storage_health(WorkspaceStorageHealthInput {
+        roots: roots.into_iter().map(Into::into).collect(),
+        thresholds: StorageHealthThresholds {
+            run_warn_bytes: run_warn_bytes.unwrap_or(default_thresholds.run_warn_bytes),
+            root_warn_bytes: root_warn_bytes.unwrap_or(default_thresholds.root_warn_bytes),
+            stale_partial_warn_bytes: stale_partial_warn_bytes
+                .unwrap_or(default_thresholds.stale_partial_warn_bytes),
+            partial_stale_after_seconds: partial_stale_after_seconds
+                .unwrap_or(default_thresholds.partial_stale_after_seconds),
+        },
+        now_unix_seconds: None,
+    })
+    .map_err(py_error)?;
+    value_to_py(py, &value)
+}
+
+#[pyfunction(signature = (run_dir, dry_run=true))]
+pub fn gepa_delete_run_storage(py: Python<'_>, run_dir: &str, dry_run: bool) -> PyResult<PyObject> {
     let value = delete_run_storage(run_dir, dry_run).map_err(py_error)?;
     value_to_py(py, &value)
 }
@@ -623,6 +694,9 @@ fn _synth_optimizers(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<(
     module.add_function(wrap_pyfunction!(events_compare, module)?)?;
     module.add_function(wrap_pyfunction!(default_proposer_best_practices, module)?)?;
     module.add_function(wrap_pyfunction!(gepa_serve, module)?)?;
+    module.add_function(wrap_pyfunction!(gepa_inspect_run_storage, module)?)?;
+    module.add_function(wrap_pyfunction!(gepa_inspect_run_storage_summary, module)?)?;
+    module.add_function(wrap_pyfunction!(gepa_workspace_storage_health, module)?)?;
     module.add_function(wrap_pyfunction!(gepa_compact_run_storage, module)?)?;
     module.add_function(wrap_pyfunction!(gepa_delete_run_storage, module)?)?;
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;

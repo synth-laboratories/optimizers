@@ -20,8 +20,9 @@ use synth_optimizer_platform::limits::{
 };
 use synth_optimizer_platform::{
     budget_limit_engine_input, normalize_event_feed, stable_json_hash, task_identity,
-    ArtifactPaths, ArtifactRef, CacheMode, CacheProfileRecord, CandidateOverlay, CheckpointInput,
-    CheckpointRecord, ConfiguredGepaRunLimits, ContainerClient, ContainerContractSnapshotInput,
+    write_run_storage_report, ArtifactPaths, ArtifactRef, CacheMode, CacheProfileRecord,
+    CandidateOverlay, CheckpointInput, CheckpointRecord, CheckpointSummaryRecord,
+    ConfiguredGepaRunLimits, ContainerClient, ContainerContractSnapshotInput,
     ContainerContractSnapshotRecord, DiskBudget, EvaluationCacheRecord, EvaluationCacheRecordInput,
     EventStreamRecord, EventWriter, EvidenceFrame, FailurePayload, ForecastConfidence,
     GepaBatchSamplerConfig, GepaCandidateSelectorConfig, GepaObjectiveAcceptanceConfig,
@@ -34,12 +35,12 @@ use synth_optimizer_platform::{
     PlanLinkRecord, PromptCandidatePayload, PromptProgram, PromptProgramSnapshotInput,
     PromptProgramSnapshotRecord, RequestCache, ResolvedRunConfigInput, ResolvedRunConfigRecord,
     Result, RetryPolicy, RolloutMaterializationIdentity, RunArtifactStore, RunPhaseTimingInput,
-    RunRegistry, RunRegistryEntry, RuntimeEffectInput, RuntimeEffectRecord, ScoreRecord,
-    ScoreVectorRecord, SensorFrame, SensorScoreRecords, StateMachineEntity, StopperStateInput,
-    StopperStateRecord, SynthOptimizerConfig, TasksetResponse, TasksetSnapshotInput,
-    TasksetSnapshotRecord, TasksetTasksRequest, TasksetTasksResponse, TransitionInput,
-    TransitionLog, TransitionSink, UsageLedgerInput, UsageLedgerRecord, WorkspaceStore,
-    LIMIT_ENGINE_SCHEMA_VERSION,
+    RunRegistry, RunRegistryEntry, RunStorageInspectionInput, RuntimeEffectInput,
+    RuntimeEffectRecord, ScoreRecord, ScoreVectorRecord, SensorFrame, StateMachineEntity,
+    StopperStateInput, StopperStateRecord, SynthOptimizerConfig, TasksetResponse,
+    TasksetSnapshotInput, TasksetSnapshotRecord, TasksetTasksRequest, TasksetTasksResponse,
+    TransitionInput, TransitionLog, TransitionSink, UsageLedgerInput, UsageLedgerRecord,
+    WorkspaceStore, LIMIT_ENGINE_SCHEMA_VERSION,
 };
 
 mod codex_app_server;
@@ -91,6 +92,487 @@ pub struct CandidateRecord {
     pub acceptance_metadata: Map<String, Value>,
 }
 
+fn checkpoint_candidate_records(candidates: &[CandidateRecord]) -> Vec<Value> {
+    candidates
+        .iter()
+        .map(|candidate| {
+            let mut value = candidate_value_with_seed_summaries(candidate);
+            if let Some(object) = value.as_object_mut() {
+                object.insert("sensor_frames".to_string(), Value::Array(Vec::new()));
+            }
+            value
+        })
+        .collect()
+}
+
+fn candidate_value_with_seed_summaries(candidate: &CandidateRecord) -> Value {
+    let mut value = serde_json::to_value(candidate).unwrap_or(Value::Null);
+    enrich_candidate_value_with_seed_summaries(&mut value, candidate);
+    value
+}
+
+fn enrich_candidate_value_with_seed_summaries(value: &mut Value, candidate: &CandidateRecord) {
+    let seed_rewards = candidate_seed_rewards(candidate);
+    let seed_counts = seed_counts_from_rewards(&seed_rewards);
+    if let Some(object) = value.as_object_mut() {
+        object.insert("seed_counts".to_string(), seed_counts);
+        object.insert("seed_rewards".to_string(), seed_rewards);
+    }
+}
+
+fn artifact_candidate_records(candidates: &[CandidateRecord]) -> Vec<CandidateRecord> {
+    candidates.iter().map(artifact_candidate_record).collect()
+}
+
+fn artifact_candidate_record(candidate: &CandidateRecord) -> CandidateRecord {
+    let mut candidate = candidate.clone();
+    candidate.sensor_frames = candidate
+        .sensor_frames
+        .iter()
+        .map(artifact_sensor_frame)
+        .collect();
+    candidate
+}
+
+fn artifact_sensor_frame(frame: &SensorFrame) -> SensorFrame {
+    let mut frame = frame.clone();
+    frame.metadata = artifact_sensor_frame_metadata(&frame);
+    frame
+}
+
+fn artifact_sensor_frame_metadata(frame: &SensorFrame) -> Map<String, Value> {
+    let mut metadata = Map::new();
+    metadata.insert(
+        "schema".to_string(),
+        json!("synth_gepa.sensor_frame_artifact_summary.v1"),
+    );
+    metadata.insert("storage_compacted".to_string(), json!(true));
+    metadata.insert(
+        "original_metadata_keys".to_string(),
+        Value::Array(
+            frame
+                .metadata
+                .keys()
+                .map(|key| Value::String(key.clone()))
+                .collect(),
+        ),
+    );
+    if let Some(summary) = frame.metadata.get("summary") {
+        metadata.insert(
+            "summary".to_string(),
+            project_json_fields(
+                summary,
+                &[
+                    "outcome_reward",
+                    "reward",
+                    "achievement_score",
+                    "achievement_deltas",
+                    "final_achievements",
+                    "final_inventory",
+                    "objective_scores",
+                    "objective_counts",
+                    "termination",
+                    "turn_count",
+                    "unique_actions",
+                    "invalid_action_count",
+                    "malformed_tool_call_count",
+                    "missing_tool_call_count",
+                ],
+            ),
+        );
+    }
+    if let Some(reward_details) = frame.metadata.get("reward_details") {
+        metadata.insert(
+            "reward_details".to_string(),
+            project_json_fields(
+                reward_details,
+                &[
+                    "achievement_count",
+                    "achievement_score",
+                    "achievement_universe_count",
+                    "achievements",
+                    "backend",
+                    "env_reward",
+                    "objective_achievements",
+                    "objective_counts",
+                    "objective_scores",
+                ],
+            ),
+        );
+    }
+    if let Some(rollout_trace) = frame.metadata.get("rollout_trace") {
+        metadata.insert(
+            "rollout_trace".to_string(),
+            compact_rollout_trace_summary(rollout_trace),
+        );
+    }
+    let trace_refs = frame
+        .artifact_refs
+        .iter()
+        .filter(|artifact| artifact.kind == "rollout_trace_payload")
+        .map(|artifact| serde_json::to_value(artifact).unwrap_or(Value::Null))
+        .filter(|value| !value.is_null())
+        .collect::<Vec<_>>();
+    if !trace_refs.is_empty() {
+        metadata.insert(
+            "rollout_trace_artifact_refs".to_string(),
+            Value::Array(trace_refs),
+        );
+    }
+    metadata
+}
+
+fn compact_rollout_trace_summary(rollout_trace: &Value) -> Value {
+    let mut summary = Map::new();
+    summary.insert(
+        "schema".to_string(),
+        json!("synth_gepa.rollout_trace_summary_ref.v1"),
+    );
+    summary.insert("storage_compacted".to_string(), json!(true));
+    for key in [
+        "schema_version",
+        "rollout_id",
+        "trace_correlation_id",
+        "task_id",
+    ] {
+        if let Some(value) = rollout_trace.get(key) {
+            summary.insert(key.to_string(), value.clone());
+        }
+    }
+    if let Some(value) = rollout_trace.get("summary") {
+        summary.insert(
+            "summary".to_string(),
+            project_json_fields(
+                value,
+                &[
+                    "outcome_reward",
+                    "reward",
+                    "achievement_score",
+                    "achievement_deltas",
+                    "objective_scores",
+                    "objective_counts",
+                    "termination",
+                    "turn_count",
+                ],
+            ),
+        );
+    }
+    if let Some(value) = rollout_trace.get("outcome") {
+        summary.insert(
+            "outcome".to_string(),
+            project_json_fields(
+                value,
+                &["status", "success_status", "status_detail", "reward"],
+            ),
+        );
+    }
+    Value::Object(summary)
+}
+
+fn project_json_fields(value: &Value, keys: &[&str]) -> Value {
+    let mut projected = Map::new();
+    if let Some(object) = value.as_object() {
+        for key in keys {
+            if let Some(value) = object.get(*key) {
+                projected.insert((*key).to_string(), value.clone());
+            }
+        }
+    }
+    Value::Object(projected)
+}
+
+fn candidate_seed_rewards(candidate: &CandidateRecord) -> Value {
+    let mut grouped = BTreeMap::<String, Vec<Value>>::new();
+    let mut seen = BTreeSet::<String>::new();
+    for frame in &candidate.sensor_frames {
+        let stage = seed_reward_stage(&frame.evaluation_stage);
+        let dedupe_key = format!("{stage}\u{0}{}\u{0}{}", frame.task_id, frame.example_id);
+        if seen.insert(dedupe_key) {
+            grouped
+                .entry(stage)
+                .or_default()
+                .push(seed_reward_row_from_frame(frame));
+        }
+    }
+    if !grouped.contains_key("minibatch") {
+        let rows = seed_reward_rows_from_scores("minibatch", &candidate.minibatch_scores);
+        if !rows.is_empty() {
+            grouped.insert("minibatch".to_string(), rows);
+        }
+    }
+    if !grouped.contains_key("train") {
+        let rows = seed_reward_rows_from_scores("train", &candidate.train_scores);
+        if !rows.is_empty() {
+            grouped.insert("train".to_string(), rows);
+        }
+    }
+    grouped
+        .values_mut()
+        .for_each(|rows| rows.sort_by(seed_reward_row_cmp));
+    Value::Object(
+        grouped
+            .into_iter()
+            .map(|(stage, rows)| (stage, Value::Array(rows)))
+            .collect(),
+    )
+}
+
+fn seed_reward_stage(evaluation_stage: &str) -> String {
+    match evaluation_stage {
+        "candidate_minibatch" => "minibatch".to_string(),
+        "candidate_full_train" | "seed_full_train" => "train".to_string(),
+        "parent_minibatch_reference" => "parent_minibatch_reference".to_string(),
+        "heldout" => "heldout".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn seed_reward_row_from_frame(frame: &SensorFrame) -> Value {
+    let mut row = Map::new();
+    row.insert("seed_id".to_string(), json!(&frame.task_id));
+    row.insert("task_id".to_string(), json!(&frame.task_id));
+    row.insert("example_id".to_string(), json!(&frame.example_id));
+    row.insert("split".to_string(), json!(&frame.split));
+    row.insert(
+        "evaluation_stage".to_string(),
+        json!(&frame.evaluation_stage),
+    );
+    row.insert("reward".to_string(), json!(frame.reward));
+    row.insert("status".to_string(), json!(&frame.status));
+    if let Some(success_status) = &frame.success_status {
+        row.insert("success_status".to_string(), json!(success_status));
+    }
+    let metadata = compact_seed_reward_metadata(frame);
+    if metadata
+        .as_object()
+        .is_some_and(|object| !object.is_empty())
+    {
+        row.insert("metadata".to_string(), metadata);
+    }
+    Value::Object(row)
+}
+
+fn compact_seed_reward_metadata(frame: &SensorFrame) -> Value {
+    let mut metadata = Map::new();
+    if let Some(actionable_side_info) = &frame.actionable_side_info {
+        metadata.insert(
+            "actionable_side_info".to_string(),
+            actionable_side_info.clone(),
+        );
+    }
+    if !frame.objective_scores.is_empty() {
+        metadata.insert(
+            "objective_scores".to_string(),
+            json!(&frame.objective_scores),
+        );
+    }
+    if !frame.usage.is_null() {
+        metadata.insert("usage".to_string(), frame.usage.clone());
+    }
+    if let Some(trace_digest) = &frame.trace_digest {
+        metadata.insert("trace_digest".to_string(), json!(trace_digest));
+    }
+    if !frame.artifact_refs.is_empty() {
+        metadata.insert("artifact_refs".to_string(), json!(&frame.artifact_refs));
+    }
+    let artifact_metadata = artifact_sensor_frame_metadata(frame);
+    for key in [
+        "summary",
+        "reward_details",
+        "rollout_trace",
+        "rollout_trace_artifact_refs",
+    ] {
+        if let Some(value) = artifact_metadata.get(key) {
+            metadata.insert(key.to_string(), value.clone());
+        }
+    }
+    Value::Object(metadata)
+}
+
+fn seed_reward_rows_from_scores(stage: &str, scores: &[RolloutScore]) -> Vec<Value> {
+    scores
+        .iter()
+        .map(|score| {
+            json!({
+                "seed_id": &score.task_id,
+                "task_id": &score.task_id,
+                "example_id": &score.example_id,
+                "evaluation_stage": stage,
+                "reward": score.reward,
+            })
+        })
+        .collect()
+}
+
+fn seed_counts_from_rewards(seed_rewards: &Value) -> Value {
+    let mut counts = Map::new();
+    if let Some(object) = seed_rewards.as_object() {
+        for (stage, rows) in object {
+            let count = rows.as_array().map(Vec::len).unwrap_or(0);
+            counts.insert(stage.clone(), json!(count));
+        }
+    }
+    Value::Object(counts)
+}
+
+fn seed_reward_row_cmp(left: &Value, right: &Value) -> std::cmp::Ordering {
+    value_string_field(left, "task_id")
+        .cmp(&value_string_field(right, "task_id"))
+        .then_with(|| {
+            value_string_field(left, "example_id").cmp(&value_string_field(right, "example_id"))
+        })
+        .then_with(|| {
+            value_string_field(left, "evaluation_stage")
+                .cmp(&value_string_field(right, "evaluation_stage"))
+        })
+}
+
+fn value_string_field(value: &Value, key: &str) -> String {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn hydrate_candidate_sensor_frames_from_workspace(
+    workspace: &WorkspaceStore,
+    run_id: &str,
+    candidates: &mut [CandidateRecord],
+) -> Result<()> {
+    if candidates
+        .iter()
+        .all(|candidate| !candidate.sensor_frames.is_empty())
+    {
+        return Ok(());
+    }
+    let mut frames_by_candidate = BTreeMap::<String, Vec<SensorFrame>>::new();
+    for frame in workspace.view().sensor_frames(run_id)? {
+        frames_by_candidate
+            .entry(frame.candidate_id.clone())
+            .or_default()
+            .push(frame);
+    }
+    if frames_by_candidate.is_empty() {
+        return Ok(());
+    }
+    for candidate in candidates {
+        if candidate.sensor_frames.is_empty() {
+            if let Some(frames) = frames_by_candidate.remove(&candidate.candidate_id) {
+                candidate.sensor_frames = frames;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn candidate_checkpoint_summaries(candidates: &[CandidateRecord]) -> Vec<Value> {
+    candidates
+        .iter()
+        .map(|candidate| {
+            let seed_rewards = candidate_seed_rewards(candidate);
+            let seed_counts = seed_counts_from_rewards(&seed_rewards);
+            json!({
+                "candidate_id": &candidate.candidate_id,
+                "parent_id": &candidate.parent_id,
+                "source": &candidate.source,
+                "status": &candidate.status,
+                "minibatch_reward": candidate.minibatch_reward,
+                "train_reward": candidate.train_reward,
+                "heldout_reward": candidate.heldout_reward,
+                "minibatch_score_count": candidate.minibatch_scores.len(),
+                "train_score_count": candidate.train_scores.len(),
+                "sensor_frame_count": candidate.sensor_frames.len(),
+                "seed_counts": seed_counts,
+                "seed_rewards": seed_rewards,
+                "acceptance_score": &candidate.acceptance_score,
+            })
+        })
+        .collect()
+}
+
+fn frontier_checkpoint_summaries(frontier: &[FrontierMember]) -> Vec<Value> {
+    frontier
+        .iter()
+        .map(|member| {
+            json!({
+                "candidate_id": &member.candidate_id,
+                "parent_id": &member.parent_id,
+                "source": &member.source,
+                "train_reward": member.train_reward,
+                "heldout_reward": member.heldout_reward,
+            })
+        })
+        .collect()
+}
+
+fn compact_terminal_summary(result: &Value) -> Value {
+    let mut summary = Map::new();
+    summary.insert(
+        "schema".to_string(),
+        json!("synth_gepa.terminal_summary_ref.v1"),
+    );
+    summary.insert("storage_compacted".to_string(), json!(true));
+    if let Some(manifest_path) = result.get("manifest_path").cloned() {
+        summary.insert("manifest_path".to_string(), manifest_path);
+    }
+    if let Some(workspace_db_path) = result.get("workspace_db_path").cloned() {
+        summary.insert("workspace_db_path".to_string(), workspace_db_path);
+    }
+    if let Some(best_candidate_id) = result
+        .get("best_candidate")
+        .and_then(|candidate| candidate.get("candidate_id"))
+        .cloned()
+    {
+        summary.insert("best_candidate_id".to_string(), best_candidate_id);
+    }
+    if let Some(cost_usd) = result.get("cost_usd").cloned() {
+        summary.insert("cost_usd".to_string(), cost_usd);
+    }
+    if let Some(stopped_by) = result.get("stopped_by").cloned() {
+        summary.insert("stopped_by".to_string(), stopped_by);
+    }
+    Value::Object(summary)
+}
+
+fn terminal_result_from_cursor(
+    context: &GepaRunContext,
+    cursor: &GepaCursor,
+) -> Result<Option<GepaRunResult>> {
+    if let Some(summary) = cursor.terminal_summary.clone() {
+        if summary.get("best_candidate").is_some() && summary.get("manifest_path").is_some() {
+            return serde_json::from_value(summary)
+                .map(Some)
+                .map_err(OptimizerError::from);
+        }
+        if let Some(result) = context.workspace.run_manifest(&context.config.run.run_id)? {
+            return serde_json::from_value(result)
+                .map(Some)
+                .map_err(OptimizerError::from);
+        }
+        let manifest_path = summary
+            .get("manifest_path")
+            .and_then(Value::as_str)
+            .filter(|path| !path.trim().is_empty());
+        if let Some(manifest_path) = manifest_path {
+            let path = Path::new(manifest_path);
+            if path.exists() {
+                let raw =
+                    fs::read_to_string(path).map_err(|source| OptimizerError::io(path, source))?;
+                return serde_json::from_str(&raw)
+                    .map(Some)
+                    .map_err(OptimizerError::from);
+            }
+        }
+    }
+    context
+        .workspace
+        .run_manifest(&context.config.run.run_id)?
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(OptimizerError::from)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CandidateEvaluation {
     pub average_reward: f64,
@@ -134,9 +616,12 @@ pub struct ProposedCandidate {
 }
 
 impl ProposedCandidate {
-    fn payload_map(&self) -> BTreeMap<String, String> {
+    pub(crate) fn payload_map(&self) -> BTreeMap<String, String> {
         if !self.payload.is_empty() {
-            return self.payload.clone();
+            let payload = Self::payload_from_string_payload(&self.payload);
+            if !payload.is_empty() {
+                return payload;
+            }
         }
         if let Some(bundle) = &self.lever_bundle {
             let payload = bundle.to_prompt_payload();
@@ -144,9 +629,274 @@ impl ProposedCandidate {
                 return payload;
             }
         }
+        for payload_key in ["proposed_payload", "candidate"] {
+            if let Some(payload) = self
+                .extra
+                .get(payload_key)
+                .map(Self::payload_from_proposed_payload_value)
+                .filter(|payload| !payload.is_empty())
+            {
+                return payload;
+            }
+        }
+        let flattened_payload =
+            Self::payload_from_proposed_payload_value(&Value::Object(self.extra.clone()));
+        if !flattened_payload.is_empty() {
+            return flattened_payload;
+        }
         self.extra
             .iter()
+            .filter(|(key, _)| !Self::is_structural_payload_key(key))
             .filter_map(|(key, value)| value.as_str().map(|text| (key.clone(), text.to_string())))
+            .collect()
+    }
+
+    pub(crate) fn payload_map_for_allowed_fields(
+        &self,
+        allowed_fields: &[String],
+    ) -> BTreeMap<String, String> {
+        let payload = self.payload_map();
+        if payload
+            .keys()
+            .any(|key| allowed_fields.iter().any(|field| field == key))
+            || allowed_fields.len() != 1
+        {
+            return payload;
+        }
+
+        let Some(target_field) = allowed_fields
+            .first()
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|target_field| !target_field.is_empty())
+        else {
+            return payload;
+        };
+
+        for payload_key in ["proposed_payload", "candidate"] {
+            if let Some(single_target_payload) = self.extra.get(payload_key).and_then(|value| {
+                Self::single_target_payload_from_unqualified_value(value, target_field)
+            }) {
+                return single_target_payload;
+            }
+        }
+
+        Self::single_target_payload_from_unqualified_value(
+            &Value::Object(self.extra.clone()),
+            target_field,
+        )
+        .unwrap_or(payload)
+    }
+
+    fn is_structural_payload_key(key: &str) -> bool {
+        matches!(
+            key,
+            "metadata"
+                | "candidate"
+                | "proposed_payload"
+                | "module_id"
+                | "modules"
+                | "target_modules"
+                | "mutable"
+                | "role"
+                | "template_variables"
+                | "candidate_field"
+                | "program_id"
+                | "seed_candidate"
+        )
+    }
+
+    fn is_single_target_payload_key(key: &str) -> bool {
+        matches!(
+            key,
+            "content"
+                | "value"
+                | "prompt"
+                | "instructions"
+                | "text"
+                | "role"
+                | "modules"
+                | "target_modules"
+        )
+    }
+
+    fn is_single_target_module_key(key: &str) -> bool {
+        matches!(
+            key,
+            "content" | "value" | "prompt" | "instructions" | "text" | "role"
+        )
+    }
+
+    fn payload_from_string_payload(payload: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+        if let Some(module_id) = payload
+            .get("module_id")
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|module_id| !module_id.is_empty())
+        {
+            for value_key in ["content", "value", "prompt", "instructions", "text"] {
+                if let Some(text) = payload
+                    .get(value_key)
+                    .map(String::as_str)
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                {
+                    return BTreeMap::from([(module_id.to_string(), text.to_string())]);
+                }
+            }
+        }
+        payload
+            .iter()
+            .filter(|(key, _)| !Self::is_structural_payload_key(key))
+            .filter(|(_, value)| !value.trim().is_empty())
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect()
+    }
+
+    fn single_target_payload_from_unqualified_value(
+        value: &Value,
+        target_field: &str,
+    ) -> Option<BTreeMap<String, String>> {
+        let object = value.as_object()?;
+        if object.contains_key(target_field) {
+            return None;
+        }
+        if object
+            .keys()
+            .any(|key| !Self::is_single_target_payload_key(key))
+        {
+            return None;
+        }
+
+        let mut chunks = Vec::new();
+        if let Some(text) = ["content", "value", "prompt", "instructions", "text"]
+            .iter()
+            .find_map(|value_key| {
+                object
+                    .get(*value_key)
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+            })
+        {
+            chunks.push(text.to_string());
+        }
+
+        for modules_key in ["modules", "target_modules"] {
+            let Some(modules) = object.get(modules_key).and_then(Value::as_array) else {
+                continue;
+            };
+            for module in modules {
+                let module_object = module.as_object()?;
+                if module_object
+                    .get("candidate_field")
+                    .or_else(|| module_object.get("module_id"))
+                    .is_some()
+                {
+                    return None;
+                }
+                if module_object
+                    .keys()
+                    .any(|key| !Self::is_single_target_module_key(key))
+                {
+                    return None;
+                }
+                if let Some(content) = ["content", "value", "prompt", "instructions", "text"]
+                    .iter()
+                    .find_map(|value_key| {
+                        module_object
+                            .get(*value_key)
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|text| !text.is_empty())
+                    })
+                {
+                    chunks.push(content.to_string());
+                }
+            }
+        }
+
+        let content = chunks
+            .into_iter()
+            .filter(|chunk| !chunk.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        if content.trim().is_empty() {
+            return None;
+        }
+        Some(BTreeMap::from([(target_field.to_string(), content)]))
+    }
+
+    fn payload_from_proposed_payload_value(value: &Value) -> BTreeMap<String, String> {
+        let Some(object) = value.as_object() else {
+            return BTreeMap::new();
+        };
+        if let Some(module_id) = object
+            .get("module_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|module_id| !module_id.is_empty())
+        {
+            for value_key in ["content", "value", "prompt", "instructions", "text"] {
+                if let Some(text) = object
+                    .get(value_key)
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                {
+                    return BTreeMap::from([(module_id.to_string(), text.to_string())]);
+                }
+            }
+        }
+
+        if let Some(modules) = object
+            .get("modules")
+            .or_else(|| object.get("target_modules"))
+            .and_then(Value::as_array)
+        {
+            let mut payload = BTreeMap::new();
+            for module in modules {
+                let Some(module_object) = module.as_object() else {
+                    continue;
+                };
+                let Some(candidate_field) = module_object
+                    .get("candidate_field")
+                    .or_else(|| module_object.get("module_id"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|candidate_field| !candidate_field.is_empty())
+                else {
+                    continue;
+                };
+                let Some(content) = ["content", "value", "prompt", "instructions", "text"]
+                    .iter()
+                    .find_map(|value_key| {
+                        module_object
+                            .get(*value_key)
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|text| !text.is_empty())
+                    })
+                else {
+                    continue;
+                };
+                payload.insert(candidate_field.to_string(), content.to_string());
+            }
+            if !payload.is_empty() {
+                return payload;
+            }
+        }
+
+        object
+            .iter()
+            .filter(|(key, _)| !Self::is_structural_payload_key(key))
+            .filter_map(|(key, value)| {
+                value
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .map(|text| (key.clone(), text.to_string()))
+            })
             .collect()
     }
 
@@ -180,6 +930,30 @@ impl ProposedCandidate {
             metadata.insert("raw_extra".to_string(), Value::Object(self.extra.clone()));
         }
         Value::Object(metadata)
+    }
+
+    pub(crate) fn payload_shape_summary(&self) -> Value {
+        let extra_keys = self.extra.keys().cloned().collect::<Vec<_>>();
+        let payload_keys = self.payload.keys().cloned().collect::<Vec<_>>();
+        let proposed_payload_keys = self
+            .extra
+            .get("proposed_payload")
+            .and_then(Value::as_object)
+            .map(|object| object.keys().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        let candidate_keys = self
+            .extra
+            .get("candidate")
+            .and_then(Value::as_object)
+            .map(|object| object.keys().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        json!({
+            "payload_keys": payload_keys,
+            "extra_keys": extra_keys,
+            "proposed_payload_keys": proposed_payload_keys,
+            "candidate_keys": candidate_keys,
+            "has_lever_bundle": self.lever_bundle.is_some(),
+        })
     }
 }
 
@@ -362,6 +1136,8 @@ struct GepaRunContext {
     reflection_rows: Vec<Value>,
     heldout_rows: Vec<Value>,
     rollout_task_id: Option<String>,
+    last_limit_estimate_check: Option<Instant>,
+    last_limit_estimate_checkpoint_sequence: u64,
 }
 
 struct GepaContainerInputs {
@@ -410,6 +1186,8 @@ pub enum GepaAdvanceMode {
 }
 
 const ASYNC_PIPELINE_NOOP_SLEEP: Duration = Duration::from_millis(250);
+const LIMIT_ESTIMATE_UPDATE_MIN_INTERVAL: Duration = Duration::from_secs(60);
+const LIMIT_ESTIMATE_UPDATE_CHECKPOINT_STEP: u64 = 10;
 
 #[derive(Clone, Debug)]
 pub struct GepaAdvanceOutcome {
@@ -710,9 +1488,15 @@ pub fn project_gepa_limit_snapshot(
         &timings,
         Some(generated_at.clone()),
     );
-    append_gepa_search_limits(&mut input, run_store, config, &generated_at)?;
-    let checkpoints = run_store.checkpoint_history(run_id, None)?;
+    let checkpoints = run_store.checkpoint_summary_history(run_id, None)?;
     let cursor = load_gepa_cursor_from_workspace(run_store, run_id)?;
+    append_gepa_search_limits(
+        &mut input,
+        config,
+        &generated_at,
+        &checkpoints,
+        cursor.as_ref(),
+    )?;
     let mut snapshot = LimitEngine::snapshot(input);
     apply_gepa_phase_forecasts(
         &mut snapshot,
@@ -726,9 +1510,10 @@ pub fn project_gepa_limit_snapshot(
 
 fn append_gepa_search_limits(
     input: &mut LimitEngineInput,
-    run_store: &WorkspaceStore,
     config: &SynthOptimizerConfig,
     generated_at: &str,
+    checkpoints: &[CheckpointSummaryRecord],
+    cursor: Option<&GepaCursor>,
 ) -> Result<()> {
     let run_id = &config.run.run_id;
     let generation_limit = config.gepa.max_generations.max(1) as f64;
@@ -761,7 +1546,7 @@ fn append_gepa_search_limits(
             "seed_candidates": 1,
         }),
     ));
-    for checkpoint in run_store.checkpoint_history(run_id, None)? {
+    for checkpoint in checkpoints {
         if let Some(generation) = checkpoint.generation {
             input.observations.push(LimitObservation {
                 run_id: run_id.clone(),
@@ -776,14 +1561,14 @@ fn append_gepa_search_limits(
         input.observations.push(LimitObservation {
             run_id: run_id.clone(),
             limit_id: candidate_limit_id.clone(),
-            timestamp: checkpoint.created_at,
+            timestamp: checkpoint.created_at.clone(),
             spent: checkpoint.candidate_count as f64,
             reserved: 0.0,
             source_kind: "checkpoint".to_string(),
-            source_id: checkpoint.checkpoint_id,
+            source_id: checkpoint.checkpoint_id.clone(),
         });
     }
-    if let Some(cursor) = load_gepa_cursor_from_workspace(run_store, run_id)? {
+    if let Some(cursor) = cursor {
         input.observations.push(LimitObservation {
             run_id: run_id.clone(),
             limit_id: generation_limit_id,
@@ -810,7 +1595,7 @@ fn apply_gepa_phase_forecasts(
     snapshot: &mut LimitSnapshot,
     config: &SynthOptimizerConfig,
     cursor: Option<&GepaCursor>,
-    checkpoints: &[CheckpointRecord],
+    checkpoints: &[CheckpointSummaryRecord],
     generated_at: &str,
 ) {
     let Some(cursor) = cursor else {
@@ -845,7 +1630,7 @@ fn gepa_generation_phase_forecast(
     limit_id: &str,
     max_generations: usize,
     current_generation: usize,
-    checkpoints: &[CheckpointRecord],
+    checkpoints: &[CheckpointSummaryRecord],
     generated_at: &str,
 ) -> Option<LimitForecast> {
     let remaining_generations = max_generations.saturating_sub(current_generation);
@@ -901,7 +1686,7 @@ fn gepa_generation_phase_forecast(
     ))
 }
 
-fn completed_generation_durations(checkpoints: &[CheckpointRecord]) -> Vec<f64> {
+fn completed_generation_durations(checkpoints: &[CheckpointSummaryRecord]) -> Vec<f64> {
     let mut starts = BTreeMap::<u64, f64>::new();
     for checkpoint in checkpoints {
         if checkpoint.checkpoint_kind != GEPA_CURSOR_CHECKPOINT_KIND
@@ -931,7 +1716,7 @@ fn completed_generation_durations(checkpoints: &[CheckpointRecord]) -> Vec<f64> 
 }
 
 fn current_generation_elapsed_seconds(
-    checkpoints: &[CheckpointRecord],
+    checkpoints: &[CheckpointSummaryRecord],
     generation: usize,
     generated_at: &str,
 ) -> Option<f64> {
@@ -1477,6 +2262,8 @@ fn open_gepa_run_context(
         reflection_rows: Vec::new(),
         heldout_rows: Vec::new(),
         rollout_task_id: None,
+        last_limit_estimate_check: None,
+        last_limit_estimate_checkpoint_sequence: 0,
     })
 }
 
@@ -1756,13 +2543,18 @@ fn initialize_or_restore_cursor(workspace: &WorkspaceStore, run_id: &str) -> Res
 fn restore_gepa_run_state(context: &mut GepaRunContext) -> Result<GepaRunState> {
     let cursor = initialize_or_restore_cursor(&context.workspace, &context.config.run.run_id)?;
     restore_state_machine_from_cursor(context, &cursor)?;
-    let candidates: Vec<CandidateRecord> = cursor
+    let mut candidates: Vec<CandidateRecord> = cursor
         .candidates
         .as_array()
         .filter(|rows| !rows.is_empty())
         .map(|_| serde_json::from_value(cursor.candidates.clone()))
         .transpose()?
         .unwrap_or_default();
+    hydrate_candidate_sensor_frames_from_workspace(
+        &context.workspace,
+        &context.config.run.run_id,
+        &mut candidates,
+    )?;
     let best_idx = cursor.best_candidate_id.as_ref().and_then(|candidate_id| {
         candidates
             .iter()
@@ -1950,7 +2742,8 @@ fn persist_gepa_run_state(
         .as_ref()
         .map(serde_json::to_value)
         .transpose()?;
-    state.cursor.candidates = serde_json::to_value(&state.candidates)?;
+    state.cursor.candidates =
+        serde_json::to_value(checkpoint_candidate_records(&state.candidates))?;
     state.cursor.best_candidate_id = state
         .best_idx
         .and_then(|idx| state.candidates.get(idx))
@@ -1993,13 +2786,22 @@ fn persist_gepa_run_state(
     });
     context
         .workspace
-        .record_checkpoint(&context.config.run.run_id, &checkpoint)?;
-    emit_limit_estimate_update_if_major(context)?;
+        .record_checkpoint_compacting_previous(&context.config.run.run_id, &checkpoint)?;
+    emit_limit_estimate_update_if_major(context, state.checkpoint_sequence)?;
     Ok(())
 }
 
-fn emit_limit_estimate_update_if_major(context: &mut GepaRunContext) -> Result<()> {
+fn emit_limit_estimate_update_if_major(
+    context: &mut GepaRunContext,
+    checkpoint_sequence: u64,
+) -> Result<()> {
+    if !limit_estimate_projection_due(context, checkpoint_sequence) {
+        return Ok(());
+    }
+    let checked_at = Instant::now();
     let snapshot = project_gepa_limit_snapshot(&context.workspace, &context.config)?;
+    context.last_limit_estimate_check = Some(checked_at);
+    context.last_limit_estimate_checkpoint_sequence = checkpoint_sequence;
     let Some(payload) = limit_estimate_update_payload(&snapshot) else {
         return Ok(());
     };
@@ -2014,6 +2816,26 @@ fn emit_limit_estimate_update_if_major(context: &mut GepaRunContext) -> Result<(
     context
         .workspace
         .record_event_stream(&context.config.run.run_id, context.events.records())
+}
+
+fn limit_estimate_projection_due(context: &GepaRunContext, checkpoint_sequence: u64) -> bool {
+    let has_prior_estimate = context
+        .events
+        .records()
+        .iter()
+        .rev()
+        .any(|event| event.event_type == "optimizer.limit.estimate_updated");
+    if !has_prior_estimate {
+        return true;
+    }
+    let interval_due = context
+        .last_limit_estimate_check
+        .map(|last| last.elapsed() >= LIMIT_ESTIMATE_UPDATE_MIN_INTERVAL)
+        .unwrap_or(true);
+    let checkpoint_due = checkpoint_sequence
+        .saturating_sub(context.last_limit_estimate_checkpoint_sequence)
+        >= LIMIT_ESTIMATE_UPDATE_CHECKPOINT_STEP;
+    interval_due || checkpoint_due
 }
 
 fn limit_estimate_update_payload(snapshot: &LimitSnapshot) -> Option<Value> {
@@ -2137,12 +2959,41 @@ fn metadata_with_pipeline_state(
             metadata.insert("pipeline".to_string(), plan_metadata(&plan));
             metadata.insert(
                 "pipeline_state".to_string(),
-                serde_json::to_value(&state.cursor.pipeline_state)?,
+                pipeline_state_metadata_summary(&state.cursor.pipeline_state),
             );
         }
         GepaPipelineRuntimePlan::SyncSerial(_) => {}
     }
     Ok(metadata)
+}
+
+fn pipeline_state_metadata_summary(state: &planner::GepaAsyncPipelineCursorState) -> Value {
+    json!({
+        "pool_version": state.pool_version,
+        "parent_pool_version": state.parent_pool_version,
+        "parent_candidate_id": state.parent_candidate_id,
+        "in_flight_candidate_count": state.in_flight_candidate_count,
+        "propose_queue_count": state.propose_queue.len(),
+        "rollout_queue_count": state.rollout_queue.len(),
+        "evaluate_queue_count": state.evaluate_queue.len(),
+        "lane_lease_count": state.lane_leases.len(),
+        "pending_job_ids": &state.pending_job_ids,
+        "pending_effect_ids": &state.pending_effect_ids,
+        "candidate_partial_count": state.candidate_partials.len(),
+        "speculative_release_count": state.speculative_releases.len(),
+        "staleness_review_count": state.staleness_reviews.len(),
+        "rollout_concurrency": {
+            "initialized": state.adaptive_rollout_concurrency.initialized,
+            "current_limit": state.adaptive_rollout_concurrency.current_limit,
+            "completed_rollouts": state.adaptive_rollout_concurrency.completed_rollouts,
+            "overload_count": state.adaptive_rollout_concurrency.overload_count,
+        },
+        "rollout_resilience": {
+            "scored_rollouts": state.rollout_resilience.scored_rollouts,
+            "degraded_rollouts": state.rollout_resilience.degraded_rollouts,
+            "last_failure_rate": state.rollout_resilience.last_failure_rate,
+        },
+    })
 }
 
 pub(crate) fn advance_gepa_config_once(
@@ -2224,12 +3075,7 @@ fn advance_gepa_sync_serial_once(
 ) -> Result<GepaAdvanceOutcome> {
     if matches!(state.cursor.phase, GepaCursorPhase::Completed) {
         refresh_terminal_run_projection(context, state)?;
-        let result = state
-            .cursor
-            .terminal_summary
-            .clone()
-            .map(serde_json::from_value)
-            .transpose()?;
+        let result = terminal_result_from_cursor(context, &state.cursor)?;
         return Ok(GepaAdvanceOutcome {
             action: planner::GepaTickAction::TerminalizeRun {
                 run_id: context.config.run.run_id.clone(),
@@ -2295,12 +3141,7 @@ fn advance_gepa_async_pipeline_once(
     refresh_async_pipeline_cursor_state(context, state, plan);
     if matches!(state.cursor.phase, GepaCursorPhase::Completed) {
         refresh_terminal_run_projection(context, state)?;
-        let result = state
-            .cursor
-            .terminal_summary
-            .clone()
-            .map(serde_json::from_value)
-            .transpose()?;
+        let result = terminal_result_from_cursor(context, &state.cursor)?;
         return Ok(GepaAdvanceOutcome {
             action: planner::GepaTickAction::TerminalizeRun {
                 run_id: context.config.run.run_id.clone(),
@@ -2524,13 +3365,7 @@ fn refresh_async_pipeline_cursor_state(
     let pool_version = state
         .candidates
         .iter()
-        .filter(|candidate| {
-            candidate.train_reward.is_some()
-                && matches!(
-                    candidate.status.as_str(),
-                    "full_train_evaluated" | "accepted"
-                )
-        })
+        .filter(|candidate| candidate_train_selectable(candidate))
         .count() as u64;
     let in_flight_candidate_count = async_pipeline_in_flight_candidate_count(state);
     state.cursor.pipeline_state.pool_version = pool_version;
@@ -3256,12 +4091,7 @@ fn reflective_pool_summary(state: &GepaRunState, decision: &GepaStaleItemDecisio
     let recent_pool = state
         .candidates
         .iter()
-        .filter(|candidate| {
-            matches!(
-                candidate.status.as_str(),
-                "accepted" | "full_train_evaluated"
-            ) && candidate.train_reward.is_some()
-        })
+        .filter(|candidate| candidate_train_selectable(candidate))
         .rev()
         .take(decision.stale_gap.max(1) as usize)
         .cloned()
@@ -5567,6 +6397,16 @@ fn candidate_metric_score(candidate: &CandidateRecord, metric: &str) -> Option<f
     }
 }
 
+fn candidate_train_selectable(candidate: &CandidateRecord) -> bool {
+    candidate.train_reward.is_some()
+        && !candidate.train_scores.is_empty()
+        && (candidate.source == "seed"
+            || matches!(
+                candidate.status.as_str(),
+                "accepted" | "full_train_evaluated"
+            ))
+}
+
 fn candidate_generation(candidate: &CandidateRecord) -> Option<usize> {
     if candidate.source == "seed" || candidate.parent_id.is_none() {
         return Some(0);
@@ -7638,11 +8478,14 @@ fn plan_rollout_runtime_batch_job_for_candidates(
                 candidate: PromptCandidatePayload::from_map(group.candidate.payload.clone()),
                 metadata: Map::new(),
             };
+            let prompt_assertions =
+                prompt_assertions_for_candidate(&overlay.candidate, &context.config);
             let request = json!({
                 "submission_mode": rollout_submission_mode_for_request(&context.config),
                 "task_id": resources.rollout_task_id,
                 "candidate": overlay.candidate.to_value(),
                 "candidate_overlay": overlay,
+                "prompt_assertions": prompt_assertions,
                 "policy": rollout_policy_for_request(&context.config),
                 "task": row,
                 "metadata": {
@@ -7763,6 +8606,39 @@ fn rollout_policy_for_request(config: &SynthOptimizerConfig) -> Value {
     } else {
         Value::Null
     }
+}
+
+fn prompt_assertions_for_candidate(
+    candidate: &PromptCandidatePayload,
+    config: &SynthOptimizerConfig,
+) -> Value {
+    let mut expected_candidate_prompts = Map::new();
+    for field in &config.candidate.target_modules {
+        let Some(prompt) = candidate.fields.get(field) else {
+            continue;
+        };
+        expected_candidate_prompts.insert(
+            field.clone(),
+            json!({
+                "sha256": sha256_text(prompt),
+                "bytes": prompt.as_bytes().len(),
+                "source": format!("candidate.{field}"),
+                "must_reach": "policy_llm_system_message",
+            }),
+        );
+    }
+    json!({
+        "schema_version": "prompt_assertions.v1",
+        "required": !expected_candidate_prompts.is_empty(),
+        "proxy_mode": &config.policy.proxy_mode,
+        "expected_candidate_prompts": expected_candidate_prompts,
+    })
+}
+
+fn sha256_text(text: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(text.as_bytes());
+    format!("{:x}", digest.finalize())
 }
 
 fn consume_completed_runtime_job(
@@ -8631,14 +9507,16 @@ fn record_rollout_materialization_from_outcome(
         candidate: PromptCandidatePayload::from_map(candidate.payload.clone()),
         metadata: Map::new(),
     };
+    let prompt_assertions = prompt_assertions_for_candidate(&overlay.candidate, &context.config);
     let request = json!({
         "submission_mode": rollout_submission_mode_for_request(&context.config),
         "task_id": resources.rollout_task_id,
         "candidate": overlay.candidate.to_value(),
         "candidate_overlay": overlay,
+        "prompt_assertions": prompt_assertions,
         "policy": rollout_policy_for_request(&context.config),
         "task": row,
-            "metadata": {
+        "metadata": {
                 "candidate_id": candidate.candidate_id,
                 "task_id": task_id,
             },
@@ -9096,14 +9974,20 @@ fn terminalize_gepa_run_state(
         }),
     )?;
     context.events.flush()?;
-    context
-        .workspace
-        .record_event_stream(&context.config.run.run_id, context.events.records())?;
     normalize_event_feed(
         &context.paths.event_feed_path,
         &context.paths.normalized_event_feed_path,
         &context.paths.run_dir,
     )?;
+    let storage_summary = record_terminal_storage_snapshot(
+        &context.paths,
+        &context.config.run.run_id,
+        &mut context.events,
+    )?;
+    context.events.flush()?;
+    context
+        .workspace
+        .record_event_stream(&context.config.run.run_id, context.events.records())?;
     if matches!(terminal_state, OptimizerRunState::Cancelled) {
         context.workspace.record_run_cancelled_result(
             &context.config.run.run_id,
@@ -9118,6 +10002,7 @@ fn terminalize_gepa_run_state(
             &context.cache_namespace,
             state.total_cost,
             usage_value.clone(),
+            Some(storage_summary.clone()),
         ))?;
     } else {
         context.workspace.record_run_failed(
@@ -9133,6 +10018,7 @@ fn terminalize_gepa_run_state(
             &context.cache_namespace,
             state.total_cost,
             usage_value.clone(),
+            Some(storage_summary.clone()),
         ))?;
     }
     state.checkpoint_sequence += 1;
@@ -9146,7 +10032,8 @@ fn terminalize_gepa_run_state(
         .as_ref()
         .map(serde_json::to_value)
         .transpose()?;
-    state.cursor.candidates = serde_json::to_value(&state.candidates)?;
+    state.cursor.candidates =
+        serde_json::to_value(checkpoint_candidate_records(&state.candidates))?;
     state.cursor.best_candidate_id = best_candidate_id;
     state.cursor.rollout_count = state.rollout_count;
     state.cursor.cost_usd = state.total_cost;
@@ -9185,7 +10072,7 @@ fn terminalize_gepa_run_state(
     });
     context
         .workspace
-        .record_checkpoint(&context.config.run.run_id, &checkpoint)
+        .record_checkpoint_compacting_previous(&context.config.run.run_id, &checkpoint)
 }
 
 fn finalize_active_rollout_evaluation(
@@ -10261,7 +11148,6 @@ fn finalize_candidate_minibatch_group(
             planned_full_train_rollouts.saturating_add(resources.train_rows.len());
     }
     if full_train_evaluations.is_empty() {
-        state.cursor.proposal_index = state.proposal_queue.len();
         state.active_evaluation = None;
         return move_to_proposer_waiting(
             context,
@@ -11004,11 +11890,18 @@ fn advance_proposer_waiting(
                     "proposal parent index {proposal_parent_idx} is outside candidate registry"
                 ))
             })?;
+        let allowed_fields = candidate_allowed_fields(&resources.program, &context.config);
+        let proposed_payload = proposed_payload_for_candidate_admission(
+            &proposal,
+            &allowed_fields,
+            state.cursor.generation,
+            proposal_index,
+        )?;
         let payload = normalize_candidate_payload(
             &resources.program,
             &context.config,
             &proposal_parent.payload,
-            proposal.payload_map(),
+            proposed_payload,
         )?;
         let candidate_id = candidate_id(&payload);
         if planned_candidate_ids.contains(&candidate_id) {
@@ -11466,6 +12359,10 @@ fn advance_heldout(
         }
         let required_rollouts = heldout_indices
             .len()
+            .max(minimum_terminal_heldout_candidate_count(
+                &all_heldout_indices,
+                state.best_idx,
+            ))
             .saturating_mul(resources.heldout_rows.len());
         if heldout_indices.is_empty()
             || available_rollouts < required_rollouts
@@ -11500,7 +12397,30 @@ fn advance_heldout(
                     "available_rollouts": available_rollouts,
                 }),
             )?;
-            return move_to_finalizing(context, state, resources, "heldout skipped due to limits");
+            terminalize_gepa_run_state(
+                context,
+                state,
+                GepaCursorPhase::Failed,
+                "failed",
+                "Heldout required but skipped due to limits",
+                json!({
+                    "schema_version": "gepa_terminal_heldout_required.v1",
+                    "error_code": "gepa_terminal_heldout_not_evaluated",
+                    "message": "GEPA cannot complete with a train-only best candidate when heldout rows are configured",
+                    "best_candidate_id": state.candidates[best_idx].candidate_id,
+                    "required_rollouts": required_rollouts,
+                    "available_rollouts": available_rollouts,
+                }),
+            )?;
+            return Ok(GepaAdvanceOutcome {
+                action: planner::GepaTickAction::TerminalizeRun {
+                    run_id: context.config.run.run_id.clone(),
+                    status: "failed".to_string(),
+                },
+                terminal: true,
+                result: None,
+                message: "heldout required but skipped due to limits".to_string(),
+            });
         }
         let total_heldout_candidates = all_heldout_indices.len();
         if heldout_indices.len() < total_heldout_candidates {
@@ -11584,12 +12504,17 @@ fn advance_heldout(
 }
 
 fn heldout_candidate_indices(state: &GepaRunState) -> Vec<usize> {
+    let best_train_reward = state
+        .best_idx
+        .and_then(|idx| state.candidates.get(idx))
+        .and_then(|candidate| candidate.train_reward);
     let mut indices = state
         .candidates
         .iter()
         .enumerate()
         .filter_map(|(idx, candidate)| {
-            heldout_candidate_eligible(candidate, state.best_idx, idx).then_some(idx)
+            heldout_candidate_eligible(candidate, state.best_idx, best_train_reward, idx)
+                .then_some(idx)
         })
         .collect::<Vec<_>>();
     if indices.is_empty() {
@@ -11603,12 +12528,25 @@ fn heldout_candidate_indices(state: &GepaRunState) -> Vec<usize> {
 fn heldout_candidate_eligible(
     candidate: &CandidateRecord,
     best_idx: Option<usize>,
+    best_train_reward: Option<f64>,
     candidate_idx: usize,
 ) -> bool {
-    candidate.train_reward.is_some()
-        && (best_idx == Some(candidate_idx)
-            || candidate.source == "seed"
-            || candidate.status == "accepted")
+    let Some(train_reward) = candidate.train_reward else {
+        return false;
+    };
+    if candidate.train_scores.is_empty() {
+        return false;
+    }
+    if best_idx == Some(candidate_idx) || candidate.source == "seed" {
+        return true;
+    }
+    if !matches!(candidate.status.as_str(), "rejected_full_train") {
+        return false;
+    }
+    let Some(best_train_reward) = best_train_reward else {
+        return false;
+    };
+    train_reward + f64::EPSILON >= best_train_reward
 }
 
 fn budgeted_heldout_candidate_indices(
@@ -11624,6 +12562,9 @@ fn budgeted_heldout_candidate_indices(
     let max_candidates = available_rollouts / heldout_row_count;
     if max_candidates >= indices.len() {
         return indices;
+    }
+    if max_candidates < minimum_terminal_heldout_candidate_count(&indices, best_idx) {
+        return Vec::new();
     }
     if max_candidates == 0 {
         return Vec::new();
@@ -11652,6 +12593,16 @@ fn budgeted_heldout_candidate_indices(
         push_index(idx, &mut selected);
     }
     selected
+}
+
+fn minimum_terminal_heldout_candidate_count(indices: &[usize], best_idx: Option<usize>) -> usize {
+    if indices.is_empty() {
+        return 0;
+    }
+    if best_idx.is_some_and(|idx| idx != 0 && indices.contains(&idx)) && indices.contains(&0) {
+        return 2;
+    }
+    1
 }
 
 fn finalize_heldout_candidate(
@@ -11834,10 +12785,36 @@ fn finalize_completed_gepa_run(
     resources: &GepaStepResources,
 ) -> Result<GepaAdvanceOutcome> {
     let best_idx = state.best_idx.unwrap_or(0);
-    let heldout_best_reward = state.candidates[best_idx]
-        .heldout_reward
-        .or(state.candidates[best_idx].train_reward)
-        .unwrap_or(0.0);
+    let Some(heldout_best_reward) = state.candidates[best_idx].heldout_reward else {
+        terminalize_gepa_run_state(
+            context,
+            state,
+            GepaCursorPhase::Failed,
+            "failed",
+            "Best candidate missing terminal heldout evidence",
+            json!({
+                "schema_version": "gepa_terminal_heldout_required.v1",
+                "error_code": "gepa_best_candidate_missing_heldout",
+                "message": "GEPA cannot complete with a best candidate that has no heldout_reward",
+                "best_candidate_id": state.candidates[best_idx].candidate_id,
+                "train_reward": state.candidates[best_idx].train_reward,
+                "heldout_evaluated_candidate_count": state
+                    .candidates
+                    .iter()
+                    .filter(|candidate| candidate.heldout_reward.is_some())
+                    .count(),
+            }),
+        )?;
+        return Ok(GepaAdvanceOutcome {
+            action: planner::GepaTickAction::TerminalizeRun {
+                run_id: context.config.run.run_id.clone(),
+                status: "failed".to_string(),
+            },
+            terminal: true,
+            result: None,
+            message: "best candidate missing terminal heldout evidence".to_string(),
+        });
+    };
     let heldout_skipped = !state
         .candidates
         .iter()
@@ -11938,8 +12915,9 @@ fn finalize_completed_gepa_run(
             }),
         )?;
     }
-    let best_candidate = serde_json::to_value(&state.candidates[best_idx])?;
-    let candidate_registry = serde_json::to_value(&state.candidates)?;
+    let artifact_candidates = artifact_candidate_records(&state.candidates);
+    let best_candidate = serde_json::to_value(&artifact_candidates[best_idx])?;
+    let candidate_registry = serde_json::to_value(&artifact_candidates)?;
     let frontier_value = serde_json::to_value(frontier_members(&state.candidates))?;
     let cache_profile_record = CacheProfileRecord::from_profile(context.cache.profile()?);
     let cache_access_log = context.cache.access_log().to_vec();
@@ -11997,14 +12975,20 @@ fn finalize_completed_gepa_run(
         }),
     )?;
     context.events.flush()?;
-    context
-        .workspace
-        .record_event_stream(&context.config.run.run_id, context.events.records())?;
     normalize_event_feed(
         &context.paths.event_feed_path,
         &context.paths.normalized_event_feed_path,
         &context.paths.run_dir,
     )?;
+    let storage_summary = record_terminal_storage_snapshot(
+        &context.paths,
+        &context.config.run.run_id,
+        &mut context.events,
+    )?;
+    context.events.flush()?;
+    context
+        .workspace
+        .record_event_stream(&context.config.run.run_id, context.events.records())?;
     context.registry.append(&RunRegistryEntry::finished(
         &context.paths,
         &context.config,
@@ -12013,6 +12997,7 @@ fn finalize_completed_gepa_run(
         state.candidates[best_idx].candidate_id.clone(),
         state.total_cost,
         usage_value.clone(),
+        Some(storage_summary.clone()),
     ))?;
     let artifact_refs = vec![
         context.paths.artifact_ref(
@@ -12049,6 +13034,11 @@ fn finalize_completed_gepa_run(
             "release_evidence",
         )?,
         context.paths.artifact_ref(
+            &context.paths.storage_report_path,
+            "storage_report",
+            "local_ops",
+        )?,
+        context.paths.artifact_ref(
             &context.paths.run_registry_path,
             "run_registry_jsonl",
             "release_evidence",
@@ -12067,6 +13057,7 @@ fn finalize_completed_gepa_run(
         candidate_registry_path: context.paths.candidate_registry_path.display().to_string(),
         frontier_path: context.paths.frontier_path.display().to_string(),
         score_chart_path: context.paths.score_chart_path.display().to_string(),
+        storage_report_path: context.paths.storage_report_path.display().to_string(),
         run_registry_path: context.paths.run_registry_path.display().to_string(),
         workspace_db_path: context.paths.workspace_db_path.display().to_string(),
         artifact_refs,
@@ -12112,7 +13103,7 @@ fn finalize_completed_gepa_run(
     context
         .paths
         .write_json(&context.paths.manifest_path, &result_value)?;
-    state.cursor.terminal_summary = Some(result_value);
+    state.cursor.terminal_summary = Some(compact_terminal_summary(&result_value));
     persist_gepa_run_state(
         context,
         state,
@@ -12155,6 +13146,44 @@ fn stopped_by_value(config: &SynthOptimizerConfig, state: &GepaRunState) -> Valu
         return json!({"kind": "max_rollouts", "n": config.gepa.max_total_rollouts});
     }
     json!({"kind": "max_generations", "n": config.gepa.max_generations})
+}
+
+fn record_terminal_storage_snapshot(
+    paths: &ArtifactPaths,
+    run_id: &str,
+    events: &mut EventWriter,
+) -> Result<Value> {
+    let report = write_run_storage_report(RunStorageInspectionInput {
+        run_dir: paths.run_dir.clone(),
+        run_id: Some(run_id.to_string()),
+        terminal: Some(true),
+    })?;
+    let summary = storage_registry_summary(&report);
+    events.emit(
+        "storage.snapshot.recorded",
+        "GEPA terminal storage snapshot recorded",
+        json!({
+            "run_id": run_id,
+            "storage": summary,
+            "storage_report_path": paths.storage_report_path.display().to_string(),
+        }),
+    )?;
+    Ok(summary)
+}
+
+fn storage_registry_summary(report: &Value) -> Value {
+    json!({
+        "schema": "synth.optimizer.storage_registry_summary.v1",
+        "bytes": report.get("bytes").cloned().unwrap_or(json!(0)),
+        "reclaimable_bytes": report.get("reclaimable_bytes").cloned().unwrap_or(json!(0)),
+        "terminal": report.get("terminal").cloned().unwrap_or(json!(false)),
+        "terminal_status": report.get("terminal_status").cloned().unwrap_or(Value::Null),
+        "storage_report_path": report
+            .get("storage_report_path")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "recommendation": report.get("recommendation").cloned().unwrap_or(Value::Null),
+    })
 }
 
 pub fn execute_gepa_with_options(
@@ -12292,8 +13321,8 @@ fn execute_gepa_monolithic_with_options(
     let restored_cursor =
         initialize_or_restore_cursor(&context.workspace, &context.config.run.run_id)?;
     if matches!(restored_cursor.phase, GepaCursorPhase::Completed) {
-        if let Some(summary) = restored_cursor.terminal_summary.clone() {
-            return serde_json::from_value(summary).map_err(OptimizerError::from);
+        if let Some(result) = terminal_result_from_cursor(&context, &restored_cursor)? {
+            return Ok(result);
         }
     }
     let container_inputs = ensure_container_inputs(&mut context)?;
@@ -13258,11 +14287,18 @@ fn execute_gepa_monolithic_with_options(
                     proposal_parent.candidate_id, generation
                 ))
             })?;
+            let allowed_fields = candidate_allowed_fields(&program, &config);
+            let proposed_payload = proposed_payload_for_candidate_admission(
+                &proposal,
+                &allowed_fields,
+                generation,
+                proposal_index,
+            )?;
             let payload = normalize_candidate_payload(
                 &program,
                 &config,
                 &proposal_parent.payload,
-                proposal.payload_map(),
+                proposed_payload,
             )?;
             let candidate_id = candidate_id(&payload);
             if candidates
@@ -14080,7 +15116,15 @@ fn execute_gepa_monolithic_with_options(
         .iter()
         .enumerate()
         .filter_map(|(idx, candidate)| {
-            heldout_candidate_eligible(candidate, Some(best_idx), idx).then_some(idx)
+            heldout_candidate_eligible(
+                candidate,
+                Some(best_idx),
+                candidates
+                    .get(best_idx)
+                    .and_then(|candidate| candidate.train_reward),
+                idx,
+            )
+            .then_some(idx)
         })
         .collect::<Vec<_>>();
     let mut heldout_indices = all_heldout_indices.clone();
@@ -14101,7 +15145,13 @@ fn execute_gepa_monolithic_with_options(
             heldout_rows.len(),
         );
     }
-    let heldout_required_rollouts = heldout_indices.len().saturating_mul(heldout_rows.len());
+    let heldout_required_rollouts = heldout_indices
+        .len()
+        .max(minimum_terminal_heldout_candidate_count(
+            &all_heldout_indices,
+            Some(best_idx),
+        ))
+        .saturating_mul(heldout_rows.len());
     let heldout_skipped = heldout_indices.is_empty()
         || heldout_available_rollouts < heldout_required_rollouts
         || heldout_budget_breach.is_some();
@@ -14151,6 +15201,39 @@ fn execute_gepa_monolithic_with_options(
                 })),
             }),
         )?;
+        let error = OptimizerError::Invariant(
+            "GEPA cannot complete with a train-only best candidate when heldout rows are configured"
+                .to_string(),
+        );
+        return fail_gepa_run_and_return(
+            FailedGepaRunInput {
+                workspace: &mut workspace,
+                events: &mut events,
+                state_machine: &mut state_machine,
+                transitions: &transitions,
+                paths: &paths,
+                registry: &registry,
+                cache: &mut cache,
+                config: &config,
+                cache_mode,
+                cache_namespace: &cache_namespace,
+                best_candidate_id: Some(&candidates[best_idx].candidate_id),
+                total_cost,
+                total_usage: &total_usage,
+                usage_ledger: &usage_ledger,
+                stopper_states: &stopper_states,
+                message: "Heldout required but skipped due to limits",
+                details: json!({
+                    "schema_version": "gepa_terminal_heldout_required.v1",
+                    "error_code": "gepa_terminal_heldout_not_evaluated",
+                    "stage": "heldout",
+                    "best_candidate_id": candidates[best_idx].candidate_id,
+                    "required_rollouts": heldout_required_rollouts,
+                    "available_rollouts": heldout_available_rollouts,
+                }),
+            },
+            error,
+        );
     } else {
         let total_heldout_candidates = all_heldout_indices.len();
         if heldout_indices.len() < total_heldout_candidates {
@@ -14386,8 +15469,9 @@ fn execute_gepa_monolithic_with_options(
         }),
     )?;
 
-    let best_candidate = serde_json::to_value(&candidates[best_idx])?;
-    let candidate_registry = serde_json::to_value(&candidates)?;
+    let artifact_candidates = artifact_candidate_records(&candidates);
+    let best_candidate = serde_json::to_value(&artifact_candidates[best_idx])?;
+    let candidate_registry = serde_json::to_value(&artifact_candidates)?;
     let frontier = serde_json::to_value(frontier_members(&candidates))?;
     let cache_profile_record = CacheProfileRecord::from_profile(cache.profile()?);
     let cache_access_log = cache.access_log().to_vec();
@@ -14432,12 +15516,15 @@ fn execute_gepa_monolithic_with_options(
         }),
     )?;
     events.flush()?;
-    workspace.record_event_stream(&config.run.run_id, events.records())?;
     normalize_event_feed(
         &paths.event_feed_path,
         &paths.normalized_event_feed_path,
         &paths.run_dir,
     )?;
+    let storage_summary =
+        record_terminal_storage_snapshot(&paths, &config.run.run_id, &mut events)?;
+    events.flush()?;
+    workspace.record_event_stream(&config.run.run_id, events.records())?;
     registry.append(&RunRegistryEntry::finished(
         &paths,
         &config,
@@ -14446,6 +15533,7 @@ fn execute_gepa_monolithic_with_options(
         candidates[best_idx].candidate_id.clone(),
         total_cost,
         usage_value.clone(),
+        Some(storage_summary.clone()),
     ))?;
     let artifact_refs = vec![
         paths.artifact_ref(
@@ -14475,6 +15563,7 @@ fn execute_gepa_monolithic_with_options(
             "cache_profile",
             "release_evidence",
         )?,
+        paths.artifact_ref(&paths.storage_report_path, "storage_report", "local_ops")?,
         paths.artifact_ref(
             &paths.run_registry_path,
             "run_registry_jsonl",
@@ -14491,6 +15580,7 @@ fn execute_gepa_monolithic_with_options(
         candidate_registry_path: paths.candidate_registry_path.display().to_string(),
         frontier_path: paths.frontier_path.display().to_string(),
         score_chart_path: paths.score_chart_path.display().to_string(),
+        storage_report_path: paths.storage_report_path.display().to_string(),
         run_registry_path: paths.run_registry_path.display().to_string(),
         workspace_db_path: paths.workspace_db_path.display().to_string(),
         artifact_refs,
@@ -14544,7 +15634,7 @@ fn execute_gepa_monolithic_with_options(
             rollout_count,
             stopper_sequence,
             state_machine: &state_machine,
-            terminal_summary: Some(result_value.clone()),
+            terminal_summary: Some(compact_terminal_summary(&result_value)),
             error_summary: None,
             metadata: Map::new(),
         },
@@ -14759,18 +15849,38 @@ fn align_sensor_frame_objectives(
     });
 }
 
+fn proposed_payload_for_candidate_admission(
+    proposal: &ProposedCandidate,
+    allowed_fields: &[String],
+    generation: usize,
+    proposal_index: usize,
+) -> Result<BTreeMap<String, String>> {
+    let proposed_payload = proposal.payload_map_for_allowed_fields(allowed_fields);
+    if proposed_payload.is_empty() {
+        return Err(OptimizerError::Proposer(format!(
+            "proposer proposal generation={generation} index={proposal_index} returned no mutable payload; shape={}",
+            proposal.payload_shape_summary()
+        )));
+    }
+    Ok(proposed_payload)
+}
+
+fn candidate_allowed_fields(program: &PromptProgram, config: &SynthOptimizerConfig) -> Vec<String> {
+    let mutable_fields = program.mutable_field_ids();
+    if mutable_fields.is_empty() {
+        config.candidate.target_modules.clone()
+    } else {
+        mutable_fields
+    }
+}
+
 fn normalize_candidate_payload(
     program: &PromptProgram,
     config: &SynthOptimizerConfig,
     parent_payload: &BTreeMap<String, String>,
     proposed_payload: BTreeMap<String, String>,
 ) -> Result<BTreeMap<String, String>> {
-    let mutable_fields = program.mutable_field_ids();
-    let allowed_fields = if mutable_fields.is_empty() {
-        config.candidate.target_modules.clone()
-    } else {
-        mutable_fields
-    };
+    let allowed_fields = candidate_allowed_fields(program, config);
     let proposed_payload =
         normalize_single_module_proposal_shape(&allowed_fields, proposed_payload);
     let mut payload = parent_payload.clone();
@@ -15093,12 +16203,36 @@ fn minibatch_reflection_alignment(
     }))
 }
 
+fn score_vector_frame_matches_split(
+    frame: &SensorFrame,
+    requested_split: &str,
+    source_stages: &[&str],
+) -> bool {
+    if frame.split == requested_split {
+        return true;
+    }
+    // Heldout evaluation frames are tagged with the synthetic split "heldout"
+    // while the heldout rows retain their dataset split, such as "test".
+    frame.split == "heldout"
+        && frame.evaluation_stage == "heldout"
+        && source_stages.iter().any(|stage| *stage == "heldout")
+}
+
 fn score_vector_for_candidate(input: CandidateScoreVectorInput<'_>) -> Result<ScoreVectorRecord> {
-    let row_example_ids = input
+    let requested_example_ids = input
         .rows
         .iter()
         .map(row_example_id)
-        .collect::<Result<BTreeSet<_>>>()?;
+        .collect::<Result<Vec<_>>>()?;
+    let mut row_example_ids = BTreeSet::new();
+    for example_id in &requested_example_ids {
+        if !row_example_ids.insert(example_id.clone()) {
+            return Err(OptimizerError::Invariant(format!(
+                "score vector for candidate={} split={} evaluation_stage={} requested duplicate row {}",
+                input.candidate.candidate_id, input.split, input.evaluation_stage, example_id
+            )));
+        }
+    }
     let declared_objectives = input
         .objective_set
         .objectives
@@ -15106,66 +16240,65 @@ fn score_vector_for_candidate(input: CandidateScoreVectorInput<'_>) -> Result<Sc
         .map(|objective| objective.name.clone())
         .collect::<BTreeSet<_>>();
     let mut scores = Vec::new();
-    for frame in &input.candidate.sensor_frames {
-        if frame.split != input.split {
-            continue;
-        }
-        if !input
-            .source_stages
-            .iter()
-            .any(|stage| *stage == frame.evaluation_stage)
-        {
-            continue;
-        }
-        if !row_example_ids.contains(&frame.example_id) {
-            continue;
-        }
-        let records = SensorScoreRecords::from_sensor_frame(frame);
-        let declared_scores = records
-            .scores
-            .into_iter()
-            .filter(|score| declared_objectives.contains(&score.objective))
-            .collect::<Vec<_>>();
-        if declared_scores.is_empty() {
-            let selection_objective = input.objective_set.selection_objective.trim();
-            if !selection_objective.is_empty() && declared_objectives.contains(selection_objective)
-            {
-                if let Some(objective) = input
-                    .objective_set
-                    .objectives
-                    .iter()
-                    .find(|objective| objective.name == selection_objective)
-                {
-                    let mut metadata = Map::new();
-                    metadata.insert("fallback_source".to_string(), json!("sensor_frame.reward"));
-                    metadata.insert(
-                        "source_stage".to_string(),
-                        json!(frame.evaluation_stage.clone()),
-                    );
-                    let fallback_score = ObjectiveScore {
-                        objective: selection_objective.to_string(),
-                        value: frame.reward,
-                        source: "gepa.decision_bridge.reward_fallback".to_string(),
-                        rationale: Some(
-                            "matching sensor frame had no declared objective score; using scalar reward for selection"
-                                .to_string(),
-                        ),
-                        metadata,
-                    };
-                    scores.push(ScoreRecord::from_sensor_frame(
-                        frame,
-                        objective,
-                        &fallback_score,
-                    ));
-                }
+    let mut duplicate_frame_count = 0usize;
+    for example_id in &requested_example_ids {
+        let mut row_score_sets = BTreeMap::<String, Vec<ScoreRecord>>::new();
+        let mut matching_frame_count = 0usize;
+        for frame in &input.candidate.sensor_frames {
+            if !score_vector_frame_matches_split(frame, input.split, input.source_stages) {
+                continue;
             }
-        } else {
-            scores.extend(declared_scores);
+            if !input
+                .source_stages
+                .iter()
+                .any(|stage| *stage == frame.evaluation_stage)
+            {
+                continue;
+            }
+            if frame.example_id != *example_id {
+                continue;
+            }
+            matching_frame_count += 1;
+            let row_scores =
+                score_records_for_vector_frame(input.objective_set, &declared_objectives, frame);
+            if row_scores.is_empty() {
+                continue;
+            }
+            row_score_sets
+                .entry(score_record_material_key(&row_scores))
+                .or_insert(row_scores);
+        }
+        if matching_frame_count > 1 {
+            duplicate_frame_count += matching_frame_count - 1;
+        }
+        if row_score_sets.is_empty() {
+            return Err(OptimizerError::Invariant(format!(
+                "missing score vector material for candidate={} split={} evaluation_stage={} source_stages={:?}; no declared objective scores matched requested row {}",
+                input.candidate.candidate_id,
+                input.split,
+                input.evaluation_stage,
+                input.source_stages,
+                example_id
+            )));
+        }
+        if row_score_sets.len() > 1 {
+            return Err(OptimizerError::Invariant(format!(
+                "conflicting score vector material for candidate={} split={} evaluation_stage={} source_stages={:?}; requested row {} matched {} distinct score payloads",
+                input.candidate.candidate_id,
+                input.split,
+                input.evaluation_stage,
+                input.source_stages,
+                example_id,
+                row_score_sets.len()
+            )));
+        }
+        if let Some((_, row_scores)) = row_score_sets.into_iter().next() {
+            scores.extend(row_scores);
         }
     }
     if scores.is_empty() {
         return Err(OptimizerError::Invariant(format!(
-            "missing score vector material for candidate={} split={} evaluation_stage={} source_stages={:?}; no sensor scores matched {} requested rows",
+            "missing score vector material for candidate={} split={} evaluation_stage={} source_stages={:?}; no declared objective scores matched {} requested rows",
             input.candidate.candidate_id,
             input.split,
             input.evaluation_stage,
@@ -15180,6 +16313,14 @@ fn score_vector_for_candidate(input: CandidateScoreVectorInput<'_>) -> Result<Sc
         json!(input.source_stages.to_vec()),
     );
     metadata.insert("row_count".to_string(), json!(input.rows.len()));
+    metadata.insert(
+        "requested_example_ids".to_string(),
+        json!(requested_example_ids),
+    );
+    metadata.insert(
+        "deduped_duplicate_frame_count".to_string(),
+        json!(duplicate_frame_count),
+    );
     let vector = ScoreVectorRecord::from_scores(
         input.objective_set,
         &input.candidate.candidate_id,
@@ -15218,6 +16359,39 @@ fn score_vector_for_candidate(input: CandidateScoreVectorInput<'_>) -> Result<Sc
         )));
     }
     Ok(vector)
+}
+
+fn score_records_for_vector_frame(
+    objective_set: &ObjectiveSetRecord,
+    declared_objectives: &BTreeSet<String>,
+    frame: &SensorFrame,
+) -> Vec<ScoreRecord> {
+    frame
+        .objective_scores
+        .iter()
+        .filter(|score| declared_objectives.contains(&score.objective))
+        .filter_map(|score| {
+            objective_set
+                .objectives
+                .iter()
+                .find(|objective| objective.name == score.objective)
+                .map(|objective| ScoreRecord::from_sensor_frame(frame, objective, score))
+        })
+        .collect::<Vec<_>>()
+}
+
+fn score_record_material_key(scores: &[ScoreRecord]) -> String {
+    let mut parts = scores
+        .iter()
+        .map(|score| {
+            format!(
+                "{}\u{0}{}\u{0}{:.17}",
+                score.objective, score.source, score.value
+            )
+        })
+        .collect::<Vec<_>>();
+    parts.sort();
+    parts.join("\u{1}")
 }
 
 fn compare_score_vectors(input: ScoreVectorPreferenceInput<'_>) -> Result<ScoreVectorPreference> {
@@ -15762,7 +16936,7 @@ fn rollout_task_id(program: &PromptProgram) -> String {
 fn frontier_members(candidates: &[CandidateRecord]) -> Vec<FrontierMember> {
     let evaluated = candidates
         .iter()
-        .filter(|candidate| candidate.train_reward.is_some() && !candidate.train_scores.is_empty())
+        .filter(|candidate| candidate_train_selectable(candidate))
         .collect::<Vec<_>>();
     let mut frontier = evaluated
         .iter()
@@ -15810,13 +16984,13 @@ fn select_proposer_parent_candidate(
         ));
     }
     let fallback_idx = fallback_idx
-        .filter(|idx| *idx < candidates.len())
+        .filter(|idx| candidates.get(*idx).is_some_and(candidate_train_selectable))
         .or_else(|| {
             candidates
                 .iter()
                 .enumerate()
                 .rev()
-                .find(|(_, candidate)| candidate.train_reward.is_some())
+                .find(|(_, candidate)| candidate_train_selectable(candidate))
                 .map(|(idx, _)| idx)
         })
         .unwrap_or(0);
@@ -15840,7 +17014,7 @@ fn select_proposer_parent_candidate(
     let search_visible = candidates
         .iter()
         .enumerate()
-        .filter_map(|(idx, candidate)| candidate.train_reward.map(|_| idx))
+        .filter_map(|(idx, candidate)| candidate_train_selectable(candidate).then_some(idx))
         .collect::<Vec<_>>();
     let mut members = pareto_front
         .win_counts
@@ -16148,7 +17322,7 @@ fn pareto_example_cells(
 ) -> Vec<CandidateParetoCell> {
     let mut winners: BTreeMap<String, CandidateParetoCell> = BTreeMap::new();
     for (idx, candidate) in candidates.iter().enumerate() {
-        if candidate.train_reward.is_none() {
+        if !candidate_train_selectable(candidate) {
             continue;
         }
         for frame in train_sensor_frames(candidate, train_example_ids) {
@@ -16179,7 +17353,7 @@ fn pareto_objective_cells(
 ) -> Vec<CandidateParetoCell> {
     let mut objective_scores: BTreeMap<(usize, String), (f64, usize)> = BTreeMap::new();
     for (idx, candidate) in candidates.iter().enumerate() {
-        if candidate.train_reward.is_none() {
+        if !candidate_train_selectable(candidate) {
             continue;
         }
         for frame in train_sensor_frames(candidate, train_example_ids) {
@@ -16229,7 +17403,7 @@ fn pareto_example_objective_cells(
 ) -> Vec<CandidateParetoCell> {
     let mut winners: BTreeMap<String, CandidateParetoCell> = BTreeMap::new();
     for (idx, candidate) in candidates.iter().enumerate() {
-        if candidate.train_reward.is_none() {
+        if !candidate_train_selectable(candidate) {
             continue;
         }
         for frame in train_sensor_frames(candidate, train_example_ids) {
@@ -16633,7 +17807,7 @@ fn select_best_train_candidate(
 ) -> Result<Option<usize>> {
     let mut best_idx = None;
     for (idx, candidate) in candidates.iter().enumerate() {
-        if candidate.train_reward.is_none() {
+        if !candidate_train_selectable(candidate) {
             continue;
         };
         let Some(current_idx) = best_idx else {
@@ -17346,7 +18520,7 @@ fn persist_gepa_cursor(
         pending_effect_id: state.pending_effect_id,
         pending_reservation_ids: state.pending_reservation_ids,
         active_evaluation: state.active_evaluation,
-        candidates: serde_json::to_value(state.candidates)?,
+        candidates: serde_json::to_value(checkpoint_candidate_records(state.candidates))?,
         best_candidate_id: best_candidate_id.clone(),
         rollout_task_id: Some(state.rollout_task_id.to_string()),
         rollout_count: state.rollout_count,
@@ -17387,7 +18561,7 @@ fn persist_gepa_cursor(
         snapshot: cursor_value,
         metadata: Map::new(),
     });
-    workspace.record_checkpoint(&config.run.run_id, &checkpoint)
+    workspace.record_checkpoint_compacting_previous(&config.run.run_id, &checkpoint)
 }
 
 fn checkpoint_snapshot_value(state: CheckpointSnapshotState<'_>) -> Value {
@@ -17400,8 +18574,8 @@ fn checkpoint_snapshot_value(state: CheckpointSnapshotState<'_>) -> Value {
             state.candidates.get(idx).map(|candidate| candidate.candidate_id.clone())
         }),
         "candidate_count": state.candidates.len(),
-        "candidates": state.candidates,
-        "frontier": state.frontier,
+        "candidates": candidate_checkpoint_summaries(state.candidates),
+        "frontier": frontier_checkpoint_summaries(&state.frontier),
         "rollout_count": state.rollout_count,
         "usage": state.total_usage,
         "cost_usd": state.total_cost,
@@ -17472,7 +18646,9 @@ fn persist_candidate_snapshot(
     run_id: &str,
     candidate: &CandidateRecord,
 ) -> Result<()> {
-    workspace.persist_candidate_registry(run_id, &[serde_json::to_value(candidate)?])
+    let mut value = serde_json::to_value(candidate)?;
+    enrich_candidate_value_with_seed_summaries(&mut value, candidate);
+    workspace.persist_candidate_registry(run_id, &[value])
 }
 
 pub(crate) fn record_initial_platform_snapshots(
@@ -17743,6 +18919,267 @@ struct RuntimeEffectJobInput<'a> {
     failure: Option<&'a FailurePayload>,
 }
 
+fn compact_completed_optimizer_job_payload(payload: &Map<String, Value>) -> Map<String, Value> {
+    let mut compacted = Map::new();
+    compacted.insert(
+        "schema_version".to_string(),
+        json!("synth_gepa.runtime_job_summary.v1"),
+    );
+    compacted.insert("storage_compacted".to_string(), json!(true));
+    for key in [
+        "schema_version",
+        "dispatch_kind",
+        "runtime_effect_id",
+        "effect_kind",
+        "lane",
+        "subject_type",
+        "subject_id",
+        "idempotency_key",
+        "cache_key",
+        "budget_reservation_id",
+        "queue_state",
+        "generation",
+        "parent_candidate_id",
+        "candidate_id",
+        "stage",
+        "example_id",
+        "task_id",
+        "proposer_workspace_dir",
+        "effect_payload",
+        "runtime_outcome",
+    ] {
+        if let Some(value) = payload.get(key) {
+            compacted.insert(
+                if key == "schema_version" {
+                    "original_schema_version".to_string()
+                } else {
+                    key.to_string()
+                },
+                value.clone(),
+            );
+        }
+    }
+    if let Some(request) = payload.get("request") {
+        compacted.insert(
+            "request_summary".to_string(),
+            compact_runtime_request_summary(request),
+        );
+    }
+    if let Some(rollouts) = payload.get("rollouts").and_then(Value::as_array) {
+        compacted.insert("rollout_count".to_string(), json!(rollouts.len()));
+        compacted.insert(
+            "rollouts".to_string(),
+            Value::Array(
+                rollouts
+                    .iter()
+                    .map(compact_runtime_rollout_dispatch_summary)
+                    .collect(),
+            ),
+        );
+    }
+    compacted
+}
+
+fn compact_runtime_request_summary(request: &Value) -> Value {
+    let mut summary = Map::new();
+    summary.insert(
+        "schema".to_string(),
+        json!("synth_gepa.runtime_request_summary.v1"),
+    );
+    summary.insert("storage_compacted".to_string(), json!(true));
+    for key in [
+        "backend",
+        "execution_mode",
+        "runtime_substrate",
+        "model",
+        "generation",
+        "proposal_count",
+        "target_modules",
+        "parent_candidate_id",
+        "workspace_root",
+        "run_artifact_dir",
+        "proposal_artifact_dir",
+    ] {
+        if let Some(value) = request.get(key) {
+            summary.insert(key.to_string(), value.clone());
+        }
+    }
+    if let Some(parent) = request.get("parent") {
+        summary.insert(
+            "parent".to_string(),
+            compact_candidate_value_summary(parent),
+        );
+    }
+    if let Some(candidates) = request.get("candidates").and_then(Value::as_array) {
+        summary.insert("candidate_count".to_string(), json!(candidates.len()));
+        summary.insert(
+            "candidates".to_string(),
+            Value::Array(
+                candidates
+                    .iter()
+                    .map(compact_candidate_value_summary)
+                    .collect(),
+            ),
+        );
+    }
+    if let Some(task_pool_rows) = request.get("task_pool_rows") {
+        summary.insert(
+            "task_pool_rows".to_string(),
+            compact_task_pool_rows(task_pool_rows),
+        );
+    }
+    if let Some(value) = request.get("frontier_summary") {
+        summary.insert("frontier_summary".to_string(), value.clone());
+    }
+    if let Some(value) = request.get("minibatch_failures") {
+        summary.insert("minibatch_failures".to_string(), value.clone());
+    }
+    if let Some(value) = request.get("rollout_trace_artifact_refs") {
+        summary.insert(
+            "rollout_trace_artifact_ref_count".to_string(),
+            json!(value.as_array().map(Vec::len).unwrap_or(0)),
+        );
+    }
+    if let Some(value) = request.get("merge_evidence_artifacts") {
+        summary.insert("merge_evidence_artifacts".to_string(), value.clone());
+    }
+    Value::Object(summary)
+}
+
+fn compact_runtime_rollout_dispatch_summary(rollout: &Value) -> Value {
+    let mut summary = Map::new();
+    for key in ["candidate_id", "stage", "example_id", "task_id"] {
+        if let Some(value) = rollout.get(key) {
+            summary.insert(key.to_string(), value.clone());
+        }
+    }
+    if let Some(request) = rollout.get("request") {
+        summary.insert(
+            "request_summary".to_string(),
+            compact_rollout_request_summary(request),
+        );
+    }
+    Value::Object(summary)
+}
+
+fn compact_rollout_request_summary(request: &Value) -> Value {
+    let mut summary = Map::new();
+    for key in ["task_id", "candidate_id", "policy"] {
+        if let Some(value) = request.get(key) {
+            summary.insert(key.to_string(), value.clone());
+        }
+    }
+    if let Some(candidate) = request.get("candidate") {
+        summary.insert("candidate".to_string(), candidate.clone());
+    }
+    if let Some(task) = request.get("task") {
+        summary.insert(
+            "task".to_string(),
+            project_json_fields(
+                task,
+                &["task_id", "task_instance_id", "split", "seed", "objective"],
+            ),
+        );
+    }
+    Value::Object(summary)
+}
+
+fn compact_candidate_value_summary(candidate: &Value) -> Value {
+    let mut summary = Map::new();
+    for key in [
+        "candidate_id",
+        "parent_id",
+        "source",
+        "status",
+        "minibatch_reward",
+        "train_reward",
+        "heldout_reward",
+        "acceptance_score",
+    ] {
+        if let Some(value) = candidate.get(key) {
+            summary.insert(key.to_string(), value.clone());
+        }
+    }
+    if let Some(payload) = candidate.get("payload") {
+        summary.insert("payload".to_string(), payload.clone());
+    }
+    if let Some(scores) = candidate.get("minibatch_scores").and_then(Value::as_array) {
+        summary.insert("minibatch_score_count".to_string(), json!(scores.len()));
+    }
+    if let Some(scores) = candidate.get("train_scores").and_then(Value::as_array) {
+        summary.insert("train_score_count".to_string(), json!(scores.len()));
+    }
+    if let Some(frames) = candidate.get("sensor_frames").and_then(Value::as_array) {
+        summary.insert("sensor_frame_count".to_string(), json!(frames.len()));
+        summary.insert(
+            "sensor_frames".to_string(),
+            Value::Array(
+                frames
+                    .iter()
+                    .map(compact_sensor_frame_value_summary)
+                    .collect(),
+            ),
+        );
+    }
+    Value::Object(summary)
+}
+
+fn compact_sensor_frame_value_summary(frame: &Value) -> Value {
+    let mut summary = Map::new();
+    for key in [
+        "sensor_frame_id",
+        "candidate_id",
+        "rollout_id",
+        "example_id",
+        "task_id",
+        "split",
+        "evaluation_stage",
+        "reward",
+        "status",
+        "success_status",
+        "objective_scores",
+        "usage",
+        "trace_digest",
+        "failure",
+        "artifact_refs",
+    ] {
+        if let Some(value) = frame.get(key) {
+            summary.insert(key.to_string(), value.clone());
+        }
+    }
+    Value::Object(summary)
+}
+
+fn compact_task_pool_rows(task_pool_rows: &Value) -> Value {
+    let mut summary = Map::new();
+    if let Some(object) = task_pool_rows.as_object() {
+        if let Some(schema_version) = object.get("schema_version") {
+            summary.insert("schema_version".to_string(), schema_version.clone());
+        }
+        for (name, pool) in object {
+            if name == "schema_version" {
+                continue;
+            }
+            let row_count = pool
+                .get("row_count")
+                .and_then(Value::as_u64)
+                .or_else(|| {
+                    pool.get("rows")
+                        .and_then(Value::as_array)
+                        .map(|rows| rows.len() as u64)
+                })
+                .unwrap_or(0);
+            let mut pool_summary = Map::new();
+            pool_summary.insert("row_count".to_string(), json!(row_count));
+            if let Some(task_ids) = pool.get("task_ids") {
+                pool_summary.insert("task_ids".to_string(), task_ids.clone());
+            }
+            summary.insert(name.clone(), Value::Object(pool_summary));
+        }
+    }
+    Value::Object(summary)
+}
+
 fn record_runtime_effect_job(
     workspace: &WorkspaceStore,
     input: RuntimeEffectJobInput<'_>,
@@ -17820,6 +19257,9 @@ fn record_runtime_effect_job(
     job.payload
         .insert("queue_state".to_string(), json!(input.queue_state));
     job.failure = input.failure.cloned();
+    if job.status == OptimizerJobStatus::Completed {
+        job.payload = compact_completed_optimizer_job_payload(&job.payload);
+    }
     workspace.record_optimizer_job(&job)
 }
 
@@ -18231,6 +19671,7 @@ fn evaluate_candidate(call: EvaluationCall<'_>) -> Result<CandidateEvaluation> {
             candidate: PromptCandidatePayload::from_map(call.candidate.payload.clone()),
             metadata: Map::new(),
         };
+        let prompt_assertions = prompt_assertions_for_candidate(&overlay.candidate, call.config);
         let request = json!({
             "submission_mode": rollout_submission_mode_for_request(call.config),
             "task_id": call.task_id,
@@ -18238,6 +19679,7 @@ fn evaluate_candidate(call: EvaluationCall<'_>) -> Result<CandidateEvaluation> {
             "candidate_id": call.candidate.candidate_id,
             "candidate": overlay.candidate.to_value(),
             "candidate_overlay": overlay,
+            "prompt_assertions": prompt_assertions,
             "policy": rollout_policy_for_request(call.config),
             "task": row,
         });
@@ -19104,7 +20546,7 @@ fn fail_gepa_run_and_return<T>(input: FailedGepaRunInput<'_>, error: OptimizerEr
     });
     input
         .workspace
-        .record_checkpoint(&input.config.run.run_id, &checkpoint)?;
+        .record_checkpoint_compacting_previous(&input.config.run.run_id, &checkpoint)?;
     input.events.emit(
         terminal_event_type,
         input.message,
@@ -19118,14 +20560,17 @@ fn fail_gepa_run_and_return<T>(input: FailedGepaRunInput<'_>, error: OptimizerEr
         }),
     )?;
     input.events.flush()?;
-    input
-        .workspace
-        .record_event_stream(&input.config.run.run_id, input.events.records())?;
     normalize_event_feed(
         &input.paths.event_feed_path,
         &input.paths.normalized_event_feed_path,
         &input.paths.run_dir,
     )?;
+    let storage_summary =
+        record_terminal_storage_snapshot(input.paths, &input.config.run.run_id, input.events)?;
+    input.events.flush()?;
+    input
+        .workspace
+        .record_event_stream(&input.config.run.run_id, input.events.records())?;
     if matches!(terminal_state, OptimizerRunState::Cancelled) {
         input.workspace.record_run_cancelled_result(
             &input.config.run.run_id,
@@ -19140,6 +20585,7 @@ fn fail_gepa_run_and_return<T>(input: FailedGepaRunInput<'_>, error: OptimizerEr
             input.cache_namespace,
             input.total_cost,
             usage_value,
+            Some(storage_summary.clone()),
         ))?;
     } else {
         input.workspace.record_run_failed(
@@ -19155,6 +20601,7 @@ fn fail_gepa_run_and_return<T>(input: FailedGepaRunInput<'_>, error: OptimizerEr
             input.cache_namespace,
             input.total_cost,
             usage_value,
+            Some(storage_summary.clone()),
         ))?;
     }
     Err(error)

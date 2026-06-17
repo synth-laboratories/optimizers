@@ -27,6 +27,8 @@ LLM calls are still owned by the task container.
 
 The promo grant is reused for repeat submits from the same organization. Each organization
 may have one hosted GELO run in `queued` or `running` status at once while using the promo.
+Pass `billing_mode="paid"` in the SDK, or `--billing-mode paid` in the CLI, to submit against
+normal hosted optimizer billing without promo slot, grant, concurrency, or GPT-proposer gates.
 
 Promo submits require GPT models for the five paid proposer roles:
 `core_proposer`, `aux_hill_climb_proposer`, `aux_data_miner_proposer`,

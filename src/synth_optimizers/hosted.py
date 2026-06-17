@@ -21,6 +21,12 @@ from .tunnels import (
     create_tunnel_lease,
     tunnel_provider_value,
 )
+from .observability import (
+    OptimizerEvent,
+    OptimizerStateSlice,
+    OptimizerStateSliceKind,
+    state_slice_value,
+)
 
 
 class HostedOptimizerError(RuntimeError):
@@ -284,6 +290,16 @@ class HostedOptimizerClient:
     ) -> OptimizerRunSubmitResponse:
         return self._submit(OptimizerAlgorithmSlug.GEPA, config, **kwargs)
 
+    def submit(
+        self,
+        config: Mapping[str, Any] | Any,
+        *,
+        algorithm: OptimizerAlgorithmSlug | str | None = None,
+        **kwargs: Any,
+    ) -> OptimizerRunSubmitResponse:
+        resolved_algorithm = _resolve_submit_algorithm(config, algorithm)
+        return self._submit(resolved_algorithm, config, **kwargs)
+
     def submit_gepa_toml(
         self,
         config_toml: str,
@@ -392,26 +408,47 @@ class HostedOptimizerClient:
         for payload in self._sse_events(f"/api/v1/optimizers/runs/{run_id}/events"):
             yield payload
 
+    def stream_events(
+        self,
+        run_id: str,
+        *,
+        after_seq: int = 0,
+        limit: int = 500,
+        typed: bool = False,
+    ) -> Iterator[Mapping[str, Any] | OptimizerEvent]:
+        query = _event_query(after_seq=after_seq, limit=limit)
+        for payload in self._sse_events(f"/api/v1/optimizers/runs/{run_id}/events?{query}"):
+            yield OptimizerEvent.from_payload(payload) if typed else payload
+
     def event_backfill(
         self,
         run_id: str,
         *,
         after_seq: int = 0,
         limit: int = 500,
-    ) -> Iterator[Mapping[str, Any]]:
+        typed: bool = False,
+    ) -> Iterator[Mapping[str, Any] | OptimizerEvent]:
         query = _event_query(after_seq=after_seq, limit=limit)
         query = f"{query}&stream=0"
-        yield from self._ndjson_events(
+        for payload in self._ndjson_events(
             f"/api/v1/optimizers/runs/{run_id}/events?{query}",
             context="lifecycle event backfill",
-        )
+        ):
+            yield OptimizerEvent.from_payload(payload) if typed else payload
 
     def get_state(self, run_id: str) -> Mapping[str, Any]:
         return self._json_request("GET", f"/api/v1/optimizers/runs/{run_id}/state")
 
-    def get_state_slice(self, run_id: str, slice_name: str) -> Mapping[str, Any]:
-        slice_path = quote(str(slice_name), safe="")
-        return self._json_request("GET", f"/api/v1/optimizers/runs/{run_id}/state/{slice_path}")
+    def get_state_slice(
+        self,
+        run_id: str,
+        slice_name: OptimizerStateSliceKind | str,
+        *,
+        typed: bool = False,
+    ) -> Mapping[str, Any] | OptimizerStateSlice:
+        slice_path = quote(state_slice_value(slice_name), safe="")
+        payload = self._json_request("GET", f"/api/v1/optimizers/runs/{run_id}/state/{slice_path}")
+        return OptimizerStateSlice.from_payload(payload) if typed else payload
 
     def get_state_batch(
         self,
@@ -438,6 +475,21 @@ class HostedOptimizerClient:
             context="Go-Ex event backfill",
         )
 
+    def algorithm_events(
+        self,
+        run_id: str,
+        *,
+        after_seq: int = 0,
+        limit: int = 500,
+        typed: bool = False,
+    ) -> Iterator[Mapping[str, Any] | OptimizerEvent]:
+        query = _event_query(after_seq=after_seq, limit=limit)
+        for payload in self._ndjson_events(
+            f"/api/v1/optimizers/runs/{run_id}/algorithm-events?{query}",
+            context="optimizer algorithm event backfill",
+        ):
+            yield OptimizerEvent.from_payload(payload) if typed else payload
+
     def goex_event_stream(
         self,
         run_id: str,
@@ -447,6 +499,20 @@ class HostedOptimizerClient:
     ) -> Iterator[Mapping[str, Any]]:
         query = _event_query(after_seq=after_seq, limit=limit)
         yield from self._sse_events(f"/api/v1/optimizers/runs/{run_id}/goex-events/stream?{query}")
+
+    def algorithm_event_stream(
+        self,
+        run_id: str,
+        *,
+        after_seq: int = 0,
+        limit: int = 500,
+        typed: bool = False,
+    ) -> Iterator[Mapping[str, Any] | OptimizerEvent]:
+        query = _event_query(after_seq=after_seq, limit=limit)
+        for payload in self._sse_events(
+            f"/api/v1/optimizers/runs/{run_id}/algorithm-events/stream?{query}"
+        ):
+            yield OptimizerEvent.from_payload(payload) if typed else payload
 
     def open_synth_tunnel(
         self,
@@ -500,6 +566,7 @@ class HostedOptimizerClient:
         project_id: str | None = None,
         container_pool: ContainerPoolTarget | Mapping[str, Any] | None = None,
         container_tunnel: TunnelLease | None = None,
+        billing_mode: str | None = None,
     ) -> OptimizerRunSubmitResponse:
         if container_pool is not None and container_tunnel is not None:
             raise HostedOptimizerError(
@@ -519,6 +586,7 @@ class HostedOptimizerClient:
             idempotency_key=idempotency_key,
             project_id=project_id,
             container_pool=container_pool,
+            billing_mode=billing_mode,
         )
         response = self._json_request("POST", "/api/v1/optimizers/runs", payload)
         submit_response = OptimizerRunSubmitResponse.from_payload(response)
@@ -560,6 +628,7 @@ class HostedOptimizerClient:
         idempotency_key: str | None,
         project_id: str | None,
         container_pool: ContainerPoolTarget | Mapping[str, Any] | None,
+        billing_mode: str | None = None,
     ) -> None:
         if run_id is not None:
             payload["run_id"] = run_id
@@ -573,6 +642,8 @@ class HostedOptimizerClient:
                 if isinstance(container_pool, ContainerPoolTarget)
                 else dict(container_pool)
             )
+        if billing_mode is not None:
+            payload["billing_mode"] = billing_mode
 
     def _json_request(
         self,
@@ -793,6 +864,22 @@ def _config_to_json(config: Mapping[str, Any] | Any) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise TypeError("hosted optimizer config must serialize to a JSON object")
     return data
+
+
+def _resolve_submit_algorithm(
+    config: Mapping[str, Any] | Any,
+    algorithm: OptimizerAlgorithmSlug | str | None,
+) -> OptimizerAlgorithmSlug:
+    if algorithm is not None:
+        return _algorithm_slug(algorithm, context="hosted optimizer submit")
+    if isinstance(config, Mapping):
+        raise HostedOptimizerError(
+            "hosted optimizer submit requires algorithm=... for raw mapping configs"
+        )
+    return _algorithm_slug(
+        getattr(config, "algorithm", None),
+        context=f"{type(config).__name__} hosted optimizer config",
+    )
 
 
 def _with_tunnel_container(config_json: dict[str, Any], lease: TunnelLease) -> dict[str, Any]:

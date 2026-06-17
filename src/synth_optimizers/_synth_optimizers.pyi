@@ -42,6 +42,7 @@ class GepaRunResult:
     candidate_registry_path: str
     frontier_path: str
     score_chart_path: str
+    storage_report_path: str
     run_registry_path: str
     workspace_db_path: str
     artifact_refs: list[dict[str, Any]]
@@ -59,6 +60,23 @@ def gepa_compact_run_storage(
     run_id: str | None = None,
     profile: str = "compact",
     dry_run: bool = True,
+) -> dict[str, Any]: ...
+def gepa_inspect_run_storage(
+    run_dir: str,
+    run_id: str | None = None,
+    terminal: bool | None = None,
+) -> dict[str, Any]: ...
+def gepa_inspect_run_storage_summary(
+    run_dir: str,
+    run_id: str | None = None,
+    terminal: bool | None = None,
+) -> dict[str, Any]: ...
+def gepa_workspace_storage_health(
+    roots: list[str],
+    run_warn_bytes: int | None = None,
+    root_warn_bytes: int | None = None,
+    stale_partial_warn_bytes: int | None = None,
+    partial_stale_after_seconds: int | None = None,
 ) -> dict[str, Any]: ...
 def gepa_delete_run_storage(run_dir: str, dry_run: bool = True) -> dict[str, Any]: ...
 

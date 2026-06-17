@@ -56,7 +56,7 @@ fn default_policy_tool_call_style() -> String {
 }
 
 fn default_policy_proxy_mode() -> String {
-    "allow_direct".to_string()
+    "proxy_only".to_string()
 }
 
 fn default_policy_credential_mode() -> String {
@@ -628,6 +628,18 @@ impl SynthOptimizerConfig {
         }
         validate_gepa_acceptance_criterion(&self.gepa.acceptance_criterion)?;
         validate_policy_config(&self.policy)?;
+        if self.policy.enabled {
+            if self.candidate.target_modules.is_empty() {
+                return Err(OptimizerError::Config(
+                    "GEPA policy runs require candidate.target_modules so prompt delivery assertions can be bound to candidate fields".to_string(),
+                ));
+            }
+            if normalize_enum_value(&self.policy.proxy_mode) == "allow_direct" {
+                return Err(OptimizerError::Config(
+                    "policy.proxy_mode = \"allow_direct\" is forbidden for GEPA policy runs; use proxy_only or assert_proxy so candidate prompts are applied through the inference proxy".to_string(),
+                ));
+            }
+        }
         validate_gepa_objective_acceptance_config(&self.gepa.objective_acceptance)?;
         validate_gepa_candidate_selector_config(&self.gepa.candidate_selector)?;
         validate_gepa_batch_sampler_config(&self.gepa.batch_sampler)?;
@@ -2187,12 +2199,9 @@ fn validate_policy_config(config: &PolicyConfig) -> Result<()> {
         )));
     }
     let proxy_mode = normalize_enum_value(&config.proxy_mode);
-    if !matches!(
-        proxy_mode.as_str(),
-        "allow_direct" | "proxy_only" | "assert_proxy"
-    ) {
+    if !matches!(proxy_mode.as_str(), "proxy_only" | "assert_proxy") {
         return Err(OptimizerError::Config(format!(
-            "policy.proxy_mode must be allow_direct, proxy_only, or assert_proxy; got {:?}",
+            "policy.proxy_mode must be proxy_only or assert_proxy; got {:?}",
             config.proxy_mode
         )));
     }

@@ -3,6 +3,8 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 
+pub const CHECKPOINT_SUMMARY_SCHEMA: &str = "synth.optimizer.checkpoint_summary.v1";
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CheckpointRecord {
     pub schema_version: String,
@@ -31,6 +33,21 @@ pub struct CheckpointRecord {
     pub snapshot: Value,
     #[serde(default)]
     pub metadata: Map<String, Value>,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CheckpointSummaryRecord {
+    pub checkpoint_id: String,
+    pub sequence_number: u64,
+    pub checkpoint_kind: String,
+    pub status: String,
+    pub run_state: String,
+    pub generation: Option<u64>,
+    pub candidate_count: u64,
+    pub frontier_count: u64,
+    pub rollout_count: u64,
+    pub cost_usd: f64,
     pub created_at: String,
 }
 
@@ -102,6 +119,43 @@ impl CheckpointRecord {
             "rollout_count": self.rollout_count,
             "cost_usd": self.cost_usd,
         })
+    }
+
+    pub fn is_storage_compacted(&self) -> bool {
+        self.snapshot
+            .get("compacted")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            || self
+                .metadata
+                .get("storage_compacted")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+    }
+
+    pub fn storage_compacted_summary(mut self, original_snapshot_bytes: u64) -> Self {
+        let original_checkpoint_id = self.checkpoint_id.clone();
+        let original_snapshot_kind = self
+            .snapshot
+            .get("schema")
+            .or_else(|| self.snapshot.get("schema_version"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        self.snapshot = json!({
+            "schema": CHECKPOINT_SUMMARY_SCHEMA,
+            "compacted": true,
+            "original_checkpoint_id": original_checkpoint_id,
+            "original_snapshot_kind": original_snapshot_kind,
+            "original_snapshot_bytes": original_snapshot_bytes,
+            "summary": self.summary(),
+        });
+        self.metadata
+            .insert("storage_compacted".to_string(), json!(true));
+        self.metadata.insert(
+            "storage_compaction_schema".to_string(),
+            json!(CHECKPOINT_SUMMARY_SCHEMA),
+        );
+        self
     }
 }
 

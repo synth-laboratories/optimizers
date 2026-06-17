@@ -94,7 +94,9 @@ pub(crate) fn terminal_line_for_event(
         }
         "taskset.tasks.loaded" => Some(format!(
             "  taskset: train={} heldout={}",
-            field_usize(fields, "train_rows").unwrap_or(0),
+            field_usize(fields, "train_rows")
+                .or_else(|| field_usize(fields, "pareto_rows"))
+                .unwrap_or(0),
             field_usize(fields, "heldout_rows").unwrap_or(0)
         )),
         "candidate.evaluated" => Some(format!(

@@ -7,9 +7,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
-from .hosted import ContainerPoolTarget
+from .hosted import ContainerPoolTarget, OptimizerAlgorithmSlug
 from .tunnels import TunnelProvider, tunnel_provider_value
 
 
@@ -49,6 +49,7 @@ class GeloPluginKind(StrEnum):
 class GeloPresetName(StrEnum):
     CRAFTER = "crafter"
     CRAFTER_SMOKE = "crafter_smoke"
+    SOKOBAN_SMOKE = "sokoban_smoke"
     NETHACK_SMOKE = "nethack_smoke"
     DUNGEONGRID_PLUS_PICO = "dungeongrid_plus_pico"
 
@@ -239,6 +240,8 @@ class GeloProposerSection:
 
 @dataclass(frozen=True, slots=True)
 class GeloHostedConfig:
+    algorithm: ClassVar[OptimizerAlgorithmSlug] = OptimizerAlgorithmSlug.GELO
+
     run: GeloRunSection
     container: GeloContainerSection
     taskset: GeloTasksetSection
@@ -356,6 +359,20 @@ class GeloPreset:
                 "heldout_seed_count": 8,
                 "max_rollouts": 6000,
             }
+        elif preset_name == GeloPresetName.SOKOBAN_SMOKE:
+            # GameBench rust gold Sokoban (tasks/sokoban-singleplayer). Mirrors the
+            # proven local config goex_sokoban_gpt_oss_120b_budget.json, scaled for a
+            # hosted smoke. Policy runs Groq gpt-oss-120b inside the react container;
+            # proposers are Synth-managed (same as crafter_smoke).
+            defaults = {
+                "proposer_rounds": 1,
+                "train_seed_count": 4,
+                "heldout_seed_count": 2,
+                "max_rollouts": 48,
+                "policy_model": "openai/gpt-oss-120b",
+                "policy_provider": "groq",
+                "policy_api_key_env": "GROQ_API_KEY",
+            }
         else:
             raise GeloMaterializeError(
                 f"preset {preset_name.value!r} is not available in the public package yet"
@@ -371,14 +388,18 @@ class GeloPreset:
     def crafter(cls, **overrides: Any) -> "GeloPreset":
         return cls.from_name(GeloPresetName.CRAFTER, **overrides)
 
-    def materialize(
+    @classmethod
+    def sokoban_smoke(cls, **overrides: Any) -> "GeloPreset":
+        return cls.from_name(GeloPresetName.SOKOBAN_SMOKE, **overrides)
+
+    def to_config(
         self,
         *,
         container_url: str | None = None,
         container_pool: ContainerPoolTarget | Mapping[str, Any] | None = None,
         container_tunnel: Any | None = None,
         run_id: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> GeloHostedConfig:
         _validate_container_inputs(
             container_url=container_url,
             container_pool=container_pool,
@@ -394,41 +415,61 @@ class GeloPreset:
             raise GeloMaterializeError(
                 "container_url, container_pool, or container_tunnel is required"
             )
-        config = GeloHostedConfig(
-            run=GeloRunSection(run_id=run_id or _default_run_id(self.name)),
-            container=container,
-            taskset=GeloTasksetSection(
-                train_seeds=_seed_tuple(3001, self.train_seed_count),
-                heldout_seeds=_seed_tuple(7001, self.heldout_seed_count),
-                profile="crafter_react",
-                reward_mode=GeloRewardMode.ACHIEVEMENT,
-                env_config={"task_family": "crafter_react"},
-            ),
-            policy=GeloPolicySection(
-                model=self.policy_model,
-                provider=self.policy_provider,
-                api_key_env=self.policy_api_key_env,
-                inference_url=(
-                    "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
-                    if self.policy_provider == "gemini"
-                    else None
+        run = GeloRunSection(run_id=run_id or _default_run_id(self.name))
+        if self.name == GeloPresetName.SOKOBAN_SMOKE:
+            config = _sokoban_config(self, run=run, container=container)
+        else:
+            config = GeloHostedConfig(
+                run=run,
+                container=container,
+                taskset=GeloTasksetSection(
+                    train_seeds=_seed_tuple(3001, self.train_seed_count),
+                    heldout_seeds=_seed_tuple(7001, self.heldout_seed_count),
+                    profile="crafter_react",
+                    reward_mode=GeloRewardMode.ACHIEVEMENT,
+                    env_config={"task_family": "crafter_react"},
                 ),
-            ),
-            go_ex=_crafter_engine(self),
-            seed_candidate=GeloSeedCandidateSection(
-                react_system_prompt=(
-                    "You are a Crafter ReAct policy. Explore safely, collect resources, "
-                    "craft tools when prerequisites are present, and use only valid "
-                    "crafter_interact actions."
-                )
-            ),
-            proposers=_default_crafter_roles(),
-            cache=GeloCacheSection(mode=GeloCacheMode.OFF),
-            disk_budget=GeloDiskBudgetSection(enabled=True, soft_limit_gb=5.0, hard_limit_gb=10.0),
-        )
-        payload = config.to_config_json()
-        _validate_materialized_config(payload)
-        return payload
+                policy=GeloPolicySection(
+                    model=self.policy_model,
+                    provider=self.policy_provider,
+                    api_key_env=self.policy_api_key_env,
+                    inference_url=(
+                        "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+                        if self.policy_provider == "gemini"
+                        else None
+                    ),
+                ),
+                go_ex=_crafter_engine(self),
+                seed_candidate=GeloSeedCandidateSection(
+                    react_system_prompt=(
+                        "You are a Crafter ReAct policy. Explore safely, collect resources, "
+                        "craft tools when prerequisites are present, and use only valid "
+                        "crafter_interact actions."
+                    )
+                ),
+                proposers=_default_crafter_roles(),
+                cache=GeloCacheSection(mode=GeloCacheMode.OFF),
+                disk_budget=GeloDiskBudgetSection(
+                    enabled=True, soft_limit_gb=5.0, hard_limit_gb=10.0
+                ),
+            )
+        _validate_materialized_config(config.to_config_json())
+        return config
+
+    def materialize(
+        self,
+        *,
+        container_url: str | None = None,
+        container_pool: ContainerPoolTarget | Mapping[str, Any] | None = None,
+        container_tunnel: Any | None = None,
+        run_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self.to_config(
+            container_url=container_url,
+            container_pool=container_pool,
+            container_tunnel=container_tunnel,
+            run_id=run_id,
+        ).to_config_json()
 
 
 @dataclass(frozen=True, slots=True)
@@ -582,6 +623,148 @@ def _crafter_engine(preset: GeloPreset) -> GeloEngineSection:
         data_miner_while_active_theme_climbing=True,
         target_new_candidate_count=2,
         candidates_per_proposer=3 if smoke else 5,
+    )
+
+
+_SOKOBAN_SEED_PROMPT = (
+    "You are playing Sokoban. Reply with exactly one move as JSON: "
+    '{"action":"up"}, {"action":"down"}, {"action":"left"}, or {"action":"right"}. '
+    "Push boxes onto targets. Avoid pushing boxes into walls or corners unless that "
+    "move places the box on a target."
+)
+
+# Mirrors goex_sokoban_gpt_oss_120b_budget.json taskset.context.milestone_ladder.
+_SOKOBAN_MILESTONE_LADDER: tuple[Mapping[str, Any], ...] = (
+    {"milestone_id": "first_push", "title": "Make the first useful box push", "reward": 0.2, "region": {}},
+    {
+        "milestone_id": "box_on_target",
+        "title": "Move a box onto a target",
+        "reward": 0.5,
+        "region": {"requires_milestone": "first_push"},
+    },
+    {
+        "milestone_id": "level_complete",
+        "title": "Solve the Sokoban puzzle",
+        "reward": 1.0,
+        "region": {"requires_milestone": "box_on_target"},
+    },
+)
+
+
+def _sokoban_engine(preset: "GeloPreset") -> GeloEngineSection:
+    """GameBench Sokoban smoke engine — scaled-down mirror of the proven budget config."""
+    return GeloEngineSection(
+        max_rollouts=preset.max_rollouts,
+        proposer_rounds=preset.proposer_rounds,
+        base_react_system_prompt=_SOKOBAN_SEED_PROMPT,
+        submission_mode="sync",
+        execute_live_proposers=True,
+        bootstrap_train_rollout_count=0,
+        fresh_rollouts_per_round=4,
+        resume_rollouts_per_round=0,
+        heldout_measurement_rollouts=max(1, preset.heldout_seed_count),
+        all_candidate_holdout_seed_count=max(1, preset.heldout_seed_count),
+        full_rollout_lane_enabled=True,
+        full_rollout_initial_budget=6,
+        full_rollout_budget_per_round=4,
+        full_rollout_cadence=1,
+        fresh_rollouts_per_parent=1,
+        full_rollout_concurrency=3,
+        theme_rollout_concurrency=3,
+        full_rollout_checkpoint_cadence="per_llm_call",
+        full_rollout_checkpoint_budget=160,
+        data_miner_authority=True,
+        data_miner_min_new_checkpoints=1,
+        data_miner_rollouts_per_job=2,
+        data_miner_cadence="after_full_rollout_phase",
+        theme_finalize_min_checkpoints=1,
+        max_tentative_themes=5,
+        tentative_theme_max_age_rounds=3,
+        theme_start_score_band=(0.0, 0.95),
+        theme_partials_per_candidate=3,
+        theme_saturation_threshold=0.85,
+        theme_saturation_min_rollouts=1,
+        theme_aux_rounds_per_staircase=3,
+        theme_proposal_round_budget=3,
+        theme_aux_budget_per_theme=3,
+        theme_no_progress_rounds=3,
+        terminator_default="agent",
+        promotion_min_seeds=1,
+        promotion_margin=0.01,
+        holdout_consolidate_k=2,
+        auto_aux_hill_climb_calls_per_round=3,
+        auto_consolidate_min_mature_themes=1,
+        auto_consolidate_theme_count=2,
+        auto_consolidate_min_score=0.0,
+        allow_single_theme_consolidation=True,
+        consolidation_budget_per_round=2,
+        consolidation_max_themes=3,
+        target_new_candidate_count=4,
+        candidates_per_proposer=3,
+        segment_steps=20,
+        resume_segment_steps=10,
+        max_llm_turns=20,
+        max_actions_per_turn=1,
+        request_timeout_seconds=240.0,
+        rollout_state_poll_seconds=0.25,
+        rollout_terminator_poll_seconds=0.25,
+        rollout_stall_timeout_seconds=300.0,
+        container_connect_timeout_seconds=15.0,
+    )
+
+
+def _sokoban_config(
+    preset: "GeloPreset",
+    *,
+    run: GeloRunSection,
+    container: GeloContainerSection,
+) -> GeloHostedConfig:
+    return GeloHostedConfig(
+        run=run,
+        container=container,
+        taskset=GeloTasksetSection(
+            train_seeds=_seed_tuple(101, preset.train_seed_count),
+            heldout_seeds=_seed_tuple(201, preset.heldout_seed_count),
+            profile="sokoban_singleplayer_agent",
+            reward_mode="sokoban_sparse_shaped",
+            checkpoint_semantics=GeloCheckpointSemantics.TRUE_ENV_SNAPSHOT,
+            # Target is conveyed via context.target_objective_label + the milestone
+            # ladder (matches the proven goex_sokoban_gpt_oss_120b_budget.json, which
+            # sets no top-level target_achievement — that field is crafter-shaped).
+            env_config={
+                "task_path": "tasks/difficulty/gold_08_double_push.json",
+                "max_steps": 20,
+            },
+            context={
+                "task_family": "sokoban_singleplayer",
+                "checkpoint_restore_semantics": "true_environment_snapshot",
+                "allow_request_snapshot_resume": False,
+                "require_real_rewards": True,
+                "required_candidate_kind": "prompt",
+                "prompt_only_candidate_authoring": True,
+                "forbid_code_policy_candidates": True,
+                "target_objective_label": "level_complete",
+                "milestone_ladder": [dict(m) for m in _SOKOBAN_MILESTONE_LADDER],
+            },
+        ),
+        policy=GeloPolicySection(
+            model=preset.policy_model,
+            provider=preset.policy_provider,
+            api_key_env=preset.policy_api_key_env,
+            inference_url="https://api.groq.com/openai/v1/chat/completions",
+            max_tokens=512,
+            config={
+                "use_lm": True,
+                "policy_id": "greedy_distance_v1",
+                "temperature": 0.0,
+                "max_steps": 20,
+            },
+        ),
+        go_ex=_sokoban_engine(preset),
+        seed_candidate=GeloSeedCandidateSection(react_system_prompt=_SOKOBAN_SEED_PROMPT),
+        proposers=_default_crafter_roles(),
+        cache=GeloCacheSection(mode=GeloCacheMode.OFF),
+        disk_budget=GeloDiskBudgetSection(enabled=True, soft_limit_gb=5.0, hard_limit_gb=10.0),
     )
 
 

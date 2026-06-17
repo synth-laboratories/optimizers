@@ -29,8 +29,8 @@ with client.open_tunnel(
     "http://127.0.0.1:8943",
     provider="synth_tunnel",
 ) as tunnel:
-    config = GeloPreset.crafter_smoke().materialize(container_tunnel=tunnel)
-    resp = client.submit_gelo(config)
+    config = GeloPreset.crafter_smoke().to_config(container_tunnel=tunnel)
+    resp = client.submit(config)
     record = client.wait_for_run(resp.run_id, timeout_seconds=3600)
 
 board = client.get_state_slice(resp.run_id, "board")
@@ -42,6 +42,7 @@ frontier = client.get_artifact(resp.run_id, "checkpoint_frontier")
 | Method | Purpose |
 |--------|---------|
 | `startup()` | Catalog; `go-ex` in `submit_supported` |
+| `submit(config, **kwargs)` | Shared hosted submit; reads `config.algorithm` |
 | `submit_gelo(config, **kwargs)` | `POST /api/v1/optimizers/runs` with `algorithm: go-ex` |
 | `get_run` / `wait_for_run` | Status + `finalize_state` |
 | `get_artifact(name)` | `checkpoint_frontier`, `manifest`, … |
@@ -52,7 +53,8 @@ frontier = client.get_artifact(resp.run_id, "checkpoint_frontier")
 | `open_tunnel(local_url, provider=...)` | Expose local container with `synth_tunnel`, `cloudflared`, or `ngrok` |
 | `open_synth_tunnel(local_url)` | Compatibility wrapper for `open_tunnel(..., provider="synth_tunnel")` |
 
-Submit kwargs: `run_id`, `idempotency_key`, `project_id`, `container_pool`, `container_tunnel`.
+Submit kwargs: `run_id`, `idempotency_key`, `project_id`, `container_pool`,
+`container_tunnel`, `billing_mode`.
 
 Usage registration is on by default for hosted submits. It sends only coarse
 package/run-start metadata (`algorithm`, `client_surface`, package name/version);
@@ -77,7 +79,8 @@ Wire shape for `config_json` on submit. Sections:
 - `plugins` — optional plugin lanes; SFT beta is accepted, RLVR/OPSD fail closed
 - `cache`, `disk_budget` — optional
 
-`.to_config_json()` serializes for submit.
+`.to_config_json()` serializes for submit. `GeloHostedConfig.algorithm` is `go-ex`, so it can
+be passed directly to `HostedOptimizerClient.submit(config)`.
 
 ## Plugin lanes
 
@@ -99,7 +102,7 @@ plugins = GeloPluginsSection(
 ```python
 from synth_optimizers.gelo import GeloMaterializer, GeloPreset
 
-config = GeloPreset.crafter_smoke(proposer_rounds=3).materialize(
+config = GeloPreset.crafter_smoke(proposer_rounds=3).to_config(
     container_url="http://127.0.0.1:8943",
 )
 
@@ -116,7 +119,11 @@ materialization includes `container.auth_refresh` so the hosted worker can refre
 long GELO runs. Cloudflared and ngrok materialize as public URLs without
 `container.auth_refresh`.
 
+Use `.materialize(...)` when you need the raw config JSON dictionary for compatibility.
 Materialize from TOML + overlay without hand-editing JSON copied from internal overlays.
+
+GELO submit defaults to launch-promo billing. Pass `billing_mode="paid"` to use normal
+paid hosted GELO without launch-promo model and concurrency gates.
 
 ## Config authoring vs execution
 

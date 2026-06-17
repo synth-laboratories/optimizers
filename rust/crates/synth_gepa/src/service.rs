@@ -16,12 +16,13 @@ use serde_json::{json, Map, Value};
 use sha1::{Digest as Sha1Digest, Sha1};
 use sha2::{Digest as Sha2Digest, Sha256};
 use synth_optimizer_platform::{
-    compact_run_storage, delete_run_storage, ArtifactPaths, CacheMode, CheckpointInput,
-    CheckpointRecord, ContainerClient, FailurePayload, GepaPipelineMode, GepaStalenessPolicy,
-    GepaTaskPoolsConfig, OptimizerError, OptimizerJob, OptimizerJobKind, OptimizerJobStatus,
-    PromptProgram, Result, RunPhaseTimingRecord, RunStorageMaintenanceInput, RuntimeEffectInput,
-    RuntimeEffectRecord, StorageMaintenanceProfile, SynthOptimizerConfig, TransitionLog,
-    TransitionRow, WorkspaceRunRequestStatus, WorkspaceStore,
+    compact_run_storage, delete_run_storage, inspect_run_storage, inspect_workspace_storage_health,
+    ArtifactPaths, CacheMode, CheckpointInput, CheckpointRecord, ContainerClient, FailurePayload,
+    GepaPipelineMode, GepaStalenessPolicy, GepaTaskPoolsConfig, OptimizerError, OptimizerJob,
+    OptimizerJobKind, OptimizerJobStatus, PromptProgram, Result, RunPhaseTimingRecord,
+    RunStorageInspectionInput, RunStorageMaintenanceInput, RuntimeEffectInput, RuntimeEffectRecord,
+    StorageHealthThresholds, StorageMaintenanceProfile, SynthOptimizerConfig, TransitionLog,
+    TransitionRow, WorkspaceRunRequestStatus, WorkspaceStorageHealthInput, WorkspaceStore,
 };
 
 use crate::{
@@ -875,7 +876,7 @@ fn persist_cursor_checkpoint(
         snapshot: serde_json::to_value(cursor)?,
         metadata,
     });
-    store.record_checkpoint(&cursor.run_id, &checkpoint)
+    store.record_checkpoint_compacting_previous(&cursor.run_id, &checkpoint)
 }
 
 fn next_cursor_checkpoint_sequence(store: &WorkspaceStore, run_id: &str) -> Result<u64> {
@@ -1512,6 +1513,7 @@ fn route_request(request: HttpRequest, runtime: GepaServiceRuntime) -> HttpRespo
         }
         ("GET", ["workspace"]) => result_response(workspace_summary(config), 200),
         ("GET", ["workspace", "usage"]) => result_response(workspace_usage(config), 200),
+        ("GET", ["workspace", "storage"]) => result_response(workspace_storage(config), 200),
         ("POST", ["workspace", "prune"]) => result_response(prune_workspace(config, &request), 200),
         ("POST", ["workspace", "compact"]) => {
             result_response(compact_workspace_response(config, &request), 200)
@@ -1523,6 +1525,7 @@ fn route_request(request: HttpRequest, runtime: GepaServiceRuntime) -> HttpRespo
         ("GET", ["runs", run_id, "limits"]) => run_limits_response(config, run_id),
         ("GET", ["runs", run_id, "timings"]) => run_timings_response(config, run_id),
         ("GET", ["runs", run_id, "stats"]) => run_stats_response(config, run_id),
+        ("GET", ["runs", run_id, "storage"]) => run_storage_response(config, run_id),
         ("DELETE", ["runs", run_id]) => delete_run_response(config, run_id),
         ("POST", ["runs", run_id, "compact"]) => compact_run_response(config, run_id, &request),
         ("POST", ["runs", run_id, "cancel"]) => {
@@ -1541,9 +1544,17 @@ fn route_request(request: HttpRequest, runtime: GepaServiceRuntime) -> HttpRespo
         ("GET", ["runs", run_id, "candidates"]) => {
             result_response(list_candidates(config, run_id, &query), 200)
         }
+        ("GET", ["runs", run_id, "candidate-seed-rewards"]) => result_response(
+            list_candidate_seed_rewards(config, run_id, None, &query),
+            200,
+        ),
         ("GET", ["runs", run_id, "candidates", candidate_id]) => {
             candidate_response(config, run_id, candidate_id)
         }
+        ("GET", ["runs", run_id, "candidates", candidate_id, "seed-rewards"]) => result_response(
+            list_candidate_seed_rewards(config, run_id, Some(candidate_id), &query),
+            200,
+        ),
         ("GET", ["runs", run_id, "candidates", candidate_id, "rollouts"]) => result_response(
             list_rollouts(config, run_id, Some(candidate_id), &query),
             200,
@@ -1831,6 +1842,28 @@ fn workspace_summary(config: &GepaServiceConfig) -> Result<Value> {
         "scheduler": scheduler,
         "run_status": run_status,
     }))
+}
+
+fn workspace_storage(config: &GepaServiceConfig) -> Result<Value> {
+    let store = WorkspaceStore::open(&config.db_path)?;
+    let status = store.status()?;
+    let mut roots = Vec::new();
+    let mut seen = BTreeSet::new();
+    for request in status.run_requests {
+        let run_dir = PathBuf::from(request.run_dir);
+        let Some(root) = run_dir.parent().map(Path::to_path_buf) else {
+            continue;
+        };
+        let key = root.display().to_string();
+        if seen.insert(key) {
+            roots.push(root);
+        }
+    }
+    inspect_workspace_storage_health(WorkspaceStorageHealthInput {
+        roots,
+        thresholds: StorageHealthThresholds::default(),
+        now_unix_seconds: None,
+    })
 }
 
 fn project_run_status_summary(
@@ -2440,6 +2473,25 @@ fn run_stats_response(config: &GepaServiceConfig, run_id: &str) -> HttpResponse 
     }
 }
 
+fn run_storage_response(config: &GepaServiceConfig, run_id: &str) -> HttpResponse {
+    match WorkspaceStore::open(&config.db_path).and_then(|store| {
+        let Some(request) = store.run_request_by_run_id(run_id)? else {
+            return Ok(None);
+        };
+        let terminal = is_terminal_status(project_request_status(&request.status));
+        inspect_run_storage(RunStorageInspectionInput {
+            run_dir: PathBuf::from(&request.run_dir),
+            run_id: Some(request.run_id.clone()),
+            terminal: Some(terminal),
+        })
+        .map(Some)
+    }) {
+        Ok(Some(report)) => json_response(200, &report),
+        Ok(None) => run_not_found_response(run_id),
+        Err(error) => optimizer_error_response(error),
+    }
+}
+
 fn delete_run_response(config: &GepaServiceConfig, run_id: &str) -> HttpResponse {
     match WorkspaceStore::open(&config.db_path).and_then(|store| {
         let Some(request) = store.run_request_by_run_id(run_id)? else {
@@ -2746,6 +2798,55 @@ fn list_candidates(
         items.retain(|item| item.get("generation").and_then(Value::as_u64) == Some(generation));
     }
     sort_candidates(&mut items, query.get("sort").map(String::as_str))?;
+    Ok(paginate(items, query))
+}
+
+fn list_candidate_seed_rewards(
+    config: &GepaServiceConfig,
+    run_id: &str,
+    candidate_id: Option<&str>,
+    query: &BTreeMap<String, String>,
+) -> Result<Value> {
+    let store = WorkspaceStore::open(&config.db_path)?;
+    let Some(request) = store.run_request_by_run_id(run_id)? else {
+        return Err(OptimizerError::Config(format!("run not found: {run_id}")));
+    };
+    let mut items = run_workspace_store(&request)?
+        .map(|run_store| run_store.view().candidate_seed_reward_records(run_id))
+        .transpose()?
+        .unwrap_or_default();
+    if let Some(candidate_id) = candidate_id {
+        items.retain(|item| item.get("candidate_id").and_then(Value::as_str) == Some(candidate_id));
+    }
+    if let Some(split) = query.get("split") {
+        items.retain(|item| item.get("split").and_then(Value::as_str) == Some(split.as_str()));
+    }
+    if let Some(stage) = query
+        .get("evaluation_stage")
+        .or_else(|| query.get("stage"))
+        .map(String::as_str)
+    {
+        items.retain(|item| item.get("evaluation_stage").and_then(Value::as_str) == Some(stage));
+    }
+    if let Some(seed_id) = query
+        .get("seed_id")
+        .or_else(|| query.get("task_id"))
+        .map(String::as_str)
+    {
+        items.retain(|item| {
+            item.get("seed_id").and_then(Value::as_str) == Some(seed_id)
+                || item.get("task_id").and_then(Value::as_str) == Some(seed_id)
+        });
+    }
+    items.sort_by(|left, right| {
+        value_string(left, "candidate_id")
+            .cmp(&value_string(right, "candidate_id"))
+            .then_with(|| value_string(left, "split").cmp(&value_string(right, "split")))
+            .then_with(|| {
+                value_string(left, "evaluation_stage").cmp(&value_string(right, "evaluation_stage"))
+            })
+            .then_with(|| value_string(left, "seed_id").cmp(&value_string(right, "seed_id")))
+    });
     Ok(paginate(items, query))
 }
 
@@ -4400,6 +4501,16 @@ fn project_candidate(run_id: &str, candidate: Value) -> Value {
         .unwrap_or("");
     let train_score = candidate.get("train_reward").and_then(Value::as_f64);
     let heldout_score = candidate.get("heldout_reward").and_then(Value::as_f64);
+    let seed_rewards = candidate
+        .get("seed_rewards")
+        .cloned()
+        .filter(|value| value.as_object().is_some_and(|object| !object.is_empty()))
+        .unwrap_or_else(|| candidate_seed_rewards_from_value(&candidate));
+    let seed_counts = candidate
+        .get("seed_counts")
+        .cloned()
+        .filter(|value| value.as_object().is_some_and(|object| !object.is_empty()))
+        .unwrap_or_else(|| seed_counts_from_seed_rewards_value(&seed_rewards));
     let generation = candidate
         .get("generation")
         .and_then(Value::as_u64)
@@ -4419,8 +4530,169 @@ fn project_candidate(run_id: &str, candidate: Value) -> Value {
         "rejection_reason": candidate.get("rejection_reason").cloned().unwrap_or(Value::Null),
         "train_score": train_score,
         "heldout_score": heldout_score,
+        "seed_counts": seed_counts,
+        "seed_rewards": seed_rewards,
         "program": program,
     })
+}
+
+fn candidate_seed_rewards_from_value(candidate: &Value) -> Value {
+    let mut grouped = BTreeMap::<String, Vec<Value>>::new();
+    if let Some(frames) = candidate.get("sensor_frames").and_then(Value::as_array) {
+        for frame in frames {
+            let stage = frame
+                .get("evaluation_stage")
+                .and_then(Value::as_str)
+                .map(seed_reward_stage)
+                .unwrap_or_else(|| "unknown".to_string());
+            grouped
+                .entry(stage)
+                .or_default()
+                .push(seed_reward_row_from_frame_value(frame));
+        }
+    }
+    if !grouped.contains_key("minibatch") {
+        let rows = candidate
+            .get("minibatch_scores")
+            .and_then(Value::as_array)
+            .map(|scores| seed_reward_rows_from_score_values("minibatch", scores))
+            .unwrap_or_default();
+        if !rows.is_empty() {
+            grouped.insert("minibatch".to_string(), rows);
+        }
+    }
+    if !grouped.contains_key("train") {
+        let rows = candidate
+            .get("train_scores")
+            .and_then(Value::as_array)
+            .map(|scores| seed_reward_rows_from_score_values("train", scores))
+            .unwrap_or_default();
+        if !rows.is_empty() {
+            grouped.insert("train".to_string(), rows);
+        }
+    }
+    grouped
+        .values_mut()
+        .for_each(|rows| rows.sort_by(seed_reward_row_cmp));
+    Value::Object(
+        grouped
+            .into_iter()
+            .map(|(stage, rows)| (stage, Value::Array(rows)))
+            .collect(),
+    )
+}
+
+fn seed_reward_stage(evaluation_stage: &str) -> String {
+    match evaluation_stage {
+        "candidate_minibatch" => "minibatch".to_string(),
+        "candidate_full_train" | "seed_full_train" => "train".to_string(),
+        "parent_minibatch_reference" => "parent_minibatch_reference".to_string(),
+        "heldout" => "heldout".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn seed_reward_row_from_frame_value(frame: &Value) -> Value {
+    let mut row = Map::new();
+    let task_id = frame
+        .get("task_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    row.insert("seed_id".to_string(), json!(task_id));
+    for key in [
+        "task_id",
+        "example_id",
+        "split",
+        "evaluation_stage",
+        "reward",
+        "status",
+        "success_status",
+        "sensor_frame_id",
+        "rollout_id",
+    ] {
+        if let Some(value) = frame.get(key) {
+            row.insert(key.to_string(), value.clone());
+        }
+    }
+    let metadata = compact_seed_reward_metadata_value(frame);
+    if metadata
+        .as_object()
+        .is_some_and(|object| !object.is_empty())
+    {
+        row.insert("metadata".to_string(), metadata);
+    }
+    Value::Object(row)
+}
+
+fn compact_seed_reward_metadata_value(frame: &Value) -> Value {
+    let mut metadata = Map::new();
+    for key in [
+        "actionable_side_info",
+        "objective_scores",
+        "usage",
+        "trace_digest",
+        "artifact_refs",
+    ] {
+        if let Some(value) = frame.get(key) {
+            if !value.is_null() {
+                metadata.insert(key.to_string(), value.clone());
+            }
+        }
+    }
+    if let Some(frame_metadata) = frame.get("metadata").and_then(Value::as_object) {
+        for key in [
+            "summary",
+            "reward_details",
+            "rollout_trace",
+            "rollout_trace_artifact_refs",
+        ] {
+            if let Some(value) = frame_metadata.get(key) {
+                metadata.insert(key.to_string(), value.clone());
+            }
+        }
+    }
+    Value::Object(metadata)
+}
+
+fn seed_reward_rows_from_score_values(stage: &str, scores: &[Value]) -> Vec<Value> {
+    scores
+        .iter()
+        .map(|score| {
+            let task_id = score
+                .get("task_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            json!({
+                "seed_id": task_id,
+                "task_id": task_id,
+                "example_id": score.get("example_id").cloned().unwrap_or(Value::Null),
+                "evaluation_stage": stage,
+                "reward": score.get("reward").cloned().unwrap_or(Value::Null),
+            })
+        })
+        .collect()
+}
+
+fn seed_counts_from_seed_rewards_value(seed_rewards: &Value) -> Value {
+    let mut counts = Map::new();
+    if let Some(object) = seed_rewards.as_object() {
+        for (stage, rows) in object {
+            counts.insert(
+                stage.clone(),
+                json!(rows.as_array().map(Vec::len).unwrap_or(0)),
+            );
+        }
+    }
+    Value::Object(counts)
+}
+
+fn seed_reward_row_cmp(left: &Value, right: &Value) -> std::cmp::Ordering {
+    value_string(left, "task_id")
+        .cmp(&value_string(right, "task_id"))
+        .then_with(|| value_string(left, "example_id").cmp(&value_string(right, "example_id")))
+        .then_with(|| {
+            value_string(left, "evaluation_stage").cmp(&value_string(right, "evaluation_stage"))
+        })
 }
 
 fn project_rollout(

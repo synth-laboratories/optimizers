@@ -72,6 +72,7 @@ from .hosted import (
     OptimizerStartupCatalog,
     RunStatus as HostedRunStatus,
 )
+from .hosted_config import HostedOptimizerConfig
 from .o11y import (
     LiveProgress,
     RegistryRecord,
@@ -81,6 +82,15 @@ from .o11y import (
     RunStatus,
     RunUsage,
     project_run_events,
+)
+from .observability import (
+    OptimizerEvent,
+    OptimizerEventType,
+    OptimizerItem,
+    OptimizerItemType,
+    OptimizerLogLevel,
+    OptimizerStateSlice,
+    OptimizerStateSliceKind,
 )
 from .sdk import OptimizerConfig, OptimizerRun
 from .tunnels import (
@@ -183,6 +193,7 @@ __all__ = [
     "ContainerTargetKind",
     "HostedOptimizerClient",
     "HostedOptimizerError",
+    "HostedOptimizerConfig",
     "HostedRunStatus",
     "InvariantError",
     "LiveProgress",
@@ -190,9 +201,16 @@ __all__ = [
     "OptimizerConfig",
     "OptimizerAlgorithmSlug",
     "OptimizerBillingFeatureConfig",
+    "OptimizerEvent",
+    "OptimizerEventType",
+    "OptimizerItem",
+    "OptimizerItemType",
+    "OptimizerLogLevel",
     "OptimizerRun",
     "OptimizerRunRecord",
     "OptimizerRunSubmitResponse",
+    "OptimizerStateSlice",
+    "OptimizerStateSliceKind",
     "OptimizerStartupCatalog",
     "OptimizerDiskBudgetError",
     "OptimizerHttpError",

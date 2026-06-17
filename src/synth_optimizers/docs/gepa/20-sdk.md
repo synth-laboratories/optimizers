@@ -2,6 +2,8 @@
 
 The Python SDK exposes the same run that the CLI drives. You build a `GepaConfig`
 (or load one from TOML), wrap it in a runner, and call `.execute()`.
+The same `GepaConfig` is also submit-ready for hosted jobs through
+`HostedOptimizerClient.submit(config)`.
 
 ```python
 from synth_optimizers import GepaConfig, GepaRun, OptimizerRun  # noqa
@@ -56,6 +58,16 @@ result = GepaRun.from_toml("gepa.toml").execute()   # load CLI-style TOML direct
 `OptimizerConfig` is a `Protocol` with a single `execute()` method; `OptimizerRun` is the
 generic runner over it. `GepaRun` is the GEPA-specialized runner and adds
 `GepaRun.from_toml(path)`. Both `.execute()` calls return a `GepaRunResult`.
+
+Hosted submit uses the shared hosted client:
+
+```python
+from synth_optimizers import GepaConfig, HostedOptimizerClient
+
+client = HostedOptimizerClient()
+submit = client.submit(GepaConfig.from_toml("gepa.toml"))
+record = client.wait_for_run(submit.run_id)
+```
 
 ### `GepaRunResult`
 

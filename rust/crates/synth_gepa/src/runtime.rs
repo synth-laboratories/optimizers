@@ -569,7 +569,7 @@ impl<'a> GepaRuntimeExecutor<'a> {
                 Value::String(workspace_dir.display().to_string()),
             );
         }
-        let proposals = proposed_candidates(&response);
+        let proposals = proposed_candidates(&response)?;
         let mut usage = UsageTotals {
             proposer_calls: 1,
             ..Default::default()
@@ -1179,92 +1179,38 @@ fn percentile_sorted(values: &[f64], percentile: f64) -> f64 {
     values[index.min(values.len().saturating_sub(1))]
 }
 
-fn proposed_candidates(response: &Value) -> Vec<ProposedCandidate> {
+fn proposed_candidates(response: &Value) -> Result<Vec<ProposedCandidate>> {
     let proposals = response
         .get("proposals")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
     let mut out = Vec::new();
-    for item in proposals {
+    for (proposal_index, item) in proposals.into_iter().enumerate() {
         let default_evidence = response
             .get("manifest")
             .and_then(|manifest| manifest.get("evidence"))
             .cloned()
             .unwrap_or(Value::Null);
-        let proposal_type = item
-            .get("proposal_type")
-            .and_then(Value::as_str)
-            .unwrap_or("frontier_variation")
-            .to_string();
-        let parent_candidate_ids = item
-            .get("parent_candidate_ids")
-            .and_then(Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(|item| item.as_str().map(str::to_string))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let rationale = item
-            .get("rationale")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        let evidence = item.get("evidence").cloned().unwrap_or(default_evidence);
-        let candidate = item
-            .get("candidate")
-            .or_else(|| item.get("proposed_payload"))
-            .cloned()
-            .unwrap_or_else(|| item.clone());
-        let lever_bundle = item
-            .get("lever_bundle")
-            .or_else(|| candidate.get("lever_bundle"))
-            .cloned()
-            .map(serde_json::from_value)
-            .transpose()
-            .unwrap_or(None);
-        let Some(map) = candidate.as_object() else {
-            continue;
-        };
-        let mut payload = BTreeMap::new();
-        for (key, value) in map {
-            if let Some(text) = value.as_str() {
-                payload.insert(key.clone(), text.to_string());
-            }
+        let mut proposal = serde_json::from_value::<ProposedCandidate>(item.clone()).map_err(
+            |source| {
+                OptimizerError::Proposer(format!(
+                    "runtime proposer proposal index={proposal_index} is not a valid proposal object: {source}"
+                ))
+            },
+        )?;
+        if proposal.evidence.is_null() {
+            proposal.evidence = default_evidence;
         }
-        if !payload.is_empty() {
-            let mut metadata = Map::new();
-            if let Some(object) = item.as_object() {
-                for (key, value) in object {
-                    if !matches!(
-                        key.as_str(),
-                        "candidate"
-                            | "proposed_payload"
-                            | "proposal_type"
-                            | "parent_candidate_ids"
-                            | "rationale"
-                            | "lever_bundle"
-                            | "evidence"
-                    ) {
-                        metadata.insert(key.clone(), value.clone());
-                    }
-                }
-            }
-            out.push(ProposedCandidate {
-                payload,
-                lever_bundle,
-                proposal_type,
-                parent_candidate_ids,
-                rationale,
-                evidence,
-                metadata,
-                extra: Map::new(),
-            });
+        if proposal.payload_map().is_empty() {
+            return Err(OptimizerError::Proposer(format!(
+                "runtime proposer proposal index={proposal_index} returned no mutable payload; shape={}",
+                proposal.payload_shape_summary()
+            )));
         }
+        out.push(proposal);
     }
-    out
+    Ok(out)
 }
 
 fn required_request_value<T: serde::de::DeserializeOwned>(

@@ -16,6 +16,8 @@ from ._synth_optimizers import (
     events_replay,
     gepa_compact_run_storage,
     gepa_delete_run_storage,
+    gepa_inspect_run_storage,
+    gepa_workspace_storage_health,
     gepa_serve,
 )
 from .gelo import (
@@ -49,6 +51,27 @@ def _duration_seconds(value: str | None) -> float | None:
         raise SystemExit(f"invalid --older-than duration: {value}") from exc
 
 
+def _bytes_value(value: str | None) -> int | None:
+    if value is None:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    unit = text[-1].lower()
+    number = text[:-1] if unit.isalpha() else text
+    multiplier = {
+        "b": 1,
+        "k": 1024,
+        "m": 1024**2,
+        "g": 1024**3,
+        "t": 1024**4,
+    }.get(unit, 1)
+    try:
+        return int(float(number) * multiplier)
+    except ValueError as exc:
+        raise SystemExit(f"invalid byte value: {value}") from exc
+
+
 def _run_manifest_status(run_dir: Path) -> str | None:
     manifest = run_dir / "result_manifest.json"
     if not manifest.is_file():
@@ -79,6 +102,8 @@ def _resolve_gepa_run_dirs(
     all_terminal: bool,
     older_than: str | None,
     statuses: Sequence[str],
+    *,
+    all_root_children: bool = False,
 ) -> list[Path]:
     older_than_seconds = _duration_seconds(older_than)
     status_filter = set(statuses)
@@ -93,15 +118,15 @@ def _resolve_gepa_run_dirs(
                     path = candidate
                     break
         resolved.append(path)
-    if all_terminal:
+    if all_terminal or all_root_children:
         if not root_paths:
-            raise SystemExit("--all-terminal requires at least one --root")
+            raise SystemExit("--root is required for bulk run discovery")
         for root in root_paths:
             for child in sorted(root.iterdir() if root.exists() else []):
                 if not child.is_dir():
                     continue
                 status = _run_manifest_status(child)
-                if status is None:
+                if all_terminal and status is None:
                     continue
                 if status_filter and status not in status_filter:
                     continue
@@ -134,6 +159,131 @@ def _print_storage_reports(reports: list[dict], json_output: bool) -> None:
             print(f"{mode}: {run_dir} before={before} after={after} estimated_reclaim={estimated}")
         else:
             print(f"{mode}: {run_dir} bytes={before}")
+
+
+def _format_bytes(value: object) -> str:
+    try:
+        size = float(value or 0)
+    except (TypeError, ValueError):
+        size = 0.0
+    units = ("B", "KB", "MB", "GB", "TB")
+    for unit in units:
+        if size < 1024 or unit == units[-1]:
+            return f"{size:.0f}{unit}" if unit == "B" else f"{size:.1f}{unit}"
+        size /= 1024
+    return f"{size:.1f}TB"
+
+
+def _print_run_storage_list(reports: list[dict], json_output: bool) -> None:
+    if json_output:
+        print(json.dumps(reports, indent=2, sort_keys=True))
+        return
+    print(f"{'run':32} {'status':14} {'size':>10} {'reclaim':>10} recommendation")
+    for report in reports:
+        recommendation = report.get("recommendation") or {}
+        run_id = str(report.get("run_id") or Path(str(report.get("run_dir") or "")).name)
+        status = str(report.get("terminal_status") or "unknown")
+        if not bool(report.get("terminal")):
+            status = f"{status}*"
+        action = recommendation.get("action") or "none"
+        profile = recommendation.get("profile")
+        label = f"{action}:{profile}" if profile else action
+        print(
+            f"{run_id[:32]:32} {status[:14]:14} "
+            f"{_format_bytes(report.get('bytes')):>10} "
+            f"{_format_bytes(report.get('reclaimable_bytes')):>10} {label}"
+        )
+    print("* cleanup disabled until the run is terminal")
+
+
+def _print_run_storage_detail(report: dict, json_output: bool, *, doctor: bool = False) -> None:
+    if json_output:
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return
+    run_id = report.get("run_id") or Path(str(report.get("run_dir") or "")).name
+    recommendation = report.get("recommendation") or {}
+    print(f"run: {run_id}")
+    print(f"path: {report.get('run_dir')}")
+    print(
+        f"status: {report.get('terminal_status')} "
+        f"({'terminal' if report.get('terminal') else 'not terminal'})"
+    )
+    print(f"size: {_format_bytes(report.get('bytes'))}")
+    print(f"reclaimable: {_format_bytes(report.get('reclaimable_bytes'))}")
+    print(
+        "recommendation: "
+        f"{recommendation.get('action') or 'none'}"
+        f"{':' + recommendation.get('profile') if recommendation.get('profile') else ''}"
+        f" — {recommendation.get('reason') or 'no recommendation'}"
+    )
+    artifacts = report.get("artifact_summary") or []
+    if artifacts:
+        print("\nartifacts:")
+        for artifact in artifacts[:12]:
+            print(f"  {_format_bytes(artifact.get('bytes')):>10}  {artifact.get('name')}")
+    sqlite = report.get("sqlite") or []
+    if sqlite:
+        print("\nsqlite:")
+        for db in sqlite:
+            print(f"  {_format_bytes(db.get('bytes')):>10}  {db.get('path')}")
+            for obj in (db.get("objects") or [])[:8]:
+                print(f"    {_format_bytes(obj.get('bytes')):>8}  {obj.get('name')}")
+            if db.get("error"):
+                print(f"    dbstat unavailable: {db.get('error')}")
+    top_files = report.get("top_files") or []
+    if top_files:
+        print("\ntop files:")
+        for item in top_files[:12]:
+            print(f"  {_format_bytes(item.get('bytes')):>10}  {item.get('relative_path')}")
+    if doctor:
+        print("\nnext command:")
+        if report.get("terminal") and recommendation.get("action") == "compact":
+            profile = recommendation.get("profile") or "compact"
+            print(f"  synth-optimizers gepa runs compact {report.get('run_dir')} --profile {profile}")
+        elif report.get("terminal"):
+            print("  no compaction needed; use gepa runs delete only if you want to remove the run")
+        else:
+            print("  no cleanup command; wait for terminal status or inspect the live run")
+
+
+def _print_storage_health(report: dict, json_output: bool) -> None:
+    if json_output:
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return
+    summary = report.get("summary") or {}
+    print(
+        "storage: "
+        f"{_format_bytes(summary.get('bytes'))} across "
+        f"{summary.get('run_count', 0)} runs; "
+        f"{_format_bytes(summary.get('stale_partial_bytes'))} stale partials; "
+        f"{summary.get('alert_count', 0)} alert(s)"
+    )
+    alerts = report.get("alerts") or []
+    if alerts:
+        print("\nalerts:")
+        for alert in alerts:
+            target = alert.get("run_id") or alert.get("root") or alert.get("path") or "workspace"
+            print(
+                f"  {alert.get('kind')}: {_format_bytes(alert.get('bytes'))} "
+                f">= {_format_bytes(alert.get('threshold_bytes'))}  {target}"
+            )
+    roots = report.get("roots") or []
+    if roots:
+        print("\nroots:")
+        for root in roots:
+            print(
+                f"  {_format_bytes(root.get('bytes')):>10}  "
+                f"runs={root.get('run_count', 0)} "
+                f"partials={root.get('partial_count', 0)} "
+                f"stale_partials={_format_bytes(root.get('stale_partial_bytes'))}  "
+                f"{root.get('root')}"
+            )
+            for partial in (root.get("partials") or [])[:5]:
+                stale = " stale" if partial.get("stale") else ""
+                print(
+                    f"    partial{stale} {_format_bytes(partial.get('bytes')):>10}  "
+                    f"{partial.get('path')}"
+                )
 
 
 def _api_endpoint(base_url: str, path: str) -> str:
@@ -425,6 +575,7 @@ def _submit_hosted_gelo(args: argparse.Namespace) -> int:
                 run_id=args.run_id,
                 idempotency_key=args.idempotency_key,
                 project_id=args.project_id,
+                billing_mode=args.billing_mode,
             )
         else:
             config = _gelo_materialized_config(args)
@@ -434,6 +585,7 @@ def _submit_hosted_gelo(args: argparse.Namespace) -> int:
                 idempotency_key=args.idempotency_key,
                 project_id=args.project_id,
                 container_pool=container_pool,
+                billing_mode=args.billing_mode,
             )
         if args.json and not args.follow:
             print(json.dumps(dict(submit.raw), indent=2, sort_keys=True))
@@ -520,6 +672,33 @@ def _gepa_watch(args: argparse.Namespace) -> int:
         _print_gepa_watch_snapshot(record=record, json_output=args.json)
         if args.once:
             return 0
+        if args.algorithm_events:
+            for event in client.algorithm_event_stream(
+                args.run_id,
+                after_seq=args.after_seq,
+                limit=args.limit,
+            ):
+                if args.json:
+                    _json_line({"type": "algorithm_event", "event": dict(event)})
+                else:
+                    event_type = _text_field(event.get("type"), "optimizer.algorithm.event")
+                    seq = _text_field(event.get("sequence_number"))
+                    item = _as_mapping(event.get("item"))
+                    item_type = _text_field(item.get("type"))
+                    item_id = _text_field(item.get("id"))
+                    print(
+                        f"algorithm_event seq={seq} "
+                        f"type={event_type} "
+                        f"item={item_type}:{item_id}"
+                    )
+                if event.get("type") in {
+                    "optimizer.run.completed",
+                    "optimizer.run.failed",
+                    "optimizer.run.cancelled",
+                }:
+                    break
+            record = client.get_run(args.run_id)
+            return 1 if record.status.value == "failed" else 0
         if args.events:
             for event in client.events(args.run_id):
                 if args.json:
@@ -631,6 +810,35 @@ def _gelo_watch(args: argparse.Namespace) -> int:
             json_output=args.json,
         )
         if args.once:
+            return 0
+        if args.algorithm_events:
+            for event in client.algorithm_event_stream(
+                args.run_id,
+                after_seq=args.after_seq,
+                limit=args.limit,
+            ):
+                if args.json:
+                    _json_line({"type": "algorithm_event", "event": dict(event)})
+                else:
+                    event_type = _text_field(event.get("type"), "optimizer.algorithm.event")
+                    seq = _text_field(event.get("sequence_number"))
+                    item = _as_mapping(event.get("item"))
+                    item_type = _text_field(item.get("type"))
+                    item_id = _text_field(item.get("id"))
+                    print(
+                        f"algorithm_event seq={seq} "
+                        f"type={event_type} "
+                        f"item={item_type}:{item_id}"
+                    )
+                if event.get("type") in {
+                    "optimizer.run.completed",
+                    "optimizer.run.failed",
+                    "optimizer.run.cancelled",
+                }:
+                    break
+            final_record = client.get_run(args.run_id)
+            if final_record.status.value == "failed":
+                return 1
             return 0
         if args.goex_events:
             for event in client.goex_event_stream(
@@ -788,6 +996,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Tail lifecycle SSE events after the initial run snapshot.",
     )
+    gepa_watch.add_argument(
+        "--algorithm-events",
+        action="store_true",
+        help="Tail normalized optimizer algorithm events after the initial run snapshot.",
+    )
+    gepa_watch.add_argument("--after-seq", type=int, default=0)
+    gepa_watch.add_argument("--limit", type=int, default=500)
     gepa_watch.add_argument("--poll-seconds", type=float, default=2.0)
     gepa_watch.add_argument("--once", action="store_true")
     gepa_watch.add_argument("--json", action="store_true")
@@ -830,6 +1045,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--goex-events",
         action="store_true",
         help="Tail the GELO event SSE stream after the initial state snapshot.",
+    )
+    gelo_watch.add_argument(
+        "--algorithm-events",
+        action="store_true",
+        help="Tail normalized optimizer algorithm events after the initial state snapshot.",
     )
     gelo_watch.add_argument("--after-seq", type=int, default=0)
     gelo_watch.add_argument("--limit", type=int, default=500)
@@ -894,6 +1114,15 @@ def build_parser() -> argparse.ArgumentParser:
     gelo_submit.add_argument("--heldout-seed-count", type=int)
     gelo_submit.add_argument("--max-rollouts", type=int)
     gelo_submit.add_argument("--policy-model")
+    gelo_submit.add_argument(
+        "--billing-mode",
+        choices=("promo", "paid"),
+        default=None,
+        help=(
+            "GELO billing mode. Defaults to backend promo behavior; use paid to bypass "
+            "launch-promo gates."
+        ),
+    )
     gelo_submit.add_argument("--timeout-seconds", type=float, default=120.0)
     gelo_submit.add_argument(
         "--disable-usage-registration",
@@ -1022,6 +1251,76 @@ def build_parser() -> argparse.ArgumentParser:
 
     gepa_runs = gepa_subcommands.add_parser("runs")
     gepa_runs_subcommands = gepa_runs.add_subparsers(dest="runs_command", required=True)
+
+    gepa_runs_list = gepa_runs_subcommands.add_parser("list")
+    gepa_runs_list.add_argument("runs", nargs="*", help="Run directories or run IDs.")
+    gepa_runs_list.add_argument(
+        "--root",
+        action="append",
+        default=[],
+        help="Runs root used for run IDs and bulk scans; may be repeated.",
+    )
+    gepa_runs_list.add_argument(
+        "--older-than",
+        help="Only include bulk runs older than this duration, e.g. 7d, 12h, 30m.",
+    )
+    gepa_runs_list.add_argument(
+        "--status",
+        action="append",
+        default=[],
+        help="Terminal status to include for bulk scans; may be repeated.",
+    )
+    gepa_runs_list.add_argument("--json", action="store_true")
+
+    gepa_runs_show = gepa_runs_subcommands.add_parser("show")
+    gepa_runs_show.add_argument("runs", nargs="+", help="Run directories or run IDs.")
+    gepa_runs_show.add_argument(
+        "--root",
+        action="append",
+        default=[],
+        help="Runs root used for run IDs; may be repeated.",
+    )
+    gepa_runs_show.add_argument("--json", action="store_true")
+
+    gepa_runs_du = gepa_runs_subcommands.add_parser("du")
+    gepa_runs_du.add_argument("runs", nargs="+", help="Run directories or run IDs.")
+    gepa_runs_du.add_argument(
+        "--root",
+        action="append",
+        default=[],
+        help="Runs root used for run IDs; may be repeated.",
+    )
+    gepa_runs_du.add_argument("--json", action="store_true")
+
+    gepa_runs_doctor = gepa_runs_subcommands.add_parser("doctor")
+    gepa_runs_doctor.add_argument("runs", nargs="+", help="Run directories or run IDs.")
+    gepa_runs_doctor.add_argument(
+        "--root",
+        action="append",
+        default=[],
+        help="Runs root used for run IDs; may be repeated.",
+    )
+    gepa_runs_doctor.add_argument("--json", action="store_true")
+
+    gepa_runs_health = gepa_runs_subcommands.add_parser("health")
+    gepa_runs_health.add_argument(
+        "--root",
+        action="append",
+        required=True,
+        help="Runs root to inspect; may be repeated.",
+    )
+    gepa_runs_health.add_argument("--run-warn-bytes", help="Per-run warning threshold, e.g. 5G.")
+    gepa_runs_health.add_argument("--root-warn-bytes", help="Per-root warning threshold, e.g. 20G.")
+    gepa_runs_health.add_argument(
+        "--stale-partial-warn-bytes",
+        help="Stale partial warning threshold, e.g. 2G.",
+    )
+    gepa_runs_health.add_argument(
+        "--partial-stale-after",
+        help="Partial artifact age before stale classification, e.g. 2h.",
+    )
+    gepa_runs_health.add_argument("--json", action="store_true")
+
     gepa_runs_compact = gepa_runs_subcommands.add_parser("compact")
     gepa_runs_compact.add_argument("runs", nargs="*", help="Run directories or run IDs.")
     gepa_runs_compact.add_argument(
@@ -1281,12 +1580,31 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(render_eval_stats_table(stats))
         return 0
     if args.command == "gepa" and args.gepa_command == "runs":
+        if args.runs_command == "health":
+            try:
+                report = gepa_workspace_storage_health(
+                    args.root,
+                    run_warn_bytes=_bytes_value(args.run_warn_bytes),
+                    root_warn_bytes=_bytes_value(args.root_warn_bytes),
+                    stale_partial_warn_bytes=_bytes_value(args.stale_partial_warn_bytes),
+                    partial_stale_after_seconds=(
+                        int(_duration_seconds(args.partial_stale_after))
+                        if args.partial_stale_after
+                        else None
+                    ),
+                )
+            except SynthOptimizerError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 1
+            _print_storage_health(report, args.json)
+            return 0
         run_dirs = _resolve_gepa_run_dirs(
             args.runs,
             args.root,
-            args.all_terminal,
-            args.older_than,
-            args.status,
+            getattr(args, "all_terminal", False),
+            getattr(args, "older_than", None),
+            getattr(args, "status", []),
+            all_root_children=args.runs_command == "list" and not args.runs,
         )
         if not run_dirs:
             print("error: no runs matched", file=sys.stderr)
@@ -1295,10 +1613,35 @@ def main(argv: Sequence[str] | None = None) -> int:
         if missing:
             print(f"error: run dir not found: {missing[0]}", file=sys.stderr)
             return 1
-        dry_run = not args.yes
-        reports = []
         try:
+            if args.runs_command in {"list", "show", "du", "doctor"}:
+                reports = [
+                    gepa_inspect_run_storage(str(run_dir), run_id=run_dir.name)
+                    for run_dir in run_dirs
+                ]
+                if args.runs_command == "list":
+                    _print_run_storage_list(reports, args.json)
+                else:
+                    for index, report in enumerate(reports):
+                        if index and not args.json:
+                            print()
+                        _print_run_storage_detail(
+                            report,
+                            args.json,
+                            doctor=args.runs_command == "doctor",
+                        )
+                return 0
+            dry_run = not args.yes
+            reports = []
             for run_dir in run_dirs:
+                inspection = gepa_inspect_run_storage(str(run_dir), run_id=run_dir.name)
+                if not inspection.get("terminal"):
+                    print(
+                        "error: cleanup requires a terminal run: "
+                        f"{run_dir} status={inspection.get('terminal_status')}",
+                        file=sys.stderr,
+                    )
+                    return 1
                 if args.runs_command == "compact":
                     reports.append(
                         gepa_compact_run_storage(

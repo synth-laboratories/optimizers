@@ -9,7 +9,7 @@ from contextlib import closing
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -18,6 +18,7 @@ from synth_containers import ContainerConnection, PromptProgram
 from ._synth_optimizers import GepaRun as _NativeGepaRun
 from ._synth_optimizers import GepaRunResult
 from ._synth_optimizers import default_proposer_best_practices as _default_proposer_best_practices
+from .hosted import OptimizerAlgorithmSlug
 
 
 class PolicyType(StrEnum):
@@ -252,7 +253,7 @@ class PolicyTomlSection(BaseModel):
     max_tokens: int | None = None
     disable_reasoning: str = "auto"
     tool_call_style: str = "none"
-    proxy_mode: str = "allow_direct"
+    proxy_mode: str = "proxy_only"
     credential_mode: str = "byok"
     config: dict[str, Any] = Field(default_factory=dict)
 
@@ -824,7 +825,7 @@ class PolicyConfig:
     max_tokens: int | None = None
     disable_reasoning: str = "auto"
     tool_call_style: str = "none"
-    proxy_mode: str = "allow_direct"
+    proxy_mode: str = "proxy_only"
     credential_mode: str = "byok"
     config: dict[str, Any] = field(default_factory=dict)
 
@@ -1111,6 +1112,8 @@ class OutputConfig:
 
 @dataclass(slots=True)
 class GepaConfig:
+    algorithm: ClassVar[OptimizerAlgorithmSlug] = OptimizerAlgorithmSlug.GEPA
+
     container: ContainerConnection
     taskset: TasksetSelection
     task_pools: GepaTaskPools
@@ -1158,6 +1161,28 @@ class GepaConfig:
         self.task_pools.validate_against_taskset(
             self.taskset.train_ids, self.taskset.heldout_ids
         )
+        if self.policy is not None:
+            if not self.target_modules:
+                raise ValueError(
+                    "GEPA policy runs require candidate.target_modules so "
+                    "prompt delivery assertions can be bound to candidate fields"
+                )
+            proxy_mode = str(self.policy.proxy_mode or "").strip().lower()
+            if proxy_mode == "allow_direct":
+                raise ValueError(
+                    "policy.proxy_mode='allow_direct' is forbidden for GEPA "
+                    "policy runs; use 'proxy_only' or 'assert_proxy'"
+                )
+            if proxy_mode not in {"proxy_only", "assert_proxy"}:
+                raise ValueError(
+                    "policy.proxy_mode must be 'proxy_only' or 'assert_proxy' "
+                    "for GEPA policy runs"
+                )
+        elif self.target_modules:
+            raise ValueError(
+                "GEPA prompt-overlay runs require an explicit policy with "
+                "proxy_mode='proxy_only' or 'assert_proxy'"
+            )
 
     def to_toml_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {}
@@ -1201,6 +1226,9 @@ class GepaConfig:
         payload["gepa"] = gepa
         payload["cache"] = self.cache.to_toml()
         return payload
+
+    def to_config_json(self) -> dict[str, Any]:
+        return self.to_toml_dict()
 
     def write_toml(self, path: str | Path | None = None) -> Path:
         if path is None:

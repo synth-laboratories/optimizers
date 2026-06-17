@@ -143,6 +143,24 @@ paths:
         '404': { $ref: '#/components/responses/RunNotFound' }
         '409': { $ref: '#/components/responses/NotTerminal' }
 
+  /runs/{run_id}/storage:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+    get:
+      operationId: getRunStorage
+      summary: Inspect local storage for a Run
+      description: |
+        Returns a read-only local storage report for the Run directory:
+        artifact sizes, SQLite hot spots when available, existing compaction
+        state, safe actions, and cleanup recommendation.
+      responses:
+        '200':
+          description: Run storage report.
+          content:
+            application/json:
+              schema: { type: object }
+        '404': { $ref: '#/components/responses/RunNotFound' }
+
   /runs/{run_id}/state:
     parameters: [ { $ref: '#/components/parameters/RunId' } ]
     get:
@@ -524,6 +542,22 @@ paths:
                       properties:
                         run_id: { type: string }
                         bytes: { type: integer }
+
+  /workspace/storage:
+    get:
+      operationId: getWorkspaceStorage
+      summary: Workspace storage health report
+      description: |
+        Returns root-level storage health for the local workspace: total bytes,
+        reclaimable bytes, stale partial artifacts, threshold configuration, and
+        alerts for oversized roots/runs or stale partials. This route is
+        read-only and never deletes or compacts artifacts.
+      responses:
+        '200':
+          description: Workspace storage health report.
+          content:
+            application/json:
+              schema: { type: object }
 
   /workspace/prune:
     post:

@@ -38,11 +38,12 @@ pub mod usage;
 pub mod workspace;
 
 pub use agent_runtime::{
-    ensure_turn_completed, extract_thread_id, prepare_proposer_codex_launch, run_turn,
-    sandbox_policy_for_mode, text_turn_input, usage_from_message, usage_from_messages,
-    AgentRuntimeSubstrate, AgentTurnOutcome, CodexAppServerClient, CodexAppServerLaunch,
-    CodexAppServerProcessLaunch, CodexTurnRequest, ExecutionSubstrate, ProposerCodexLaunch,
-    ResolvedRoleAgentConfig, RoleAgentConfig, RoleAgentTurnRequestInput, SupervisorReceipt,
+    ensure_turn_completed, extract_thread_id, prepare_proposer_codex_launch, run_command_exec,
+    run_turn, sandbox_policy_for_mode, text_turn_input, usage_from_message, usage_from_messages,
+    AgentCommandExecOutcome, AgentRuntimeSubstrate, AgentTurnOutcome, CodexAppServerClient,
+    CodexAppServerLaunch, CodexAppServerProcessLaunch, CodexCommandExecRequest, CodexTurnRequest,
+    ExecutionSubstrate, ProposerCodexLaunch, ResolvedRoleAgentConfig, RoleAgentConfig,
+    RoleAgentTurnRequestInput, SupervisorReceipt,
 };
 pub use artifact_store::{LocalDevStore, RunArtifactStore, StoredRunArtifact};
 pub use artifacts::{ArtifactPaths, ArtifactRef, GepaRunResult};

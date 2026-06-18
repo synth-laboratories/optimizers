@@ -8,9 +8,10 @@ Portable agent skills for working with the public optimizers in this repo.
 - `gelo/` — configure and debug **hosted-only** GELO (Go-Explore in prompt space):
   per-LLM-call checkpoints, async container contracts, achievement ladders, resume
   semantics, three-layer storage (env container / optimizer evidence / hosted durable),
-  and `HostedOptimizerClient` submit/watch. Local execute stays in `optimizers-beta`.
+  and `HostedOptimizerClient` submit/watch. Local execute is not part of the
+  public product surface.
 
 Each skill is a folder with a required `SKILL.md` (Agent Skills format). Runnable
 cookbooks that exercise these optimizers live in
 [`synth-cookbooks-public`](https://github.com/synth-laboratories/synth-cookbooks-public)
-(GEPA) and private cookbooks / `optimizers-beta` examples (GELO containers).
+for public GEPA examples and the hosted GELO launch quickstart.

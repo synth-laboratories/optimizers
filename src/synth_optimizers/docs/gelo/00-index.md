@@ -8,7 +8,7 @@ Unlike GEPA (bundled docs via `gepa console`), GELO does **not** offer public lo
 execute (`gelo run`).
 Customers submit **hosted jobs** via `HostedOptimizerClient` / `synth-optimizers gelo submit`.
 Config authoring (presets, materialize, typed `GeloHostedConfig`) lives in this package;
-execution runs on Synth infrastructure (`api.usesynth.ai` → optimizers-beta).
+execution runs on Synth infrastructure (`api.usesynth.ai` to hosted optimizer workers).
 
 ## Install
 
@@ -49,7 +49,7 @@ GeloPreset / materialized config_json
   └─ seed_candidate react_system_prompt
         │
         ▼
-  gelo submit  ──►  api.usesynth.ai  ──►  optimizers-beta  ──►  your container
+  gelo submit  ──►  api.usesynth.ai  ──►  hosted optimizer worker  ──►  your container
         │
         ▼
   get_state / goex-events / get_artifact(checkpoint_frontier)

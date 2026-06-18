@@ -103,7 +103,7 @@ Per checkpoint entry, include:
 | Layer | Owner | Contents |
 |-------|-------|----------|
 | **1 — Env resume** | Your container | Checkpoint bytes, env DB/files; required for resume |
-| **2 — Optimizer evidence** | Hosted worker / optimizers-beta | Frontier metadata, theme labels, candidate prompts |
+| **2 — Optimizer evidence** | Hosted optimizer worker | Frontier metadata, theme labels, candidate prompts |
 | **3 — Hosted durable** | Backend PG/Redis/S3 | Run status, events, terminal artifacts, billing |
 
 Layer 1 is **not** optional for Tier C. Layer 3 does not substitute for env-local resume data.
@@ -165,5 +165,6 @@ Hosted worker uses this for capability gating.
 ## Further reading
 
 - Agent skill: `skills/gelo/SKILL.md` (checkpoint mining + debug checklist)
-- Algorithm validity: `optimizers-beta/GO_EX_ALGO_VALIDITY.md`
-- Checkpoint mining design: `GO_EX_CHECKPOINT_MINING_DESIGN.md` (optimizers-beta)
+- Algorithm validity and checkpoint mining design are internal operator
+  runbooks; public container authors should rely on this contract page and the
+  hosted optimizer docs.

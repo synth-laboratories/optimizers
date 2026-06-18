@@ -15,7 +15,8 @@ embed your environment.
 Blog and hosted product claims for "Go-Explore in prompt space" assume **Tier C** on at least
 one reference env (e.g. Crafter).
 
-Public sharing note: this docs bundle intentionally does not include private Crafter source.
+Public sharing note: this docs bundle includes only the public container contract
+and launch-safe examples.
 Use a public Tier C container implementation or a documented SynthTunnel target before
 publishing a runnable Crafter walkthrough.
 
@@ -25,7 +26,7 @@ publishing a runnable Crafter walkthrough.
 |-----|--------|
 | **GameBench Sokoban** | **Recommended public reference.** Self-contained react container (in-process gold), Tier B+ checkpoint/resume, `true_environment_snapshot`. Preset: `sokoban_smoke`. Source: `gamebench/tasks/sokoban-singleplayer/containers/react` |
 | GameBench Crafter | In progress (Python + Rust gold); subgoal GELO wiring tracked separately |
-| Crafter (legacy) | Original hosted E2E reference; private synth-containers source — confirm publish path before sharing |
+| Crafter smoke | Hosted smoke reference for GELO-compatible checkpoint/resume behavior |
 | NetHack | Validity cohort; `acceptance.rs` scoring bug is P0 before trust |
 | VendingBench | Application lane; separate publish bar |
 | Harvey-LAB | Application lane |
@@ -35,7 +36,7 @@ For new container authors, start from the GameBench react containers
 (rollout, checkpoint, resume) with an embedded gold engine, so no separate gold
 service is required.
 
-Internal requirements doc (optimizers-beta):
+Operator requirements are summarized in this public docs bundle:
 `evals/vending_bench/GO_EX_CONTAINER_REQUIREMENTS.md`.
 
 ## Doc map

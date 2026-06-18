@@ -1,6 +1,6 @@
 ---
 name: gelo
-description: Use when building, configuring, or debugging GELO (Go-Explore in prompt space) hosted jobs and GELO-compatible task containers — especially per-LLM-call checkpoint creation, async rollout contracts, achievement ladders, resume semantics, checkpoint retention/eviction, and the three-layer storage model (env container vs optimizer evidence vs hosted durable substrate). GELO is hosted-only in the public package; local execute stays in optimizers-beta.
+description: Use when building, configuring, or debugging GELO (Go-Explore in prompt space) hosted jobs and GELO-compatible task containers — especially per-LLM-call checkpoint creation, async rollout contracts, achievement ladders, resume semantics, checkpoint retention/eviction, and the three-layer storage model (env container vs optimizer evidence vs hosted durable substrate). GELO is hosted-only in the public package.
 ---
 
 # GELO Skill
@@ -11,8 +11,8 @@ HTTP.
 
 **Product rule (locked):** GELO customer execution is **hosted-only**
 (`HostedOptimizerClient.submit_gelo`, `synth-optimizers gelo submit`). Unlike GEPA,
-there is no public `gelo run`. Engineers iterate locally via `optimizers-beta`
-(`goex_local.sh`, `goex_serve.sh`) — internal, not the customer contract.
+there is no public `gelo run`. Local GELO execution is not part of the public
+product surface.
 
 Normative hosted API/types: `GELO_HOSTED_SDK_CLI_SPEC.md`. Launch checklist:
 `Jstack/.jstack/daily_notes/2026-06-09/gelo_blog_application_lanes_and_release_quality_plan.md`.
@@ -28,13 +28,13 @@ Load only what the question needs:
 
 | Question | Read first |
 |----------|------------|
-| Checkpoint / async rollout contract | `optimizers-beta/evals/vending_bench/GO_EX_CONTAINER_REQUIREMENTS.md` §3–5 |
-| Why miner needs per-call traces | `optimizers-beta/GO_EX_CHECKPOINT_MINING_DESIGN.md`, `GO_EX_CHECKPOINT_DATA_MINER_HANDOFF.md` |
-| Optimizer knobs | `optimizers-beta/examples/*_goex_*_overlay.json`, `crates/synth_go_ex/src/config.rs` |
-| Container route matrix | `optimizers-beta/goex_release.txt` §7 |
-| Hosted storage boundaries | `optimizers-beta/HOSTED_OPTIMIZER_STORAGE_DESIGN.md` R4, R11 |
+| Checkpoint / async rollout contract | `src/synth_optimizers/docs/gelo/containers/20-contract.md` |
+| Why miner needs per-call traces | `src/synth_optimizers/docs/gelo/containers/00-overview.md` and the checkpoint sections below |
+| Optimizer knobs | `src/synth_optimizers/docs/gelo/20-sdk.md` and `GELO_HOSTED_SDK_CLI_SPEC.md` |
+| Container route matrix | `src/synth_optimizers/docs/gelo/containers/20-contract.md` |
+| Hosted storage boundaries | `src/synth_optimizers/docs/gelo/30-hosted.md` |
 | Public SDK / bundled docs | `src/synth_optimizers/gelo.py`, `hosted.py`, `docs/gelo/`, `GELO_HOSTED_SDK_CLI_SPEC.md` |
-| Env-specific | `optimizers-beta/dungeongrid/go_ex.md`, `seven_wonders/go_ex.md` |
+| Env-specific | Public GELO cookbook and bundled container docs |
 
 ## Mental Model
 
@@ -144,8 +144,8 @@ terminal snapshot (VendingBench fix pattern in `react_loop.py`).
 Reference implementations:
 
 - Crafter: `src/synth_optimizers/docs/gelo/containers/00-overview.md` (per-LLM checkpoint contract; no private repo dependency)
-- VendingBench: `optimizers-beta/evals/vending_bench/agent/react_loop.py`
-- Vending store: `optimizers-beta/evals/vending_bench/service/checkpoints.py`
+- Public GELO quickstart: `https://github.com/synth-laboratories/synth-cookbooks-public/tree/main/cookbooks/optimizers/gelo`
+- Bundled contract docs: `src/synth_optimizers/docs/gelo/containers/20-contract.md`
 
 ### Optimizer-side consumption
 
@@ -260,9 +260,8 @@ artifacts.
 | `frontier_prune_soft_cap` / `retain_tail` | Bound checkpoint frontier projection |
 | `rollout_evidence_compact_*` | Compact old evidence while retaining tail |
 
-**Hosted note:** `platform_workspace.sqlite` dominates optimizers-beta disk (~95% of
-terminal run dirs). Storage phase S2 snapshots this to S3; terminal local GC follows
-publish (R11).
+**Hosted note:** optimizer evidence can dominate terminal run storage. Hosted
+storage should snapshot terminal evidence before local worker cleanup.
 
 ### Layer 3 — Hosted durable substrate (customer observability)
 
@@ -334,7 +333,7 @@ with client.open_synth_tunnel("http://127.0.0.1:8943") as tunnel:
 synth-optimizers gelo submit --preset crafter_smoke --tunnel-url http://127.0.0.1:8943 --follow
 ```
 
-Public walkthrough: `https://github.com/synth-laboratories/cookbooks/tree/main/code/training/prompt_learning/gelo`.
+Public walkthrough: `https://github.com/synth-laboratories/synth-cookbooks-public/tree/main/cookbooks/optimizers/gelo`.
 
 ## Launch promo
 
@@ -350,9 +349,9 @@ Check slots before promising a customer run:
 Full terms: the hosted docs page (`synth-optimizers gelo console` -> hosted) and the
 public cookbook walkthrough above.
 
-**Container URL reachability:** the optimizers-beta worker must reach the container
-(from Railway: use SynthTunnel or hosted pool — not `127.0.0.1` on the user's laptop
-unless tunneled).
+**Container URL reachability:** the hosted optimizer worker must reach the
+container. Use SynthTunnel or a hosted pool; do not pass `127.0.0.1` unless it
+is reachable from the hosted worker through a tunnel.
 
 ---
 
@@ -392,9 +391,9 @@ When `theme_count=0`, `imported_empty` miner, or resume 404:
 Focused checks (do not run full GELO jobs unless the change requires it):
 
 - Container Python: `python -m py_compile synth_service_app.py` (or env's service app).
-- Optimizer Rust: `cargo check -p synth_go_ex` from `optimizers-beta`.
+- Optimizer Rust: run the relevant Rust check in the operator implementation repo when changing hosted execution code.
 - Checkpoint smoke: env-specific scripts (e.g. `dungeongrid_plus_checkpoint_smoke.py`).
-- Hosted path: `optimizers-beta/HOSTED_LOCAL_E2E.md` smoke via `HostedOptimizerClient`.
+- Hosted path: smoke via the public `HostedOptimizerClient` against the target hosted API.
 - Parse contract: one manual `GET /rollouts/{id}` jq inspection of `scheduled_checkpoints`.
 
 Do not add test files unless the user explicitly asks.

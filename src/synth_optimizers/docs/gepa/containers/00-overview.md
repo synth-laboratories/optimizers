@@ -13,9 +13,9 @@ GEPA  ──HTTP──►  Container
                        ◄──  reward, trace, usage
 ```
 
-The contract is defined by the `synth-containers` package
-(`github.com/synth-laboratories/containers`). You author a container with the `Container`
-class; it hands GEPA a URL via `handle.connection()`.
+The contract is defined by the public optimizer HTTP task contract. You author a
+container with the `Container` class; it hands GEPA a URL via
+`handle.connection()`.
 
 ## What a container provides
 

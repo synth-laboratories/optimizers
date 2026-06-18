@@ -3,7 +3,7 @@
 Hosted optimizer jobs run through the Synth API with `SYNTH_API_KEY`. The public
 client and CLI submit to `/api/v1/optimizers/runs`; the backend owns auth,
 billing, durable run status, events, and artifacts. No public workflow requires
-`OPTIMIZERS_BETA_SERVICE_TOKEN`.
+a separate optimizer service token.
 
 By default, `synth-optimizers` also sends a best-effort usage-registration event
 when an optimizer run is kicked off. The event is intentionally content-free:
@@ -53,7 +53,7 @@ frontier_events = list(client.algorithm_events(response.run_id, limit=10))
 ## GELO
 
 GELO is hosted-only in the public package. There is no public `gelo run`; local
-GELO execution remains an internal `optimizers-beta` workflow.
+GELO execution is not part of the public product surface.
 
 ```bash
 export SYNTH_API_KEY="..."
@@ -107,12 +107,12 @@ Hosted GEPA and GELO share the generic optimizer observability routes:
 GELO also exposes compatibility aliases `goex_events()` and `goex_event_stream()`.
 Prefer the generic `algorithm_*` methods for new SDK and CLI integrations.
 
-### Plugin lanes
+### Extension fields
 
-GELO exposes typed plugin-lane config for roadmap compatibility, but the public
-launch accepts only the SFT beta lane. RLVR, OPSD, and unknown plugin kinds are
-rejected fail-closed by the SDK materializer and backend submit validation until
-their hosted backends are explicitly enabled.
+The public hosted GELO path accepts the documented base Go-Explore prompt-space
+configuration. Experimental extension fields are not a launch surface; clients
+should omit them unless a Synth operator provides a dated compatibility note for
+the target hosted API.
 
 ## Launch Evidence
 
@@ -125,7 +125,7 @@ target API and commits being promoted:
 - Public lifecycle event evidence uses bounded `event_backfill()` reads; streaming
   `events()` tails are for monitoring, not finite launch proof.
 - GELO `gelo submit --preset crafter_smoke --tunnel-url ... --follow` reaches terminal success.
-- `gelo watch RUN_ID --slice board` returns public board rows without private paths.
+- `gelo watch RUN_ID --slice board` returns public board rows without internal paths.
 - Artifacts needed by the public client, such as `checkpoint_frontier`, are readable.
 - Billing evidence records optimizer spend for GEPA and GELO, or a launch waiver is recorded.
 

@@ -2,14 +2,13 @@
 <p align="center">A shared optimizer platform for AI applications — starting with open-source GEPA on a language-agnostic task contract.</p>
 <p align="center">
 <a href="https://pypi.org/project/synth-optimizers/">PyPI</a> ·
-<a href="https://github.com/synth-laboratories/containers">Containers</a> ·
+<a href="src/synth_optimizers/docs/gepa/containers/20-contract.md">Task contract</a> ·
 <a href="https://github.com/synth-laboratories/synth-cookbooks-public/tree/main/cookbooks/optimizers/gepa">Cookbooks</a> ·
 <a href="docs/hosted-optimizers.md">Hosted jobs</a>
 </p>
 
 `synth-optimizers` provides a shared Rust optimizer core for running search
-algorithms against any task exposed through the
-[`synth-containers`](https://github.com/synth-laboratories/containers) HTTP
+algorithms against any task exposed through the public optimizer HTTP task
 contract.
 
 - **Shared platform core** — reusable Rust machinery for container I/O, workspaces, cache profiles, budgets, telemetry, failure handling, and replayable evidence.
@@ -25,7 +24,8 @@ contract.
 
 The shared [`synth_optimizer_platform`](rust/crates/synth_optimizer_platform/)
 crate is the substrate for optimizer implementations; GEPA is the first public
-local algorithm; GELO is hosted-only in the public package (execution in optimizers-beta).
+local algorithm; GELO is hosted-only in the public package and runs on Synth
+hosted optimizer infrastructure.
 Hosted GEPA/GELO submission is covered in [`docs/hosted-optimizers.md`](docs/hosted-optimizers.md).
 
 ## Install
@@ -36,29 +36,15 @@ pip install synth-optimizers
 uv add synth-optimizers
 ```
 
-Latest daily dev build:
-
-```bash
-pip install --pre \
-  synth-containers==0.2.0.dev202605312141 \
-  synth-optimizers==0.2.0.dev202606010003
-
-uv add --prerelease allow \
-  synth-containers==0.2.0.dev202605312141 \
-  synth-optimizers==0.2.0.dev202606010003
-```
-
 Install [`uv`](https://github.com/astral-sh/uv) for local development and editable installs.
 
 ## Local development
 
-Pair this repo with [`synth-containers`](https://github.com/synth-laboratories/containers)
-at matching dev versions, then sync and install editable:
+Sync the repo and install the local Python/Rust extension in editable mode:
 
 ```bash
 cd optimizers
 uv sync --group dev
-uv pip install -e ../containers
 uv pip install -e .
 uv run maturin develop --manifest-path rust/crates/synth_optimizers_py/Cargo.toml
 ```
@@ -179,7 +165,7 @@ Agent docs: [skills/gepa/SKILL.md](skills/gepa/SKILL.md).
 - [GEPA docs (gepa-ai)](https://gepa-ai.github.io/gepa/) — algorithm overview, case studies, and adapter guides
 - [GEPA paper](https://arxiv.org/abs/2507.19457) — *GEPA: Reflective Prompt Evolution Can Outperform Reinforcement Learning*
 - [Cookbooks](https://github.com/synth-laboratories/synth-cookbooks-public/tree/main/cookbooks/optimizers/gepa) — runnable GEPA examples
-- [synth-containers](https://github.com/synth-laboratories/containers) — the task contract
+- [GEPA task contract](src/synth_optimizers/docs/gepa/containers/20-contract.md) — the public HTTP task contract
 - [uv](https://github.com/astral-sh/uv) — Python package and project manager
 - [GEPA service OpenAPI](rust/crates/synth_gepa/openapi/gepa-service-v1.yaml)
 

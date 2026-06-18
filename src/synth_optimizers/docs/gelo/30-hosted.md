@@ -9,7 +9,7 @@ but with `algorithm: "go-ex"` and a checkpoint-heavy config shape.
 Client (SYNTH_API_KEY)
   → POST /api/v1/optimizers/runs  { algorithm: "go-ex", config_json: {...} }
   → backend (auth, billing, projection)
-  → optimizers-beta /v1/runs
+  → hosted optimizer worker
   → HTTP → your task container (rollouts, checkpoints, resume)
 ```
 
@@ -21,7 +21,7 @@ container** — hosted storage does not replace them.
 
 The GELO launch promo gives the first 20 organizations a `$500` hosted Go-Ex proposer
 spend grant, valid for 14 days after claim. Hosted `go-ex` submits auto-claim the grant
-when slots remain, attach the Autumn product `gelo_launch_promo`, and preflight at least
+when slots remain, attach the GELO launch promo grant, and preflight at least
 `$1` of `optimizer_go_ex_llm_spend` headroom before the run is queued. In-container policy
 LLM calls are still owned by the task container.
 
@@ -77,9 +77,9 @@ Container must be up and pass `GET /health` before submit.
 | "Durable across restarts" | Storage S1+ (not S0 alone) |
 | "Reliable uplift optimizer" | Algorithm Tier B — separate from hosting |
 
-Local E2E proof runbook: `optimizers-beta/HOSTED_LOCAL_E2E.md` (uses public client only).
+Local E2E proof should use the public client against the target hosted API.
 
 ## Billing
 
 Terminal jobs should record `optimizer_algorithm=go-ex` and `optimizer_go_ex_llm_spend`
-(Autumn feature). Policy LLM spend runs in-container; proposer spend on hosted worker.
+Policy LLM spend runs in-container; proposer spend runs on the hosted worker.

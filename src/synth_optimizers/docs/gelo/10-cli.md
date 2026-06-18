@@ -43,7 +43,7 @@ synth-optimizers gelo materialize \
 
 | Flag | Default | Purpose |
 |------|---------|---------|
-| `--preset` | source option | Built-in preset. Public presets: `sokoban_smoke` (GameBench, recommended), `crafter_smoke`, `crafter` (legacy synth-containers). |
+| `--preset` | source option | Built-in preset. Public presets: `sokoban_smoke` (GameBench, recommended) and `crafter_smoke`. |
 | `--toml` | source option | Structured public GELO TOML or JSON input. |
 | `--overlay` | — | Structured overlay for `--toml`. |
 | `--container-url` | — | Direct container URL. Mutually exclusive with `--container-pool`. |
@@ -159,5 +159,5 @@ There is no local GELO run board in the public CLI (hosted observability uses
 | Not in public CLI | Where it lives |
 |-------------------|----------------|
 | `gelo run` | **Does not exist** — GELO is hosted-only. |
-| `gelo service` | `optimizers-beta` internal serve. |
-| Local theme board / TUI | `optimizers-beta` (`goex_tui`, internal scripts). |
+| `gelo service` | Internal hosted-service operation. |
+| Local theme board / TUI | Internal operator tooling. |

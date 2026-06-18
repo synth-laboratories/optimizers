@@ -5,9 +5,8 @@ implement the contract with the `synth-containers` package; GEPA talks to it ove
 contract is HTTP + JSON, so the language is up to you (the catalog ships Python, Rust, and
 TypeScript).
 
-Canonical definitions live in `github.com/synth-laboratories/containers`:
-`src/synth_containers/{sdk,contracts,http_models,prompt_programs}.py` and
-`openapi/container-contract-v1.yaml`. The GEPA contract version is
+Canonical definitions are exposed by the public `synth-containers` package and
+its OpenAPI contract artifact. The GEPA contract version is
 `synth_optimizers.gepa.v2`.
 
 ## Authoring with the `Container` class

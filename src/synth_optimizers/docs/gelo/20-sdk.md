@@ -76,24 +76,24 @@ Wire shape for `config_json` on submit. Sections:
 - `go_ex` — engine: `max_rollouts`, `proposer_rounds`, checkpoint cadence/budget, concurrency
 - `seed_candidate` — baseline `react_system_prompt`
 - `proposers` — map of `GeloProposerRole` → proposer config
-- `plugins` — optional plugin lanes; SFT beta is accepted, RLVR/OPSD fail closed
+- `plugins` — reserved extension field; omit it for the public hosted GELO path
 - `cache`, `disk_budget` — optional
 
 `.to_config_json()` serializes for submit. `GeloHostedConfig.algorithm` is `go-ex`, so it can
 be passed directly to `HostedOptimizerClient.submit(config)`.
 
-## Plugin lanes
+## Extension fields
 
-GELO exposes typed plugin-lane config so public SDK code can name the extension
-point without implying every backend exists. SFT is the only accepted beta lane
-in this release; RLVR, OPSD, and unknown plugin kinds are rejected by the SDK
-materializer and backend submit validation.
+GELO exposes a reserved extension section for future compatibility, but the
+public hosted path accepts the documented base Go-Explore prompt-space
+configuration. Omit extension lanes unless a Synth operator provides a dated
+compatibility note for the target hosted API.
 
 ```python
-from synth_optimizers.gelo import GeloPluginKind, GeloPluginSection, GeloPluginsSection
+from synth_optimizers.gelo import GeloPluginsSection
 
 plugins = GeloPluginsSection(
-    lanes=(GeloPluginSection(kind=GeloPluginKind.SFT),),
+    lanes=(),
 )
 ```
 
@@ -120,22 +120,22 @@ long GELO runs. Cloudflared and ngrok materialize as public URLs without
 `container.auth_refresh`.
 
 Use `.materialize(...)` when you need the raw config JSON dictionary for compatibility.
-Materialize from TOML + overlay without hand-editing JSON copied from internal overlays.
+Materialize from TOML + overlay without hand-editing hosted worker JSON.
 
 GELO submit defaults to launch-promo billing. Pass `billing_mode="paid"` to use normal
 paid hosted GELO without launch-promo model and concurrency gates.
 
 ## Config authoring vs execution
 
-| In `optimizers` (public) | In `optimizers-beta` (internal) |
-|--------------------------|-----------------------------------|
-| Types, presets, materialize | `synth_go_ex` execute |
-| `submit_gelo`, observability | `goex_local.sh`, serve, TUI |
+| In `optimizers` (public) | Hosted implementation |
+|--------------------------|-----------------------|
+| Types, presets, materialize | Executes on Synth hosted optimizer workers |
+| `submit_gelo`, observability | Exposed through the public Synth API |
 
-Customers never need `OPTIMIZERS_BETA_SERVICE_TOKEN`.
+Customers only need `SYNTH_API_KEY` for hosted GELO submission and reads.
 
 ## O11y
 
 After submit, poll `get_state` for phase/tick/themes; use `get_state_slice("board")` for
 human-readable theme rows; tail `goex_events` for incremental updates. Full normative artifact
-names: `goex_release.txt` §8 in optimizers-beta.
+names: use the public hosted API response and event schema for compatibility.

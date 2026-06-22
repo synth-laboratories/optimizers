@@ -43,7 +43,7 @@ synth-optimizers gelo materialize \
 
 | Flag | Default | Purpose |
 |------|---------|---------|
-| `--preset` | source option | Built-in preset. Public presets: `sokoban_smoke` (GameBench, recommended), `crafter_smoke`, `crafter` (legacy synth-containers). |
+| `--preset` | source option | Public presets: `crafter_gamebench_smoke` (GameBench rust, DeepSeek), `sokoban_smoke` (GameBench), `crafter_smoke`, `crafter` (legacy synth-containers). |
 | `--toml` | source option | Structured public GELO TOML or JSON input. |
 | `--overlay` | — | Structured overlay for `--toml`. |
 | `--container-url` | — | Direct container URL. Mutually exclusive with `--container-pool`. |

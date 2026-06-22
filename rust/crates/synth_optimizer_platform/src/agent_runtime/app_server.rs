@@ -570,6 +570,7 @@ fn install_codex_arg0_helpers(
     let Some(native_codex) = resolve_native_codex_binary(command, env_map)? else {
         return Ok(());
     };
+    let native_codex = fs::canonicalize(&native_codex).unwrap_or(native_codex);
     let codex_home = env_map
         .get("CODEX_HOME")
         .map(PathBuf::from)
@@ -587,7 +588,19 @@ fn install_codex_arg0_helpers(
         let helper_path = helper_dir.join(helper);
         create_codex_helper_link(&native_codex, &helper_path)?;
     }
+    let exec_wrapper = helper_dir.join("codex-execve-wrapper");
+    if !exec_wrapper.is_file() {
+        return Err(OptimizerError::Proposer(format!(
+            "codex arg0 helper install failed: missing {} under {}",
+            exec_wrapper.file_name().and_then(|name| name.to_str()).unwrap_or("codex-execve-wrapper"),
+            helper_dir.display()
+        )));
+    }
     prepend_path_entry(env_map, &helper_dir);
+    env_map.insert(
+        "CODEX_ARG0_HELPER_DIR".to_string(),
+        helper_dir.display().to_string(),
+    );
     Ok(())
 }
 
@@ -705,7 +718,12 @@ fn platform_package_name() -> Option<&'static str> {
 
 #[cfg(unix)]
 fn create_codex_helper_link(native_codex: &Path, helper_path: &Path) -> Result<()> {
-    std::os::unix::fs::symlink(native_codex, helper_path)
+    if std::os::unix::fs::symlink(native_codex, helper_path).is_ok() {
+        return Ok(());
+    }
+    fs::copy(native_codex, helper_path).map_err(|source| OptimizerError::io(helper_path, source))?;
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(helper_path, fs::Permissions::from_mode(0o755))
         .map_err(|source| OptimizerError::io(helper_path, source))
 }
 

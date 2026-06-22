@@ -7,10 +7,13 @@ import time
 import tomllib
 import urllib.error
 import urllib.request
+import uuid
+from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlencode, urljoin
 
@@ -392,6 +395,12 @@ class HostedOptimizerClient:
         while True:
             record = self.get_run(run_id)
             if record.status.value in RunStatus.terminal():
+                if self.register_usage and record.algorithm is not None:
+                    self.register_usage_complete(
+                        algorithm=record.algorithm,
+                        status=record.status.value,
+                        uplift=_extract_uplift(record.result),
+                    )
                 return record
             if deadline is not None and time.monotonic() >= deadline:
                 raise HostedOptimizerError(f"timed out waiting for optimizer run {run_id}")
@@ -607,7 +616,44 @@ class HostedOptimizerClient:
             "client_surface": _usage_registration_surface(self.usage_registration_surface),
             "package_name": _PACKAGE_NAME,
             "package_version": _package_version(),
+            "internal": _usage_registration_internal(),
+            "install_id": _usage_install_id(),
         }
+        try:
+            self._json_request(
+                "POST",
+                "/api/v1/optimizers/usage/registrations",
+                payload,
+                context="optimizer usage registration",
+                include_auth=False,
+                timeout_seconds=_USAGE_REGISTRATION_TIMEOUT_SECONDS,
+            )
+        except HostedOptimizerError:
+            return
+
+    def register_usage_complete(
+        self,
+        *,
+        algorithm: OptimizerAlgorithmSlug,
+        status: str,
+        uplift: float | None = None,
+    ) -> None:
+        """Fire a run-completion ping: terminal status + uplift number (if present).
+        Anonymous and best-effort, like the submit ping; never raises."""
+        if not self.register_usage:
+            return
+        payload: dict[str, Any] = {
+            "algorithm": algorithm.value,
+            "event_name": "run_complete",
+            "client_surface": _usage_registration_surface(self.usage_registration_surface),
+            "package_name": _PACKAGE_NAME,
+            "package_version": _package_version(),
+            "status": status,
+            "internal": _usage_registration_internal(),
+            "install_id": _usage_install_id(),
+        }
+        if uplift is not None:
+            payload["uplift"] = uplift
         try:
             self._json_request(
                 "POST",
@@ -792,6 +838,58 @@ def _usage_registration_default_enabled() -> bool:
 
 def _env_flag(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _usage_registration_internal() -> bool:
+    """True when this is our own testing (set SYNTH_OPTIMIZERS_INTERNAL=1 in our
+    dev/CI envs) so the dashboard can separate internal runs from real OSS usage."""
+    raw = os.environ.get("SYNTH_OPTIMIZERS_INTERNAL")
+    return raw is not None and _env_flag(raw)
+
+
+@lru_cache(maxsize=1)
+def _usage_install_id() -> str:
+    """Stable anonymous install id (a random UUID persisted under the state dir),
+    so usage can be de-duplicated into DAU/WAU. It is NOT derived from hardware —
+    just a random id — and is only ever created when usage reporting is enabled.
+    Falls back to an ephemeral per-process id if the file can't be persisted."""
+    raw_state_dir = os.environ.get("SYNTH_OPTIMIZERS_STATE_DIR")
+    if raw_state_dir and raw_state_dir.strip():
+        state_root = Path(raw_state_dir).expanduser()
+    else:
+        xdg_state = os.environ.get("XDG_STATE_HOME")
+        state_root = (
+            Path(xdg_state).expanduser() if xdg_state and xdg_state.strip() else Path.home() / ".local" / "state"
+        )
+    path = state_root / "synth-optimizers" / "install-id"
+    try:
+        existing = path.read_text(encoding="utf-8").strip()
+        if existing:
+            return existing
+    except OSError:
+        pass
+    new_id = str(uuid.uuid4())
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(new_id, encoding="utf-8")
+    except OSError:
+        pass  # read-only / sandboxed home: ephemeral anonymous id for this process
+    return new_id
+
+
+def _extract_uplift(result: Mapping[str, Any] | None) -> float | None:
+    """Best-effort single uplift number from a run result (no other detail sent)."""
+    if not isinstance(result, Mapping):
+        return None
+    for key in ("uplift", "improvement", "delta", "score_uplift"):
+        v = result.get(key)
+        if isinstance(v, (int, float)):
+            return float(v)
+    best = result.get("best_score")
+    base = result.get("baseline_score", result.get("baseline"))
+    if isinstance(best, (int, float)) and isinstance(base, (int, float)):
+        return float(best) - float(base)
+    return None
 
 
 def _usage_registration_surface(raw: str) -> str:

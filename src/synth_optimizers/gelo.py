@@ -49,6 +49,7 @@ class GeloPluginKind(StrEnum):
 class GeloPresetName(StrEnum):
     CRAFTER = "crafter"
     CRAFTER_SMOKE = "crafter_smoke"
+    CRAFTER_GAMEBENCH_SMOKE = "crafter_gamebench_smoke"
     SOKOBAN_SMOKE = "sokoban_smoke"
     NETHACK_SMOKE = "nethack_smoke"
     DUNGEONGRID_PLUS_PICO = "dungeongrid_plus_pico"
@@ -373,6 +374,16 @@ class GeloPreset:
                 "policy_provider": "groq",
                 "policy_api_key_env": "GROQ_API_KEY",
             }
+        elif preset_name == GeloPresetName.CRAFTER_GAMEBENCH_SMOKE:
+            defaults = {
+                "proposer_rounds": 1,
+                "train_seed_count": 4,
+                "heldout_seed_count": 2,
+                "max_rollouts": 80,
+                "policy_model": "deepseek-v4-flash",
+                "policy_provider": "deepseek",
+                "policy_api_key_env": "DEEPSEEK_API_KEY",
+            }
         else:
             raise GeloMaterializeError(
                 f"preset {preset_name.value!r} is not available in the public package yet"
@@ -391,6 +402,10 @@ class GeloPreset:
     @classmethod
     def sokoban_smoke(cls, **overrides: Any) -> "GeloPreset":
         return cls.from_name(GeloPresetName.SOKOBAN_SMOKE, **overrides)
+
+    @classmethod
+    def crafter_gamebench_smoke(cls, **overrides: Any) -> "GeloPreset":
+        return cls.from_name(GeloPresetName.CRAFTER_GAMEBENCH_SMOKE, **overrides)
 
     def to_config(
         self,
@@ -418,6 +433,8 @@ class GeloPreset:
         run = GeloRunSection(run_id=run_id or _default_run_id(self.name))
         if self.name == GeloPresetName.SOKOBAN_SMOKE:
             config = _sokoban_config(self, run=run, container=container)
+        elif self.name == GeloPresetName.CRAFTER_GAMEBENCH_SMOKE:
+            config = _crafter_gamebench_config(self, run=run, container=container)
         else:
             config = GeloHostedConfig(
                 run=run,
@@ -551,7 +568,10 @@ def _default_run_id(name: GeloPresetName) -> str:
 
 
 def _crafter_engine(preset: GeloPreset) -> GeloEngineSection:
-    smoke = preset.name == GeloPresetName.CRAFTER_SMOKE
+    smoke = preset.name in (
+        GeloPresetName.CRAFTER_SMOKE,
+        GeloPresetName.CRAFTER_GAMEBENCH_SMOKE,
+    )
     return GeloEngineSection(
         max_rollouts=preset.max_rollouts,
         proposer_rounds=preset.proposer_rounds,
@@ -766,6 +786,101 @@ def _sokoban_config(
         cache=GeloCacheSection(mode=GeloCacheMode.OFF),
         disk_budget=GeloDiskBudgetSection(enabled=True, soft_limit_gb=5.0, hard_limit_gb=10.0),
     )
+
+
+_CRAFTER_GAMEBENCH_SEED_PROMPT = (
+    "You are a Crafter ReAct policy on GameBench rust gold. Explore safely, collect resources, "
+    "and unlock the configured objective achievement. Reply with JSON "
+    '{"actions":["move_right","do",...]} using only legal crafter actions.'
+)
+
+_CRAFTER_GAMEBENCH_MILESTONE_LADDER: tuple[Mapping[str, Any], ...] = (
+    {"milestone_id": "collect_wood", "title": "Collect wood", "reward": 0.2, "region": {}},
+    {
+        "milestone_id": "collect_sapling",
+        "title": "Collect a sapling",
+        "reward": 1.0,
+        "region": {"requires_milestone": "collect_wood"},
+    },
+)
+
+
+def _crafter_gamebench_config(
+    preset: "GeloPreset",
+    *,
+    run: GeloRunSection,
+    container: GeloContainerSection,
+) -> GeloHostedConfig:
+    return GeloHostedConfig(
+        run=run,
+        container=container,
+        taskset=GeloTasksetSection(
+            train_seeds=_seed_tuple(101, preset.train_seed_count),
+            heldout_seeds=_seed_tuple(201, preset.heldout_seed_count),
+            profile="crafter_singleplayer_agent",
+            reward_mode="goal_binary",
+            env_config={
+                "task_path": "tasks/gc_collect_sapling.json",
+                "max_steps": 120,
+            },
+            context={
+                "task_family": "crafter-singleplayer",
+                "checkpoint_restore_semantics": "true_environment_snapshot",
+                "allow_request_snapshot_resume": False,
+                "require_real_rewards": True,
+                "required_candidate_kind": "prompt",
+                "prompt_only_candidate_authoring": True,
+                "forbid_code_policy_candidates": True,
+                "target_objective_label": "collect_sapling",
+                "milestone_ladder": [dict(m) for m in _CRAFTER_GAMEBENCH_MILESTONE_LADDER],
+            },
+        ),
+        policy=GeloPolicySection(
+            model=preset.policy_model,
+            provider=preset.policy_provider,
+            api_key_env=preset.policy_api_key_env,
+            inference_url="https://api.deepseek.com/chat/completions",
+            max_tokens=512,
+            config={
+                "use_lm": True,
+                "policy_id": "react_deepseek_v1",
+                "temperature": 0.0,
+                "max_steps": 120,
+                "max_llm_turns": 6,
+                "min_actions": 3,
+                "max_actions": 10,
+            },
+        ),
+        go_ex=replace(
+            _crafter_engine(preset),
+            base_react_system_prompt=_CRAFTER_GAMEBENCH_SEED_PROMPT,
+            submission_mode="async",
+        ),
+        seed_candidate=GeloSeedCandidateSection(react_system_prompt=_CRAFTER_GAMEBENCH_SEED_PROMPT),
+        proposers=_deepseek_proposer_roles(),
+        cache=GeloCacheSection(mode=GeloCacheMode.OFF),
+        disk_budget=GeloDiskBudgetSection(enabled=True, soft_limit_gb=5.0, hard_limit_gb=10.0),
+        plugins={"enabled": ["prompt"]},
+    )
+
+
+def _deepseek_proposer_roles() -> Mapping[GeloProposerRole, GeloProposerSection]:
+    roles: dict[GeloProposerRole, GeloProposerSection] = {}
+    for role in _PROPOSER_ROLES:
+        low_effort = role in (GeloProposerRole.THEME_VERIFIER, GeloProposerRole.TERMINATOR)
+        roles[role] = GeloProposerSection(
+            role=role.value,
+            output_schema=_ROLE_OUTPUT_SCHEMAS[role],
+            model="deepseek-v4-flash",
+            provider="deepseek",
+            backend="deepseek_chat",
+            auth_mode="api_key",
+            reasoning_effort="low" if low_effort else "high",
+            timeout_seconds=120 if low_effort else 300,
+            api_key_env="DEEPSEEK_API_KEY",
+            base_url="https://api.deepseek.com",
+        )
+    return roles
 
 
 def _default_crafter_roles() -> Mapping[GeloProposerRole, GeloProposerSection]:

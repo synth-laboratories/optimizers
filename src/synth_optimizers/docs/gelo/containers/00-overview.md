@@ -24,7 +24,7 @@ publishing a runnable Crafter walkthrough.
 | Env | Notes |
 |-----|--------|
 | **GameBench Sokoban** | **Recommended public reference.** Self-contained react container (in-process gold), Tier B+ checkpoint/resume, `true_environment_snapshot`. Preset: `sokoban_smoke`. Source: `gamebench/tasks/sokoban-singleplayer/containers/react` |
-| GameBench Crafter | In progress (Python + Rust gold); subgoal GELO wiring tracked separately |
+| **GameBench Crafter (rust)** | ReAct container on rust gold HTTP; local GELO via `crafter_gamebench_smoke` preset + `scripts/run_gelo_sdk_local.sh`. Preset: `crafter_gamebench_smoke`. Source: `gamebench/tasks/crafter-singleplayer/containers/react` |
 | Crafter (legacy) | Original hosted E2E reference; private synth-containers source — confirm publish path before sharing |
 | NetHack | Validity cohort; `acceptance.rs` scoring bug is P0 before trust |
 | VendingBench | Application lane; separate publish bar |

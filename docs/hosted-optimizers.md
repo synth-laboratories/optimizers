@@ -107,12 +107,12 @@ Hosted GEPA and GELO share the generic optimizer observability routes:
 GELO also exposes compatibility aliases `goex_events()` and `goex_event_stream()`.
 Prefer the generic `algorithm_*` methods for new SDK and CLI integrations.
 
-### Plugin lanes
+### Hosted GELO compatibility
 
-GELO exposes typed plugin-lane config for roadmap compatibility, but the public
-launch accepts only the SFT beta lane. RLVR, OPSD, and unknown plugin kinds are
+GELO exposes typed compatibility fields for older internal configs, but the
+public launch path is GEPA and GELO only. Unsupported compatibility modes are
 rejected fail-closed by the SDK materializer and backend submit validation until
-their hosted backends are explicitly enabled.
+their hosted backends are explicitly enabled and documented.
 
 ## Launch Evidence
 

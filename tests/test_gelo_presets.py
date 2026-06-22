@@ -74,6 +74,22 @@ def test_sokoban_smoke_requires_container_target() -> None:
         GeloPreset.from_name("sokoban_smoke").materialize(run_id="r")
 
 
+def test_crafter_gamebench_smoke_materializes_deepseek_shape() -> None:
+    cfg = GeloPreset.from_name("crafter_gamebench_smoke").materialize(
+        container_url="http://127.0.0.1:8096",
+        run_id="crafter_gamebench_test",
+    )
+    for section in _REQUIRED_SECTIONS:
+        assert isinstance(cfg.get(section), dict), f"missing section {section}"
+    assert cfg["taskset"]["profile"] == "crafter_singleplayer_agent"
+    assert cfg["taskset"]["env_config"]["task_path"].endswith("gc_collect_sapling.json")
+    assert cfg["policy"]["model"] == "deepseek-v4-flash"
+    assert cfg["policy"]["provider"] == "deepseek"
+    assert cfg["proposers"]["core_proposer"]["backend"] == "deepseek_chat"
+    assert cfg["proposers"]["core_proposer"]["model"] == "deepseek-v4-flash"
+    assert cfg["go_ex"]["submission_mode"] == "async"
+
+
 def test_crafter_smoke_unchanged() -> None:
     cfg = GeloPreset.from_name("crafter_smoke").materialize(
         container_url="http://x", run_id="r"

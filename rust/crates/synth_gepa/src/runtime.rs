@@ -24,6 +24,8 @@ const DEFAULT_RUNTIME_LEASE_SECONDS: u64 = 3600;
 const DEFAULT_ROLLOUT_CONCURRENCY: usize = 128;
 const DEFAULT_ROLLOUT_HTTP_RETRIES: usize = 2;
 const DEFAULT_ROLLOUT_RETRY_BACKOFF_MS: u64 = 200;
+const DEEPSEEK_INPUT_USD_PER_MILLION: f64 = 0.27;
+const DEEPSEEK_OUTPUT_USD_PER_MILLION: f64 = 1.10;
 
 #[derive(Clone, Debug)]
 pub struct RuntimeEffectExecutorConfig {
@@ -582,6 +584,8 @@ impl<'a> GepaRuntimeExecutor<'a> {
             .and_then(|usage| usage.get("cost_usd"))
             .or_else(|| response.get("cost_usd"))
             .and_then(Value::as_f64)
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .or_else(|| proposer_static_cost_usd(self.config, &usage, &response))
             .unwrap_or(0.0);
         let backend = response
             .get("backend")
@@ -753,6 +757,36 @@ impl<'a> GepaRuntimeExecutor<'a> {
             .collect::<Result<Vec<_>>>()?;
         Ok(RuntimeEffectOutcome::RolloutBatch(outcomes))
     }
+}
+
+fn proposer_static_cost_usd(
+    config: &SynthOptimizerConfig,
+    usage: &UsageTotals,
+    response: &Value,
+) -> Option<f64> {
+    let provider = response
+        .get("provider")
+        .and_then(Value::as_str)
+        .unwrap_or(config.proposer.provider.as_str())
+        .trim()
+        .to_ascii_lowercase();
+    let model = response
+        .get("model")
+        .and_then(Value::as_str)
+        .or(config.proposer.model.as_deref())
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if provider == "deepseek" || model.contains("deepseek") {
+        if usage.prompt_tokens == 0 && usage.completion_tokens == 0 {
+            return None;
+        }
+        return Some(
+            usage.prompt_tokens as f64 * DEEPSEEK_INPUT_USD_PER_MILLION / 1_000_000.0
+                + usage.completion_tokens as f64 * DEEPSEEK_OUTPUT_USD_PER_MILLION / 1_000_000.0,
+        );
+    }
+    None
 }
 
 #[derive(Clone, Debug)]

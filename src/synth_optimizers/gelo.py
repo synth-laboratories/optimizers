@@ -1347,6 +1347,11 @@ def _validate_materialized_config(config: Mapping[str, Any]) -> None:
         if not str(raw_auth_refresh.get("lease_id") or "").strip():
             raise GeloMaterializeError("GELO config container.auth_refresh.lease_id is required")
     taskset = _mapping(config.get("taskset"))
+    if "checkpoint_semantics" in taskset:
+        raise GeloMaterializeError(
+            "GELO config taskset.checkpoint_semantics is not accepted by hosted "
+            "go-ex; use taskset.context.checkpoint_restore_semantics instead"
+        )
     if not taskset.get("train_seeds") or not taskset.get("heldout_seeds"):
         raise GeloMaterializeError("GELO config requires taskset.train_seeds and heldout_seeds")
     go_ex = _mapping(config.get("go_ex"))
@@ -1374,6 +1379,11 @@ def _clean_config_value(value: Any) -> Any:
     if is_dataclass(value) and not isinstance(value, type):
         result: dict[str, Any] = {}
         for dataclass_field in fields(value):
+            if (
+                isinstance(value, GeloTasksetSection)
+                and dataclass_field.name == "checkpoint_semantics"
+            ):
+                continue
             item = getattr(value, dataclass_field.name)
             if item is None:
                 continue

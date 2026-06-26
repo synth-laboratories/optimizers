@@ -1,5 +1,9 @@
 # synth-optimizers changelog
 
+## 2026-06-26
+
+* Prepared `0.2.6.dev20260626` for the GELO 72-hour promo relaunch: added public `craftax_gamebench_rust_smoke` and `rogue_gamebench_rust_smoke` presets, refreshed the bundled hosted GELO docs, and updated the agent skill with the June 26 promo terms and GameBench Rust tunnel path.
+
 ## 2026-06-12
 
 * Prepared `0.2.5` for GELO launch: `crafter_smoke` keeps the full-rollout lane but disables auxiliary data-miner authority for the public smoke quickstart, and the Rust extension now reports package version `0.2.5`.

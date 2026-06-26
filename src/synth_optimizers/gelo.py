@@ -50,6 +50,8 @@ class GeloPresetName(StrEnum):
     CRAFTER = "crafter"
     CRAFTER_SMOKE = "crafter_smoke"
     SOKOBAN_SMOKE = "sokoban_smoke"
+    CRAFTAX_GAMEBENCH_RUST_SMOKE = "craftax_gamebench_rust_smoke"
+    ROGUE_GAMEBENCH_RUST_SMOKE = "rogue_gamebench_rust_smoke"
     NETHACK_SMOKE = "nethack_smoke"
     DUNGEONGRID_PLUS_PICO = "dungeongrid_plus_pico"
 
@@ -284,9 +286,7 @@ _AGENT_ROLES: tuple[GeloProposerRole, ...] = (
 
 _ALL_ROLES: tuple[GeloProposerRole, ...] = _PROPOSER_ROLES + _AGENT_ROLES
 
-_GO_EX_FLAT_KEYS: frozenset[str] = frozenset(
-    field.name for field in fields(GeloEngineSection)
-)
+_GO_EX_FLAT_KEYS: frozenset[str] = frozenset(field.name for field in fields(GeloEngineSection))
 
 _TASKSET_KEYS: frozenset[str] = frozenset(
     {
@@ -373,6 +373,19 @@ class GeloPreset:
                 "policy_provider": "groq",
                 "policy_api_key_env": "GROQ_API_KEY",
             }
+        elif preset_name in {
+            GeloPresetName.CRAFTAX_GAMEBENCH_RUST_SMOKE,
+            GeloPresetName.ROGUE_GAMEBENCH_RUST_SMOKE,
+        }:
+            defaults = {
+                "proposer_rounds": 1,
+                "train_seed_count": 4,
+                "heldout_seed_count": 2,
+                "max_rollouts": 64,
+                "policy_model": "openai/gpt-oss-120b",
+                "policy_provider": "groq",
+                "policy_api_key_env": "GROQ_API_KEY",
+            }
         else:
             raise GeloMaterializeError(
                 f"preset {preset_name.value!r} is not available in the public package yet"
@@ -391,6 +404,14 @@ class GeloPreset:
     @classmethod
     def sokoban_smoke(cls, **overrides: Any) -> "GeloPreset":
         return cls.from_name(GeloPresetName.SOKOBAN_SMOKE, **overrides)
+
+    @classmethod
+    def craftax_gamebench_rust_smoke(cls, **overrides: Any) -> "GeloPreset":
+        return cls.from_name(GeloPresetName.CRAFTAX_GAMEBENCH_RUST_SMOKE, **overrides)
+
+    @classmethod
+    def rogue_gamebench_rust_smoke(cls, **overrides: Any) -> "GeloPreset":
+        return cls.from_name(GeloPresetName.ROGUE_GAMEBENCH_RUST_SMOKE, **overrides)
 
     def to_config(
         self,
@@ -418,6 +439,28 @@ class GeloPreset:
         run = GeloRunSection(run_id=run_id or _default_run_id(self.name))
         if self.name == GeloPresetName.SOKOBAN_SMOKE:
             config = _sokoban_config(self, run=run, container=container)
+        elif self.name == GeloPresetName.CRAFTAX_GAMEBENCH_RUST_SMOKE:
+            config = _gamebench_rust_config(
+                self,
+                run=run,
+                container=container,
+                task_family="craftax-singleplayer",
+                profile="craftax_singleplayer_rust",
+                target_objective_label="midgame_crafting_progress",
+                max_steps=300,
+                seed_prompt=_CRAFTAX_GAMEBENCH_SEED_PROMPT,
+            )
+        elif self.name == GeloPresetName.ROGUE_GAMEBENCH_RUST_SMOKE:
+            config = _gamebench_rust_config(
+                self,
+                run=run,
+                container=container,
+                task_family="rogue-singleplayer",
+                profile="rogue_singleplayer_rust",
+                target_objective_label="survive_and_explore",
+                max_steps=200,
+                seed_prompt=_ROGUE_GAMEBENCH_SEED_PROMPT,
+            )
         else:
             config = GeloHostedConfig(
                 run=run,
@@ -522,9 +565,7 @@ class GeloMaterializer:
         if container_tunnel is not None:
             if not hasattr(container_tunnel, "container_config"):
                 raise GeloMaterializeError("container_tunnel must expose container_config()")
-            container = _clean_config_value(
-                _container_section_from_tunnel(container_tunnel)
-            )
+            container = _clean_config_value(_container_section_from_tunnel(container_tunnel))
             config["container"] = _deep_merge(_mapping(config.get("container")), container)
         if container_url is not None:
             container = dict(_mapping(config.get("container")))
@@ -633,9 +674,26 @@ _SOKOBAN_SEED_PROMPT = (
     "move places the box on a target."
 )
 
+_CRAFTAX_GAMEBENCH_SEED_PROMPT = (
+    "You are playing the GameBench Craftax single-player Rust task. Use valid "
+    "container actions only. Prioritize survival, collect wood and stone, craft "
+    "basic tools, recover coal and iron, and make measurable achievement progress."
+)
+
+_ROGUE_GAMEBENCH_SEED_PROMPT = (
+    "You are playing the GameBench Rogue single-player Rust task. Use valid "
+    "container actions only. Prioritize survival, map coverage, safe combat, "
+    "inventory discipline, and progress toward deeper exploration."
+)
+
 # Mirrors goex_sokoban_gpt_oss_120b_budget.json taskset.context.milestone_ladder.
 _SOKOBAN_MILESTONE_LADDER: tuple[Mapping[str, Any], ...] = (
-    {"milestone_id": "first_push", "title": "Make the first useful box push", "reward": 0.2, "region": {}},
+    {
+        "milestone_id": "first_push",
+        "title": "Make the first useful box push",
+        "reward": 0.2,
+        "region": {},
+    },
     {
         "milestone_id": "box_on_target",
         "title": "Move a box onto a target",
@@ -768,6 +826,131 @@ def _sokoban_config(
     )
 
 
+def _gamebench_rust_engine(preset: "GeloPreset") -> GeloEngineSection:
+    return GeloEngineSection(
+        max_rollouts=preset.max_rollouts,
+        proposer_rounds=preset.proposer_rounds,
+        base_react_system_prompt=None,
+        submission_mode="async",
+        execute_live_proposers=True,
+        bootstrap_train_rollout_count=1,
+        heldout_measurement_rollouts=max(1, preset.heldout_seed_count),
+        all_candidate_holdout_seed_count=max(1, preset.heldout_seed_count),
+        full_rollout_lane_enabled=True,
+        full_rollout_initial_budget=8,
+        full_rollout_budget_per_round=4,
+        full_rollout_cadence=1,
+        fresh_rollouts_per_parent=1,
+        resume_rollouts_per_parent=1,
+        full_rollout_concurrency=4,
+        theme_rollout_concurrency=4,
+        closeout_heldout_concurrency=4,
+        closeout_heldout_candidate_parallelism=2,
+        heldout_measurement_concurrency=4,
+        heldout_measurement_candidate_parallelism=2,
+        full_rollout_checkpoint_cadence="per_llm_call",
+        full_rollout_checkpoint_budget=240,
+        data_miner_authority=True,
+        data_miner_min_new_checkpoints=1,
+        data_miner_rollouts_per_job=2,
+        data_miner_cadence="after_full_rollout_phase",
+        theme_finalize_min_checkpoints=1,
+        max_tentative_themes=4,
+        tentative_theme_max_age_rounds=2,
+        theme_start_score_band=(0.0, 0.95),
+        theme_partials_per_candidate=2,
+        theme_saturation_threshold=0.9,
+        theme_saturation_min_rollouts=2,
+        theme_aux_rounds_per_staircase=2,
+        theme_proposal_round_budget=2,
+        theme_aux_budget_per_theme=2,
+        theme_no_progress_rounds=2,
+        terminator_default="agent",
+        promotion_min_seeds=1,
+        promotion_margin=0.01,
+        holdout_consolidate_k=2,
+        auto_aux_hill_climb_calls_per_round=2,
+        auto_consolidate_min_mature_themes=1,
+        auto_consolidate_theme_count=2,
+        auto_consolidate_min_score=0.0,
+        allow_single_theme_consolidation=True,
+        consolidation_budget_per_round=2,
+        consolidation_max_themes=3,
+        target_new_candidate_count=3,
+        candidates_per_proposer=3,
+        segment_steps=50,
+        resume_segment_steps=25,
+        max_llm_turns=20,
+        max_actions_per_turn=1,
+        request_timeout_seconds=240.0,
+        rollout_state_poll_seconds=0.25,
+        rollout_terminator_poll_seconds=0.25,
+        rollout_stall_timeout_seconds=300.0,
+        container_connect_timeout_seconds=30.0,
+        allow_resume_fallback_to_fresh=False,
+    )
+
+
+def _gamebench_rust_config(
+    preset: "GeloPreset",
+    *,
+    run: GeloRunSection,
+    container: GeloContainerSection,
+    task_family: str,
+    profile: str,
+    target_objective_label: str,
+    max_steps: int,
+    seed_prompt: str,
+) -> GeloHostedConfig:
+    return GeloHostedConfig(
+        run=run,
+        container=container,
+        taskset=GeloTasksetSection(
+            train_seeds=_seed_tuple(101, preset.train_seed_count),
+            heldout_seeds=_seed_tuple(501, preset.heldout_seed_count),
+            profile=profile,
+            backend="gamebench_gold_rust",
+            reward_mode=GeloRewardMode.PROGRESS,
+            checkpoint_semantics=GeloCheckpointSemantics.TRUE_ENV_SNAPSHOT,
+            env_config={
+                "gamebench_task": task_family,
+                "substrate": "rust",
+                "max_steps": max_steps,
+            },
+            context={
+                "task_family": task_family,
+                "gamebench_task": task_family,
+                "substrate_label": f"gamebench/{task_family}/rust",
+                "checkpoint_restore_semantics": "true_environment_snapshot",
+                "allow_request_snapshot_resume": False,
+                "require_real_rewards": True,
+                "required_candidate_kind": "prompt",
+                "prompt_only_candidate_authoring": True,
+                "forbid_code_policy_candidates": True,
+                "target_objective_label": target_objective_label,
+                "source_ref": f"gamebench/tasks/{task_family}/gold_rust",
+            },
+        ),
+        policy=GeloPolicySection(
+            model=preset.policy_model,
+            provider=preset.policy_provider,
+            api_key_env=preset.policy_api_key_env,
+            inference_url="https://api.groq.com/openai/v1/chat/completions",
+            max_tokens=512,
+            config={
+                "use_lm": True,
+                "temperature": 0.0,
+                "max_steps": max_steps,
+            },
+        ),
+        go_ex=_gamebench_rust_engine(preset),
+        seed_candidate=GeloSeedCandidateSection(react_system_prompt=seed_prompt),
+        proposers=_default_crafter_roles(),
+        cache=GeloCacheSection(mode=GeloCacheMode.OFF),
+        disk_budget=GeloDiskBudgetSection(enabled=True, soft_limit_gb=5.0, hard_limit_gb=10.0),
+    )
+
+
 def _default_crafter_roles() -> Mapping[GeloProposerRole, GeloProposerSection]:
     roles: dict[GeloProposerRole, GeloProposerSection] = {}
     for role in _PROPOSER_ROLES:
@@ -878,11 +1061,7 @@ def _structured_from_launcher(payload: Mapping[str, Any], source: Path | None) -
 
 def _structured_from_flat(flat: Mapping[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {}
-    run = {
-        key: flat[key]
-        for key in ("run_id", "output_dir", "seed")
-        if key in flat
-    }
+    run = {key: flat[key] for key in ("run_id", "output_dir", "seed") if key in flat}
     if run:
         result["run"] = run
     service_url = flat.get("service_url") or flat.get("container_url")
@@ -947,8 +1126,7 @@ def _role_from_flat(flat: Mapping[str, Any], role: GeloProposerRole) -> dict[str
             continue
         if source_key == "backend" and str(value).strip() in _LEGACY_BACKEND_ALIASES:
             raise GeloMaterializeError(
-                f"GELO proposer {role.value} backend {value!r} is retired; "
-                "use 'codex_app_server'"
+                f"GELO proposer {role.value} backend {value!r} is retired; use 'codex_app_server'"
             )
         config[source_key] = value
     return config
@@ -987,7 +1165,9 @@ def _container_payload_from_target(target: Any) -> Mapping[str, Any]:
     else:
         payload = _clean_config_value(target)
     if not isinstance(payload, Mapping):
-        raise GeloMaterializeError("container_tunnel.container_config() must serialize to an object")
+        raise GeloMaterializeError(
+            "container_tunnel.container_config() must serialize to an object"
+        )
     return payload
 
 
@@ -1065,9 +1245,7 @@ def _validate_container_inputs(
 
 
 _GELO_SUPPORTED_PLUGIN_KINDS = frozenset({GeloPluginKind.SFT.value})
-_GELO_FUTURE_PLUGIN_KINDS = frozenset(
-    {GeloPluginKind.RLVR.value, GeloPluginKind.OPSD.value}
-)
+_GELO_FUTURE_PLUGIN_KINDS = frozenset({GeloPluginKind.RLVR.value, GeloPluginKind.OPSD.value})
 _GELO_PLUGIN_KIND_KEYS = frozenset({"kind", "type", "plugin_kind"})
 _GELO_PLUGIN_COLLECTION_KEYS = frozenset({"lanes", "items"})
 _GELO_PLUGIN_METADATA_KEYS = frozenset({"enabled", "status", "version", "config"})
@@ -1099,9 +1277,7 @@ def _validate_plugin_declaration(value: Any, *, path: str) -> None:
         if key in value:
             _validate_plugin_kind(value[key], path=f"{path}.{key}")
             return
-    raise GeloMaterializeError(
-        f"GELO plugin declaration at {path} must include kind='sft'"
-    )
+    raise GeloMaterializeError(f"GELO plugin declaration at {path} must include kind='sft'")
 
 
 def _validate_plugin_collection(value: Any, *, path: str) -> None:
@@ -1169,9 +1345,7 @@ def _validate_materialized_config(config: Mapping[str, Any]) -> None:
                 "GELO config container.auth_refresh.provider must be synth_tunnel"
             )
         if not str(raw_auth_refresh.get("lease_id") or "").strip():
-            raise GeloMaterializeError(
-                "GELO config container.auth_refresh.lease_id is required"
-            )
+            raise GeloMaterializeError("GELO config container.auth_refresh.lease_id is required")
     taskset = _mapping(config.get("taskset"))
     if not taskset.get("train_seeds") or not taskset.get("heldout_seeds"):
         raise GeloMaterializeError("GELO config requires taskset.train_seeds and heldout_seeds")
@@ -1188,8 +1362,7 @@ def _validate_materialized_config(config: Mapping[str, Any]) -> None:
         backend = str(role_config.get("backend") or "").strip()
         if backend in _LEGACY_BACKEND_ALIASES:
             raise GeloMaterializeError(
-                f"GELO proposer {role_name} backend {backend!r} is retired; "
-                "use 'codex_app_server'"
+                f"GELO proposer {role_name} backend {backend!r} is retired; use 'codex_app_server'"
             )
 
 

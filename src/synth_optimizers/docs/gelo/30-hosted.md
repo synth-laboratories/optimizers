@@ -17,13 +17,13 @@ Durable status, events, and artifacts land in backend PG/Redis/S3 (see storage s
 [container contract](#/containers/contract)). **Env checkpoint blobs for resume stay in your
 container** — hosted storage does not replace them.
 
-## Launch promo
+## 72-hour launch promo
 
-The GELO launch promo gives the first 20 organizations a `$500` hosted Go-Ex proposer
-spend grant, valid for 14 days after claim. Hosted `go-ex` submits auto-claim the grant
-when slots remain, attach the GELO launch promo grant, and preflight at least
-`$1` of `optimizer_go_ex_llm_spend` headroom before the run is queued. In-container policy
-LLM calls are still owned by the task container.
+The June 26 GELO launch promo gives eligible organizations a 72-hour hosted Go-Ex
+proposer-spend grant after claim. Hosted `go-ex` submits auto-claim the grant when
+promo capacity remains, attach the GELO launch promo grant, and preflight at least
+`$1` of `optimizer_go_ex_llm_spend` headroom before the run is queued. In-container
+policy LLM calls are still owned by the task container.
 
 The promo grant is reused for repeat submits from the same organization. Each organization
 may have one hosted GELO run in `queued` or `running` status at once while using the promo.
@@ -34,6 +34,9 @@ Promo submits require GPT models for the five paid proposer roles:
 `core_proposer`, `aux_hill_climb_proposer`, `aux_data_miner_proposer`,
 `aux_consolidate_proposer`, and `aux_consolidate_hill_climb_proposer`.
 `theme_verifier_agent` and `terminator_agent` are intentionally exempt.
+
+The active campaign id is `gelo_free_72h_20260626`. Check the status route for the
+exact grant expiry, remaining promo capacity, headroom snapshot, and first GELO run id.
 
 ## Public API routes
 
@@ -68,6 +71,22 @@ Supported providers are `synth_tunnel`, `cloudflared`, and `ngrok`. Only SynthTu
 `container.auth_refresh`; cloudflared and ngrok submit as public container URLs.
 
 Container must be up and pass `GET /health` before submit.
+
+## GameBench Rust presets
+
+GameBench Rust task containers can be submitted through the same tunnel path:
+
+```bash
+synth-optimizers gelo submit \
+  --preset craftax_gamebench_rust_smoke \
+  --tunnel-url http://127.0.0.1:8098 \
+  --tunnel-provider synth_tunnel \
+  --follow
+```
+
+Use `rogue_gamebench_rust_smoke` for the Rogue prototype container. These presets
+materialize explicit `gamebench/<task>/rust` substrate metadata so blog evidence can
+separate GameBench Rust replications from legacy Craftax, NLE, or Crafter rows.
 
 ## Staging vs prod claims
 

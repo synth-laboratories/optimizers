@@ -331,23 +331,35 @@ with client.open_synth_tunnel("http://127.0.0.1:8943") as tunnel:
 
 ```bash
 synth-optimizers gelo submit --preset crafter_smoke --tunnel-url http://127.0.0.1:8943 --follow
+synth-optimizers gelo submit --preset craftax_gamebench_rust_smoke --tunnel-url http://127.0.0.1:8098 --follow
 ```
 
 Public walkthrough: `https://github.com/synth-laboratories/synth-cookbooks-public/tree/main/cookbooks/optimizers/gelo`.
 
-## Launch promo
+## 72-hour launch promo
 
-The GELO launch promo gives the **first 20 organizations** a **$500** hosted Go-Ex
-proposer-spend grant, valid **14 days** from claim. Hosted `go-ex` submits auto-claim
-when slots remain; the five paid proposer roles must use GPT-family models
-(`theme_verifier_agent` / `terminator_agent` are exempt). One run in `queued`/`running`
-at a time per org while on the promo. Not covered: in-container policy LLM calls and
-the Managed Research $500 credit (separate offer).
+The June 26 GELO launch promo uses campaign id `gelo_free_72h_20260626`. Eligible
+organizations receive a hosted Go-Ex proposer-spend grant for **72 hours** after claim.
+Hosted `go-ex` submits auto-claim when promo capacity remains; the five paid proposer
+roles must use GPT-family models (`theme_verifier_agent` / `terminator_agent` are
+exempt). One run in `queued`/`running` at a time per org while on the promo. Not
+covered: in-container policy LLM calls and the Managed Research credit offers.
 
-Check slots before promising a customer run:
+Check status before promising a customer run:
 `GET /api/v1/optimizers/gelo-launch-promo/status` (claim: `POST .../claim`).
 Full terms: the hosted docs page (`synth-optimizers gelo console` -> hosted) and the
 public cookbook walkthrough above.
+
+GameBench Rust public smoke presets:
+
+- `craftax_gamebench_rust_smoke` — `gamebench/craftax-singleplayer/rust`
+- `rogue_gamebench_rust_smoke` — `gamebench/rogue-singleplayer/rust` prototype lane
+
+Use a reachable task container plus `--tunnel-url`; do not publish result rows until the
+terminal artifact bundle includes `goex_integrity_report.json` and heldout acceptance.
+
+Plugin lanes: SFT is invite-only beta; RLVR and OPSD are waitlist/private-eval lanes and
+must not be described as generally available.
 
 **Container URL reachability:** the hosted optimizer worker must reach the
 container. Use SynthTunnel or a hosted pool; do not pass `127.0.0.1` unless it

@@ -1249,7 +1249,13 @@ class GepaConfig:
         if not self.container_command:
             self._preflight_container_capabilities()
         config_path = self.write_toml()
-        return _NativeGepaRun.from_toml(str(config_path)).execute()
+        try:
+            result = _NativeGepaRun.from_toml(str(config_path)).execute()
+        except Exception:
+            self._register_usage_complete(status="failed")
+            raise
+        self._register_usage_complete(status="succeeded")
+        return result
 
     def _register_usage_submit(self) -> None:
         if not self.usage_registration.enabled:
@@ -1268,9 +1274,53 @@ class GepaConfig:
             )
             client.register_usage_submit(
                 algorithm=OptimizerAlgorithmSlug.GEPA,
+                models=self._usage_registration_models(),
             )
         except HostedOptimizerError:
             return
+
+    def _register_usage_complete(self, *, status: str) -> None:
+        if not self.usage_registration.enabled:
+            return
+        from .hosted import (
+            HostedOptimizerClient,
+            HostedOptimizerError,
+            OptimizerAlgorithmSlug,
+        )
+
+        try:
+            client = HostedOptimizerClient(
+                api_key="",
+                register_usage=None,
+                require_api_key=False,
+            )
+            client.register_usage_complete(
+                algorithm=OptimizerAlgorithmSlug.GEPA,
+                status=status,
+                models=self._usage_registration_models(),
+            )
+        except HostedOptimizerError:
+            return
+
+    def _usage_registration_models(self) -> list[dict[str, str]]:
+        models: list[dict[str, str]] = []
+        if self.proposer.model:
+            models.append(
+                {
+                    "role": "proposer",
+                    "provider": self.proposer.provider,
+                    "model": self.proposer.model,
+                }
+            )
+        if self.policy is not None:
+            models.append(
+                {
+                    "role": "policy",
+                    "provider": self.policy.provider,
+                    "model": self.policy.model,
+                }
+            )
+        return models
 
     def _preflight_container_capabilities(self) -> None:
         metadata = ContainerMetadataPayload.model_validate(

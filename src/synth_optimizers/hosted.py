@@ -323,12 +323,18 @@ class HostedOptimizerClient:
                 "container_pool and container_tunnel are mutually exclusive"
             )
         usage_registration_enabled = _usage_registration_enabled_from_toml(config_toml)
+        usage_registration_models: list[dict[str, str]] = []
+        try:
+            usage_registration_models = _usage_registration_models_from_config(tomllib.loads(config_toml))
+        except tomllib.TOMLDecodeError:
+            usage_registration_models = []
         if container_tunnel is not None:
             try:
                 config_json = tomllib.loads(config_toml)
             except tomllib.TOMLDecodeError as exc:
                 raise HostedOptimizerError(f"invalid GEPA config_toml: {exc}") from exc
             usage_registration_enabled = _usage_registration_enabled_from_config(config_json)
+            usage_registration_models = _usage_registration_models_from_config(config_json)
             config_json = _with_tunnel_container(config_json, container_tunnel)
             payload: dict[str, Any] = {
                 "algorithm": OptimizerAlgorithmSlug.GEPA.value,
@@ -349,7 +355,10 @@ class HostedOptimizerClient:
         response = self._json_request("POST", "/api/v1/optimizers/runs", payload)
         submit_response = OptimizerRunSubmitResponse.from_payload(response)
         if usage_registration_enabled:
-            self.register_usage_submit(algorithm=OptimizerAlgorithmSlug.GEPA)
+            self.register_usage_submit(
+                algorithm=OptimizerAlgorithmSlug.GEPA,
+                models=usage_registration_models,
+            )
         return submit_response
 
     def submit_gepa_tunnel_toml(
@@ -583,6 +592,7 @@ class HostedOptimizerClient:
             )
         config_json = _config_to_json(config)
         usage_registration_enabled = _usage_registration_enabled_from_config(config_json)
+        usage_registration_models = _usage_registration_models_from_config(config_json)
         if container_tunnel is not None:
             config_json = _with_tunnel_container(config_json, container_tunnel)
         payload: dict[str, Any] = {
@@ -600,13 +610,14 @@ class HostedOptimizerClient:
         response = self._json_request("POST", "/api/v1/optimizers/runs", payload)
         submit_response = OptimizerRunSubmitResponse.from_payload(response)
         if usage_registration_enabled:
-            self.register_usage_submit(algorithm=algorithm)
+            self.register_usage_submit(algorithm=algorithm, models=usage_registration_models)
         return submit_response
 
     def register_usage_submit(
         self,
         *,
         algorithm: OptimizerAlgorithmSlug,
+        models: Sequence[Mapping[str, str]] | None = None,
     ) -> None:
         if not self.register_usage:
             return
@@ -619,6 +630,9 @@ class HostedOptimizerClient:
             "internal": _usage_registration_internal(),
             "install_id": _usage_install_id(),
         }
+        usage_models = _sanitize_usage_registration_models(models)
+        if usage_models:
+            payload["models"] = usage_models
         try:
             self._json_request(
                 "POST",
@@ -637,6 +651,7 @@ class HostedOptimizerClient:
         algorithm: OptimizerAlgorithmSlug,
         status: str,
         uplift: float | None = None,
+        models: Sequence[Mapping[str, str]] | None = None,
     ) -> None:
         """Fire a run-completion ping: terminal status + uplift number (if present).
         Anonymous and best-effort, like the submit ping; never raises."""
@@ -654,6 +669,9 @@ class HostedOptimizerClient:
         }
         if uplift is not None:
             payload["uplift"] = uplift
+        usage_models = _sanitize_usage_registration_models(models)
+        if usage_models:
+            payload["models"] = usage_models
         try:
             self._json_request(
                 "POST",
@@ -917,6 +935,68 @@ def _usage_registration_enabled_from_config(config_json: Mapping[str, Any]) -> b
     if isinstance(raw_enabled, str):
         return _env_flag(raw_enabled)
     return True
+
+
+def _usage_registration_models_from_config(config_json: Mapping[str, Any]) -> list[dict[str, str]]:
+    models: list[Mapping[str, str]] = []
+    policy = config_json.get("policy")
+    if isinstance(policy, Mapping):
+        models.append(
+            {
+                "role": "policy",
+                "provider": str(policy.get("provider") or ""),
+                "model": str(policy.get("model") or ""),
+            }
+        )
+    proposer = config_json.get("proposer")
+    if isinstance(proposer, Mapping):
+        models.append(
+            {
+                "role": "proposer",
+                "provider": str(proposer.get("provider") or ""),
+                "model": str(proposer.get("model") or ""),
+            }
+        )
+    proposers = config_json.get("proposers")
+    if isinstance(proposers, Mapping):
+        defaults = proposers.get("defaults")
+        default_provider = str(defaults.get("provider") or "") if isinstance(defaults, Mapping) else ""
+        default_model = str(defaults.get("model") or "") if isinstance(defaults, Mapping) else ""
+        for role, raw in proposers.items():
+            if role == "defaults" or not isinstance(raw, Mapping):
+                continue
+            models.append(
+                {
+                    "role": str(raw.get("role") or role),
+                    "provider": str(raw.get("provider") or default_provider),
+                    "model": str(raw.get("model") or default_model),
+                }
+            )
+    return _sanitize_usage_registration_models(models)
+
+
+def _sanitize_usage_registration_models(
+    models: Sequence[Mapping[str, str]] | None,
+) -> list[dict[str, str]]:
+    sanitized: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for raw in list(models or [])[:16]:
+        model = str(raw.get("model") or "").strip()[:160]
+        if not model:
+            continue
+        provider = str(raw.get("provider") or "").strip()[:80]
+        role = str(raw.get("role") or "").strip()[:64]
+        key = (role, provider, model)
+        if key in seen:
+            continue
+        seen.add(key)
+        entry = {"model": model}
+        if provider:
+            entry["provider"] = provider
+        if role:
+            entry["role"] = role
+        sanitized.append(entry)
+    return sanitized
 
 
 def _package_version() -> str | None:

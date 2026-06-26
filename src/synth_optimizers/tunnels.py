@@ -453,8 +453,7 @@ def _require_managed_localhost_target(
 ) -> None:
     if target.host not in {"127.0.0.1", "localhost"}:
         raise TunnelError(
-            f"{provider.value} managed leases require a localhost target; "
-            f"got {target.host!r}"
+            f"{provider.value} managed leases require a localhost target; got {target.host!r}"
         )
 
 
@@ -675,8 +674,7 @@ class _SynthTunnelAgent:
             if self._lease_id not in {str(item) for item in accepted}:
                 rejected = ", ".join(str(item) for item in payload.get("rejected_leases") or [])
                 raise TunnelError(
-                    "SynthTunnel agent attach was rejected"
-                    + (f": {rejected}" if rejected else "")
+                    "SynthTunnel agent attach was rejected" + (f": {rejected}" if rejected else "")
                 )
             self._ready.set()
             return
@@ -924,9 +922,7 @@ def _required_binary(name: str, provider: TunnelProvider) -> str:
     binary = shutil.which(name)
     if binary:
         return binary
-    raise TunnelError(
-        f"{provider.value} tunnel provider requires the {name!r} binary in PATH"
-    )
+    raise TunnelError(f"{provider.value} tunnel provider requires the {name!r} binary in PATH")
 
 
 def _start_cloudflared(binary: str, tunnel_token: str) -> subprocess.Popen[str]:
@@ -969,13 +965,12 @@ def _connect_websocket(url: str, *, headers: Mapping[str, str]) -> Any:
     try:
         import websocket
     except ImportError as exc:
-        raise TunnelError(
-            "synth_tunnel provider requires the 'websocket-client' package"
-        ) from exc
+        raise TunnelError("synth_tunnel provider requires the 'websocket-client' package") from exc
     ws = websocket.WebSocket()
     header_lines = [f"{key}: {value}" for key, value in headers.items()]
     try:
         ws.connect(url, header=header_lines, timeout=10)
+        ws.settimeout(None)
     except Exception:
         try:
             ws.close()

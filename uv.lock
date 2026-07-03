@@ -1512,7 +1512,7 @@ dev = [
 
 [[package]]
 name = "synth-optimizers"
-version = "0.2.6.dev20260626"
+version = "0.2.6.dev20260703"
 source = { editable = "." }
 dependencies = [
     { name = "pydantic" },

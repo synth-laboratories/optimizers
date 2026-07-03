@@ -1,5 +1,9 @@
 # synth-optimizers changelog
 
+## 2026-07-03
+
+* Prepared `0.2.6.dev20260703` for the Stack hosted optimizer path (supersedes the unpublished `0.2.6.dev20260702` prep): confirms `gepa submit` / `gepa watch` and the hosted GELO `startup`, `materialize`, `submit`, `watch`, and `console` commands ship in the public CLI, and picks up the hosted GELO SynthTunnel keep-open fix plus optimizer model usage metadata registration from `main`.
+
 ## 2026-06-26
 
 * Prepared `0.2.6.dev20260626` for the GELO 72-hour promo relaunch: added public `craftax_gamebench_rust_smoke` and `rogue_gamebench_rust_smoke` presets, refreshed the bundled hosted GELO docs, and updated the agent skill with the June 26 promo terms and GameBench Rust tunnel path.

@@ -188,6 +188,21 @@ class GeloEngineSection:
     auto_aux_hill_climb_calls_per_round: int | None = None
     theme_eval_checkpoints: int | None = None
     agent_turn_message_stall_seconds: float | None = None
+    jesterky_workflow: GeloJesterkyWorkflowSection | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class GeloJesterkyWorkflowSection:
+    """Per-run toggle for jesterky trace annotate inside GELO/goex."""
+
+    enabled: bool = False
+    spec: str = "examples/gelo_trace_annotate.json"
+    command: str = "jesterky"
+    actor: str = "codex"
+    model: str | None = None
+    concurrency: int = 4
+    timeout_seconds: int = 600
+    fail_closed: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -1082,6 +1097,8 @@ def _structured_from_flat(flat: Mapping[str, Any]) -> dict[str, Any]:
             value = flat[key]
             if key == "data_miner_cadence" and isinstance(value, int):
                 value = "every_tick" if value <= 0 else "after_full_rollout_phase"
+            if key == "jesterky_workflow":
+                value = _jesterky_workflow_from_value(value)
             go_ex[key] = value
     base_prompt = flat.get("base_prompt")
     if base_prompt is not None and "base_react_system_prompt" not in go_ex:
@@ -1359,6 +1376,28 @@ def _validate_materialized_config(config: Mapping[str, Any]) -> None:
         raise GeloMaterializeError("GELO config requires go_ex.max_rollouts > 0")
     if int(go_ex.get("proposer_rounds") or 0) <= 0:
         raise GeloMaterializeError("GELO config requires go_ex.proposer_rounds > 0")
+    raw_jesterky = go_ex.get("jesterky_workflow")
+    if raw_jesterky is not None:
+        if not isinstance(raw_jesterky, Mapping):
+            raise GeloMaterializeError("GELO config go_ex.jesterky_workflow must be an object")
+        if bool(raw_jesterky.get("enabled")):
+            actor = str(raw_jesterky.get("actor") or "").strip()
+            if actor not in {"fake", "codex"}:
+                raise GeloMaterializeError(
+                    "GELO config go_ex.jesterky_workflow.actor must be fake or codex when enabled"
+                )
+            if not str(raw_jesterky.get("spec") or "").strip():
+                raise GeloMaterializeError(
+                    "GELO config go_ex.jesterky_workflow.spec must be non-empty when enabled"
+                )
+            if int(raw_jesterky.get("concurrency") or 0) <= 0:
+                raise GeloMaterializeError(
+                    "GELO config go_ex.jesterky_workflow.concurrency must be > 0 when enabled"
+                )
+            if int(raw_jesterky.get("timeout_seconds") or 0) <= 0:
+                raise GeloMaterializeError(
+                    "GELO config go_ex.jesterky_workflow.timeout_seconds must be > 0 when enabled"
+                )
     _validate_plugin_lanes(config)
     proposers = _mapping(config.get("proposers"))
     for role_name, role_config in proposers.items():
@@ -1369,6 +1408,24 @@ def _validate_materialized_config(config: Mapping[str, Any]) -> None:
             raise GeloMaterializeError(
                 f"GELO proposer {role_name} backend {backend!r} is retired; use 'codex_app_server'"
             )
+
+
+def _jesterky_workflow_from_value(value: Any) -> dict[str, Any]:
+    if isinstance(value, GeloJesterkyWorkflowSection):
+        return _clean_config_value(value)
+    if not isinstance(value, Mapping):
+        raise GeloMaterializeError("go_ex.jesterky_workflow must be an object")
+    section = GeloJesterkyWorkflowSection(
+        enabled=bool(value.get("enabled", False)),
+        spec=str(value.get("spec") or "examples/gelo_trace_annotate.json"),
+        command=str(value.get("command") or "jesterky"),
+        actor=str(value.get("actor") or "codex"),
+        model=_text_or_none(value.get("model")),
+        concurrency=int(value.get("concurrency") or 4),
+        timeout_seconds=int(value.get("timeout_seconds") or 600),
+        fail_closed=bool(value.get("fail_closed", True)),
+    )
+    return _clean_config_value(section)
 
 
 def _clean_config_value(value: Any) -> Any:

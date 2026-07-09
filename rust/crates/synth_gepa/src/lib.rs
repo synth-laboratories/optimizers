@@ -44,6 +44,7 @@ use synth_optimizer_platform::{
 };
 
 mod codex_app_server;
+mod jesterky_workflow;
 mod machines;
 pub mod pipeline;
 pub mod planner;
@@ -13071,6 +13072,14 @@ fn finalize_completed_gepa_run(
             "stopped_by".to_string(),
             stopped_by_value(&context.config, state),
         );
+        result_object.insert(
+            "jesterky_workflow".to_string(),
+            json!({
+                "enabled": context.config.jesterky_workflow.enabled,
+                "config": &context.config.jesterky_workflow,
+                "receipts": load_jesterky_workflow_receipts(&context.paths.run_dir),
+            }),
+        );
     }
     context
         .workspace
@@ -15588,7 +15597,17 @@ fn execute_gepa_monolithic_with_options(
         usage: usage_value,
         state_history,
     };
-    let result_value = serde_json::to_value(&result)?;
+    let mut result_value = serde_json::to_value(&result)?;
+    if let Some(result_object) = result_value.as_object_mut() {
+        result_object.insert(
+            "jesterky_workflow".to_string(),
+            json!({
+                "enabled": config.jesterky_workflow.enabled,
+                "config": &config.jesterky_workflow,
+                "receipts": load_jesterky_workflow_receipts(&paths.run_dir),
+            }),
+        );
+    }
     workspace.record_artifact_refs(&config.run.run_id, &result.artifact_refs)?;
     workspace.record_cache_profile(&config.run.run_id, &cache_profile_record, &cache_access_log)?;
     workspace.record_usage_ledger(&config.run.run_id, &usage_ledger)?;
@@ -15642,6 +15661,22 @@ fn execute_gepa_monolithic_with_options(
         "GEPA run completed",
     )?;
     Ok(result)
+}
+
+fn load_jesterky_workflow_receipts(run_dir: &Path) -> Vec<Value> {
+    let path = run_dir.join(crate::jesterky_workflow::JESTERKY_RECEIPTS_JSONL);
+    let Ok(text) = fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() {
+                return None;
+            }
+            serde_json::from_str::<Value>(line).ok()
+        })
+        .collect()
 }
 
 fn load_rows(

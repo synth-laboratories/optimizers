@@ -475,6 +475,31 @@ class CandidateTomlSection(BaseModel):
     target_modules: list[str] = Field(default_factory=list)
 
 
+class JesterkyWorkflowTomlSection(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = False
+    spec: str = "examples/gepa_trace_annotate.json"
+    command: str = "jesterky"
+    actor: str = "codex"
+    model: str | None = None
+    concurrency: int = 4
+    timeout_seconds: int = 600
+    fail_closed: bool = True
+
+    def to_domain(self) -> "JesterkyWorkflowConfig":
+        return JesterkyWorkflowConfig(
+            enabled=bool(self.enabled),
+            spec=str(self.spec or "examples/gepa_trace_annotate.json"),
+            command=str(self.command or "jesterky"),
+            actor=str(self.actor or "codex"),
+            model=self.model,
+            concurrency=int(self.concurrency),
+            timeout_seconds=int(self.timeout_seconds),
+            fail_closed=bool(self.fail_closed),
+        )
+
+
 class GepaTomlDocument(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -484,6 +509,9 @@ class GepaTomlDocument(BaseModel):
     proposer: ProposerTomlSection = Field(default_factory=ProposerTomlSection)
     policy: PolicyTomlSection = Field(default_factory=PolicyTomlSection)
     gepa: GepaTomlSection = Field(default_factory=GepaTomlSection)
+    jesterky_workflow: JesterkyWorkflowTomlSection = Field(
+        default_factory=JesterkyWorkflowTomlSection
+    )
     cache: CacheTomlSection = Field(default_factory=CacheTomlSection)
     usage_registration: UsageRegistrationTomlSection = Field(
         default_factory=UsageRegistrationTomlSection
@@ -508,6 +536,7 @@ class GepaTomlDocument(BaseModel):
             budgets=self.gepa.gepa_budget_config(),
             pipeline=self.gepa.pipeline_config(),
             budget=self.gepa.budget_config(),
+            jesterky_workflow=self.jesterky_workflow.to_domain(),
             cache=self.cache.to_domain(),
             usage_registration=self.usage_registration.to_domain(),
             target_modules=list(self.candidate.target_modules),
@@ -1106,6 +1135,54 @@ class CacheConfig:
 
 
 @dataclass(slots=True)
+class JesterkyWorkflowConfig:
+    """Per-run toggle for jesterky trace annotate inside GEPA."""
+
+    enabled: bool = False
+    spec: str = "examples/gepa_trace_annotate.json"
+    command: str = "jesterky"
+    actor: str = "codex"
+    model: str | None = None
+    concurrency: int = 4
+    timeout_seconds: int = 600
+    fail_closed: bool = True
+
+    def to_toml(self) -> dict[str, Any]:
+        return _drop_none(
+            {
+                "enabled": bool(self.enabled),
+                "spec": str(self.spec),
+                "command": str(self.command),
+                "actor": str(self.actor),
+                "model": self.model,
+                "concurrency": int(self.concurrency),
+                "timeout_seconds": int(self.timeout_seconds),
+                "fail_closed": bool(self.fail_closed),
+            }
+        )
+
+    def validate(self) -> None:
+        if not self.enabled:
+            return
+        if not str(self.spec or "").strip():
+            raise ValueError("jesterky_workflow.spec must be non-empty when enabled")
+        if not str(self.command or "").strip():
+            raise ValueError("jesterky_workflow.command must be non-empty when enabled")
+        actor = str(self.actor or "").strip()
+        if actor not in {"fake", "codex"}:
+            raise ValueError(
+                "jesterky_workflow.actor must be fake or codex when enabled, "
+                f"got {self.actor!r}"
+            )
+        if int(self.concurrency) <= 0:
+            raise ValueError("jesterky_workflow.concurrency must be > 0 when enabled")
+        if int(self.timeout_seconds) <= 0:
+            raise ValueError(
+                "jesterky_workflow.timeout_seconds must be > 0 when enabled"
+            )
+
+
+@dataclass(slots=True)
 class OutputConfig:
     output_dir: str | Path | None = None
 
@@ -1130,6 +1207,9 @@ class GepaConfig:
     budgets: GepaBudgetConfig = field(default_factory=GepaBudgetConfig)
     pipeline: GepaPipeline = field(default_factory=GepaPipeline)
     budget: BudgetConfig = field(default_factory=BudgetConfig)
+    jesterky_workflow: JesterkyWorkflowConfig = field(
+        default_factory=JesterkyWorkflowConfig
+    )
     cache: CacheConfig = field(default_factory=CacheConfig)
     usage_registration: UsageRegistrationConfig = field(
         default_factory=UsageRegistrationConfig
@@ -1161,6 +1241,7 @@ class GepaConfig:
         self.task_pools.validate_against_taskset(
             self.taskset.train_ids, self.taskset.heldout_ids
         )
+        self.jesterky_workflow.validate()
         if self.policy is not None:
             if not self.target_modules:
                 raise ValueError(
@@ -1224,6 +1305,7 @@ class GepaConfig:
         _apply_default_budget_estimates(gepa)
         gepa["task_pools"] = self.task_pools.to_toml()
         payload["gepa"] = gepa
+        payload["jesterky_workflow"] = self.jesterky_workflow.to_toml()
         payload["cache"] = self.cache.to_toml()
         return payload
 

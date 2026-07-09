@@ -17,6 +17,7 @@ pub mod failures;
 pub mod fsm;
 pub mod http;
 pub mod invariants;
+pub mod jesterky;
 pub mod jobs;
 pub mod levers;
 pub mod limit_engine;
@@ -66,9 +67,9 @@ pub use config::{
     GepaAdaptiveStageWorkersConfig, GepaBatchSamplerConfig, GepaCandidateSelectorConfig,
     GepaConfig, GepaObjectiveAcceptanceConfig, GepaPipelineConfig, GepaPipelineMode,
     GepaPipelineWorkers, GepaSpeculativeCompletionConfig, GepaStalenessPolicy, GepaTaskPoolsConfig,
-    PolicyConfig, ProposerAuthLaunchMode, ProposerConfig, ProposerDaytonaConfig,
-    ProposerDockerConfig, ProposerPromptConfig, RunConfig, SynthOptimizerConfig, TasksetConfig,
-    CHATGPT_PROPOSER_MODELS,
+    JesterkyWorkflowConfig, PolicyConfig, ProposerAuthLaunchMode, ProposerConfig,
+    ProposerDaytonaConfig, ProposerDockerConfig, ProposerPromptConfig, RunConfig,
+    SynthOptimizerConfig, TasksetConfig, CHATGPT_PROPOSER_MODELS,
 };
 pub use configured_limits::{
     ConfiguredGepaRunLimits, GepaRuntimeEffectBudgetEstimates, GEPA_LIMIT_STOP_POLICY,
@@ -105,6 +106,10 @@ pub use fsm::{
 pub use http::ContainerClient;
 pub use invariants::{
     CountMismatchInput, InvariantReport, InvariantViolation, InvariantViolationInput,
+};
+pub use jesterky::{
+    jesterky_workspace_read_model, looks_like_jesterky_manifest, read_jesterky_manifest,
+    JESTERKY_WORKSPACE_READ_MODEL_SCHEMA_VERSION,
 };
 pub use jobs::{OptimizerJob, OptimizerJobKind, OptimizerJobStatus, RetryPolicy};
 pub use levers::{LeverBundle, LeverKind, LeverManifest, LeverSpec};

@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import time
+import tomllib
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -30,8 +31,10 @@ from .hosted import (
     ContainerPoolTarget,
     HostedOptimizerClient,
     HostedOptimizerError,
+    validate_online_reflexion_evidence_notes,
 )
 from .tunnels import TunnelError, TunnelProvider
+from .victorialogs import project_gepa_run_artifacts, project_gepa_run_started
 
 
 def _duration_seconds(value: str | None) -> float | None:
@@ -357,6 +360,22 @@ def _require_tunnel_follow(args: argparse.Namespace) -> None:
         )
 
 
+def _add_gelo_jesterky_workflow_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--jesterky-workflow",
+        dest="jesterky_workflow",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable/disable go_ex.jesterky_workflow for this GELO run.",
+    )
+    parser.add_argument("--jesterky-workflow-spec", default=None)
+    parser.add_argument("--jesterky-workflow-command", default=None)
+    parser.add_argument("--jesterky-workflow-actor", choices=("fake", "codex"), default=None)
+    parser.add_argument("--jesterky-workflow-model", default=None)
+    parser.add_argument("--jesterky-workflow-concurrency", type=int, default=None)
+    parser.add_argument("--jesterky-workflow-timeout-seconds", type=int, default=None)
+
+
 def _gelo_preset_overrides(args: argparse.Namespace) -> dict[str, Any]:
     overrides: dict[str, Any] = {}
     for attr in (
@@ -372,6 +391,46 @@ def _gelo_preset_overrides(args: argparse.Namespace) -> dict[str, Any]:
     return overrides
 
 
+def _apply_gelo_jesterky_workflow_overrides(
+    config: dict[str, Any], args: argparse.Namespace
+) -> dict[str, Any]:
+    """Merge CLI jesterky-workflow flags into a materialized GELO config."""
+    enabled = getattr(args, "jesterky_workflow", None)
+    if enabled is None and not any(
+        getattr(args, attr, None) is not None
+        for attr in (
+            "jesterky_workflow_spec",
+            "jesterky_workflow_command",
+            "jesterky_workflow_actor",
+            "jesterky_workflow_model",
+            "jesterky_workflow_concurrency",
+            "jesterky_workflow_timeout_seconds",
+        )
+    ):
+        return config
+    go_ex = dict(config.get("go_ex") or {})
+    workflow = dict(go_ex.get("jesterky_workflow") or {})
+    if enabled is not None:
+        workflow["enabled"] = bool(enabled)
+    for cli_attr, key in (
+        ("jesterky_workflow_spec", "spec"),
+        ("jesterky_workflow_command", "command"),
+        ("jesterky_workflow_actor", "actor"),
+        ("jesterky_workflow_model", "model"),
+        ("jesterky_workflow_concurrency", "concurrency"),
+        ("jesterky_workflow_timeout_seconds", "timeout_seconds"),
+    ):
+        value = getattr(args, cli_attr, None)
+        if value is not None:
+            workflow[key] = value
+    if "fail_closed" not in workflow:
+        workflow["fail_closed"] = True
+    go_ex["jesterky_workflow"] = workflow
+    out = dict(config)
+    out["go_ex"] = go_ex
+    return out
+
+
 def _gelo_materialized_config(
     args: argparse.Namespace,
     *,
@@ -384,7 +443,7 @@ def _gelo_materialized_config(
     container_pool = _container_pool_from_args(args)
     if getattr(args, "preset", None):
         try:
-            return GeloPreset.from_name(args.preset, **_gelo_preset_overrides(args)).materialize(
+            config = GeloPreset.from_name(args.preset, **_gelo_preset_overrides(args)).materialize(
                 container_url=container_url,
                 container_pool=container_pool,
                 container_tunnel=container_tunnel,
@@ -392,9 +451,10 @@ def _gelo_materialized_config(
             )
         except GeloMaterializeError as exc:
             raise SystemExit(str(exc)) from exc
+        return _apply_gelo_jesterky_workflow_overrides(config, args)
     if getattr(args, "toml", None):
         try:
-            return GeloMaterializer.from_paths(
+            config = GeloMaterializer.from_paths(
                 args.toml,
                 getattr(args, "overlay", None),
             ).materialize(
@@ -405,9 +465,10 @@ def _gelo_materialized_config(
             )
         except GeloMaterializeError as exc:
             raise SystemExit(str(exc)) from exc
+        return _apply_gelo_jesterky_workflow_overrides(config, args)
     if getattr(args, "config", None):
         try:
-            return GeloMaterializer(_json_file_object(args.config)).materialize(
+            config = GeloMaterializer(_json_file_object(args.config)).materialize(
                 container_url=container_url,
                 container_pool=container_pool,
                 container_tunnel=container_tunnel,
@@ -415,6 +476,7 @@ def _gelo_materialized_config(
             )
         except GeloMaterializeError as exc:
             raise SystemExit(str(exc)) from exc
+        return _apply_gelo_jesterky_workflow_overrides(config, args)
     raise SystemExit("one of --config, --preset, or --toml is required")
 
 
@@ -440,6 +502,9 @@ def _startup_catalog_payload(catalog: Any) -> dict[str, Any]:
             for algorithm, config in catalog.billing_feature_ids.items()
         },
         "billing_feature_ids_configured": dict(catalog.billing_feature_ids_configured),
+        "online_reflexion_release_evidence": dict(
+            catalog.online_reflexion_release_evidence
+        ),
     }
 
 
@@ -457,7 +522,9 @@ def _print_hosted_startup(catalog: Any, json_output: bool) -> None:
     print(
         "billing_feature_ids_configured "
         f"gepa={configured.get('gepa')} "
-        f"go_ex={configured.get('go_ex')}"
+        f"go_ex={configured.get('go_ex')} "
+        f"mapo={configured.get('mapo')} "
+        f"online_reflexion={configured.get('online_reflexion')}"
     )
     for entry in payload["available_algorithms"]:
         candidates = ",".join(entry["candidate_kinds"]) or "-"
@@ -468,6 +535,121 @@ def _print_hosted_startup(catalog: Any, json_output: bool) -> None:
             f"submit_supported={entry['submit_supported']} "
             f"candidate_kinds={candidates}"
         )
+    release_evidence = payload["online_reflexion_release_evidence"]
+    if release_evidence:
+        required_lanes = release_evidence.get("required_lanes")
+        release_checks = release_evidence.get("release_gate_required_checks")
+        standard_artifacts = release_evidence.get("standard_artifacts")
+        lane_count = (
+            len(required_lanes)
+            if isinstance(required_lanes, Sequence)
+            and not isinstance(required_lanes, str | bytes)
+            else 0
+        )
+        check_count = (
+            len(release_checks)
+            if isinstance(release_checks, Sequence)
+            and not isinstance(release_checks, str | bytes)
+            else 0
+        )
+        artifact_count = (
+            len(standard_artifacts) if isinstance(standard_artifacts, Mapping) else 0
+        )
+        print(
+            "online_reflexion_release_evidence "
+            f"schema={release_evidence.get('schema_version') or '-'} "
+            f"release_gate={release_evidence.get('release_gate_key') or '-'} "
+            f"lanes={lane_count} "
+            f"release_checks={check_count} "
+            f"standard_artifacts={artifact_count} "
+            "public_copy_requires_owner_approval="
+            f"{release_evidence.get('public_copy_requires_owner_approval')} "
+            "effortbench_chinese_wall="
+            f"{release_evidence.get('effortbench_cookbook_chinese_wall') or '-'}"
+        )
+    else:
+        print("online_reflexion_release_evidence missing")
+
+
+def _startup_sequence(value: Any) -> Sequence[Any]:
+    if isinstance(value, Sequence) and not isinstance(value, str | bytes):
+        return value
+    return ()
+
+
+def _online_reflexion_startup_preflight_failures(
+    payload: Mapping[str, Any], args: argparse.Namespace
+) -> list[str]:
+    require_algorithm = bool(getattr(args, "require_online_reflexion", False))
+    require_metadata = bool(
+        getattr(args, "require_online_reflexion_release_metadata", False)
+    )
+    if not require_algorithm and not require_metadata:
+        return []
+
+    failures: list[str] = []
+    algorithms = _startup_sequence(payload.get("available_algorithms"))
+    online_reflexion_available = any(
+        isinstance(entry, Mapping)
+        and entry.get("algorithm") == "online-reflexion"
+        and entry.get("status") == "available"
+        and entry.get("submit_supported") is True
+        for entry in algorithms
+    )
+    if (require_algorithm or require_metadata) and not online_reflexion_available:
+        failures.append("online-reflexion algorithm is not advertised as submit-supported")
+
+    if not require_metadata:
+        return failures
+
+    release_evidence = payload.get("online_reflexion_release_evidence")
+    if not isinstance(release_evidence, Mapping) or not release_evidence:
+        failures.append("online_reflexion_release_evidence metadata is not advertised")
+        return failures
+
+    if (
+        release_evidence.get("schema_version")
+        != "online_reflexion_release_evidence.v1"
+    ):
+        failures.append("online_reflexion_release_evidence schema_version is not v1")
+    if release_evidence.get("release_gate_key") != "release_blog_growth":
+        failures.append("online_reflexion release_gate_key is not release_blog_growth")
+
+    lane_keys = {
+        str(item.get("key"))
+        for item in _startup_sequence(release_evidence.get("required_lanes"))
+        if isinstance(item, Mapping) and item.get("key")
+    }
+    for key in (
+        "craftax_rotated_121_125",
+        "alfworld_6x6_x3",
+        "ebr_first_scale_compare",
+        "harvey_lab_pilot",
+        "hosted_staging_smoke",
+    ):
+        if key not in lane_keys:
+            failures.append(f"online_reflexion release lane missing: {key}")
+
+    release_checks = _startup_sequence(
+        release_evidence.get("release_gate_required_checks")
+    )
+    if not release_checks:
+        failures.append("online_reflexion release_gate_required_checks is empty")
+
+    standard_artifacts = release_evidence.get("standard_artifacts")
+    if not isinstance(standard_artifacts, Mapping):
+        failures.append("online_reflexion standard_artifacts is not advertised")
+    else:
+        for key in ("events", "exposures", "lever_effects", "summary"):
+            if key not in standard_artifacts:
+                failures.append(f"online_reflexion standard artifact missing: {key}")
+
+    if release_evidence.get("public_copy_requires_owner_approval") is not True:
+        failures.append("online_reflexion owner approval requirement is not advertised")
+    if release_evidence.get("effortbench_cookbook_chinese_wall") != "grader_only":
+        failures.append("online_reflexion EffortBench Chinese-wall marker is not grader_only")
+
+    return failures
 
 
 def _gelo_startup(args: argparse.Namespace) -> int:
@@ -476,6 +658,13 @@ def _gelo_startup(args: argparse.Namespace) -> int:
     except HostedOptimizerError as exc:
         raise SystemExit(str(exc)) from exc
     _print_hosted_startup(catalog, args.json)
+    failures = _online_reflexion_startup_preflight_failures(
+        _startup_catalog_payload(catalog), args
+    )
+    if failures:
+        for failure in failures:
+            print(f"startup preflight failed: {failure}", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -555,6 +744,27 @@ def _json_file_object(path: str) -> dict:
     return data
 
 
+def _config_file_object(path: str) -> dict:
+    p = Path(path)
+    try:
+        text = p.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise SystemExit(f"cannot read {path}: {exc}") from exc
+    if p.suffix == ".toml":
+        try:
+            data = tomllib.loads(text)
+        except tomllib.TOMLDecodeError as exc:
+            raise SystemExit(f"{path} is not valid TOML: {exc}") from exc
+    else:
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"{path} is not valid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise SystemExit(f"{path} must contain an object")
+    return data
+
+
 def _submit_hosted_gelo(args: argparse.Namespace) -> int:
     tunnel: Any | None = None
     try:
@@ -616,6 +826,248 @@ def _submit_hosted_gelo(args: argparse.Namespace) -> int:
         raise SystemExit(str(exc)) from exc
     finally:
         _close_tunnel_quietly(tunnel)
+
+
+def _submit_hosted_mapo(args: argparse.Namespace) -> int:
+    tunnel: Any | None = None
+    try:
+        _validate_container_args(args)
+        _require_tunnel_follow(args)
+        client = _hosted_client(args)
+        container_pool = _container_pool_from_args(args)
+        if args.tunnel_url:
+            tunnel = client.open_tunnel(
+                args.tunnel_url,
+                provider=_tunnel_provider_from_args(args),
+                requested_ttl_seconds=_tunnel_ttl_seconds_from_args(args),
+                metadata={"optimizer": "mapo", "run_id": args.run_id or ""},
+            )
+            submit = client.submit_mapo(
+                _config_file_object(args.config),
+                run_id=args.run_id,
+                idempotency_key=args.idempotency_key,
+                project_id=args.project_id,
+                container_tunnel=tunnel,
+                billing_mode=args.billing_mode,
+            )
+        else:
+            submit = client.submit_mapo(
+                _config_file_object(args.config),
+                run_id=args.run_id,
+                idempotency_key=args.idempotency_key,
+                project_id=args.project_id,
+                container_pool=container_pool,
+                billing_mode=args.billing_mode,
+            )
+        if args.json and not args.follow:
+            print(json.dumps(dict(submit.raw), indent=2, sort_keys=True))
+            return 0
+
+        print(f"submitted run_id={submit.run_id} status={submit.status.value}")
+        if submit.events_url:
+            print(f"events: {_api_endpoint(args.base_url, submit.events_url)}")
+
+        if args.follow:
+            for event in client.events(submit.run_id):
+                event_type = str(event.get("event_type") or "event")
+                status = str(event.get("status") or "")
+                print(f"event {event_type} status={status}")
+                if status in {"succeeded", "failed", "cancelled"}:
+                    break
+            final_record = client.get_run(submit.run_id)
+            if args.json:
+                print(json.dumps(dict(final_record.raw), indent=2, sort_keys=True))
+            else:
+                print(f"final status={final_record.status.value}")
+                if final_record.error:
+                    print(f"error: {final_record.error}")
+            if final_record.status.value == "failed":
+                return 1
+        return 0
+    except (HostedOptimizerError, TunnelError) as exc:
+        raise SystemExit(str(exc)) from exc
+    finally:
+        _close_tunnel_quietly(tunnel)
+
+
+def _submit_hosted_reflexion(args: argparse.Namespace) -> int:
+    try:
+        client = _hosted_client(args)
+        submit = client.submit_online_reflexion(
+            _config_file_object(args.config),
+            run_id=args.run_id,
+            idempotency_key=args.idempotency_key,
+            project_id=args.project_id,
+            container_pool=_container_pool_from_args(args),
+        )
+        if args.json and not args.follow:
+            print(json.dumps(dict(submit.raw), indent=2, sort_keys=True))
+            return 0
+
+        print(f"submitted run_id={submit.run_id} status={submit.status.value}")
+        if submit.events_url:
+            print(f"events: {_api_endpoint(args.base_url, submit.events_url)}")
+
+        if args.follow:
+            for event in client.events(submit.run_id):
+                event_type = str(event.get("event_type") or "event")
+                status = str(event.get("status") or "")
+                print(f"event {event_type} status={status}")
+                if status in {"succeeded", "failed", "cancelled"}:
+                    break
+            final_record = client.get_run(submit.run_id)
+            if args.json:
+                print(json.dumps(dict(final_record.raw), indent=2, sort_keys=True))
+            else:
+                print(f"final status={final_record.status.value}")
+                if final_record.error:
+                    print(f"error: {final_record.error}")
+            if final_record.status.value == "failed":
+                return 1
+        return 0
+    except HostedOptimizerError as exc:
+        raise SystemExit(str(exc)) from exc
+
+
+def _run_ids_from_args(args: argparse.Namespace) -> list[str] | None:
+    values: list[str] = []
+    for raw in getattr(args, "run_id", None) or []:
+        values.extend(item.strip() for item in str(raw).split(",") if item.strip())
+    for raw in getattr(args, "run_ids", None) or []:
+        values.extend(item.strip() for item in str(raw).split(",") if item.strip())
+    return values or None
+
+
+def _print_json_payload(payload: Mapping[str, Any], *, json_output: bool) -> None:
+    if json_output:
+        print(json.dumps(dict(payload), indent=2, sort_keys=True, default=str))
+        return
+    status = _text_field(payload.get("status"))
+    schema = _text_field(payload.get("schema_version"))
+    print(f"{schema} status={status}")
+    counts = payload.get("counts")
+    if isinstance(counts, Mapping):
+        print(f"counts {_compact_json(counts)}")
+    remaining = payload.get("remaining")
+    if isinstance(remaining, Sequence) and not isinstance(remaining, str | bytes):
+        for item in remaining:
+            print(f"remaining: {item}")
+
+
+def _write_json_payload(path: str | None, payload: Mapping[str, Any]) -> Path | None:
+    if not path:
+        return None
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(dict(payload), indent=2, sort_keys=True, default=str) + "\n",
+        encoding="utf-8",
+    )
+    return output_path
+
+
+def _online_reflexion_receipt(args: argparse.Namespace) -> int:
+    try:
+        payload = _hosted_client(args).online_reflexion_receipt(
+            args.run_id,
+            exposure_limit=args.exposure_limit,
+            outcome_limit=args.outcome_limit,
+        )
+    except HostedOptimizerError as exc:
+        raise SystemExit(str(exc)) from exc
+    if args.json:
+        print(json.dumps(dict(payload), indent=2, sort_keys=True, default=str))
+    else:
+        run = _as_mapping(payload.get("run"))
+        receipt = _as_mapping(payload.get("receipt"))
+        print(
+            f"run_id={_text_field(run.get('run_id'), args.run_id)} "
+            f"status={_text_field(run.get('status'))} "
+            f"layer_id={_text_field(receipt.get('layer_id'))}"
+        )
+        print(
+            f"artifacts={len(payload.get('artifacts') or [])} "
+            f"exposures={len(payload.get('exposures') or [])} "
+            f"outcomes={len(payload.get('outcomes') or [])}"
+        )
+    return 0
+
+
+def _online_reflexion_audit(args: argparse.Namespace) -> int:
+    try:
+        client = _hosted_client(args)
+        if getattr(args, "audit_run_id", None):
+            payload = client.online_reflexion_receipt_audit(
+                args.audit_run_id,
+                strict=args.strict,
+            )
+        else:
+            payload = client.online_reflexion_receipt_audits(
+                run_ids=_run_ids_from_args(args),
+                layer_id=args.layer_id,
+                project_id=args.project_id,
+                strict=args.strict,
+                limit=args.limit,
+            )
+    except HostedOptimizerError as exc:
+        raise SystemExit(str(exc)) from exc
+    _print_json_payload(payload, json_output=args.json)
+    return 0 if payload.get("status") == "pass" else 1
+
+
+def _json_arg_object(raw: str | None) -> dict[str, Any] | None:
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"--evidence-notes is not valid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise SystemExit("--evidence-notes must be a JSON object")
+    return payload
+
+
+def _json_file_arg_object(path: str | None) -> dict[str, Any] | None:
+    if not path:
+        return None
+    return _json_file_object(path)
+
+
+def _online_reflexion_evidence_packet(args: argparse.Namespace) -> int:
+    evidence_notes = _json_file_arg_object(args.evidence_notes_file)
+    inline_notes = _json_arg_object(args.evidence_notes)
+    if evidence_notes is not None and inline_notes is not None:
+        raise SystemExit("provide --evidence-notes or --evidence-notes-file, not both")
+    try:
+        payload = _hosted_client(args).online_reflexion_evidence_packet(
+            run_ids=_run_ids_from_args(args),
+            layer_id=args.layer_id,
+            project_id=args.project_id,
+            evidence_notes=evidence_notes or inline_notes,
+            blog_decision_owner=args.blog_decision_owner,
+            blog_approved_by_owner=args.blog_approved_by_owner,
+            include_receipt_summaries=not args.no_receipt_summaries,
+            limit=args.limit,
+        )
+    except HostedOptimizerError as exc:
+        raise SystemExit(str(exc)) from exc
+    output_path = _write_json_payload(args.out, payload)
+    _print_json_payload(payload, json_output=args.json)
+    if output_path is not None and not args.json:
+        print(f"evidence_packet_path: {output_path}")
+    return 0 if payload.get("status") == "ready" else 1
+
+
+def _online_reflexion_validate_evidence_notes(args: argparse.Namespace) -> int:
+    evidence_notes = _json_file_arg_object(args.evidence_notes_file)
+    inline_notes = _json_arg_object(args.evidence_notes)
+    if evidence_notes is not None and inline_notes is not None:
+        raise SystemExit("provide --evidence-notes or --evidence-notes-file, not both")
+    if evidence_notes is None and inline_notes is None:
+        raise SystemExit("provide --evidence-notes or --evidence-notes-file")
+    payload = validate_online_reflexion_evidence_notes(evidence_notes or inline_notes or {})
+    _print_json_payload(payload, json_output=args.json)
+    return 0 if payload.get("status") == "pass" else 1
 
 
 def _materialize_hosted_gelo(args: argparse.Namespace) -> int:
@@ -1071,6 +1523,7 @@ def build_parser() -> argparse.ArgumentParser:
     gelo_materialize.add_argument("--heldout-seed-count", type=int)
     gelo_materialize.add_argument("--max-rollouts", type=int)
     gelo_materialize.add_argument("--policy-model")
+    _add_gelo_jesterky_workflow_args(gelo_materialize)
     gelo_materialize.add_argument("-o", "--out", required=True)
     gelo_materialize.add_argument("--json", action="store_true")
 
@@ -1114,6 +1567,7 @@ def build_parser() -> argparse.ArgumentParser:
     gelo_submit.add_argument("--heldout-seed-count", type=int)
     gelo_submit.add_argument("--max-rollouts", type=int)
     gelo_submit.add_argument("--policy-model")
+    _add_gelo_jesterky_workflow_args(gelo_submit)
     gelo_submit.add_argument(
         "--billing-mode",
         choices=("promo", "paid"),
@@ -1143,6 +1597,287 @@ def build_parser() -> argparse.ArgumentParser:
     gelo_console.add_argument(
         "--docs-set", default="gelo", help="Bundled docs set to serve (default: gelo)."
     )
+
+    mapo = subcommands.add_parser("mapo")
+    mapo_subcommands = mapo.add_subparsers(dest="mapo_command", required=True)
+    mapo_startup = mapo_subcommands.add_parser("startup")
+    mapo_startup.add_argument(
+        "--base-url",
+        default=os.environ.get("SYNTH_BACKEND_URL", "https://api.usesynth.ai"),
+        help="Synth API base URL. Defaults to SYNTH_BACKEND_URL or https://api.usesynth.ai.",
+    )
+    mapo_startup.add_argument(
+        "--api-key-env",
+        default="SYNTH_API_KEY",
+        help="Environment variable containing the Synth API key.",
+    )
+    mapo_startup.add_argument("--timeout-seconds", type=float, default=120.0)
+    mapo_startup.add_argument("--json", action="store_true")
+
+    mapo_submit = mapo_subcommands.add_parser("submit")
+    mapo_submit.add_argument("--config", required=True, help="Path to MAPO TOML or JSON config.")
+    mapo_submit.add_argument(
+        "--base-url",
+        default=os.environ.get("SYNTH_BACKEND_URL", "https://api.usesynth.ai"),
+        help="Synth API base URL. Defaults to SYNTH_BACKEND_URL or https://api.usesynth.ai.",
+    )
+    mapo_submit.add_argument(
+        "--api-key-env",
+        default="SYNTH_API_KEY",
+        help="Environment variable containing the Synth API key.",
+    )
+    mapo_submit.add_argument("--run-id")
+    mapo_submit.add_argument("--idempotency-key")
+    mapo_submit.add_argument("--project-id")
+    mapo_submit.add_argument("--container-pool")
+    mapo_submit.add_argument("--container-task-id")
+    mapo_submit.add_argument("--tunnel-url")
+    mapo_submit.add_argument(
+        "--tunnel-provider",
+        choices=[provider.value for provider in TunnelProvider],
+        default=TunnelProvider.SYNTH_TUNNEL.value,
+        help="Tunnel provider for --tunnel-url. Defaults to synth_tunnel.",
+    )
+    mapo_submit.add_argument(
+        "--tunnel-ttl-seconds",
+        type=int,
+        default=86400,
+        help="Lease TTL for --tunnel-url, in seconds. Defaults to 86400.",
+    )
+    mapo_submit.add_argument(
+        "--billing-mode",
+        choices=("promo", "paid"),
+        default=None,
+        help="MAPO billing mode. Defaults to backend behavior.",
+    )
+    mapo_submit.add_argument("--timeout-seconds", type=float, default=120.0)
+    mapo_submit.add_argument(
+        "--disable-usage-registration",
+        action="store_true",
+        help="Do not send the best-effort package usage registration event.",
+    )
+    mapo_submit.add_argument("--follow", action="store_true")
+    mapo_submit.add_argument("--json", action="store_true")
+
+    mapo_watch = mapo_subcommands.add_parser("watch")
+    mapo_watch.add_argument("run_id")
+    mapo_watch.add_argument(
+        "--base-url",
+        default=os.environ.get("SYNTH_BACKEND_URL", "https://api.usesynth.ai"),
+        help="Synth API base URL. Defaults to SYNTH_BACKEND_URL or https://api.usesynth.ai.",
+    )
+    mapo_watch.add_argument(
+        "--api-key-env",
+        default="SYNTH_API_KEY",
+        help="Environment variable containing the Synth API key.",
+    )
+    mapo_watch.add_argument("--timeout-seconds", type=float, default=120.0)
+    mapo_watch.add_argument(
+        "--events",
+        action="store_true",
+        help="Tail lifecycle SSE events after the initial run snapshot.",
+    )
+    mapo_watch.add_argument(
+        "--algorithm-events",
+        action="store_true",
+        help="Tail normalized optimizer algorithm events after the initial run snapshot.",
+    )
+    mapo_watch.add_argument("--after-seq", type=int, default=0)
+    mapo_watch.add_argument("--limit", type=int, default=500)
+    mapo_watch.add_argument("--poll-seconds", type=float, default=2.0)
+    mapo_watch.add_argument("--once", action="store_true")
+    mapo_watch.add_argument("--json", action="store_true")
+
+    reflexion = subcommands.add_parser("reflexion")
+    reflexion_subcommands = reflexion.add_subparsers(dest="reflexion_command", required=True)
+    reflexion_startup = reflexion_subcommands.add_parser("startup")
+    reflexion_startup.add_argument(
+        "--base-url",
+        default=os.environ.get("SYNTH_BACKEND_URL", "https://api.usesynth.ai"),
+        help="Synth API base URL. Defaults to SYNTH_BACKEND_URL or https://api.usesynth.ai.",
+    )
+    reflexion_startup.add_argument(
+        "--api-key-env",
+        default="SYNTH_API_KEY",
+        help="Environment variable containing the Synth API key.",
+    )
+    reflexion_startup.add_argument("--timeout-seconds", type=float, default=120.0)
+    reflexion_startup.add_argument(
+        "--require-online-reflexion",
+        action="store_true",
+        help="Exit non-zero unless online-reflexion is advertised as submit-supported.",
+    )
+    reflexion_startup.add_argument(
+        "--require-online-reflexion-release-metadata",
+        action="store_true",
+        help=(
+            "Exit non-zero unless the startup catalog advertises the Online "
+            "Reflexion release evidence schema and release_blog_growth gate."
+        ),
+    )
+    reflexion_startup.add_argument("--json", action="store_true")
+
+    reflexion_submit = reflexion_subcommands.add_parser("submit")
+    reflexion_submit.add_argument(
+        "--config",
+        required=True,
+        help="Path to hosted online Reflexion TOML or JSON config.",
+    )
+    reflexion_submit.add_argument(
+        "--base-url",
+        default=os.environ.get("SYNTH_BACKEND_URL", "https://api.usesynth.ai"),
+        help="Synth API base URL. Defaults to SYNTH_BACKEND_URL or https://api.usesynth.ai.",
+    )
+    reflexion_submit.add_argument(
+        "--api-key-env",
+        default="SYNTH_API_KEY",
+        help="Environment variable containing the Synth API key.",
+    )
+    reflexion_submit.add_argument("--run-id")
+    reflexion_submit.add_argument("--idempotency-key")
+    reflexion_submit.add_argument("--project-id")
+    reflexion_submit.add_argument("--container-pool")
+    reflexion_submit.add_argument("--container-task-id")
+    reflexion_submit.add_argument("--timeout-seconds", type=float, default=120.0)
+    reflexion_submit.add_argument(
+        "--disable-usage-registration",
+        action="store_true",
+        help="Do not send the best-effort package usage registration event.",
+    )
+    reflexion_submit.add_argument("--follow", action="store_true")
+    reflexion_submit.add_argument("--json", action="store_true")
+
+    reflexion_watch = reflexion_subcommands.add_parser("watch")
+    reflexion_watch.add_argument("run_id")
+    reflexion_watch.add_argument(
+        "--base-url",
+        default=os.environ.get("SYNTH_BACKEND_URL", "https://api.usesynth.ai"),
+        help="Synth API base URL. Defaults to SYNTH_BACKEND_URL or https://api.usesynth.ai.",
+    )
+    reflexion_watch.add_argument(
+        "--api-key-env",
+        default="SYNTH_API_KEY",
+        help="Environment variable containing the Synth API key.",
+    )
+    reflexion_watch.add_argument("--timeout-seconds", type=float, default=120.0)
+    reflexion_watch.add_argument(
+        "--events",
+        action="store_true",
+        help="Tail lifecycle SSE events after the initial run snapshot.",
+    )
+    reflexion_watch.add_argument(
+        "--algorithm-events",
+        action="store_true",
+        help="Tail normalized optimizer algorithm events after the initial run snapshot.",
+    )
+    reflexion_watch.add_argument("--after-seq", type=int, default=0)
+    reflexion_watch.add_argument("--limit", type=int, default=500)
+    reflexion_watch.add_argument("--poll-seconds", type=float, default=2.0)
+    reflexion_watch.add_argument("--once", action="store_true")
+    reflexion_watch.add_argument("--json", action="store_true")
+
+    reflexion_receipt = reflexion_subcommands.add_parser("receipt")
+    reflexion_receipt.add_argument("run_id")
+    reflexion_receipt.add_argument(
+        "--base-url",
+        default=os.environ.get("SYNTH_BACKEND_URL", "https://api.usesynth.ai"),
+        help="Synth API base URL. Defaults to SYNTH_BACKEND_URL or https://api.usesynth.ai.",
+    )
+    reflexion_receipt.add_argument(
+        "--api-key-env",
+        default="SYNTH_API_KEY",
+        help="Environment variable containing the Synth API key.",
+    )
+    reflexion_receipt.add_argument("--timeout-seconds", type=float, default=120.0)
+    reflexion_receipt.add_argument("--exposure-limit", type=int, default=500)
+    reflexion_receipt.add_argument("--outcome-limit", type=int, default=500)
+    reflexion_receipt.add_argument("--json", action="store_true")
+
+    reflexion_audit = reflexion_subcommands.add_parser("audit")
+    audit_selection = reflexion_audit.add_mutually_exclusive_group()
+    audit_selection.add_argument("--audit-run-id")
+    audit_selection.add_argument("--run-id", action="append")
+    audit_selection.add_argument("--run-ids", action="append")
+    reflexion_audit.add_argument("--layer-id")
+    reflexion_audit.add_argument("--project-id")
+    reflexion_audit.add_argument("--strict", action="store_true")
+    reflexion_audit.add_argument("--limit", type=int, default=50)
+    reflexion_audit.add_argument(
+        "--base-url",
+        default=os.environ.get("SYNTH_BACKEND_URL", "https://api.usesynth.ai"),
+        help="Synth API base URL. Defaults to SYNTH_BACKEND_URL or https://api.usesynth.ai.",
+    )
+    reflexion_audit.add_argument(
+        "--api-key-env",
+        default="SYNTH_API_KEY",
+        help="Environment variable containing the Synth API key.",
+    )
+    reflexion_audit.add_argument("--timeout-seconds", type=float, default=120.0)
+    reflexion_audit.add_argument("--json", action="store_true")
+
+    reflexion_packet = reflexion_subcommands.add_parser("evidence-packet")
+    reflexion_packet.add_argument("--run-id", action="append")
+    reflexion_packet.add_argument("--run-ids", action="append")
+    reflexion_packet.add_argument("--layer-id")
+    reflexion_packet.add_argument("--project-id")
+    reflexion_packet.add_argument(
+        "--evidence-notes",
+        help=(
+            "Structured JSON object keyed by required evidence lane plus "
+            "release_blog_growth. Each entry must carry specific proof; bare "
+            "true/status values do not complete release readiness."
+        ),
+    )
+    reflexion_packet.add_argument(
+        "--evidence-notes-file",
+        help=(
+            "Structured JSON file keyed by required evidence lane plus "
+            "release_blog_growth. "
+            "Use dev_examples/online_reflexion/evidence_notes_template.json "
+            "as the fill-in shape."
+        ),
+    )
+    reflexion_packet.add_argument("--blog-decision-owner", default="Josh")
+    reflexion_packet.add_argument("--blog-approved-by-owner", action="store_true")
+    reflexion_packet.add_argument("--no-receipt-summaries", action="store_true")
+    reflexion_packet.add_argument("--limit", type=int, default=50)
+    reflexion_packet.add_argument(
+        "--base-url",
+        default=os.environ.get("SYNTH_BACKEND_URL", "https://api.usesynth.ai"),
+        help="Synth API base URL. Defaults to SYNTH_BACKEND_URL or https://api.usesynth.ai.",
+    )
+    reflexion_packet.add_argument(
+        "--api-key-env",
+        default="SYNTH_API_KEY",
+        help="Environment variable containing the Synth API key.",
+    )
+    reflexion_packet.add_argument("--timeout-seconds", type=float, default=120.0)
+    reflexion_packet.add_argument(
+        "--out",
+        help="Optional path to write the assembled evidence packet JSON.",
+    )
+    reflexion_packet.add_argument("--json", action="store_true")
+
+    reflexion_validate_notes = reflexion_subcommands.add_parser(
+        "validate-evidence-notes"
+    )
+    reflexion_validate_notes.add_argument(
+        "--evidence-notes",
+        help=(
+            "Structured JSON object keyed by required evidence lane plus "
+            "release_blog_growth."
+        ),
+    )
+    reflexion_validate_notes.add_argument(
+        "--evidence-notes-file",
+        help=(
+            "Structured JSON file keyed by required evidence lane plus "
+            "release_blog_growth. "
+            "Use dev_examples/online_reflexion/evidence_notes_template.json "
+            "as the fill-in shape."
+        ),
+    )
+    reflexion_validate_notes.add_argument("--json", action="store_true")
 
     # The standing HTTP service is the public worker/workspace surface: queueing,
     # claiming, and lifecycle control happen over the /runs and /workspace routes.
@@ -1423,7 +2158,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             gepa_run = GepaRun.from_toml(args.config)
             if args.disable_usage_registration:
                 gepa_run.config.usage_registration = UsageRegistrationConfig(enabled=False)
+            project_gepa_run_started(
+                run_id=gepa_run.config.run.run_id,
+                config_path=args.config,
+                output_dir=gepa_run.config.run.output_dir,
+            )
             result = gepa_run.execute()
+            project_gepa_run_artifacts(result.manifest_path)
         except SynthOptimizerError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
@@ -1489,6 +2230,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         docs = DocsSource([docs_root], title=args.title)
         serve_console(board, docs, host=args.host, port=args.port)
         return 0
+    if args.command == "mapo" and args.mapo_command == "startup":
+        return _gelo_startup(args)
+    if args.command == "mapo" and args.mapo_command == "submit":
+        return _submit_hosted_mapo(args)
+    if args.command == "mapo" and args.mapo_command == "watch":
+        return _gepa_watch(args)
+    if args.command == "reflexion" and args.reflexion_command == "startup":
+        return _gelo_startup(args)
+    if args.command == "reflexion" and args.reflexion_command == "submit":
+        return _submit_hosted_reflexion(args)
+    if args.command == "reflexion" and args.reflexion_command == "watch":
+        return _gepa_watch(args)
+    if args.command == "reflexion" and args.reflexion_command == "receipt":
+        return _online_reflexion_receipt(args)
+    if args.command == "reflexion" and args.reflexion_command == "audit":
+        return _online_reflexion_audit(args)
+    if args.command == "reflexion" and args.reflexion_command == "evidence-packet":
+        return _online_reflexion_evidence_packet(args)
+    if args.command == "reflexion" and args.reflexion_command == "validate-evidence-notes":
+        return _online_reflexion_validate_evidence_notes(args)
     if args.command == "gepa" and args.gepa_command == "service":
         gepa_serve(args.db, args.bind, args.worker_id, args.lease_seconds, args.workers)
         return 0

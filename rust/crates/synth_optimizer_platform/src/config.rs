@@ -302,10 +302,69 @@ pub struct SynthOptimizerConfig {
     pub proposer: ProposerConfig,
     #[serde(default)]
     pub gepa: GepaConfig,
+    /// Optional jesterky trace-annotate workflow before each GEPA proposer turn.
+    /// Default disabled (Arm A). When enabled, export rollouts → annotate →
+    /// materialize `state/jesterky_*` into the proposer workspace.
+    #[serde(default)]
+    pub jesterky_workflow: JesterkyWorkflowConfig,
     #[serde(default)]
     pub cache: CacheConfig,
     #[serde(default)]
     pub disk_budget: DiskBudgetConfig,
+}
+
+/// Per-run toggle for jesterky trace workflows inside GEPA.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct JesterkyWorkflowConfig {
+    pub enabled: bool,
+    /// Path to a jesterky workflow spec (absolute or relative).
+    pub spec: String,
+    /// Binary name or absolute path. Falls back to `STACK_JESTERKY_COMMAND` then `jesterky`.
+    pub command: String,
+    /// jesterky `--actor` (fake|codex).
+    pub actor: String,
+    /// Optional annotate actor model (`--model`).
+    pub model: Option<String>,
+    pub concurrency: usize,
+    pub timeout_seconds: u64,
+    /// When true, annotate/export failures fail the proposer turn.
+    pub fail_closed: bool,
+}
+
+impl Default for JesterkyWorkflowConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            spec: default_jesterky_workflow_spec(),
+            command: default_jesterky_workflow_command(),
+            actor: default_jesterky_workflow_actor(),
+            model: None,
+            concurrency: default_jesterky_workflow_concurrency(),
+            timeout_seconds: default_jesterky_workflow_timeout_seconds(),
+            fail_closed: true,
+        }
+    }
+}
+
+fn default_jesterky_workflow_spec() -> String {
+    "examples/gepa_trace_annotate.json".to_string()
+}
+
+fn default_jesterky_workflow_command() -> String {
+    "jesterky".to_string()
+}
+
+fn default_jesterky_workflow_actor() -> String {
+    "codex".to_string()
+}
+
+fn default_jesterky_workflow_concurrency() -> usize {
+    4
+}
+
+fn default_jesterky_workflow_timeout_seconds() -> u64 {
+    600
 }
 
 impl SynthOptimizerConfig {
@@ -704,6 +763,7 @@ impl SynthOptimizerConfig {
             ));
         }
         validate_gepa_limit_config(&self.gepa)?;
+        validate_jesterky_workflow_config(&self.jesterky_workflow)?;
         self.disk_budget.validate()?;
         let backend = self.proposer.backend.trim();
         match backend {
@@ -2144,6 +2204,40 @@ fn validate_positive_option(name: &str, value: Option<u64>) -> Result<()> {
 fn validate_positive_f64_option(name: &str, value: Option<f64>) -> Result<()> {
     if value.is_some_and(|item| !item.is_finite() || item <= 0.0) {
         return Err(OptimizerError::Config(format!("{name} must be positive")));
+    }
+    Ok(())
+}
+
+fn validate_jesterky_workflow_config(config: &JesterkyWorkflowConfig) -> Result<()> {
+    if !config.enabled {
+        return Ok(());
+    }
+    if config.spec.trim().is_empty() {
+        return Err(OptimizerError::Config(
+            "jesterky_workflow.spec must be non-empty when enabled".to_string(),
+        ));
+    }
+    if config.command.trim().is_empty() {
+        return Err(OptimizerError::Config(
+            "jesterky_workflow.command must be non-empty when enabled".to_string(),
+        ));
+    }
+    let actor = config.actor.trim().to_ascii_lowercase();
+    if !matches!(actor.as_str(), "fake" | "codex") {
+        return Err(OptimizerError::Config(format!(
+            "jesterky_workflow.actor must be fake or codex when enabled, got {:?}",
+            config.actor
+        )));
+    }
+    if config.concurrency == 0 {
+        return Err(OptimizerError::Config(
+            "jesterky_workflow.concurrency must be > 0 when enabled".to_string(),
+        ));
+    }
+    if config.timeout_seconds == 0 {
+        return Err(OptimizerError::Config(
+            "jesterky_workflow.timeout_seconds must be > 0 when enabled".to_string(),
+        ));
     }
     Ok(())
 }

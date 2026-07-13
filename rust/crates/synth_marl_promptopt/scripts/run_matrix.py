@@ -14,6 +14,11 @@ from pathlib import Path
 
 ALGORITHMS = ("gepa", "coma", "ic3net", "imac", "rode")
 ENVIRONMENTS = ("craftax", "dungeongrid", "overcooked")
+SERVICE_ENVIRONMENTS = {
+    "craftax": "craftax-multiplayer",
+    "dungeongrid": "dungeongrid-multiplayer",
+    "overcooked": "overcooked-v2-multiplayer",
+}
 PROGRAM_FIELDS = ("shared_instruction", "communication_policy", "role_prompts")
 SEED_CANDIDATE = {
     "shared_instruction": "PRIORITY=SAFETY",
@@ -333,7 +338,7 @@ def main() -> int:
         return 0
 
     for environment in environments:
-        require_service(urls[environment], environment.replace("craftax", "craftax-multiplayer").replace("dungeongrid", "dungeongrid-multiplayer").replace("overcooked", "overcooked-v2-multiplayer"))
+        require_service(urls[environment], SERVICE_ENVIRONMENTS[environment])
 
     receipt: dict[str, object] = {
         "schema_version": "marl_promptopt_rust_matrix.v1",

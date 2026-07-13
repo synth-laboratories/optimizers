@@ -198,7 +198,13 @@ heldout = {toml_array(heldout_ids)}
 
 
 def variant_text(
-    *, profile: Path, variant: str, environment: str, output_dir: Path, seed: int
+    *,
+    profile: Path,
+    variant: str,
+    environment: str,
+    output_dir: Path,
+    seed: int,
+    selection_candidates_per_generation: int,
 ) -> str:
     return f'''gepa_profile = {toml_string(profile)}
 variant = {toml_string(variant)}
@@ -209,7 +215,7 @@ output_dir = {toml_string(output_dir)}
 seed = {seed}
 
 [experiment]
-selection_candidates_per_generation = 1
+selection_candidates_per_generation = {selection_candidates_per_generation}
 minimum_rows_per_candidate = 72
 require_disjoint_splits = true
 require_exact_rollout_budget = true
@@ -272,6 +278,7 @@ def main() -> int:
     parser.add_argument("--train-rollouts", type=int, default=768)
     parser.add_argument("--heldout-rollouts", type=int, default=48)
     parser.add_argument("--seed", type=int, default=20260713)
+    parser.add_argument("--selection-candidates-per-generation", type=int, default=1)
     parser.add_argument("--run-timeout-seconds", type=int, default=1800)
     parser.add_argument("--generate-only", action="store_true")
     parser.add_argument("--fail-fast", action="store_true")
@@ -328,6 +335,9 @@ def main() -> int:
                     environment=environment,
                     output_dir=run_dir / f"{algorithm}_{environment}",
                     seed=args.seed,
+                    selection_candidates_per_generation=(
+                        args.selection_candidates_per_generation
+                    ),
                 ),
                 encoding="utf-8",
             )

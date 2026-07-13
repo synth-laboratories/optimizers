@@ -293,9 +293,7 @@ fn score_observations(observations: &[RolloutObservation]) -> Result<StrategySco
         ));
     }
     require_exact_task_keys("channel_masked", &primary, &channel_masked)?;
-    for (role, observations) in &role_ablations {
-        require_exact_task_keys(&format!("role_ablation::{role}"), &primary, observations)?;
-    }
+    require_role_coverage(&primary, &role_ablations)?;
 
     let mut credit_vectors = Vec::with_capacity(primary.len());
     let mut axis_samples: BTreeMap<CreditAxis, Vec<AxisSample>> = BTreeMap::new();
@@ -327,11 +325,9 @@ fn score_observations(observations: &[RolloutObservation]) -> Result<StrategySco
         counterfactuals.push(channel_credit);
 
         for (role, observations) in &role_ablations {
-            let observation = observations.get(task_key).ok_or_else(|| {
-                invariant(format!(
-                    "COMA role intervention {role:?} is missing for task key {task_key:?}"
-                ))
-            })?;
+            let Some(observation) = observations.get(task_key) else {
+                continue;
+            };
             let axis = CreditAxis::RoleAblation { role: role.clone() };
             let credit = counterfactual_credit(
                 task_key,
@@ -519,6 +515,35 @@ fn require_exact_task_keys(
     Err(invariant(format!(
         "COMA {arm} task-key set differs from factual primary: missing={missing:?} unexpected={unexpected:?}"
     )))
+}
+
+fn require_role_coverage(
+    factual: &BTreeMap<TaskKey, &RolloutObservation>,
+    role_ablations: &BTreeMap<String, BTreeMap<TaskKey, &RolloutObservation>>,
+) -> Result<()> {
+    let factual_keys = factual.keys().cloned().collect::<BTreeSet<_>>();
+    let mut covered = BTreeSet::new();
+    for (role, observations) in role_ablations {
+        let unexpected = observations
+            .keys()
+            .filter(|task_key| !factual_keys.contains(*task_key))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !unexpected.is_empty() {
+            return Err(invariant(format!(
+                "COMA role_ablation::{role} contains task keys without factual primary arms: {unexpected:?}"
+            )));
+        }
+        covered.extend(observations.keys().cloned());
+    }
+    let missing = factual_keys.difference(&covered).cloned().collect::<Vec<_>>();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(invariant(format!(
+            "COMA requires at least one valid role-ablation intervention per factual task; missing={missing:?}"
+        )))
+    }
 }
 
 fn factual_receipt(observation: &RolloutObservation) -> Result<AppliedInterventionReceipt> {

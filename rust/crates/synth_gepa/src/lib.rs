@@ -8521,6 +8521,7 @@ fn plan_rollout_runtime_batch_job_for_candidates(
                 "metadata": {
                     "candidate_id": group.candidate.candidate_id,
                     "seed": seed,
+                    "evaluation_arm": "primary",
                 },
             });
             let mut cache_metadata = Map::new();
@@ -9549,6 +9550,7 @@ fn record_rollout_materialization_from_outcome(
         "metadata": {
                 "candidate_id": candidate.candidate_id,
                 "task_id": task_id,
+                "evaluation_arm": "primary",
             },
     });
     let objective_scores = serde_json::to_value(&sensor_frame.objective_scores)?;
@@ -19712,6 +19714,10 @@ fn evaluate_candidate(call: EvaluationCall<'_>) -> Result<CandidateEvaluation> {
             "prompt_assertions": prompt_assertions,
             "policy": rollout_policy_for_request(call.config),
             "task": row,
+            "metadata": {
+                "candidate_id": call.candidate.candidate_id,
+                "evaluation_arm": "primary",
+            },
         });
         let mut cache_metadata = Map::new();
         cache_metadata.insert(

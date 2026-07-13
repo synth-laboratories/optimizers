@@ -20,24 +20,26 @@ impl MarlStrategy for Ic3NetStrategy {
 
     fn proposer_guidance(&self) -> Value {
         json!({
-            "paper_analogue": "IC3Net learned communication gating",
+            "paper_analogue": "IC3Net communication gating",
             "status": "implemented",
-            "instruction": "Use matched channel-masking evidence to choose the narrowest event-conditioned speak gate that preserves joint outcome. Remove messages with no positive causal channel value and resolve simultaneous speech with a deterministic single speaker or silence.",
+            "mechanism": "Static prompt gate search inspired by IC3Net; no neural gate is trained or learned at runtime.",
+            "instruction": "Use exact primary-minus-channel_masked outcome and coordination evidence to edit per-agent event gates. Cite the agent, event, matched delta, and gate diagnostic for every change; do not return benchmark menus or generic protocol families.",
             "objective_order": [
-                "primary outcome reward",
+                "outcome success",
+                "outcome reward",
                 "positive causal channel value",
-                "lower congestion",
-                "lower interference",
+                "lower congestion and interference",
                 "fewer messages",
                 "fewer message characters"
             ],
             "speak_gate": {
-                "type": "event_conditioned",
-                "allowed": ["never", "start", "info_change", "blocker", "uncertainty", "always"],
+                "type": "per_agent_event_conditioned",
+                "scope": "Assign one explicit gate to each agent; role templates are valid only when they resolve to a gate per agent.",
+                "allowed": ["never", "episode_start", "information_change", "blocker", "uncertainty", "always"],
                 "events": {
                     "never": "Do not speak when matched masking shows no causal benefit.",
-                    "start": "Speak once to establish a load-bearing initial assignment.",
-                    "info_change": "Speak only when new information changes another agent's next action.",
+                    "episode_start": "Speak once before the first action to establish a load-bearing initial assignment.",
+                    "information_change": "Speak only when newly observed information changes another agent's next action, role, or belief.",
                     "blocker": "Speak only to report or clear a blocker that prevents progress.",
                     "uncertainty": "Speak only when uncertainty requires another agent's evidence or decision.",
                     "always": "Speak every opportunity only when every such delivery is causally justified."
@@ -45,9 +47,9 @@ impl MarlStrategy for Ic3NetStrategy {
                 "selection_rule": "Prefer the smallest event set supported by positive primary-minus-channel_masked value on exact matched tasks and checkpoints."
             },
             "collision_policy": {
-                "allowed": ["single_speaker", "silence"],
+                "allowed": ["single_speaker", "silence_on_collision"],
                 "single_speaker": "Elect one deterministic speaker with the most decision-relevant information; all others stay silent.",
-                "silence": "If no unique load-bearing speaker exists, send nothing rather than colliding, duplicating, or acknowledging."
+                "silence_on_collision": "If more than one gate remains eligible, deliver no message for that event and record the collision."
             },
             "required_evidence": {
                 "arms": [PRIMARY_ARM, CHANNEL_MASKED_ARM],
@@ -58,6 +60,8 @@ impl MarlStrategy for Ic3NetStrategy {
                     "coordination_success",
                     "message_action_alignment",
                     "interference_actions",
+                    "idle_actions",
+                    "congestion_events (when reported)",
                     "messages",
                     "message_chars"
                 ]
@@ -92,19 +96,22 @@ impl MarlStrategy for Ic3NetStrategy {
     }
 
     fn compare(&self, left: &StrategyScore, right: &StrategyScore) -> Ordering {
-        left.primary
-            .total_cmp(&right.primary)
+        higher_metric(left, "outcome_success")
+            .total_cmp(&higher_metric(right, "outcome_success"))
+            .then_with(|| left.primary.total_cmp(&right.primary))
             .then_with(|| {
-                positive_metric(left, "causal_channel_value")
-                    .total_cmp(&positive_metric(right, "causal_channel_value"))
+                higher_metric(left, "positive_causal_channel_value").total_cmp(&higher_metric(
+                    right,
+                    "positive_causal_channel_value",
+                ))
             })
             .then_with(|| {
                 lower_metric(right, "congestion_cost")
                     .total_cmp(&lower_metric(left, "congestion_cost"))
             })
             .then_with(|| {
-                lower_metric(right, "interference_cost")
-                    .total_cmp(&lower_metric(left, "interference_cost"))
+                lower_metric(right, "congestion_interference_cost")
+                    .total_cmp(&lower_metric(left, "congestion_interference_cost"))
             })
             .then_with(|| {
                 lower_metric(right, "messages").total_cmp(&lower_metric(left, "messages"))
@@ -131,6 +138,8 @@ struct CoordinationMetrics {
     coordination_success: f64,
     message_action_alignment: f64,
     interference_actions: f64,
+    idle_actions: f64,
+    congestion_events: Option<f64>,
     messages: f64,
     message_chars: f64,
 }
@@ -157,8 +166,14 @@ struct Aggregate {
     masked_coordination_success: f64,
     message_action_alignment: f64,
     masked_message_action_alignment: f64,
-    interference_cost: f64,
+    interference_actions: f64,
     masked_interference_actions: f64,
+    idle_actions: f64,
+    masked_idle_actions: f64,
+    congestion_events: f64,
+    masked_congestion_events: f64,
+    congestion_events_reported: f64,
+    congestion_interference_cost: f64,
     congestion_cost: f64,
     messages: f64,
     message_chars: f64,
@@ -205,6 +220,7 @@ fn score_matched_pairs(observations: &[RolloutObservation]) -> Result<StrategySc
 
     let mut aggregate = Aggregate::default();
     let mut matched_diagnostics = Vec::with_capacity(pairs.len());
+    let mut gate_diagnostics = Vec::with_capacity(pairs.len());
     for (task_id, pair) in pairs {
         let primary = pair.primary.ok_or_else(|| {
             invariant(format!(
@@ -218,24 +234,22 @@ fn score_matched_pairs(observations: &[RolloutObservation]) -> Result<StrategySc
         })?;
         require_exact_match(&task_id, &primary, &masked)?;
 
-        let causal_channel_value = primary.observation.reward - masked.observation.reward;
+        let reward_delta = primary.observation.reward - masked.observation.reward;
         let causal_outcome_value =
             primary.metrics.outcome_success - masked.metrics.outcome_success;
         let causal_coordination_value =
             primary.metrics.coordination_success - masked.metrics.coordination_success;
+        let causal_channel_value = 0.5 * (causal_outcome_value + causal_coordination_value);
+        let positive_causal_channel_value = causal_channel_value.max(0.0);
         let causal_alignment_value = primary.metrics.message_action_alignment
             - masked.metrics.message_action_alignment;
-        let useful_aligned_messages = primary
-            .metrics
-            .message_action_alignment
-            .clamp(0.0, 1.0)
-            .min(primary.metrics.messages);
-        let congestion_cost = (primary.metrics.messages - useful_aligned_messages).max(0.0);
-        let gate_efficiency = if primary.metrics.messages > 0.0 {
-            causal_channel_value.max(0.0) / primary.metrics.messages
-        } else {
-            0.0
-        };
+        let congestion_interference_cost = primary.metrics.interference_actions
+            + primary.metrics.idle_actions
+            + primary.metrics.congestion_events.unwrap_or(0.0);
+        let congestion_cost = congestion_interference_cost
+            + primary.metrics.messages
+            + primary.metrics.message_chars;
+        let gating_efficiency = positive_causal_channel_value / (1.0 + congestion_cost);
 
         aggregate.primary_reward += primary.observation.reward;
         aggregate.masked_reward += masked.observation.reward;
@@ -245,23 +259,36 @@ fn score_matched_pairs(observations: &[RolloutObservation]) -> Result<StrategySc
         aggregate.masked_coordination_success += masked.metrics.coordination_success;
         aggregate.message_action_alignment += primary.metrics.message_action_alignment;
         aggregate.masked_message_action_alignment += masked.metrics.message_action_alignment;
-        aggregate.interference_cost += primary.metrics.interference_actions;
+        aggregate.interference_actions += primary.metrics.interference_actions;
         aggregate.masked_interference_actions += masked.metrics.interference_actions;
+        aggregate.idle_actions += primary.metrics.idle_actions;
+        aggregate.masked_idle_actions += masked.metrics.idle_actions;
+        aggregate.congestion_events += primary.metrics.congestion_events.unwrap_or(0.0);
+        aggregate.masked_congestion_events += masked.metrics.congestion_events.unwrap_or(0.0);
+        aggregate.congestion_events_reported +=
+            if primary.metrics.congestion_events.is_some() {
+                1.0
+            } else {
+                0.0
+            };
+        aggregate.congestion_interference_cost += congestion_interference_cost;
         aggregate.congestion_cost += congestion_cost;
         aggregate.messages += primary.metrics.messages;
         aggregate.message_chars += primary.metrics.message_chars;
 
         matched_diagnostics.push(json!({
-            "task_id": task_id,
-            "checkpoint_digest": primary.checkpoint_digest,
-            "primary_rollout_id": primary.observation.rollout_id,
-            "channel_masked_rollout_id": masked.observation.rollout_id,
+            "task_id": &task_id,
+            "checkpoint_digest": &primary.checkpoint_digest,
+            "primary_rollout_id": &primary.observation.rollout_id,
+            "channel_masked_rollout_id": &masked.observation.rollout_id,
             "primary": {
                 "outcome_reward": primary.observation.reward,
                 "outcome_success": primary.metrics.outcome_success,
                 "coordination_success": primary.metrics.coordination_success,
                 "message_action_alignment": primary.metrics.message_action_alignment,
                 "interference_actions": primary.metrics.interference_actions,
+                "idle_actions": primary.metrics.idle_actions,
+                "congestion_events": primary.metrics.congestion_events,
                 "messages": primary.metrics.messages,
                 "message_chars": primary.metrics.message_chars
             },
@@ -271,49 +298,90 @@ fn score_matched_pairs(observations: &[RolloutObservation]) -> Result<StrategySc
                 "coordination_success": masked.metrics.coordination_success,
                 "message_action_alignment": masked.metrics.message_action_alignment,
                 "interference_actions": masked.metrics.interference_actions,
+                "idle_actions": masked.metrics.idle_actions,
+                "congestion_events": masked.metrics.congestion_events,
                 "messages": masked.metrics.messages,
                 "message_chars": masked.metrics.message_chars
             },
+            "primary_minus_channel_masked": {
+                "outcome_reward": reward_delta,
+                "outcome_success": causal_outcome_value,
+                "coordination_success": causal_coordination_value,
+                "message_action_alignment": causal_alignment_value,
+                "interference_actions": primary.metrics.interference_actions - masked.metrics.interference_actions,
+                "idle_actions": primary.metrics.idle_actions - masked.metrics.idle_actions,
+                "congestion_events": optional_delta(
+                    primary.metrics.congestion_events,
+                    masked.metrics.congestion_events,
+                ),
+                "messages": primary.metrics.messages - masked.metrics.messages,
+                "message_chars": primary.metrics.message_chars - masked.metrics.message_chars
+            },
             "causal": {
                 "channel_value": causal_channel_value,
-                "positive_channel_value": causal_channel_value.max(0.0),
+                "positive_channel_value": positive_causal_channel_value,
                 "outcome_value": causal_outcome_value,
                 "coordination_value": causal_coordination_value,
                 "alignment_value": causal_alignment_value
             },
             "cost": {
                 "congestion": congestion_cost,
-                "interference": primary.metrics.interference_actions
+                "congestion_interference": congestion_interference_cost,
+                "messages": primary.metrics.messages,
+                "message_chars": primary.metrics.message_chars
             },
-            "gate_efficiency": gate_efficiency
+            "gating_efficiency": gating_efficiency
+        }));
+        gate_diagnostics.push(json!({
+            "task_id": &task_id,
+            "primary": response_gate_diagnostics(&primary.observation.response),
+            "channel_masked": response_gate_diagnostics(&masked.observation.response),
+            "observed": {
+                "channel_mask_applied": true,
+                "primary_messages": primary.metrics.messages,
+                "primary_message_chars": primary.metrics.message_chars,
+                "primary_interference_actions": primary.metrics.interference_actions,
+                "primary_idle_actions": primary.metrics.idle_actions,
+                "primary_congestion_events": primary.metrics.congestion_events
+            }
         }));
     }
 
     let denominator = matched_diagnostics.len() as f64;
     let primary_reward = aggregate.primary_reward / denominator;
     let masked_reward = aggregate.masked_reward / denominator;
-    let causal_channel_value = primary_reward - masked_reward;
     let outcome_success = aggregate.outcome_success / denominator;
     let masked_outcome_success = aggregate.masked_outcome_success / denominator;
     let coordination_success = aggregate.coordination_success / denominator;
     let masked_coordination_success = aggregate.masked_coordination_success / denominator;
+    let causal_outcome_value = outcome_success - masked_outcome_success;
+    let causal_coordination_value = coordination_success - masked_coordination_success;
+    let causal_channel_value = 0.5 * (causal_outcome_value + causal_coordination_value);
+    let positive_causal_channel_value = causal_channel_value.max(0.0);
     let message_action_alignment = aggregate.message_action_alignment / denominator;
     let masked_message_action_alignment =
         aggregate.masked_message_action_alignment / denominator;
-    let interference_cost = aggregate.interference_cost / denominator;
+    let interference_actions = aggregate.interference_actions / denominator;
     let masked_interference_actions = aggregate.masked_interference_actions / denominator;
+    let idle_actions = aggregate.idle_actions / denominator;
+    let masked_idle_actions = aggregate.masked_idle_actions / denominator;
+    let congestion_events = aggregate.congestion_events / denominator;
+    let masked_congestion_events = aggregate.masked_congestion_events / denominator;
+    let congestion_events_reported_fraction =
+        aggregate.congestion_events_reported / denominator;
+    let congestion_interference_cost = aggregate.congestion_interference_cost / denominator;
     let congestion_cost = aggregate.congestion_cost / denominator;
     let messages = aggregate.messages / denominator;
     let message_chars = aggregate.message_chars / denominator;
-    let gate_efficiency = if messages > 0.0 {
-        causal_channel_value.max(0.0) / messages
-    } else {
-        0.0
-    };
+    let gating_efficiency = positive_causal_channel_value / (1.0 + congestion_cost);
 
     let metrics = BTreeMap::from([
         ("outcome_reward".to_string(), primary_reward),
         ("masked_outcome_reward".to_string(), masked_reward),
+        (
+            "causal_reward_delta".to_string(),
+            primary_reward - masked_reward,
+        ),
         ("outcome_success".to_string(), outcome_success),
         (
             "masked_outcome_success".to_string(),
@@ -321,7 +389,7 @@ fn score_matched_pairs(observations: &[RolloutObservation]) -> Result<StrategySc
         ),
         (
             "causal_outcome_value".to_string(),
-            outcome_success - masked_outcome_success,
+            causal_outcome_value,
         ),
         (
             "coordination_success".to_string(),
@@ -333,7 +401,7 @@ fn score_matched_pairs(observations: &[RolloutObservation]) -> Result<StrategySc
         ),
         (
             "causal_coordination_value".to_string(),
-            coordination_success - masked_coordination_success,
+            causal_coordination_value,
         ),
         (
             "message_action_alignment".to_string(),
@@ -350,19 +418,40 @@ fn score_matched_pairs(observations: &[RolloutObservation]) -> Result<StrategySc
         ("causal_channel_value".to_string(), causal_channel_value),
         (
             "positive_causal_channel_value".to_string(),
-            causal_channel_value.max(0.0),
+            positive_causal_channel_value,
         ),
         ("congestion_cost".to_string(), congestion_cost),
-        ("interference_cost".to_string(), interference_cost),
+        (
+            "congestion_interference_cost".to_string(),
+            congestion_interference_cost,
+        ),
+        ("interference_actions".to_string(), interference_actions),
+        ("interference_cost".to_string(), interference_actions),
         (
             "masked_interference_actions".to_string(),
             masked_interference_actions,
         ),
         (
             "causal_interference_delta".to_string(),
-            interference_cost - masked_interference_actions,
+            interference_actions - masked_interference_actions,
         ),
-        ("gate_efficiency".to_string(), gate_efficiency),
+        ("idle_actions".to_string(), idle_actions),
+        ("masked_idle_actions".to_string(), masked_idle_actions),
+        (
+            "causal_idle_delta".to_string(),
+            idle_actions - masked_idle_actions,
+        ),
+        ("congestion_events".to_string(), congestion_events),
+        (
+            "masked_congestion_events".to_string(),
+            masked_congestion_events,
+        ),
+        (
+            "congestion_events_reported_fraction".to_string(),
+            congestion_events_reported_fraction,
+        ),
+        ("gating_efficiency".to_string(), gating_efficiency),
+        ("gate_efficiency".to_string(), gating_efficiency),
         ("messages".to_string(), messages),
         ("message_chars".to_string(), message_chars),
     ]);
@@ -371,10 +460,10 @@ fn score_matched_pairs(observations: &[RolloutObservation]) -> Result<StrategySc
     } else {
         "narrow the speak gate toward never unless a specific event class proves positive value"
     };
-    let collision_pressure = if congestion_cost > 0.0 {
+    let collision_pressure = if congestion_interference_cost > 0.0 {
         "elect one deterministic speaker per event; otherwise silence all speakers"
     } else {
-        "preserve the current single-speaker or silence behavior"
+        "preserve the current single-speaker or silence-on-collision behavior"
     };
 
     Ok(StrategyScore {
@@ -384,33 +473,42 @@ fn score_matched_pairs(observations: &[RolloutObservation]) -> Result<StrategySc
             "schema_version": "ic3net_strategy_diagnostics.v1",
             "matched_pair_count": matched_diagnostics.len(),
             "definitions": {
-                "causal_channel_value": "mean primary outcome reward minus mean channel_masked outcome reward on exact task/checkpoint pairs",
-                "congestion_cost": "mean primary messages not covered by the bounded message-action-alignment signal",
-                "interference_cost": "mean primary interference actions",
-                "gate_efficiency": "positive causal channel value per primary message"
+                "causal_channel_value": "0.5 * ((primary outcome success - masked outcome success) + (primary coordination success - masked coordination success)) on exact task/checkpoint pairs",
+                "positive_causal_channel_value": "max(causal channel value, 0)",
+                "congestion_interference_cost": "primary interference actions + idle actions + optional congestion events",
+                "congestion_cost": "congestion/interference cost + primary messages + primary message characters",
+                "gating_efficiency": "positive causal channel value / (1 + congestion cost)"
             },
             "aggregate": {
                 "primary_outcome_reward": primary_reward,
                 "channel_masked_outcome_reward": masked_reward,
+                "causal_reward_delta": primary_reward - masked_reward,
                 "causal_channel_value": causal_channel_value,
-                "positive_causal_channel_value": causal_channel_value.max(0.0),
-                "causal_outcome_value": outcome_success - masked_outcome_success,
-                "causal_coordination_value": coordination_success - masked_coordination_success,
+                "positive_causal_channel_value": positive_causal_channel_value,
+                "causal_outcome_value": causal_outcome_value,
+                "causal_coordination_value": causal_coordination_value,
                 "causal_alignment_value": message_action_alignment - masked_message_action_alignment,
                 "congestion_cost": congestion_cost,
-                "interference_cost": interference_cost,
-                "causal_interference_delta": interference_cost - masked_interference_actions,
-                "gate_efficiency": gate_efficiency,
+                "congestion_interference_cost": congestion_interference_cost,
+                "interference_actions": interference_actions,
+                "causal_interference_delta": interference_actions - masked_interference_actions,
+                "idle_actions": idle_actions,
+                "causal_idle_delta": idle_actions - masked_idle_actions,
+                "congestion_events": congestion_events,
+                "congestion_events_reported_fraction": congestion_events_reported_fraction,
+                "gating_efficiency": gating_efficiency,
                 "messages": messages,
                 "message_chars": message_chars
             },
             "proposer_feedback": {
                 "gate_pressure": gate_pressure,
                 "collision_pressure": collision_pressure,
-                "candidate_speak_gates": ["never", "start", "info_change", "blocker", "uncertainty", "always"],
-                "collision_policy": ["single_speaker", "silence"]
+                "required_edit": "Cite matched task deltas and per-agent gate diagnostics for each concrete gate change; do not emit a benchmark menu.",
+                "event_gate_contract": ["never", "episode_start", "information_change", "blocker", "uncertainty", "always"],
+                "collision_policy": ["single_speaker", "silence_on_collision"]
             },
-            "matched_tasks": matched_diagnostics
+            "matched_deltas": matched_diagnostics,
+            "gate_diagnostics": gate_diagnostics
         }),
     })
 }
@@ -544,6 +642,11 @@ fn require_exact_match(
             "IC3Net task {task_id} channel_masked intervention changed generated message count or characters"
         )));
     }
+    if primary.metrics.congestion_events.is_some() != masked.metrics.congestion_events.is_some() {
+        return Err(invariant(format!(
+            "IC3Net task {task_id} reports congestion_events on only one matched arm"
+        )));
+    }
     Ok(())
 }
 
@@ -555,11 +658,14 @@ fn required_coordination_metrics(
         coordination_success: required_metric(observation, "coordination_success")?,
         message_action_alignment: required_metric(observation, "message_action_alignment")?,
         interference_actions: required_metric(observation, "interference_actions")?,
+        idle_actions: required_metric(observation, "idle_actions")?,
+        congestion_events: optional_nonnegative_metric(observation, "congestion_events")?,
         messages: required_metric(observation, "messages")?,
         message_chars: required_metric(observation, "message_chars")?,
     };
     for (key, value) in [
         ("interference_actions", metrics.interference_actions),
+        ("idle_actions", metrics.idle_actions),
         ("messages", metrics.messages),
         ("message_chars", metrics.message_chars),
     ] {
@@ -589,6 +695,38 @@ fn required_metric(observation: &RolloutObservation, key: &str) -> Result<f64> {
     Ok(value)
 }
 
+fn optional_nonnegative_metric(
+    observation: &RolloutObservation,
+    key: &str,
+) -> Result<Option<f64>> {
+    let Some(value) = observation.metrics.get(key).copied() else {
+        return Ok(None);
+    };
+    if !value.is_finite() || value < 0.0 {
+        return Err(invariant(format!(
+            "IC3Net rollout {} metric {key:?} must be finite and non-negative",
+            observation.rollout_id
+        )));
+    }
+    Ok(Some(value))
+}
+
+fn response_gate_diagnostics(response: &Value) -> Value {
+    json!({
+        "reported_gate_diagnostics": response.pointer("/summary/gate_diagnostics"),
+        "executed_protocol": response.pointer("/trace/protocol"),
+        "recognized_directives": response.pointer("/actionable_side_info/recognized_directives"),
+        "ignored_directives": response.pointer("/actionable_side_info/ignored_directives"),
+        "failure_signals": response.pointer("/actionable_side_info/failure_signals"),
+        "per_agent_contributions": response.pointer("/reward_info/details/per_agent_contributions"),
+        "masked_delivery_count": response.pointer("/summary/masked_delivery_count")
+    })
+}
+
+fn optional_delta(primary: Option<f64>, masked: Option<f64>) -> Option<f64> {
+    primary.zip(masked).map(|(primary, masked)| primary - masked)
+}
+
 fn required_string<'a>(
     value: &'a Value,
     pointer: &str,
@@ -614,15 +752,6 @@ fn higher_metric(score: &StrategyScore, key: &str) -> f64 {
         .copied()
         .filter(|value| value.is_finite())
         .unwrap_or(f64::NEG_INFINITY)
-}
-
-fn positive_metric(score: &StrategyScore, key: &str) -> f64 {
-    let value = higher_metric(score, key);
-    if value.is_finite() {
-        value.max(0.0)
-    } else {
-        value
-    }
 }
 
 fn lower_metric(score: &StrategyScore, key: &str) -> f64 {

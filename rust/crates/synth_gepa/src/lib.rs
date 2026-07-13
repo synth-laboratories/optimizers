@@ -595,6 +595,21 @@ pub struct ProposerOutcome {
     pub evidence_warnings: Vec<String>,
 }
 
+/// Public, workspace-backed proposer result for optimizer experiments that need
+/// GEPA's exact proposer substrate without adopting GEPA's search dynamics.
+/// The caller remains responsible for candidate admission, rollout accounting,
+/// and heldout isolation.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WorkspaceProposerOutcome {
+    pub proposals: Vec<ProposedCandidate>,
+    pub response: Value,
+    pub backend: String,
+    pub runtime_substrate: String,
+    pub workspace: String,
+    #[serde(default)]
+    pub evidence_warnings: Vec<String>,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ProposedCandidate {
     #[serde(default)]
@@ -616,6 +631,21 @@ pub struct ProposedCandidate {
 }
 
 impl ProposedCandidate {
+    /// Resolve every supported GEPA proposal shape into the prompt-program
+    /// candidate-field map consumed by an optimizer container.
+    pub fn resolved_payload(&self) -> BTreeMap<String, String> {
+        self.payload_map()
+    }
+
+    /// Resolve a proposal while preserving the single-target compatibility
+    /// behavior used by public GEPA.
+    pub fn resolved_payload_for_allowed_fields(
+        &self,
+        allowed_fields: &[String],
+    ) -> BTreeMap<String, String> {
+        self.payload_map_for_allowed_fields(allowed_fields)
+    }
+
     pub(crate) fn payload_map(&self) -> BTreeMap<String, String> {
         if !self.payload.is_empty() {
             let payload = Self::payload_from_string_payload(&self.payload);
@@ -8491,6 +8521,7 @@ fn plan_rollout_runtime_batch_job_for_candidates(
                 "metadata": {
                     "candidate_id": group.candidate.candidate_id,
                     "seed": seed,
+                    "evaluation_arm": "primary",
                 },
             });
             let mut cache_metadata = Map::new();
@@ -9519,6 +9550,7 @@ fn record_rollout_materialization_from_outcome(
         "metadata": {
                 "candidate_id": candidate.candidate_id,
                 "task_id": task_id,
+                "evaluation_arm": "primary",
             },
     });
     let objective_scores = serde_json::to_value(&sensor_frame.objective_scores)?;
@@ -19682,6 +19714,10 @@ fn evaluate_candidate(call: EvaluationCall<'_>) -> Result<CandidateEvaluation> {
             "prompt_assertions": prompt_assertions,
             "policy": rollout_policy_for_request(call.config),
             "task": row,
+            "metadata": {
+                "candidate_id": call.candidate.candidate_id,
+                "evaluation_arm": "primary",
+            },
         });
         let mut cache_metadata = Map::new();
         cache_metadata.insert(
@@ -20278,6 +20314,96 @@ fn run_proposer(
             "unsupported proposer.backend {backend:?}; expected codex_app_server, chat_completions, or deepseek_chat"
         ))),
     }
+}
+
+/// Invoke the same workspace proposer used by public GEPA and return decoded
+/// proposals. This deliberately does not evaluate or select candidates: it is
+/// the narrow extension boundary used by experimental optimizer dynamics while
+/// keeping proposer model, prompt, auth, and evidence hygiene identical.
+pub fn propose_workspace_candidates(
+    config: &SynthOptimizerConfig,
+    program: &PromptProgram,
+    parent: &CandidateRecord,
+    candidates: &[CandidateRecord],
+    generation: usize,
+    task_pool_rows: Value,
+    workspace_dir: PathBuf,
+) -> Result<WorkspaceProposerOutcome> {
+    let workspace = workspace_dir.display().to_string();
+    let mut response = run_proposer(
+        config,
+        program,
+        parent,
+        candidates,
+        generation,
+        task_pool_rows,
+        workspace_dir,
+    )?;
+    if let Some(object) = response.as_object_mut() {
+        object.insert("workspace".to_string(), json!(&workspace));
+    }
+
+    let default_evidence = response
+        .get("manifest")
+        .and_then(|manifest| manifest.get("evidence"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let proposal_values = response
+        .get("proposals")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut proposals = Vec::with_capacity(proposal_values.len());
+    for (proposal_index, value) in proposal_values.into_iter().enumerate() {
+        let mut proposal = serde_json::from_value::<ProposedCandidate>(value).map_err(|source| {
+            OptimizerError::Proposer(format!(
+                "workspace proposer proposal index={proposal_index} is invalid: {source}"
+            ))
+        })?;
+        if proposal.evidence.is_null() {
+            proposal.evidence = default_evidence.clone();
+        }
+        if proposal.payload_map().is_empty() {
+            return Err(OptimizerError::Proposer(format!(
+                "workspace proposer proposal index={proposal_index} returned no mutable payload; shape={}",
+                proposal.payload_shape_summary()
+            )));
+        }
+        proposals.push(proposal);
+    }
+    if proposals.is_empty() {
+        return Err(OptimizerError::Proposer(
+            "workspace proposer returned no proposals".to_string(),
+        ));
+    }
+
+    let backend = response
+        .get("backend")
+        .and_then(Value::as_str)
+        .unwrap_or(config.proposer.backend.as_str())
+        .to_string();
+    let runtime_substrate = response
+        .get("runtime_substrate")
+        .and_then(Value::as_str)
+        .unwrap_or(config.proposer.runtime_substrate.as_str())
+        .to_string();
+    let evidence_warnings = response
+        .get("evidence_warnings")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect();
+
+    Ok(WorkspaceProposerOutcome {
+        proposals,
+        response,
+        backend,
+        runtime_substrate,
+        workspace,
+        evidence_warnings,
+    })
 }
 
 fn cached_call(

@@ -2,6 +2,7 @@
 members = [
     "rust/crates/synth_optimizer_platform",
     "rust/crates/synth_gepa",
+    "rust/crates/synth_marl_promptopt",
     "rust/crates/synth_optimizers_py",
 ]
 resolver = "2"

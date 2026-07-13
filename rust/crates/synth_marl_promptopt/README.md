@@ -19,6 +19,12 @@ counterfactual credit, IC3Net speak gating, IMAC communication bottleneck, and
 RODE role hierarchy. Public GEPA itself is the baseline and runs from the same
 common profile.
 
+Run that baseline directly against the same Rust workspace revision:
+
+```bash
+cargo run -p synth_marl_promptopt --bin gepa_baseline -- --config path/to/gepa.toml
+```
+
 Run a variant:
 
 ```bash

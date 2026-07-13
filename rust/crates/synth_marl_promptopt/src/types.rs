@@ -178,6 +178,8 @@ pub struct MarlRunResult {
     pub environment: String,
     pub seed_candidate_id: String,
     pub champion_candidate_id: String,
+    #[serde(default)]
+    pub frontier_candidate_ids: Vec<String>,
     pub heldout_seed_score: Option<StrategyScore>,
     pub heldout_champion_score: Option<StrategyScore>,
     pub heldout_uplift: Option<f64>,

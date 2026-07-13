@@ -5,8 +5,10 @@ use std::path::Path;
 
 use serde::Serialize;
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 use synth_optimizer_platform::{
-    ContainerClient, OptimizerError, Result, SynthOptimizerConfig, TasksetTasksRequest,
+    task_identity, ContainerClient, OptimizerError, Result, SensorFrame, SynthOptimizerConfig,
+    TasksetTasksRequest,
 };
 
 use crate::config::MarlPromptoptConfig;
@@ -14,9 +16,16 @@ use crate::evaluation::{evaluate_candidate, score_batch, EvaluateCandidateInput}
 use crate::proposer::{propose_generation, ProposeGenerationInput};
 use crate::strategy::{primary_mean_score, MarlStrategy};
 use crate::types::{
-    BudgetLedger, DatasetSplits, MarlCandidate, MarlRunResult, RolloutObservation, StrategyScore,
+    BudgetLedger, MarlCandidate, MarlRunResult, RolloutObservation, StrategyScore,
 };
 use crate::variants::strategy_by_name;
+
+#[derive(Clone, Debug)]
+struct SearchSplits {
+    train_rows: Vec<Value>,
+    selection_rows: Vec<Value>,
+    heldout_ids: Vec<String>,
+}
 
 pub fn execute_marl_promptopt_from_toml(path: impl AsRef<Path>) -> Result<MarlRunResult> {
     execute_marl_promptopt(MarlPromptoptConfig::from_toml_file(path)?)
@@ -46,13 +55,13 @@ pub fn execute_marl_promptopt(config: MarlPromptoptConfig) -> Result<MarlRunResu
         &gepa_config.seed_candidate,
     )?;
 
-    let splits = load_dataset_splits(&client, &gepa_config)?;
+    let splits = load_search_splits(&client, &gepa_config)?;
     if config.experiment.require_disjoint_splits {
-        splits.assert_disjoint().map_err(OptimizerError::Config)?;
+        assert_search_splits_disjoint(&splits).map_err(OptimizerError::Config)?;
     }
     if splits.train_rows.is_empty()
         || splits.selection_rows.is_empty()
-        || splits.heldout_rows.is_empty()
+        || splits.heldout_ids.is_empty()
     {
         return Err(OptimizerError::Config(
             "MARL comparison requires non-empty train, selection, and heldout rows".to_string(),
@@ -67,9 +76,13 @@ pub fn execute_marl_promptopt(config: MarlPromptoptConfig) -> Result<MarlRunResu
         &json!({
             "schema_version": "marl_promptopt_dataset_snapshot.v1",
             "environment": environment,
-            "train": splits.train_rows,
-            "selection": splits.selection_rows,
-            "heldout": splits.heldout_rows,
+            "train": public_split_snapshot(&splits.train_rows)?,
+            "selection": public_split_snapshot(&splits.selection_rows)?,
+            "heldout": {
+                "row_count": splits.heldout_ids.len(),
+                "task_id_digest": string_list_digest(&splits.heldout_ids),
+                "rows_loaded": false,
+            },
         }),
     )?;
 
@@ -107,7 +120,7 @@ pub fn execute_marl_promptopt(config: MarlPromptoptConfig) -> Result<MarlRunResu
         0,
         gepa_config.gepa.minibatch_size.max(1),
     );
-    let seed_batch = evaluate_candidate(EvaluateCandidateInput {
+    let mut seed_batch = evaluate_candidate(EvaluateCandidateInput {
         client: &client,
         config: &gepa_config,
         strategy: strategy.as_ref(),
@@ -123,7 +136,9 @@ pub fn execute_marl_promptopt(config: MarlPromptoptConfig) -> Result<MarlRunResu
         heldout: false,
         primary_only: false,
     })?;
-    seed.train_score = Some(score_batch(strategy.as_ref(), &seed_batch)?);
+    let seed_score = score_batch(strategy.as_ref(), &seed_batch)?;
+    attach_strategy_score(&mut seed_batch.sensor_frames, &seed_score)?;
+    seed.train_score = Some(seed_score);
     seed.sensor_frames = seed_batch.sensor_frames.clone();
     let mut observations = seed_batch.observations;
     let mut candidates = vec![seed];
@@ -132,7 +147,8 @@ pub fn execute_marl_promptopt(config: MarlPromptoptConfig) -> Result<MarlRunResu
         if budget.train_remaining() < config.experiment.minimum_rows_per_candidate {
             break;
         }
-        let parent_index = best_candidate_index(strategy.as_ref(), &candidates)?;
+        let frontier = nondominated_candidate_indices(strategy.as_ref(), &candidates);
+        let parent_index = frontier[(generation - 1) % frontier.len()];
         let parent = candidates[parent_index].clone();
         let proposed = propose_generation(ProposeGenerationInput {
             config: &gepa_config,
@@ -156,7 +172,7 @@ pub fn execute_marl_promptopt(config: MarlPromptoptConfig) -> Result<MarlRunResu
             if budget.train_remaining() < config.experiment.minimum_rows_per_candidate {
                 break;
             }
-            let batch = evaluate_candidate(EvaluateCandidateInput {
+            let mut batch = evaluate_candidate(EvaluateCandidateInput {
                 client: &client,
                 config: &gepa_config,
                 strategy: strategy.as_ref(),
@@ -175,7 +191,9 @@ pub fn execute_marl_promptopt(config: MarlPromptoptConfig) -> Result<MarlRunResu
             if batch.observations.is_empty() {
                 break;
             }
-            candidate.train_score = Some(score_batch(strategy.as_ref(), &batch)?);
+            let score = score_batch(strategy.as_ref(), &batch)?;
+            attach_strategy_score(&mut batch.sensor_frames, &score)?;
+            candidate.train_score = Some(score);
             candidate.sensor_frames = batch.sensor_frames.clone();
             observations.extend(batch.observations);
             candidates.push(candidate);
@@ -210,7 +228,7 @@ pub fn execute_marl_promptopt(config: MarlPromptoptConfig) -> Result<MarlRunResu
                         .find(|candidate| candidate.candidate_id == parent_id)
                 })
                 .cloned();
-            let batch = evaluate_candidate(EvaluateCandidateInput {
+            let mut batch = evaluate_candidate(EvaluateCandidateInput {
                 client: &client,
                 config: &gepa_config,
                 strategy: strategy.as_ref(),
@@ -227,18 +245,25 @@ pub fn execute_marl_promptopt(config: MarlPromptoptConfig) -> Result<MarlRunResu
                 primary_only: false,
             })?;
             if !batch.observations.is_empty() {
-                candidates[index].selection_score = Some(score_batch(strategy.as_ref(), &batch)?);
+                let score = score_batch(strategy.as_ref(), &batch)?;
+                attach_strategy_score(&mut batch.sensor_frames, &score)?;
+                candidates[index].selection_score = Some(score);
                 candidates[index]
                     .sensor_frames
                     .extend(batch.sensor_frames.clone());
                 observations.extend(batch.observations);
             }
         }
+        let frontier_candidate_ids = nondominated_candidate_indices(strategy.as_ref(), &candidates)
+            .into_iter()
+            .map(|index| candidates[index].candidate_id.clone())
+            .collect::<Vec<_>>();
         write_json(
             &run_dir.join(format!("generation_{generation:03}.json")),
             &json!({
                 "generation": generation,
                 "budget": budget,
+                "frontier_candidate_ids": frontier_candidate_ids,
                 "candidates": candidates,
             }),
         )?;
@@ -260,6 +285,20 @@ pub fn execute_marl_promptopt(config: MarlPromptoptConfig) -> Result<MarlRunResu
         )?;
     }
 
+    // Fetch heldout payloads only after search and parent selection have ended. The public GEPA
+    // proposer runs below `run_dir`, so pre-search artifacts contain only a count and digest.
+    let heldout_rows = fetch_rows(
+        &client,
+        &gepa_config.taskset.heldout_split,
+        &splits.heldout_ids,
+        Value::Object(gepa_config.taskset.filters.clone()),
+    )?;
+    if heldout_rows.is_empty() {
+        return Err(OptimizerError::Config(
+            "MARL comparison requires non-empty heldout rows".to_string(),
+        ));
+    }
+
     let (heldout_seed, heldout_champion, heldout_observations) = paired_heldout(
         &client,
         &gepa_config,
@@ -267,7 +306,7 @@ pub fn execute_marl_promptopt(config: MarlPromptoptConfig) -> Result<MarlRunResu
         &candidates[0],
         &candidates[champion_index],
         &seed_payload,
-        &splits.heldout_rows,
+        &heldout_rows,
         &config.run.run_id,
         &mut budget,
     )?;
@@ -293,6 +332,10 @@ pub fn execute_marl_promptopt(config: MarlPromptoptConfig) -> Result<MarlRunResu
             champion_outcome - seed_outcome
         });
     let manifest_path = run_dir.join("result_manifest.json");
+    let frontier_candidate_ids = nondominated_candidate_indices(strategy.as_ref(), &candidates)
+        .into_iter()
+        .map(|index| candidates[index].candidate_id.clone())
+        .collect::<Vec<_>>();
     let result = MarlRunResult {
         schema_version: "marl_promptopt_result.v1".to_string(),
         run_id: config.run.run_id.clone(),
@@ -300,6 +343,7 @@ pub fn execute_marl_promptopt(config: MarlPromptoptConfig) -> Result<MarlRunResu
         environment,
         seed_candidate_id: candidates[0].candidate_id.clone(),
         champion_candidate_id: champion_id,
+        frontier_candidate_ids,
         heldout_seed_score: heldout_seed,
         heldout_champion_score: heldout_champion,
         heldout_uplift,
@@ -328,10 +372,10 @@ fn container_client(config: &SynthOptimizerConfig) -> Result<ContainerClient> {
     )
 }
 
-fn load_dataset_splits(
+fn load_search_splits(
     client: &ContainerClient,
     config: &SynthOptimizerConfig,
-) -> Result<DatasetSplits> {
+) -> Result<SearchSplits> {
     let selection_ids = if config.gepa.task_pools.pareto.is_empty() {
         return Err(OptimizerError::Config(
             "gepa.task_pools.pareto must name the frozen selection task ids".to_string(),
@@ -362,7 +406,7 @@ fn load_dataset_splits(
     } else {
         config.gepa.task_pools.heldout.clone()
     };
-    Ok(DatasetSplits {
+    Ok(SearchSplits {
         train_rows: fetch_rows(
             client,
             &config.taskset.train_split,
@@ -375,13 +419,66 @@ fn load_dataset_splits(
             &selection_ids,
             Value::Object(config.taskset.filters.clone()),
         )?,
-        heldout_rows: fetch_rows(
-            client,
-            &config.taskset.heldout_split,
-            &heldout_ids,
-            Value::Object(config.taskset.filters.clone()),
-        )?,
+        heldout_ids,
     })
+}
+
+fn assert_search_splits_disjoint(splits: &SearchSplits) -> std::result::Result<(), String> {
+    let train_ids = row_task_ids(&splits.train_rows)?;
+    let selection_ids = row_task_ids(&splits.selection_rows)?;
+    let heldout_ids = splits.heldout_ids.iter().cloned().collect::<BTreeSet<_>>();
+    assert_no_task_overlap("train", &train_ids, "selection", &selection_ids)?;
+    assert_no_task_overlap("train", &train_ids, "heldout", &heldout_ids)?;
+    assert_no_task_overlap("selection", &selection_ids, "heldout", &heldout_ids)
+}
+
+fn row_task_ids(rows: &[Value]) -> std::result::Result<BTreeSet<String>, String> {
+    rows.iter()
+        .map(|row| task_identity(row).map_err(|error| error.to_string()))
+        .collect()
+}
+
+fn assert_no_task_overlap(
+    left_name: &str,
+    left: &BTreeSet<String>,
+    right_name: &str,
+    right: &BTreeSet<String>,
+) -> std::result::Result<(), String> {
+    let overlap = left.intersection(right).cloned().collect::<Vec<_>>();
+    if overlap.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{left_name} and {right_name} task ids overlap: {overlap:?}"
+        ))
+    }
+}
+
+fn public_split_snapshot(rows: &[Value]) -> Result<Value> {
+    let task_ids = rows
+        .iter()
+        .map(task_identity)
+        .collect::<Result<Vec<_>>>()?;
+    Ok(json!({
+        "row_count": rows.len(),
+        "task_ids": task_ids,
+        "row_digest": json_digest(rows)?,
+    }))
+}
+
+fn string_list_digest(values: &[String]) -> String {
+    let mut digest = Sha256::new();
+    for value in values {
+        digest.update(value.as_bytes());
+        digest.update([0]);
+    }
+    format!("{:x}", digest.finalize())
+}
+
+fn json_digest(value: &(impl Serialize + ?Sized)) -> Result<String> {
+    let mut digest = Sha256::new();
+    digest.update(serde_json::to_vec(value)?);
+    Ok(format!("{:x}", digest.finalize()))
 }
 
 fn fetch_rows(
@@ -395,8 +492,28 @@ fn fetch_rows(
             "no task ids configured for split {split:?}"
         )));
     }
+    let expected = task_ids.iter().cloned().collect::<BTreeSet<_>>();
+    if expected.len() != task_ids.len() {
+        return Err(OptimizerError::Config(format!(
+            "duplicate task ids configured for split {split:?}"
+        )));
+    }
     let request = TasksetTasksRequest::new(split, task_ids, filters);
-    Ok(client.taskset_tasks_typed(&request)?.tasks)
+    let rows = client.taskset_tasks_typed(&request)?.tasks;
+    let actual = rows
+        .iter()
+        .map(task_identity)
+        .collect::<Result<BTreeSet<_>>>()?;
+    if rows.len() != task_ids.len() || actual != expected {
+        let missing = expected.difference(&actual).cloned().collect::<Vec<_>>();
+        let unexpected = actual.difference(&expected).cloned().collect::<Vec<_>>();
+        return Err(OptimizerError::Container(format!(
+            "taskset returned a non-exact split {split:?}: requested={}, returned={}, missing={missing:?}, unexpected={unexpected:?}",
+            task_ids.len(),
+            rows.len(),
+        )));
+    }
+    Ok(rows)
 }
 
 fn sample_rows(rows: &[Value], generation: usize, count: usize) -> Vec<Value> {
@@ -424,6 +541,62 @@ fn best_candidate_index(
         })
         .map(|(index, _)| index)
         .ok_or_else(|| OptimizerError::Invariant("no scored MARL candidate".to_string()))
+}
+
+fn nondominated_candidate_indices(
+    strategy: &dyn MarlStrategy,
+    candidates: &[MarlCandidate],
+) -> Vec<usize> {
+    let scored = candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, candidate)| candidate.selection_basis().is_some())
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let mut frontier = scored
+        .iter()
+        .copied()
+        .filter(|candidate_index| {
+            !scored.iter().copied().any(|other_index| {
+                other_index != *candidate_index
+                    && compare_candidates(
+                        strategy,
+                        &candidates[other_index],
+                        &candidates[*candidate_index],
+                    ) == Ordering::Greater
+            })
+        })
+        .collect::<Vec<_>>();
+    frontier.sort_by(|left, right| {
+        candidates[*left]
+            .candidate_id
+            .cmp(&candidates[*right].candidate_id)
+    });
+    if frontier.is_empty() {
+        vec![0]
+    } else {
+        frontier
+    }
+}
+
+fn attach_strategy_score(frames: &mut [SensorFrame], score: &StrategyScore) -> Result<()> {
+    let score_value = serde_json::to_value(score)?;
+    for frame in frames {
+        frame
+            .metadata
+            .insert("marl_strategy_score".to_string(), score_value.clone());
+        let actionable = frame
+            .actionable_side_info
+            .get_or_insert_with(|| Value::Object(Map::new()));
+        if !actionable.is_object() {
+            *actionable = Value::Object(Map::new());
+        }
+        actionable
+            .as_object_mut()
+            .expect("actionable side info is an object")
+            .insert("marl_strategy_score".to_string(), score_value.clone());
+    }
+    Ok(())
 }
 
 fn compare_candidates(

@@ -166,6 +166,32 @@ fn rollout_request(
     let overlay_metadata = arm_metadata.clone();
     let payload = arm.payload;
     let policy = serde_json::to_value(&config.policy)?;
+    let mut request_metadata = Map::from_iter([
+        (
+            "algorithm_id".to_string(),
+            json!("synth_marl_promptopt.v1"),
+        ),
+        ("variant".to_string(), json!(variant)),
+        ("candidate_id".to_string(), json!(&candidate.candidate_id)),
+        ("generation".to_string(), json!(candidate.generation)),
+        ("split".to_string(), json!(split)),
+        ("stage".to_string(), json!(stage)),
+        ("evaluation_arm".to_string(), json!(&arm.arm_id)),
+        ("diagnostic".to_string(), json!(arm.arm_id != "primary")),
+    ]);
+    for (key, value) in &arm_metadata {
+        if let Some(reserved) = request_metadata.get(key) {
+            if reserved != value {
+                return Err(OptimizerError::Invariant(format!(
+                    "evaluation arm {} tried to replace reserved rollout metadata {key:?}",
+                    arm.arm_id
+                )));
+            }
+        } else {
+            request_metadata.insert(key.clone(), value.clone());
+        }
+    }
+    request_metadata.insert("arm".to_string(), Value::Object(arm_metadata));
     Ok(json!({
         "rollout_id": rollout_id,
         "trace_correlation_id": rollout_id,
@@ -179,17 +205,7 @@ fn rollout_request(
             "metadata": overlay_metadata,
         },
         "policy": policy,
-        "metadata": {
-            "algorithm_id": "synth_marl_promptopt.v1",
-            "variant": variant,
-            "candidate_id": candidate.candidate_id,
-            "generation": candidate.generation,
-            "split": split,
-            "stage": stage,
-            "evaluation_arm": arm.arm_id,
-            "diagnostic": arm.arm_id != "primary",
-            "arm": arm_metadata,
-        },
+        "metadata": request_metadata,
     }))
 }
 
@@ -252,7 +268,14 @@ fn response_metrics(response: &Value) -> BTreeMap<String, f64> {
             &["message_action_alignment", "message_action_alignment_rate", "request_action_alignment"],
         ),
         ("role_consistency", &["role_consistency", "assignment_consistency"]),
-        ("role_duplication", &["role_duplication", "duplicate_assignments"]),
+        (
+            "role_duplication",
+            &[
+                "role_duplication",
+                "role_duplication_count",
+                "duplicate_assignments",
+            ],
+        ),
         ("invalid_actions", &["invalid_actions", "invalid_action_count"]),
         ("idle_actions", &["idle_actions", "idle_action_count"]),
         (

@@ -243,10 +243,27 @@ def require_service(url: str, expected_environment: str) -> None:
 def result_summary(algorithm: str, payload: dict[str, object]) -> dict[str, object]:
     if algorithm == "gepa":
         best = payload.get("best_candidate")
+        compact_best = None
+        if isinstance(best, dict):
+            compact_best = {
+                key: best.get(key)
+                for key in (
+                    "candidate_id",
+                    "parent_id",
+                    "source",
+                    "status",
+                    "minibatch_reward",
+                    "train_reward",
+                    "heldout_reward",
+                    "payload",
+                )
+            }
         return {
             "manifest_path": payload.get("manifest_path"),
             "cost_usd": payload.get("cost_usd"),
-            "best_candidate": best,
+            "best_candidate": compact_best,
+            "usage": payload.get("usage"),
+            "stopped_by": payload.get("stopped_by"),
         }
     return {
         key: payload.get(key)

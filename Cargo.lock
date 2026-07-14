@@ -1324,6 +1324,7 @@ version = "0.2.5"
 dependencies = [
  "serde",
  "serde_json",
+ "sha2",
  "synth_optimizer_platform",
  "toml",
  "uuid",

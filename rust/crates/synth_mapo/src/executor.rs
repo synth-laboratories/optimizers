@@ -582,7 +582,7 @@ fn compact_rollout_response(response: &Value) -> Value {
             .get("summary")
             .and_then(|summary| summary.get("usage"))
     });
-    json!({
+    public_evidence_projection(&json!({
         "rollout_id": response.get("rollout_id"),
         "trace_correlation_id": response.get("trace_correlation_id"),
         "status": response.get("status"),
@@ -597,7 +597,38 @@ fn compact_rollout_response(response: &Value) -> Value {
         "checkpoint_id": response
             .get("checkpoint")
             .and_then(|checkpoint| checkpoint.get("checkpoint_id")),
-    })
+    }))
+}
+
+fn public_evidence_projection(value: &Value) -> Value {
+    match value {
+        Value::Object(object) => Value::Object(
+            object
+                .iter()
+                .filter(|(key, _)| !is_private_evidence_key(key))
+                .map(|(key, value)| (key.clone(), public_evidence_projection(value)))
+                .collect(),
+        ),
+        Value::Array(values) => {
+            Value::Array(values.iter().map(public_evidence_projection).collect())
+        }
+        _ => value.clone(),
+    }
+}
+
+fn is_private_evidence_key(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "reason"
+            | "rationale"
+            | "private_rationale"
+            | "private_reasoning"
+            | "thought"
+            | "thoughts"
+            | "analysis"
+            | "chain_of_thought"
+            | "scratchpad"
+    )
 }
 
 fn sanitize_id(value: &str) -> String {

@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use synth_optimizer_platform::{ContainerClient, OptimizerError, Result};
 
+use crate::campaign::CampaignBinding;
 use crate::candidate::{MapoBranchCheckpoint, MapoCandidate, MapoRolloutRecord};
 use crate::config::{MapoConfig, MapoExecutionOptions};
 use crate::executor::{
@@ -33,6 +34,10 @@ pub struct MapoRunResult {
     pub baseline_heldout_rollouts: Vec<MapoRolloutRecord>,
     pub heldout_rollouts: Vec<MapoRolloutRecord>,
     pub heldout_comparison: Option<MapoHeldoutComparison>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub debrief_evidence: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub campaign_manifest_receipt: Option<Value>,
     pub rollout_request_preview: Value,
     pub dry_run: bool,
 }
@@ -65,10 +70,14 @@ fn execute_mapo_with_options_inner(
     options: MapoExecutionOptions,
 ) -> Result<MapoRunResult> {
     config.validate()?;
+    let campaign_binding = CampaignBinding::load(&config)?;
     let run_dir = config.run_dir();
     let artifact_dir = run_dir.join("artifacts");
     fs::create_dir_all(&artifact_dir)
         .map_err(|source| OptimizerError::io(&artifact_dir, source))?;
+    if let Some(binding) = &campaign_binding {
+        binding.write_artifact(&artifact_dir)?;
+    }
     write_json_pretty(
         &artifact_dir.join("resolved_config.json"),
         &config.resolved_config_value()?,
@@ -122,6 +131,7 @@ fn execute_mapo_with_options_inner(
         &run_dir,
         &artifact_dir,
         &config,
+        campaign_binding.as_ref(),
         &champion,
         &candidates,
         &train_rollouts,
@@ -178,6 +188,7 @@ fn execute_mapo_with_options_inner(
                     &run_dir,
                     &artifact_dir,
                     &config,
+                    campaign_binding.as_ref(),
                     &champion,
                     &candidates,
                     &train_rollouts,
@@ -223,6 +234,7 @@ fn execute_mapo_with_options_inner(
                         &run_dir,
                         &artifact_dir,
                         &config,
+                        campaign_binding.as_ref(),
                         &champion,
                         &candidates,
                         &train_rollouts,
@@ -308,6 +320,7 @@ fn execute_mapo_with_options_inner(
                         &run_dir,
                         &artifact_dir,
                         &config,
+                        campaign_binding.as_ref(),
                         &champion,
                         &candidates,
                         &train_rollouts,
@@ -335,6 +348,7 @@ fn execute_mapo_with_options_inner(
                 &run_dir,
                 &artifact_dir,
                 &config,
+                campaign_binding.as_ref(),
                 &champion,
                 &candidates,
                 &train_rollouts,
@@ -363,6 +377,7 @@ fn execute_mapo_with_options_inner(
             &run_dir,
             &artifact_dir,
             &config,
+            campaign_binding.as_ref(),
             &champion,
             &candidates,
             &train_rollouts,
@@ -397,6 +412,12 @@ fn execute_mapo_with_options_inner(
         )?);
     }
 
+    let debrief_evidence = campaign_binding
+        .as_ref()
+        .map(|binding| binding.evidence_value(&config));
+    let campaign_manifest_receipt = campaign_binding
+        .as_ref()
+        .map(CampaignBinding::receipt_value);
     let result = MapoRunResult {
         algorithm_id: MAPO_ALGORITHM_ID.to_string(),
         run_id: config.run.run_id.clone(),
@@ -410,6 +431,8 @@ fn execute_mapo_with_options_inner(
         baseline_heldout_rollouts,
         heldout_rollouts,
         heldout_comparison,
+        debrief_evidence,
+        campaign_manifest_receipt,
         rollout_request_preview,
         dry_run: options.dry_run,
     };
@@ -417,6 +440,7 @@ fn execute_mapo_with_options_inner(
         &run_dir,
         &artifact_dir,
         &config,
+        campaign_binding.as_ref(),
         &result.champion,
         &result.candidates,
         &result.train_rollouts,
@@ -479,6 +503,7 @@ fn persist_mapo_artifacts(
     run_dir: &Path,
     artifact_dir: &Path,
     config: &MapoConfig,
+    campaign_binding: Option<&CampaignBinding>,
     champion: &MapoCandidate,
     candidates: &[MapoCandidate],
     train_rollouts: &[MapoRolloutRecord],
@@ -492,6 +517,11 @@ fn persist_mapo_artifacts(
     dry_run: bool,
     resume_requested: bool,
 ) -> Result<()> {
+    if let Some(binding) = campaign_binding {
+        binding.write_artifact(artifact_dir)?;
+    }
+    let debrief_evidence = campaign_binding.map(|binding| binding.evidence_value(config));
+    let campaign_manifest_receipt = campaign_binding.map(CampaignBinding::receipt_value);
     write_json_pretty(
         &artifact_dir.join("mapo_rollout_request_preview.json"),
         rollout_request_preview,
@@ -561,7 +591,8 @@ fn persist_mapo_artifacts(
             "heldout_rollouts": heldout_rollouts,
             "review_rows": review_rows,
             "heldout_comparison": heldout_comparison,
-            "debrief_evidence": &config.evidence,
+            "debrief_evidence": debrief_evidence,
+            "campaign_manifest_receipt": campaign_manifest_receipt,
             "rollout_request_preview": rollout_request_preview,
             "dry_run": dry_run,
         }),

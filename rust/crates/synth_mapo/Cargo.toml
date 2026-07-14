@@ -1,0 +1,14 @@
+[package]
+name = "synth_mapo"
+version.workspace = true
+edition.workspace = true
+rust-version = "1.88"
+license.workspace = true
+publish = false
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+synth_optimizer_platform = { path = "../synth_optimizer_platform" }
+toml.workspace = true
+uuid.workspace = true

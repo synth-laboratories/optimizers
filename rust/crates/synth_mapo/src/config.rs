@@ -9,6 +9,7 @@ use synth_optimizer_platform::{
 };
 use uuid::Uuid;
 
+use crate::campaign::CampaignBinding;
 use crate::candidate::MapoCandidate;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -249,6 +250,7 @@ impl MapoConfig {
                 "evidence.claim_label is not a debrief.v1 claim label".to_string(),
             ));
         }
+        CampaignBinding::load(self)?;
         Ok(())
     }
 
@@ -269,12 +271,19 @@ impl MapoConfig {
                 self.container.cwd = Some(base_dir.join(cwd));
             }
         }
+        if let Some(path) = &self.evidence.campaign_manifest_path {
+            if path.is_relative() {
+                self.evidence.campaign_manifest_path = Some(base_dir.join(path));
+            }
+        }
     }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MapoEvidenceConfig {
+    #[serde(default)]
+    pub campaign_manifest_path: Option<PathBuf>,
     #[serde(default)]
     pub benchmark_id: String,
     #[serde(default)]
@@ -310,6 +319,7 @@ pub struct MapoEvidenceConfig {
 impl Default for MapoEvidenceConfig {
     fn default() -> Self {
         Self {
+            campaign_manifest_path: None,
             benchmark_id: String::new(),
             paper_reference: String::new(),
             environment_digest: String::new(),

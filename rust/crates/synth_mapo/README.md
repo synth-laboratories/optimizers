@@ -38,6 +38,7 @@ entrypoints live in `optimizers-beta` until MAPO is signed off for merge.
 Each run writes:
 
 - `artifacts/result_manifest.json`
+- `artifacts/campaign_manifest.json` when a frozen campaign is bound
 - `artifacts/mapo_rollout_request_preview.json`
 - `artifacts/mapo_candidate_registry.json`
 - `artifacts/mapo_rollouts.json`
@@ -49,9 +50,17 @@ Each run writes:
 failures such as rejected messages, duplicate CLAIM evidence, and split-party
 failures with no tactical communication.
 
-For Debrief materialization, fill the typed `[evidence]` config with the
-benchmark id, paper/environment pin, exact model snapshot, topology and roles,
-prompt/protocol digest, frozen search budget, metric/margin/scorer version,
-token and latency accounting, known differences, and a conservative claim
-label. The resolved config and result manifest preserve that object. Missing
-fields fail Debrief materialization rather than silently weakening provenance.
+For terminal Debrief materialization, set
+`evidence.campaign_manifest_path` to an approved
+`debrief.campaign_manifest.v1` JSON file and fill the remaining typed evidence
+fields. MAPO verifies the frozen benchmark, model, split, optimizer, pairing,
+metric, and spend/time boundaries against its resolved config before executing.
+It copies the exact manifest bytes into the artifact root, computes the SHA-256
+receipt, and derives campaign id, source digests, model snapshots, and search
+budget in `debrief_evidence` from that immutable source. Missing or mismatched
+authority fails closed.
+
+Nested action/message `reason` fields and private rationale, thought, analysis,
+chain-of-thought, and scratchpad fields are recursively excluded from persisted
+rollout evidence. Receipts, trace identifiers, public metrics, and provenance
+metadata remain available for audit.

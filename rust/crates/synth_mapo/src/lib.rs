@@ -1,3 +1,4 @@
+pub mod campaign;
 pub mod candidate;
 pub mod config;
 pub mod executor;
@@ -6,6 +7,7 @@ pub mod review;
 pub mod runtime;
 pub mod scoring;
 
+pub use campaign::{CampaignBinding, DebriefCampaignManifest};
 pub use candidate::{
     MapoCandidate, MapoProtocolConfig, MapoRolloutRecord, MapoSharedContextConfig,
 };

@@ -1319,6 +1319,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "synth_mapo"
+version = "0.2.5"
+dependencies = [
+ "serde",
+ "serde_json",
+ "synth_optimizer_platform",
+ "toml",
+ "uuid",
+]
+
+[[package]]
 name = "synth_marl_promptopt"
 version = "0.2.5"
 dependencies = [

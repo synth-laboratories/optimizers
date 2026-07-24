@@ -11,6 +11,7 @@ pub mod docker;
 mod jsonrpc_read_window;
 pub mod limits;
 pub mod local;
+pub mod nano;
 pub mod role_agent;
 pub mod session;
 pub mod substrate;
@@ -26,6 +27,11 @@ pub use daytona::DaytonaCodexSubstrate;
 pub use role_agent::{
     sandbox_policy_for_mode, text_turn_input, ResolvedRoleAgentConfig, RoleAgentConfig,
     RoleAgentTurnRequestInput,
+};
+pub use nano::{
+    record_manifest_validation, NanoAgentTurnIdentity, NanoCodexEvent, NanoCodexExecution,
+    NanoCodexLatency, NanoCodexRecordedOutcome, NanoCodexSessionPool, NanoCodexTurnReceipt,
+    NanoCodexTurnRequest,
 };
 pub use session::{
     run_command_exec, run_turn, AgentCommandExecOutcome, AgentRuntimeSubstrate, AgentTurnOutcome,

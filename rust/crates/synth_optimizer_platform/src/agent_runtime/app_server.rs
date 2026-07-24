@@ -362,6 +362,23 @@ impl CodexAppServerClient {
         }
     }
 
+    pub fn interrupt_turn(
+        &mut self,
+        thread_id: &str,
+        turn_id: &str,
+        timeout: Duration,
+        message_stall_timeout: Duration,
+    ) -> Result<Value> {
+        let request_id = self.send_request(
+            "turn/interrupt",
+            serde_json::json!({
+                "threadId": thread_id,
+                "turnId": turn_id,
+            }),
+        )?;
+        self.wait_for_response(request_id, timeout, message_stall_timeout)
+    }
+
     pub fn terminate(&mut self) -> Result<()> {
         if self
             .child

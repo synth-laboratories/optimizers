@@ -2,14 +2,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use crate::{CandidateRecord, RolloutScore};
 use reqwest::blocking::Client;
 use serde_json::{json, Map, Value};
 use synth_optimizer_platform::{
-    run_turn, AgentTurnOutcome, CodexTurnRequest, OptimizerError, PromptProgram, Result,
-    SynthOptimizerConfig,
+    record_manifest_validation, run_turn, AgentTurnOutcome, CodexTurnRequest,
+    NanoAgentTurnIdentity, NanoCodexExecution, NanoCodexSessionPool, NanoCodexTurnRequest,
+    OptimizerError, PromptProgram, Result, SynthOptimizerConfig,
 };
 
 const GEPA_REFLECTIVE_FRAME_SCHEMA_VERSION: &str = "gepa_reflective_frame.v1";
@@ -27,6 +29,8 @@ const DEEPSEEK_OUTPUT_USD_PER_MILLION: f64 = 1.10;
 const CHAT_COMPLETIONS_PROPOSER_MAX_TOKENS: u64 = 8_192;
 const CHAT_COMPLETIONS_PROPOSER_MAX_EVIDENCE_CHARS_PER_FILE: usize = 32_000;
 const CHAT_COMPLETIONS_PROPOSER_MAX_TOTAL_EVIDENCE_CHARS: usize = 160_000;
+
+static NANO_CODEX_SESSIONS: OnceLock<Mutex<NanoCodexSessionPool>> = OnceLock::new();
 
 pub(crate) struct CodexProposerInput<'a> {
     pub config: &'a SynthOptimizerConfig,
@@ -67,7 +71,7 @@ pub(crate) fn run_codex_app_server_proposer(input: CodexProposerInput<'_>) -> Re
     let timeout = Duration::from_secs(input.config.proposer.timeout_seconds.max(1));
     let message_stall_timeout =
         Duration::from_secs(input.config.proposer.message_stall_timeout_seconds.max(1));
-    let outcome = run_turn(CodexTurnRequest {
+    let turn_request = CodexTurnRequest {
         run_id: &input.config.run.run_id,
         proposer: &input.config.proposer,
         workspace_dir: &input.workspace_dir,
@@ -79,8 +83,18 @@ pub(crate) fn run_codex_app_server_proposer(input: CodexProposerInput<'_>) -> Re
         turn_start_params: turn_start_params(&input, &model)?,
         timeout,
         message_stall_timeout,
-    })?;
-    build_response_from_outcome(&input, &model, outcome)
+    };
+    if input.config.proposer.nano_codex.enabled {
+        let execution = run_nano_codex_proposer(&input, turn_request)?;
+        return build_response_from_outcome(
+            &input,
+            &model,
+            execution.outcome,
+            Some(execution.receipt_path),
+        );
+    }
+    let outcome = run_turn(turn_request)?;
+    build_response_from_outcome(&input, &model, outcome, None)
 }
 
 pub(crate) fn run_codex_staleness_reviewer(
@@ -90,6 +104,11 @@ pub(crate) fn run_codex_staleness_reviewer(
         return Err(OptimizerError::Config(
             "gepa.pipeline.staleness_policy = reflective requires proposer.backend = \"codex_app_server\" for the staleness reviewer"
                 .to_string(),
+        ));
+    }
+    if input.config.proposer.nano_codex.enabled {
+        return Err(OptimizerError::Config(
+            "nano-Codex does not yet support the reflective staleness reviewer; refusing to fall back to a one-shot proposer process".to_string(),
         ));
     }
     materialize_staleness_review_workspace(&input)?;
@@ -386,6 +405,7 @@ fn build_response_from_outcome(
     input: &CodexProposerInput<'_>,
     model: &str,
     outcome: AgentTurnOutcome,
+    nano_receipt_path: Option<PathBuf>,
 ) -> Result<Value> {
     let usage = normalize_proposer_usage(
         input.config,
@@ -417,8 +437,10 @@ fn build_response_from_outcome(
         &prevalidation_response,
         &outcome,
     )?;
+    let validation_started = std::time::Instant::now();
     let manifest = read_manifest(&input.workspace_dir)?;
     let proposals = proposals_from_manifest(&manifest)?;
+    let manifest_validation_ms = validation_started.elapsed().as_millis();
     let mut evidence_warnings = manifest_evidence_warnings(input, &manifest, &proposals);
     if outcome.usage.is_none() {
         evidence_warnings.push(
@@ -441,6 +463,13 @@ fn build_response_from_outcome(
     if let Some(shutdown_warning) = outcome.shutdown_warning.as_ref() {
         response["shutdown_warning"] = Value::String(shutdown_warning.clone());
     }
+    if let Some(receipt_path) = nano_receipt_path {
+        let receipt = record_manifest_validation(&receipt_path, manifest_validation_ms)?;
+        response["nano_codex"] = json!({
+            "receipt_path": receipt_path,
+            "receipt": receipt,
+        });
+    }
     write_agent_artifacts(
         input,
         model,
@@ -453,6 +482,47 @@ fn build_response_from_outcome(
     )?;
     write_workspace_pack_manifest(&input.workspace_dir)?;
     Ok(response)
+}
+
+fn run_nano_codex_proposer(
+    input: &CodexProposerInput<'_>,
+    turn: CodexTurnRequest<'_>,
+) -> Result<NanoCodexExecution> {
+    let task_info_path = input.workspace_dir.join("state").join("task_info.json");
+    let task_info = read_json_value(&task_info_path)?;
+    let artifact_dir = input.workspace_dir.join(".nano_codex");
+    let identity = NanoAgentTurnIdentity {
+        request_id: format!(
+            "{}-generation-{:03}",
+            input.config.run.run_id, input.generation
+        ),
+        run_id: input.config.run.run_id.clone(),
+        role: "gepa_proposer".to_string(),
+        round: input.generation.to_string(),
+        treatment_preset: "prompt".to_string(),
+        parent_candidate_id: input.parent.candidate_id.clone(),
+        workspace_id: format!("generation_{:03}", input.generation),
+    };
+    let request = NanoCodexTurnRequest {
+        turn,
+        identity,
+        static_context: json!({
+            "schema_version": "gepa.nano_codex.static_context.v1",
+            "task_info": task_info,
+            "program": input.program,
+            "target_modules": input.config.candidate.target_modules,
+            "proposer_prompt": input.config.proposer.prompt,
+        }),
+        replay_artifact_paths: vec![PathBuf::from("proposal/manifest.json")],
+        artifact_dir: &artifact_dir,
+        cancel_before_start: false,
+    };
+    let pool = NANO_CODEX_SESSIONS.get_or_init(|| Mutex::new(NanoCodexSessionPool::default()));
+    pool.lock()
+        .map_err(|_| {
+            OptimizerError::Invariant("nano-Codex session pool mutex poisoned".to_string())
+        })?
+        .run(request)
 }
 
 fn normalize_proposer_usage(config: &SynthOptimizerConfig, model: &str, usage: Value) -> Value {
@@ -2781,6 +2851,11 @@ fn read_manifest(workspace_dir: &Path) -> Result<Value> {
             normalize_manifest_contract(value, &path)
         }
     }
+}
+
+fn read_json_value(path: &Path) -> Result<Value> {
+    let text = fs::read_to_string(path).map_err(|source| OptimizerError::io(path, source))?;
+    Ok(serde_json::from_str(&text)?)
 }
 
 fn normalize_manifest_contract(mut manifest: Value, path: &Path) -> Result<Value> {

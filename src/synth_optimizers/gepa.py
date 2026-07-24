@@ -182,6 +182,35 @@ class ProposerDockerTomlSection(BaseModel):
         )
 
 
+class NanoCodexTomlSection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    mode: str = "live"
+    max_turns_per_session: int = 16
+    record_dir: str | Path | None = None
+    replay_dir: str | Path | None = None
+    allowed_tools: list[str] = Field(
+        default_factory=lambda: ["search", "read", "apply_patch", "exec"]
+    )
+
+    def to_domain(self, base_dir: Path) -> "NanoCodexConfig":
+        def resolve(path_value: str | Path | None) -> Path | None:
+            if path_value is None:
+                return None
+            path = Path(path_value)
+            return path if path.is_absolute() else base_dir / path
+
+        return NanoCodexConfig(
+            enabled=self.enabled,
+            mode=self.mode,
+            max_turns_per_session=self.max_turns_per_session,
+            record_dir=resolve(self.record_dir),
+            replay_dir=resolve(self.replay_dir),
+            allowed_tools=list(self.allowed_tools),
+        )
+
+
 class ProposerTomlSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -204,6 +233,7 @@ class ProposerTomlSection(BaseModel):
     command: list[str] = Field(default_factory=list)
     prompt: ProposerPromptTomlSection = Field(default_factory=ProposerPromptTomlSection)
     docker: ProposerDockerTomlSection | None = None
+    nano_codex: NanoCodexTomlSection = Field(default_factory=NanoCodexTomlSection)
 
     def to_domain(self, base_dir: Path) -> "ProposerConfig":
         codex_home = None
@@ -236,6 +266,7 @@ class ProposerTomlSection(BaseModel):
             command=list(self.command),
             prompt=self.prompt.to_domain(base_dir),
             docker=self.docker.to_domain() if self.docker is not None else None,
+            nano_codex=self.nano_codex.to_domain(base_dir),
         )
 
 
@@ -746,6 +777,56 @@ class ProposerDockerConfig:
 
 
 @dataclass(slots=True)
+class NanoCodexConfig:
+    enabled: bool = False
+    mode: str = "live"
+    max_turns_per_session: int = 16
+    record_dir: str | Path | None = None
+    replay_dir: str | Path | None = None
+    allowed_tools: list[str] = field(
+        default_factory=lambda: ["search", "read", "apply_patch", "exec"]
+    )
+
+    def validate(self) -> None:
+        mode = self.mode.strip().lower().replace("-", "_")
+        if mode not in {"live", "replay"}:
+            raise ValueError("NanoCodexConfig.mode must be live or replay")
+        if self.max_turns_per_session <= 0:
+            raise ValueError("NanoCodexConfig.max_turns_per_session must be positive")
+        if mode == "replay" and self.replay_dir is None:
+            raise ValueError("NanoCodexConfig replay mode requires replay_dir")
+        if (
+            mode == "replay"
+            and self.record_dir is not None
+            and Path(self.record_dir).resolve() == Path(self.replay_dir).resolve()
+        ):
+            raise ValueError(
+                "NanoCodexConfig replay record_dir must differ from replay_dir"
+            )
+        permitted = {"search", "read", "apply_patch", "exec"}
+        normalized = [tool.strip().lower().replace("-", "_") for tool in self.allowed_tools]
+        if not normalized or any(tool not in permitted for tool in normalized):
+            raise ValueError(
+                "NanoCodexConfig.allowed_tools must contain only search, read, apply_patch, exec"
+            )
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("NanoCodexConfig.allowed_tools must not contain duplicates")
+
+    def to_toml(self) -> dict[str, Any]:
+        self.validate()
+        return _drop_none(
+            {
+                "enabled": bool(self.enabled),
+                "mode": self.mode,
+                "max_turns_per_session": int(self.max_turns_per_session),
+                "record_dir": str(self.record_dir) if self.record_dir is not None else None,
+                "replay_dir": str(self.replay_dir) if self.replay_dir is not None else None,
+                "allowed_tools": list(self.allowed_tools),
+            }
+        )
+
+
+@dataclass(slots=True)
 class ProposerConfig:
     backend: str = "codex_app_server"
     runtime_substrate: str = "local"
@@ -766,6 +847,7 @@ class ProposerConfig:
     command: list[str] = field(default_factory=list)
     prompt: ProposerPromptConfig | None = None
     docker: ProposerDockerConfig | None = None
+    nano_codex: NanoCodexConfig = field(default_factory=NanoCodexConfig)
 
     @classmethod
     def local(cls, **kwargs: Any) -> "ProposerConfig":
@@ -780,8 +862,20 @@ class ProposerConfig:
         )
 
     def to_toml(self) -> dict[str, Any]:
+        auth_mode = str(self.auth_mode).strip().lower().replace("-", "_")
+        if self.nano_codex.enabled:
+            if auth_mode not in {"chatgpt", "host"}:
+                raise ValueError(
+                    "nano_codex requires proposer auth_mode='chatgpt' or 'host'"
+                )
+            if not self.copy_host_auth or self.api_key_env is not None:
+                raise ValueError(
+                    "nano_codex requires copy_host_auth=True and api_key_env=None"
+                )
+            if str(self.runtime_substrate).strip().lower() != "local":
+                raise ValueError("nano_codex currently requires runtime_substrate='local'")
         api_key_env = self.api_key_env
-        if str(self.auth_mode).strip().lower() == "chatgpt":
+        if auth_mode in {"chatgpt", "host"}:
             api_key_env = None
         payload = _drop_none(
             {
@@ -810,6 +904,7 @@ class ProposerConfig:
                 payload["prompt"] = prompt
         if self.docker is not None:
             payload["docker"] = self.docker.to_toml()
+        payload["nano_codex"] = self.nano_codex.to_toml()
         return payload
 
 

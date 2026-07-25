@@ -8,8 +8,7 @@ requires-python = ">=3.11"
 license = "Apache-2.0"
 dependencies = [
     "pydantic>=2.0.0",
-    "synth-containers==0.2.0.20260604",
-    "websocket-client>=1.8.0",
+    "synth-containers==0.4.0.20260725",
 ]
 
 [project.optional-dependencies]
@@ -54,7 +53,7 @@ include = ["src/synth_optimizers/docs/**/*"]
 package = true
 
 [tool.uv.sources]
-synth-containers = { path = "../containers", editable = true }
+synth-containers = { git = "https://github.com/synth-laboratories/containers.git", rev = "e5d9747c041101e7c00077092c2fdbd2b75a70a3" }
 
 [tool.ruff]
 line-length = 100

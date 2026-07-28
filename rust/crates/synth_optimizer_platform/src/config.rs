@@ -1111,9 +1111,9 @@ fn validate_proposer_runtime_substrate_config(proposer: &ProposerConfig) -> Resu
 
 fn validate_chat_completions_proposer_config(proposer: &ProposerConfig) -> Result<()> {
     let provider = proposer.provider.trim().to_ascii_lowercase();
-    if !matches!(provider.as_str(), "deepseek" | "nvidia") {
+    if !matches!(provider.as_str(), "deepseek" | "nvidia" | "openrouter") {
         return Err(OptimizerError::Config(format!(
-            "chat-completions proposer backend requires proposer.provider = \"deepseek\" or \"nvidia\"; got {:?}",
+            "chat-completions proposer backend requires proposer.provider = \"deepseek\", \"nvidia\", or \"openrouter\"; got {:?}",
             proposer.provider
         )));
     }
@@ -1159,9 +1159,12 @@ fn validate_openrouter_proposer_config(proposer: &ProposerConfig) -> Result<()> 
             VERIFIED_OPENROUTER_MODELS.join(", ")
         )));
     }
-    if proposer.backend != "codex_app_server" {
+    if !matches!(
+        proposer.backend.as_str(),
+        "codex_app_server" | "chat_completions" | "deepseek_chat"
+    ) {
         return Err(OptimizerError::Config(
-            "OpenRouter proposer requires proposer.backend = \"codex_app_server\"".to_string(),
+            "OpenRouter proposer requires proposer.backend = \"codex_app_server\" or \"chat_completions\"".to_string(),
         ));
     }
     let auth_mode = proposer_auth_mode_normalized(&proposer.auth_mode);

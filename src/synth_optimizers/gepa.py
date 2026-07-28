@@ -142,6 +142,7 @@ class ProposerTomlSection(BaseModel):
     timeout_seconds: int = 900
     sandbox_mode: str | None = "workspace-write"
     approval_policy: str | None = "never"
+    allow_unverified_model: bool = False
     command: list[str] = Field(default_factory=list)
     prompt: ProposerPromptTomlSection = Field(default_factory=ProposerPromptTomlSection)
     docker: ProposerDockerTomlSection | None = None
@@ -174,6 +175,7 @@ class ProposerTomlSection(BaseModel):
             timeout_seconds=self.timeout_seconds,
             sandbox_mode=self.sandbox_mode,
             approval_policy=self.approval_policy,
+            allow_unverified_model=bool(self.allow_unverified_model),
             command=list(self.command),
             prompt=self.prompt.to_domain(base_dir),
             docker=self.docker.to_domain() if self.docker is not None else None,
@@ -687,6 +689,7 @@ class ProposerConfig:
     timeout_seconds: int = 900
     sandbox_mode: str | None = "workspace-write"
     approval_policy: str | None = "never"
+    allow_unverified_model: bool = False
     command: list[str] = field(default_factory=list)
     prompt: ProposerPromptConfig | None = None
     docker: ProposerDockerConfig | None = None
@@ -725,6 +728,7 @@ class ProposerConfig:
                 "timeout_seconds": int(self.timeout_seconds),
                 "sandbox_mode": self.sandbox_mode,
                 "approval_policy": self.approval_policy,
+                "allow_unverified_model": bool(self.allow_unverified_model),
                 "command": list(self.command),
             }
         )

@@ -107,10 +107,8 @@ pub(crate) fn run_codex_staleness_reviewer(
     build_staleness_review_response(&input, &model, outcome)
 }
 
-/// Direct OpenAI-compatible Chat Completions proposer. Works for any provider whose
-/// `/chat/completions` endpoint matches the OpenAI shape — DeepSeek and NVIDIA today.
-/// This is the path NVIDIA must use: the codex_app_server route speaks the Responses
-/// wire, which `integrate.api.nvidia.com` does not serve.
+/// Direct OpenAI-compatible Chat Completions proposer. Works for providers whose
+/// `/chat/completions` endpoint matches the OpenAI shape.
 pub(crate) fn run_deepseek_chat_proposer(input: CodexProposerInput<'_>) -> Result<Value> {
     let provider = input.config.proposer.provider.trim().to_ascii_lowercase();
     // (default base_url, default api_key_env, default model, send DeepSeek `thinking` field)
@@ -128,9 +126,15 @@ pub(crate) fn run_deepseek_chat_proposer(input: CodexProposerInput<'_>) -> Resul
                 "nvidia/nemotron-3-ultra-550b-a55b",
                 false,
             ),
+            "openrouter" => (
+                "https://openrouter.ai/api/v1",
+                "OPENROUTER_API_KEY",
+                "nvidia/nemotron-3-ultra-550b-a55b",
+                false,
+            ),
             other => {
                 return Err(OptimizerError::Config(format!(
-                    "chat-completions proposer backend requires proposer.provider = \"deepseek\" or \"nvidia\"; got {other:?}"
+                    "chat-completions proposer backend requires proposer.provider = \"deepseek\", \"nvidia\", or \"openrouter\"; got {other:?}"
                 )))
             }
         };
@@ -1117,6 +1121,7 @@ Rules:
 - Preserve the exact top-level and evidence field names from the JSON schema. In particular, use `evidence.reviewed_files` and `evidence.example_ids_used`; do not rename them to `files_reviewed`, `example_ids`, or any other alias.
 - Use shell/Python/JQ inspection to summarize the workspace before writing the manifest. Do not jump straight to editing `proposal/manifest.json`.
 - Minimum review workflow: inspect `state/proposer_metadata.json`, inspect `state/task_info.json`, inspect reflection wins/losses and trace refs, inspect parent payload, then write the manifest.
+- Write the manifest with a real file-editing action. Never submit the JSON object itself as an `exec_command` or shell command.
 - Use `state/proposer_failure_summary.json`, `state/proposer_repair_hints.json`, and `state/proposer_examples.json` as the primary source for rewards, failures, wins, expected outputs, predictions, and example text. Use nested evidence frames when task semantics or trace-level behavior are unclear.
 - Use `prompting_best_practices.md` to classify each proposed change as a premise, context, task_priority, core_task_description, heuristic, constraint, rule, input_description, or output_description.
 - Fill `evidence` with concrete files reviewed, candidate comparison, failure patterns, winning patterns, and example ids from `state/proposer_failure_summary.json`.
@@ -1215,7 +1220,11 @@ fn proposer_visible_frame(
     }
     if !matches!(
         frame.evaluation_stage.as_str(),
-        "candidate_minibatch" | "parent_minibatch_reference" | "reflection"
+        "seed_full_train"
+            | "candidate_full_train"
+            | "candidate_minibatch"
+            | "parent_minibatch_reference"
+            | "reflection"
     ) {
         return false;
     }
@@ -2505,6 +2514,7 @@ fn proposer_instructions(input: &CodexProposerInput<'_>) -> Result<String> {
          Do not spend candidates on generic output-contract polish or parent paraphrases unless the dominant failures are output-format failures.\n\
          Across the requested proposals, explore genuinely different strategies (structural rewrite, few-shot examples, terse contract, label-table, role priming) rather than paraphrasing the seed or each other.\n\
          Write strict JSON to proposal/manifest.json using schema_version gepa_workspace_proposal_v3.\n\
+         Use file editing to write proposal/manifest.json. Never submit the manifest JSON itself as an exec_command or shell command.\n\
          Include the required evidence block with reviewed files, parent/evidence summary, failure patterns, winning patterns, and example ids.\n\
          Do not print pseudo-tool calls. Use real file inspection and file editing.",
         input.config.gepa.proposals_per_generation,

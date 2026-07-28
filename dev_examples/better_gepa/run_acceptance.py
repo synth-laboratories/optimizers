@@ -11,16 +11,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from synth_optimizers.gepa import _toml_dumps
-
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEV_ROOT = REPO_ROOT / "dev_examples" / "better_gepa"
 BANKING77_ROOT = REPO_ROOT / "dev_examples" / "banking77"
 PROFILES_ROOT = DEV_ROOT / "profiles"
 
+sys.path.insert(0, str(REPO_ROOT / "src"))
 sys.path.insert(0, str(REPO_ROOT))
 
+from synth_optimizers.gepa import _toml_dumps  # noqa: E402
 from dev_examples.banking77.banking77_synth_gepa_dev import (  # noqa: E402
     DEFAULT_PORT,
     DEV_ROOT as BANKING77_DEV_ROOT,
@@ -62,6 +62,7 @@ class AcceptanceReport:
     log_path: str
     event_path: str
     manifest_path: str
+    compare_json_path: str
     proposer_tokens: int
     policy_tokens: int
     total_tokens: int
@@ -131,6 +132,7 @@ def main() -> int:
         config_path=config_path,
         output_dir=output_dir,
         log_path=log_path,
+        acceptance_command=acceptance_command(args),
     )
     report_path = output_dir / "acceptance_report.json"
     report_path.write_text(json.dumps(asdict(report), indent=2, sort_keys=True) + "\n")
@@ -185,10 +187,13 @@ def inspect_acceptance_run(
     config_path: Path,
     output_dir: Path,
     log_path: Path,
+    acceptance_command: list[str],
 ) -> AcceptanceReport:
     run_dir = output_dir / run_id
     event_path = run_dir / "events.jsonl"
     manifest_path = run_dir / "result_manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    config = tomllib.loads(config_path.read_text())
     log_text = log_path.read_text()
     events = [json.loads(line) for line in event_path.read_text().splitlines() if line.strip()]
     runtime_jobs = [event for event in events if event.get("type") == "runtime.job.completed"]
@@ -228,6 +233,22 @@ def inspect_acceptance_run(
         run_dir=run_dir,
         log_text=log_text,
     )
+    compare_json_path = write_compare_artifact(
+        profile=profile,
+        mode=mode,
+        run_id=run_id,
+        config_path=config_path,
+        run_dir=run_dir,
+        log_path=log_path,
+        event_path=event_path,
+        manifest_path=manifest_path,
+        proposal_manifest_path=proposal_manifest_path,
+        runtime_summary=runtime_summary,
+        manifest=manifest,
+        config=config,
+        events=events,
+        acceptance_command=acceptance_command,
+    )
     return AcceptanceReport(
         profile=profile,
         mode=mode,
@@ -237,6 +258,7 @@ def inspect_acceptance_run(
         log_path=str(log_path),
         event_path=str(event_path),
         manifest_path=str(manifest_path),
+        compare_json_path=str(compare_json_path),
         proposer_tokens=proposer_tokens,
         policy_tokens=policy_tokens,
         total_tokens=total_tokens,
@@ -247,6 +269,214 @@ def inspect_acceptance_run(
         proposal_count=len(proposals),
         docker_staging_cleaned=docker_staging_cleaned,
     )
+
+
+def write_compare_artifact(
+    *,
+    profile: str,
+    mode: str,
+    run_id: str,
+    config_path: Path,
+    run_dir: Path,
+    log_path: Path,
+    event_path: Path,
+    manifest_path: Path,
+    proposal_manifest_path: Path,
+    runtime_summary: dict[str, Any],
+    manifest: dict[str, Any],
+    config: dict[str, Any],
+    events: list[dict[str, Any]],
+    acceptance_command: list[str],
+) -> Path:
+    candidate_registry = load_candidate_registry(manifest)
+    best_candidate = manifest.get("best_candidate")
+    if not isinstance(best_candidate, dict):
+        raise SystemExit("result_manifest.json missing best_candidate object")
+    candidate_id = str(best_candidate.get("candidate_id") or "")
+    if not candidate_id:
+        raise SystemExit("best_candidate missing candidate_id")
+    candidate = candidate_by_id(candidate_registry, candidate_id) or best_candidate
+    baseline = seed_candidate(candidate_registry)
+    if baseline is None:
+        parent_id = candidate.get("parent_id")
+        baseline = candidate_by_id(candidate_registry, str(parent_id)) if parent_id else None
+    if baseline is None:
+        raise SystemExit("could not identify baseline candidate for compare artifact")
+
+    baseline_heldout = metric_float(baseline, "heldout_reward")
+    candidate_heldout = metric_float(candidate, "heldout_reward")
+    baseline_visible = metric_float(baseline, "train_reward")
+    candidate_visible = metric_float(candidate, "train_reward")
+    score_basis = "heldout_reward"
+    if baseline_heldout is None or candidate_heldout is None:
+        score_basis = "train_reward; heldout_reward unavailable"
+    compare = {
+        "schema_version": "synth.gepa_compare.v1",
+        "profile": profile,
+        "mode": mode,
+        "status": "works" if final_state(events) == "finished" else "broken",
+        "tier": "smoke",
+        "repo": "optimizers",
+        "repo_sha": git_text("rev-parse", "HEAD"),
+        "repo_dirty": bool(git_text("status", "--short", allow_empty=True)),
+        "command": shell_join(acceptance_command),
+        "cwd": str(REPO_ROOT),
+        "run_id": run_id,
+        "artifact_root": str(run_dir),
+        "config_path": str(config_path),
+        "manifest_path": str(manifest_path),
+        "event_path": str(event_path),
+        "log_path": str(log_path),
+        "proposal_manifest_path": str(proposal_manifest_path),
+        "workspace_db_path": manifest.get("workspace_db_path"),
+        "baseline_candidate_id": baseline.get("candidate_id"),
+        "candidate_id": candidate_id,
+        "baseline_score": baseline_heldout,
+        "candidate_score": candidate_heldout,
+        "heldout_score": candidate_heldout,
+        "uplift": delta(candidate_heldout, baseline_heldout),
+        "baseline_visible_score": baseline_visible,
+        "candidate_visible_score": candidate_visible,
+        "visible_uplift": delta(candidate_visible, baseline_visible),
+        "score_basis": score_basis,
+        "cost_usd": metric_float(manifest, "cost_usd") or 0.0,
+        "wall_time_seconds": wall_time_seconds(events),
+        "model_alias": model_alias(config, runtime_summary, "proposer"),
+        "policy_model_alias": model_alias(config, runtime_summary, "policy"),
+        "runtime_substrate": config.get("proposer", {}).get("runtime_substrate", "local"),
+        "usage": manifest.get("usage", {}),
+        "taskset": {
+            "visible_split": config.get("taskset", {}).get("train_split"),
+            "heldout_split": config.get("taskset", {}).get("heldout_split"),
+            "visible_task_ids": config.get("taskset", {}).get("train_ids", []),
+            "heldout_task_ids": config.get("taskset", {}).get("heldout_ids", []),
+            "task_pools": config.get("gepa", {}).get("task_pools", {}),
+        },
+    }
+    compare_path = run_dir / "compare.json"
+    compare_path.write_text(json.dumps(compare, indent=2, sort_keys=True) + "\n")
+    return compare_path
+
+
+def acceptance_command(args: argparse.Namespace) -> list[str]:
+    command = [
+        sys.executable,
+        "dev_examples/better_gepa/run_acceptance.py",
+        "--profile",
+        str(args.profile),
+        "--mode",
+        str(args.mode),
+    ]
+    if args.substrate is not None:
+        command.extend(["--substrate", str(args.substrate)])
+    if args.port != DEFAULT_PORT:
+        command.extend(["--port", str(args.port)])
+    return command
+
+
+def load_candidate_registry(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    registry_path_value = manifest.get("candidate_registry_path")
+    if not isinstance(registry_path_value, str) or not registry_path_value:
+        raise SystemExit("result_manifest.json missing candidate_registry_path")
+    registry_path = Path(registry_path_value)
+    if not registry_path.is_file():
+        raise SystemExit(f"candidate registry missing: {registry_path}")
+    registry = json.loads(registry_path.read_text())
+    if not isinstance(registry, list):
+        raise SystemExit(f"candidate registry is not a list: {registry_path}")
+    if not all(isinstance(candidate, dict) for candidate in registry):
+        raise SystemExit(f"candidate registry has non-object entries: {registry_path}")
+    return registry
+
+
+def seed_candidate(registry: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for candidate in registry:
+        if candidate.get("source") == "seed":
+            return candidate
+    for candidate in registry:
+        if candidate.get("parent_id") is None:
+            return candidate
+    return None
+
+
+def candidate_by_id(registry: list[dict[str, Any]], candidate_id: str) -> dict[str, Any] | None:
+    for candidate in registry:
+        if candidate.get("candidate_id") == candidate_id:
+            return candidate
+    return None
+
+
+def metric_float(source: dict[str, Any], key: str) -> float | None:
+    value = source.get(key)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        raise SystemExit(f"{key} must be numeric when present; got {value!r}")
+
+
+def delta(left: float | None, right: float | None) -> float | None:
+    if left is None or right is None:
+        return None
+    return left - right
+
+
+def model_alias(
+    config: dict[str, Any],
+    runtime_summary: dict[str, Any],
+    runtime_kind: str,
+) -> str:
+    runtime_bucket = runtime_summary.get(runtime_kind)
+    if isinstance(runtime_bucket, dict) and runtime_bucket.get("model"):
+        return str(runtime_bucket["model"])
+    config_bucket = config.get(runtime_kind)
+    if isinstance(config_bucket, dict) and config_bucket.get("model"):
+        return str(config_bucket["model"])
+    return "unknown"
+
+
+def wall_time_seconds(events: list[dict[str, Any]]) -> float | None:
+    timestamps = [parse_event_time(event.get("ts")) for event in events if event.get("ts")]
+    parsed = [timestamp for timestamp in timestamps if timestamp is not None]
+    if len(parsed) < 2:
+        return None
+    return (max(parsed) - min(parsed)).total_seconds()
+
+
+def parse_event_time(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def git_text(*args: str, allow_empty: bool = False) -> str:
+    completed = subprocess.run(
+        ["git", *args],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise SystemExit(f"git {' '.join(args)} failed: {completed.stderr.strip()}")
+    output = completed.stdout.strip()
+    if not output and not allow_empty:
+        raise SystemExit(f"git {' '.join(args)} returned no output")
+    return output
+
+
+def shell_join(args: list[str]) -> str:
+    return " ".join(shell_quote(arg) for arg in args)
+
+
+def shell_quote(value: str) -> str:
+    if value and all(char.isalnum() or char in "@%_+=:,./-" for char in value):
+        return value
+    return "'" + value.replace("'", "'\"'\"'") + "'"
 
 
 def final_runtime_summary(events: list[dict[str, Any]]) -> dict[str, Any]:

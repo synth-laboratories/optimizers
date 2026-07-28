@@ -31,3 +31,8 @@ dev_examples/better_gepa/profiles/*
 !dev_examples/better_gepa/profiles/banking77_openrouter_grok43_docker.toml
 !dev_examples/better_gepa/profiles/banking77_openrouter_nemotron_ultra.toml
 !dev_examples/better_gepa/profiles/banking77_nvidia_nemotron_ultra.toml
+!dev_examples/online_reflexion/
+dev_examples/online_reflexion/*
+!dev_examples/online_reflexion/native_smoke.json
+!dev_examples/online_reflexion/evidence_notes_template.json
+!dev_examples/online_reflexion/release_blog_growth_plan.md

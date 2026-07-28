@@ -92,6 +92,10 @@ impl ContainerClient {
         self.get_typed("/health")
     }
 
+    pub fn info(&self) -> Result<Value> {
+        self.get("/info")
+    }
+
     pub fn metadata(&self) -> Result<Value> {
         self.get("/metadata")
     }

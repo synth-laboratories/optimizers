@@ -381,6 +381,34 @@ Use small profiles for plumbing:
 - `long`: enough generations/budget to observe real movement.
 - `throughput`: isolates rollout throughput and provider behavior.
 
+Before running `default`, `dev`, `long`, or `gate`, do the rollout budget math
+from the TOML and raise the budget before launch if it cannot evaluate every
+promising minibatch winner through terminal proof. A useful rule of thumb:
+
+```text
+seed_train = train_sample
+minibatch_search = generations * proposals_per_generation * 2 * minibatch_size
+full_train_promotions = generations * proposals_per_generation * train_sample
+terminal_heldout = heldout_sample * terminal_candidate_count
+required_total >= seed_train + minibatch_search + full_train_promotions + terminal_heldout
+```
+
+For seed-vs-best proof, `terminal_candidate_count` is at least `2`. If the
+config separates train and heldout budgets, `max_train_rollouts` must cover
+`seed_train + minibatch_search + full_train_promotions`; `max_total_rollouts`
+must also leave room for terminal heldout. If this budget is missing, stop and
+edit the profile or record the run as an under-budgeted EffortBench finding
+instead of calling it an optimized prompt proof.
+
+Interpret candidate states strictly:
+
+- `accepted=true` at `candidate_minibatch` means only minibatch acceptance.
+- `status=deferred_budget` means the candidate was not promoted to full-train
+  or heldout proof; report it as "promising but unevaluated."
+- Terminal proof requires the selected best candidate to have train and heldout
+  scores, and the run summary must show best is not merely the seed unless the
+  claim is only a baseline measurement.
+
 For better signal, increase train/heldout size and minibatch size together.
 Tiny train sets can overfit or make improvements noisy. Bigger heldout catches
 candidate memorization. For closed-output tasks, random balanced sampling is

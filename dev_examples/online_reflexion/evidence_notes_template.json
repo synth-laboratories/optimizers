@@ -1,0 +1,64 @@
+{
+  "craftax_rotated_121_125": {
+    "status": "attached",
+    "heldout_window": "121-125",
+    "run_ids": [],
+    "ci_excludes_zero": false,
+    "per_inject_harm_pct": null,
+    "zero_invalid_injections": false,
+    "notes": "Fill with Craftax repeat 2+3 run or artifact ids, bootstrap CI, harm, and zero-invalid-injection proof."
+  },
+  "alfworld_6x6_x3": {
+    "status": "attached",
+    "matched_tasks": 6,
+    "run_ids": [],
+    "no_truncated_runs": false,
+    "verdict": "",
+    "notes": "Fill with three clean ALFWorld 6/6 matched compare runs and the verdict, even if flat."
+  },
+  "ebr_first_scale_compare": {
+    "status": "attached",
+    "scale_compare": false,
+    "run_ids": [],
+    "verdict": "",
+    "notes": "Fill with the first EBR scale compare run or artifact id and verdict."
+  },
+  "harvey_lab_pilot": {
+    "status": "attached",
+    "split": "Tax",
+    "train_count": 25,
+    "heldout_count": 9,
+    "criterion_signals_mapped": false,
+    "run_ids": [],
+    "notes": "Fill with Harvey LAB pilot run or artifact id and criteria-to-failure-signal proof."
+  },
+  "hosted_staging_smoke": {
+    "status": "attached",
+    "environment": "staging",
+    "terminal_status": "",
+    "run_id": "",
+    "receipt_audit_passed": false,
+    "standard_artifacts_present": false,
+    "never_blocks_receipt_present": false,
+    "notes": "Fill with the staging hosted online-reflexion smoke run id and strict receipt-chain proof."
+  },
+  "release_blog_growth": {
+    "status": "attached",
+    "public_docs_ready": false,
+    "sdk_cli_stack_ready": false,
+    "changelog_ready": false,
+    "blog_claims_match_evidence": false,
+    "growth_plan_ready": false,
+    "effortbench_chinese_wall_reviewed": false,
+    "doc_paths": [],
+    "release_note_paths": [],
+    "blog_paths": [],
+    "growth_paths": [
+      "dev_examples/online_reflexion/release_blog_growth_plan.md"
+    ],
+    "artifact_paths": [
+      "dev_examples/online_reflexion/release_blog_growth_plan.md"
+    ],
+    "notes": "Fill release_blog_growth_plan.md with concrete paths, owners, SHAs, run ids, claim mappings, growth plan, and EffortBench Chinese-wall review before setting these checks true."
+  }
+}

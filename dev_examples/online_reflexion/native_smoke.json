@@ -1,0 +1,46 @@
+{
+  "engine": {
+    "layer_id": "online-reflexion-native-smoke",
+    "cursor_backend": "row"
+  },
+  "input": {
+    "events": [],
+    "exposures": [
+      {
+        "exposure_id": "online-reflexion-smoke-exp-001",
+        "surface": "hosted-staging-smoke",
+        "lever": "reflection-card",
+        "failure_signal_present": true,
+        "already_at_ceiling": false
+      }
+    ],
+    "outcomes": [
+      {
+        "exposure_id": "online-reflexion-smoke-exp-001",
+        "metric_name": "score_delta",
+        "metric_value": 0.0
+      }
+    ],
+    "lever_effects": []
+  },
+  "surface_map": {
+    "hosted-staging-smoke": {
+      "lever_scope": "internal_gated_surfaces_only"
+    }
+  },
+  "guardrails": {
+    "policy_never_blocks": true,
+    "missed_window_is_receipt": true,
+    "allow_prod_smr_edits": false,
+    "lever_scope": "internal_gated_surfaces_only"
+  },
+  "gate_config": {
+    "policy_never_blocks": true,
+    "missed_window_is_receipt": true,
+    "prod_smr_edits": false
+  },
+  "splits": {
+    "smoke": true,
+    "release_lane": "hosted_staging_smoke"
+  }
+}

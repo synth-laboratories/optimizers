@@ -98,6 +98,7 @@ from .observability import (
 )
 from .sdk import OptimizerConfig, OptimizerRun
 from .tunnels import (
+    attach_synth_tunnel_lease,
     CloudflaredTunnelLease,
     ContainerDirectTarget,
     ManagedTunnelLease,
@@ -240,6 +241,7 @@ __all__ = [
     "RunUsage",
     "StateTransitionError",
     "SynthTunnelLease",
+    "attach_synth_tunnel_lease",
     "SynthOptimizerError",
     "TasksetSelection",
     "TunnelLease",

@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -21,6 +22,9 @@ from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import urljoin, urlparse, urlunparse
+
+
+logger = logging.getLogger(__name__)
 
 
 class TunnelError(RuntimeError):
@@ -120,6 +124,13 @@ class SynthTunnelLease(TunnelLease):
     route_token: str | None = None
     agent_connect: Mapping[str, Any] | None = None
     agent: "_SynthTunnelAgent | None" = field(default=None, repr=False)
+    requested_ttl_seconds: int = field(default=3600, repr=False)
+    heartbeat_interval_seconds: float = field(default=30.0, repr=False)
+    heartbeat: "_SynthTunnelHeartbeatLoop | None" = field(default=None, repr=False)
+    _credentials_lock: threading.RLock = field(
+        default_factory=threading.RLock,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         self.provider = TunnelProvider.SYNTH_TUNNEL
@@ -129,13 +140,48 @@ class SynthTunnelLease(TunnelLease):
     def refresh_worker_token(self) -> str:
         if self.client is None:
             raise TunnelError("SynthTunnelLease has no client for token refresh")
-        payload = self.client._json_request(
-            "POST", f"/api/v1/synthtunnel/leases/{self.lease_id}/token:refresh"
-        )
-        self.worker_token = str(payload.get("worker_token") or "")
-        if not self.worker_token:
-            raise TunnelError("SynthTunnel token refresh returned no worker_token")
-        return self.worker_token
+        with self._credentials_lock:
+            payload = self.client._json_request(
+                "POST", f"/api/v1/synthtunnel/leases/{self.lease_id}/token:refresh"
+            )
+            self.worker_token = str(payload.get("worker_token") or "")
+            self.expires_at = _optional_text(payload.get("lease_expires_at")) or self.expires_at
+            if not self.worker_token:
+                raise TunnelError("SynthTunnel token refresh returned no worker_token")
+            return self.worker_token
+
+    def send_heartbeat(self) -> str:
+        """Extend the lease and atomically adopt the current worker/agent credentials."""
+
+        if self.client is None:
+            raise TunnelError("SynthTunnelLease has no client for heartbeat")
+        with self._credentials_lock:
+            payload = self.client._json_request(
+                "POST",
+                f"/api/v1/synthtunnel/leases/{self.lease_id}/heartbeat",
+                {"extend_ttl_seconds": self.requested_ttl_seconds},
+                context="Synth tunnel lease heartbeat response",
+            )
+            worker_token = _response_text(
+                payload,
+                "worker_token",
+                "Synth tunnel lease heartbeat response",
+            )
+            agent_connect = _required_mapping(
+                payload.get("agent_connect"),
+                "Synth tunnel heartbeat agent_connect",
+            )
+            self.worker_token = worker_token
+            self.agent_connect = agent_connect
+            self.expires_at = _optional_text(payload.get("expires_at")) or self.expires_at
+            if self.agent is not None:
+                self.agent.update_agent_token(
+                    _required_text(
+                        agent_connect.get("agent_token"),
+                        "SynthTunnel heartbeat agent token",
+                    )
+                )
+            return worker_token
 
     def wait_ready(self, timeout_seconds: float = 60.0) -> None:
         if not self.worker_token:
@@ -156,8 +202,17 @@ class SynthTunnelLease(TunnelLease):
             headers={"Authorization": f"Bearer {self.worker_token}"},
             timeout_seconds=timeout_seconds,
         )
+        if self.heartbeat is None:
+            self.heartbeat = _SynthTunnelHeartbeatLoop(
+                lease=self,
+                interval_seconds=self.heartbeat_interval_seconds,
+            )
+            self.heartbeat.start()
 
     def close(self) -> None:
+        if self.heartbeat is not None:
+            self.heartbeat.stop()
+            self.heartbeat = None
         if self.agent is not None:
             self.agent.stop()
             self.agent = None
@@ -329,6 +384,44 @@ def create_tunnel_lease(
     return lease
 
 
+def attach_synth_tunnel_lease(
+    client: Any,
+    lease_id: str,
+    local_base_url: str,
+    *,
+    heartbeat_extend_ttl_seconds: int = 3600,
+    wait_ready: bool = True,
+) -> SynthTunnelLease:
+    """Attach a fresh local agent to an existing lease without changing its URL."""
+
+    normalized_lease_id = _required_text(lease_id, "lease_id")
+    target = parse_local_target(local_base_url)
+    response = client._json_request(
+        "POST",
+        f"/api/v1/synthtunnel/leases/{normalized_lease_id}/attach",
+        {},
+        context="Synth tunnel attach response",
+    )
+    lease = _synth_tunnel_lease_from_response(
+        client=client,
+        target=target,
+        response=response,
+        requested_ttl_seconds=heartbeat_extend_ttl_seconds,
+        context="Synth tunnel attach response",
+    )
+    if wait_ready:
+        try:
+            lease.wait_ready()
+        except Exception:
+            # Attaching does not imply ownership of the underlying lease, so a
+            # failed local attach only stops the new agent and leaves the route.
+            if lease.agent is not None:
+                lease.agent.stop()
+                lease.agent = None
+            raise
+    return lease
+
+
 def parse_local_target(local_base_url: str) -> TunnelLocalTarget:
     raw = _required_text(local_base_url, "local_base_url")
     parsed = urlparse(raw)
@@ -386,7 +479,23 @@ def _create_synth_tunnel_lease(
         "capabilities": dict(capabilities or {}),
     }
     response = client._json_request("POST", "/api/v1/synthtunnel/leases", payload)
-    context = "Synth tunnel lease response"
+    return _synth_tunnel_lease_from_response(
+        client=client,
+        target=target,
+        response=response,
+        requested_ttl_seconds=requested_ttl_seconds,
+        context="Synth tunnel lease response",
+    )
+
+
+def _synth_tunnel_lease_from_response(
+    *,
+    client: Any,
+    target: TunnelLocalTarget,
+    response: Mapping[str, Any],
+    requested_ttl_seconds: int,
+    context: str,
+) -> SynthTunnelLease:
     return SynthTunnelLease(
         provider=TunnelProvider.SYNTH_TUNNEL,
         lease_id=_response_text(response, "lease_id", context),
@@ -397,6 +506,7 @@ def _create_synth_tunnel_lease(
         route_token=_optional_text(response.get("route_token")),
         agent_connect=_mapping_or_none(response.get("agent_connect")),
         expires_at=_optional_text(response.get("expires_at")),
+        requested_ttl_seconds=requested_ttl_seconds,
         connector_mode="synth_tunnel_agent",
         diagnostics_hint=_optional_text(response.get("diagnostics_hint")),
     )
@@ -564,6 +674,40 @@ class _HeartbeatLoop:
             return
 
 
+class _SynthTunnelHeartbeatLoop:
+    def __init__(self, *, lease: SynthTunnelLease, interval_seconds: float) -> None:
+        self._lease = lease
+        self._interval_seconds = max(10.0, float(interval_seconds))
+        self._stop = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run,
+            name="synth-tunnel-lease-heartbeat",
+            daemon=True,
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not threading.current_thread():
+            self._thread.join(timeout=2.0)
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval_seconds):
+            try:
+                self._lease.send_heartbeat()
+            except Exception as error:
+                # The data-plane health/retry path remains authoritative. A
+                # transient control-plane miss must not tear down a live route.
+                logger.warning(
+                    "SynthTunnel lease heartbeat failed for lease %s: %s",
+                    self._lease.lease_id,
+                    error,
+                )
+                continue
+
+
 @dataclass(slots=True)
 class _SynthTunnelRequest:
     method: str
@@ -600,6 +744,9 @@ class _SynthTunnelAgent:
         self._thread: threading.Thread | None = None
         self._ws: Any | None = None
         self._startup_error: str | None = None
+
+    def update_agent_token(self, token: str) -> None:
+        self._agent_token = _required_text(token, "SynthTunnel agent token")
 
     def start(self, *, timeout_seconds: float) -> None:
         if self._thread is not None and self._thread.is_alive():

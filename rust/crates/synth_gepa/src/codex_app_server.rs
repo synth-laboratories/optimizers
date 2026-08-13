@@ -83,6 +83,7 @@ pub(crate) fn run_codex_app_server_proposer(input: CodexProposerInput<'_>) -> Re
         turn_start_params: turn_start_params(&input, &model)?,
         timeout,
         message_stall_timeout,
+        message_observer: None,
     };
     if input.config.proposer.nano_codex.enabled {
         let execution = run_nano_codex_proposer(&input, turn_request)?;
@@ -133,6 +134,7 @@ pub(crate) fn run_codex_staleness_reviewer(
         turn_start_params: staleness_turn_start_params(&input, &model),
         timeout,
         message_stall_timeout,
+        message_observer: None,
     })?;
     build_staleness_review_response(&input, &model, outcome)
 }

@@ -34,8 +34,8 @@ pub use role_agent::{
     RoleAgentTurnRequestInput,
 };
 pub use session::{
-    run_command_exec, run_turn, AgentCommandExecOutcome, AgentRuntimeSubstrate, AgentTurnOutcome,
-    CodexCommandExecRequest, CodexTurnRequest,
+    run_command_exec, run_turn, AgentCommandExecOutcome, AgentMessageObserver,
+    AgentRuntimeSubstrate, AgentTurnOutcome, CodexCommandExecRequest, CodexTurnRequest,
 };
 pub use substrate::{validate_execution_mode_compat, ExecutionSubstrate};
 pub use supervisor::SupervisorReceipt;

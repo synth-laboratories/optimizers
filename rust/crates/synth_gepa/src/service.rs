@@ -16,14 +16,14 @@ use serde_json::{json, Map, Value};
 use sha1::{Digest as Sha1Digest, Sha1};
 use sha2::{Digest as Sha2Digest, Sha256};
 use synth_optimizer_platform::{
-    compact_run_storage, delete_run_storage, inspect_run_storage, inspect_workspace_storage_health,
-    optimizer_event_feed_path_for, ArtifactPaths, CacheMode, CheckpointInput, CheckpointRecord,
-    ContainerClient, FailurePayload, GepaPipelineMode, GepaStalenessPolicy, GepaTaskPoolsConfig,
-    OptimizerError, OptimizerEvent, OptimizerJob, OptimizerJobKind, OptimizerJobStatus,
-    PromptProgram, Result, RunPhaseTimingRecord, RunStorageInspectionInput,
-    RunStorageMaintenanceInput, RuntimeEffectInput, RuntimeEffectRecord, StorageHealthThresholds,
-    StorageMaintenanceProfile, SynthOptimizerConfig, TransitionLog, TransitionRow,
-    WorkspaceRunRequestStatus, WorkspaceStorageHealthInput, WorkspaceStore,
+    compact_run_storage, delete_run_storage, fold_reported_cost, inspect_run_storage,
+    inspect_workspace_storage_health, optimizer_event_feed_path_for, ArtifactPaths, CacheMode,
+    CheckpointInput, CheckpointRecord, ContainerClient, FailurePayload, GepaPipelineMode,
+    GepaStalenessPolicy, GepaTaskPoolsConfig, OptimizerError, OptimizerEvent, OptimizerJob,
+    OptimizerJobKind, OptimizerJobStatus, PromptProgram, Result, RunPhaseTimingRecord,
+    RunStorageInspectionInput, RunStorageMaintenanceInput, RuntimeEffectInput, RuntimeEffectRecord,
+    StorageHealthThresholds, StorageMaintenanceProfile, SynthOptimizerConfig, TransitionLog,
+    TransitionRow, WorkspaceRunRequestStatus, WorkspaceStorageHealthInput, WorkspaceStore,
 };
 
 use crate::{
@@ -2631,7 +2631,7 @@ fn persist_external_stop_result(
         "best_candidate": request.best_candidate_id.as_ref().map(|candidate_id| json!({
             "candidate_id": candidate_id,
         })),
-        "cost_usd": request.cost_usd.unwrap_or(0.0),
+        "cost_usd": request.cost_usd,
         "usage": request.usage.clone(),
     });
     store.record_run_request_result(&request.request_id, &result)
@@ -4110,9 +4110,9 @@ fn metadata_status_is_429(value: Option<&Value>) -> bool {
     }
 }
 
-fn transition_usage_totals(transitions: &[TransitionRow]) -> (u64, f64) {
+fn transition_usage_totals(transitions: &[TransitionRow]) -> (u64, Option<f64>) {
     let mut total_tokens = 0u64;
-    let mut cost_usd = 0.0f64;
+    let mut cost_receipts = Vec::new();
     for row in transitions {
         if row.entity_type == "proposer_round" && row.to_state != "closed" {
             continue;
@@ -4128,7 +4128,7 @@ fn transition_usage_totals(transitions: &[TransitionRow]) -> (u64, f64) {
         if !matches!(row.entity_type.as_str(), "proposer_round" | "rollout") {
             continue;
         }
-        cost_usd += value_as_f64(row.metadata.get("cost_usd")).unwrap_or(0.0);
+        cost_receipts.push(value_as_f64(row.metadata.get("cost_usd")));
         if let Some(usage) = row.metadata.get("usage").and_then(Value::as_object) {
             total_tokens = total_tokens.saturating_add(
                 value_as_u64(usage.get("total_tokens"))
@@ -4137,7 +4137,7 @@ fn transition_usage_totals(transitions: &[TransitionRow]) -> (u64, f64) {
             );
         }
     }
-    (total_tokens, cost_usd)
+    (total_tokens, fold_reported_cost(cost_receipts))
 }
 
 fn value_as_f64(value: Option<&Value>) -> Option<f64> {
@@ -4221,7 +4221,7 @@ fn project_run_state(store: &WorkspaceStore, request: &WorkspaceRunRequestStatus
             "best_candidate_id": request.best_candidate_id,
             "candidate_count": 0,
             "rollout_count": 0,
-            "cost_usd": request.cost_usd.unwrap_or(0.0),
+            "cost_usd": request.cost_usd,
             "usage": request.usage,
             "pending": {
                 "job_id": Value::Null,
@@ -4422,9 +4422,7 @@ fn project_usage(usage: &Value, cost_usd: Option<f64>) -> Value {
     json!({
         "input_tokens": usage_u64(usage, &["input_tokens", "prompt_tokens", "prompt"]),
         "output_tokens": usage_u64(usage, &["output_tokens", "completion_tokens", "completion"]),
-        "cost_usd": cost_usd
-            .or_else(|| usage.get("cost_usd").and_then(Value::as_f64))
-            .unwrap_or(0.0),
+        "cost_usd": cost_usd.or_else(|| usage.get("cost_usd").and_then(Value::as_f64)),
     })
 }
 

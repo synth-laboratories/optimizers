@@ -129,7 +129,9 @@ pub struct GepaRunResult {
     pub run_registry_path: String,
     pub workspace_db_path: String,
     pub artifact_refs: Vec<ArtifactRef>,
-    pub cost_usd: f64,
+    /// Complete settled/provider-priced cost, or null when any chargeable
+    /// boundary omitted cost authority.
+    pub cost_usd: Option<f64>,
     pub usage: Value,
     pub state_history: Value,
 }

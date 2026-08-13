@@ -168,7 +168,7 @@ pub use storage_maintenance::{
     RunStorageMaintenanceInput, StorageHealthThresholds, StorageMaintenanceProfile,
     WorkspaceStorageHealthInput,
 };
-pub use usage::{UsageLedgerInput, UsageLedgerRecord};
+pub use usage::{fold_reported_cost, UsageLedgerInput, UsageLedgerRecord};
 pub use workspace::{
     workspace_status, OptimizationRunStartedInput, WorkspaceEntityCounts,
     WorkspaceRunRequestStatus, WorkspaceRunStatus, WorkspaceStateTransitionStatus, WorkspaceStatus,

@@ -118,13 +118,13 @@ impl RunRegistryEntry {
         cache_mode: CacheMode,
         cache_namespace: &str,
         best_candidate_id: String,
-        cost_usd: f64,
+        cost_usd: Option<f64>,
         usage: Value,
         storage: Option<Value>,
     ) -> Self {
         let mut entry = Self::new(paths, config, cache_mode, cache_namespace, "finished", None);
         entry.best_candidate_id = Some(best_candidate_id);
-        entry.cost_usd = Some(cost_usd);
+        entry.cost_usd = cost_usd;
         entry.usage = Some(usage);
         entry.storage = storage;
         entry
@@ -135,12 +135,12 @@ impl RunRegistryEntry {
         config: &SynthOptimizerConfig,
         cache_mode: CacheMode,
         cache_namespace: &str,
-        cost_usd: f64,
+        cost_usd: Option<f64>,
         usage: Value,
         storage: Option<Value>,
     ) -> Self {
         let mut entry = Self::new(paths, config, cache_mode, cache_namespace, "failed", None);
-        entry.cost_usd = Some(cost_usd);
+        entry.cost_usd = cost_usd;
         entry.usage = Some(usage);
         entry.storage = storage;
         entry
@@ -151,7 +151,7 @@ impl RunRegistryEntry {
         config: &SynthOptimizerConfig,
         cache_mode: CacheMode,
         cache_namespace: &str,
-        cost_usd: f64,
+        cost_usd: Option<f64>,
         usage: Value,
         storage: Option<Value>,
     ) -> Self {
@@ -163,7 +163,7 @@ impl RunRegistryEntry {
             "cancelled",
             None,
         );
-        entry.cost_usd = Some(cost_usd);
+        entry.cost_usd = cost_usd;
         entry.usage = Some(usage);
         entry.storage = storage;
         entry

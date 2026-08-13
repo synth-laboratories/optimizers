@@ -20,7 +20,7 @@ use synth_optimizer_platform::limits::{
     RuntimeEffectAdmissionInput, RuntimeEffectAdmissionRecord, RuntimeEffectBudgetEstimate,
 };
 use synth_optimizer_platform::{
-    budget_limit_engine_input, container_child_eval_ref, normalize_event_feed,
+    budget_limit_engine_input, container_child_eval_ref, fold_reported_cost, normalize_event_feed,
     proposer_delta_chunks_from_response, stable_json_hash, task_identity, write_run_storage_report,
     ArtifactPaths, ArtifactRef, CacheMode, CacheProfileRecord, CandidateOverlay, CheckpointInput,
     CheckpointRecord, CheckpointSummaryRecord, ConfiguredGepaRunLimits, ContainerClient,
@@ -606,6 +606,7 @@ pub struct ProposerOutcome {
     pub proposals: Vec<ProposedCandidate>,
     pub usage: UsageTotals,
     pub cost_usd: f64,
+    pub reported_cost_usd: Option<f64>,
     pub backend: String,
     pub runtime_substrate: String,
     pub workspace: Option<String>,
@@ -1415,7 +1416,17 @@ enum StoredRuntimeOutcome {
     },
     RolloutBatch {
         outcomes: Vec<StoredRolloutOutcome>,
+        #[serde(default)]
+        failures: Vec<StoredRolloutFailure>,
     },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct StoredRolloutFailure {
+    candidate_id: String,
+    stage: String,
+    example_id: String,
+    failure: FailurePayload,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2111,7 +2122,7 @@ struct RuntimeUsageBucket {
     total_tokens: u64,
     calls: u64,
     jobs: u64,
-    cost_usd: f64,
+    cost_usd: Option<f64>,
     wall_seconds: f64,
 }
 
@@ -2135,10 +2146,12 @@ impl RuntimeUsageBucket {
         self.prompt_tokens += prompt_tokens;
         self.completion_tokens += completion_tokens;
         self.total_tokens += runtime_total_tokens(fields, usage, prompt_tokens, completion_tokens);
-        self.cost_usd += fields
-            .get("cost_usd")
-            .and_then(Value::as_f64)
-            .unwrap_or(0.0);
+        let reported_cost = fields.get("cost_usd").and_then(Value::as_f64);
+        self.cost_usd = if self.jobs == 0 {
+            fold_reported_cost([reported_cost])
+        } else {
+            fold_reported_cost([self.cost_usd, reported_cost])
+        };
         self.wall_seconds += fields
             .get("wall_seconds")
             .and_then(Value::as_f64)
@@ -2174,11 +2187,14 @@ impl RuntimeUsageBucket {
         self.completion_tokens += completion_tokens;
         self.total_tokens += usage_total_tokens(fields, prompt_tokens, completion_tokens);
         self.calls = self.calls.saturating_add(field_u64(fields, "calls"));
-        self.jobs = self.jobs.saturating_add(field_u64(fields, "jobs"));
-        self.cost_usd += fields
-            .get("cost_usd")
-            .and_then(Value::as_f64)
-            .unwrap_or(0.0);
+        let added_jobs = field_u64(fields, "jobs");
+        let reported_cost = fields.get("cost_usd").and_then(Value::as_f64);
+        self.cost_usd = if self.jobs == 0 {
+            fold_reported_cost([reported_cost])
+        } else {
+            fold_reported_cost([self.cost_usd, reported_cost])
+        };
+        self.jobs = self.jobs.saturating_add(added_jobs);
         self.wall_seconds += fields
             .get("wall_seconds")
             .and_then(Value::as_f64)
@@ -3171,6 +3187,7 @@ fn refresh_terminal_run_projection(
     state: &GepaRunState,
 ) -> Result<()> {
     let usage_value = serde_json::to_value(&state.total_usage)?;
+    let reported_cost = reported_cost_from_usage_ledger(&state.usage_ledger);
     match state.cursor.phase {
         GepaCursorPhase::Completed => {
             if let Some(best_candidate_id) = state
@@ -3182,7 +3199,7 @@ fn refresh_terminal_run_projection(
                 context.workspace.record_run_finished(
                     &context.config.run.run_id,
                     best_candidate_id,
-                    state.total_cost,
+                    reported_cost,
                     &usage_value,
                 )?;
             }
@@ -3191,7 +3208,7 @@ fn refresh_terminal_run_projection(
             context.workspace.record_run_failed(
                 &context.config.run.run_id,
                 state.cursor.best_candidate_id.as_deref(),
-                state.total_cost,
+                reported_cost,
                 &usage_value,
             )?;
         }
@@ -3199,7 +3216,7 @@ fn refresh_terminal_run_projection(
             context.workspace.record_run_cancelled_result(
                 &context.config.run.run_id,
                 state.cursor.best_candidate_id.as_deref(),
-                state.total_cost,
+                reported_cost,
                 &usage_value,
             )?;
         }
@@ -5679,6 +5696,21 @@ mod failed_rollout_coverage_tests {
         };
         assert_eq!(effective_required_rollout_count(&eval), 4);
     }
+
+    #[test]
+    fn child_rollout_identity_is_retry_stable_and_example_scoped() {
+        let first = deterministic_child_rollout_id("run", "candidate", "heldout", "example-1");
+        assert_eq!(
+            first,
+            deterministic_child_rollout_id("run", "candidate", "heldout", "example-1")
+        );
+        assert_ne!(
+            first,
+            deterministic_child_rollout_id("run", "candidate", "heldout", "example-2")
+        );
+        assert!(first.starts_with("gepa_"));
+        assert_eq!(first.len(), 29);
+    }
 }
 
 fn rollout_row_index_by_example_id(rows: &[Value], stage: &str, example_id: &str) -> Result<usize> {
@@ -6674,30 +6706,15 @@ fn async_rollout_chunk_size(config: &SynthOptimizerConfig) -> usize {
         .max(1)
 }
 
-fn gepa_pipeline_uses_async_lanes(config: &SynthOptimizerConfig) -> bool {
-    matches!(
-        config.gepa.pipeline.mode,
-        GepaPipelineMode::AsyncPipelined | GepaPipelineMode::FlashEvolve
-    )
-}
-
 fn rollout_rows_for_chunk<'a>(config: &SynthOptimizerConfig, rows: &'a [Value]) -> &'a [Value] {
-    if gepa_pipeline_uses_async_lanes(config) {
-        let chunk_size = async_rollout_chunk_size(config).min(rows.len()).max(1);
-        &rows[..chunk_size]
-    } else {
-        rows
-    }
+    let chunk_size = async_rollout_chunk_size(config).min(rows.len()).max(1);
+    &rows[..chunk_size]
 }
 
 fn take_count_for_group_rollout_chunk(
-    config: &SynthOptimizerConfig,
     remaining_len: usize,
     remaining_budget: &mut Option<usize>,
 ) -> usize {
-    if !gepa_pipeline_uses_async_lanes(config) {
-        return remaining_len;
-    }
     let Some(budget) = remaining_budget.as_mut() else {
         return remaining_len;
     };
@@ -6728,7 +6745,7 @@ fn rows_for_active_rollout_chunk(
                 &candidate_eval.failed_attempts,
             )?;
             let take_count =
-                take_count_for_group_rollout_chunk(config, remaining.len(), &mut remaining_budget);
+                take_count_for_group_rollout_chunk(remaining.len(), &mut remaining_budget);
             if take_count == 0 {
                 break;
             }
@@ -6745,6 +6762,19 @@ fn rows_for_active_rollout_chunk(
     );
     let remaining = unscored_rollout_rows(&rows, &active.scores, &active.failed_attempts)?;
     Ok(rollout_rows_for_chunk(config, &remaining).to_vec())
+}
+
+#[cfg(test)]
+mod rollout_chunk_bound_tests {
+    use super::*;
+
+    #[test]
+    fn group_queue_never_exceeds_the_shared_semaphore_budget() {
+        let mut budget = Some(3);
+        assert_eq!(take_count_for_group_rollout_chunk(60, &mut budget), 3);
+        assert_eq!(take_count_for_group_rollout_chunk(60, &mut budget), 0);
+        assert_eq!(budget, Some(0));
+    }
 }
 
 fn row_ids_for_chunk(rows: &[Value]) -> Result<Vec<String>> {
@@ -6872,7 +6902,11 @@ fn advance_pending_runtime_job(
                 });
             }
             let runtime_started = Instant::now();
-            let outcome = match runtime::execute_one_pending_optimizer_job_from_run_workspace(
+            let event_writer = &mut context.events;
+            let mut progress_observer = |progress: &runtime::RuntimeRolloutProgress| {
+                emit_runtime_rollout_progress(event_writer, progress)
+            };
+            let outcome = match runtime::execute_one_pending_optimizer_job_with_progress(
                 &context.workspace,
                 &mut context.cache,
                 &context.config,
@@ -6880,6 +6914,7 @@ fn advance_pending_runtime_job(
                 &context.config.run.run_id,
                 job_id,
                 runtime::RuntimeEffectExecutorConfig::inline_default(),
+                &mut progress_observer,
             ) {
                 Ok(outcome) => outcome,
                 Err(error) => {
@@ -7113,6 +7148,7 @@ fn stored_runtime_outcome(outcome: &runtime::RuntimeEffectOutcome) -> Result<Sto
         runtime::RuntimeEffectOutcome::RolloutBatch(outcomes) => {
             StoredRuntimeOutcome::RolloutBatch {
                 outcomes: outcomes
+                    .outcomes
                     .iter()
                     .map(|outcome| StoredRolloutOutcome {
                         candidate_id: outcome.candidate_id.clone(),
@@ -7127,6 +7163,16 @@ fn stored_runtime_outcome(outcome: &runtime::RuntimeEffectOutcome) -> Result<Sto
                         dispatch_wall_seconds: outcome.dispatch_wall_seconds,
                         dispatch_chunk_index: outcome.dispatch_chunk_index,
                         dispatch_chunk_size: outcome.dispatch_chunk_size,
+                    })
+                    .collect(),
+                failures: outcomes
+                    .failures
+                    .iter()
+                    .map(|failure| StoredRolloutFailure {
+                        candidate_id: failure.candidate_id.clone(),
+                        stage: failure.stage.clone(),
+                        example_id: failure.example_id.clone(),
+                        failure: failure.failure.clone(),
                     })
                     .collect(),
             }
@@ -7211,7 +7257,7 @@ fn emit_runtime_job_completed_event(
             fields.insert("proposal_count".to_string(), json!(outcome.proposals.len()));
             fields.insert("backend".to_string(), json!(&outcome.backend));
             fields.insert("cache_hit".to_string(), json!(outcome.cache_hit));
-            fields.insert("cost_usd".to_string(), json!(outcome.cost_usd));
+            fields.insert("cost_usd".to_string(), json!(outcome.reported_cost_usd));
             fields.insert("usage".to_string(), serde_json::to_value(&outcome.usage)?);
             if let Some(cost_source) = outcome
                 .response
@@ -7235,7 +7281,7 @@ fn emit_runtime_job_completed_event(
             bucket.add_usage_totals(&outcome.usage);
             bucket.calls = 1;
             bucket.jobs = 1;
-            bucket.cost_usd = outcome.cost_usd;
+            bucket.cost_usd = outcome.reported_cost_usd;
             bucket.wall_seconds = outcome.dispatch_wall_seconds.unwrap_or(wall_seconds);
             candidate_usage.insert(outcome.candidate_id.clone(), bucket);
             fields.insert("runtime_kind".to_string(), json!("rollout"));
@@ -7256,7 +7302,7 @@ fn emit_runtime_job_completed_event(
                 "avg_wall_seconds_per_rollout".to_string(),
                 json!(wall_seconds),
             );
-            fields.insert("cost_usd".to_string(), json!(outcome.cost_usd));
+            fields.insert("cost_usd".to_string(), json!(outcome.reported_cost_usd));
             fields.insert("usage".to_string(), serde_json::to_value(&outcome.usage)?);
             fields.insert(
                 "total_tokens".to_string(),
@@ -7281,7 +7327,8 @@ fn emit_runtime_job_completed_event(
         }
         runtime::RuntimeEffectOutcome::RolloutBatch(outcomes) => {
             let mut usage = UsageTotals::default();
-            let mut cost_usd = 0.0;
+            let mut cost_receipts = Vec::with_capacity(outcomes.len() + outcomes.failures.len());
+            cost_receipts.extend(std::iter::repeat_n(None, outcomes.failures.len()));
             let mut cache_hits = 0usize;
             let mut candidate_ids = BTreeSet::new();
             let mut candidate_usage = BTreeMap::<String, RuntimeUsageBucket>::new();
@@ -7291,7 +7338,7 @@ fn emit_runtime_job_completed_event(
             let mut max_chunk_size = 0usize;
             for outcome in outcomes {
                 usage.merge(&outcome.usage);
-                cost_usd += outcome.cost_usd;
+                cost_receipts.push(outcome.reported_cost_usd);
                 if outcome.cache_hit {
                     cache_hits += 1;
                 } else if let Some(dispatch_wall_seconds) = outcome.dispatch_wall_seconds {
@@ -7306,7 +7353,14 @@ fn emit_runtime_job_completed_event(
                 }
                 bucket.add_usage_totals(&outcome.usage);
                 bucket.calls = bucket.calls.saturating_add(1);
-                bucket.cost_usd += outcome.cost_usd;
+                bucket.cost_usd = if bucket.calls == 1 {
+                    outcome.reported_cost_usd
+                } else {
+                    bucket
+                        .cost_usd
+                        .zip(outcome.reported_cost_usd)
+                        .map(|(total, cost)| total + cost)
+                };
                 bucket.wall_seconds += outcome.dispatch_wall_seconds.unwrap_or(0.0);
                 *stages.entry(outcome.stage.clone()).or_insert(0) += 1;
                 if let Some(chunk_index) = outcome.dispatch_chunk_index {
@@ -7325,6 +7379,18 @@ fn emit_runtime_job_completed_event(
                 left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal)
             });
             fields.insert("runtime_kind".to_string(), json!("rollout_batch"));
+            fields.insert(
+                "failed_rollout_count".to_string(),
+                json!(outcomes.failures.len()),
+            );
+            fields.insert(
+                "failed_example_ids".to_string(),
+                json!(outcomes
+                    .failures
+                    .iter()
+                    .map(|failure| failure.example_id.as_str())
+                    .collect::<Vec<_>>()),
+            );
             fields.insert("model".to_string(), json!(&context.config.policy.model));
             fields.insert("rollout_count".to_string(), json!(rollout_count));
             fields.insert("candidate_count".to_string(), json!(candidate_ids.len()));
@@ -7346,7 +7412,10 @@ fn emit_runtime_job_completed_event(
                     json!(wall_seconds / rollout_count as f64),
                 );
             }
-            fields.insert("cost_usd".to_string(), json!(cost_usd));
+            fields.insert(
+                "cost_usd".to_string(),
+                json!(fold_reported_cost(cost_receipts)),
+            );
             fields.insert("usage".to_string(), serde_json::to_value(&usage)?);
             fields.insert("total_tokens".to_string(), json!(usage.total_tokens));
             insert_token_throughput_fields(&mut fields, usage.total_tokens, wall_seconds);
@@ -8161,7 +8230,7 @@ fn record_runtime_job_transitions(
                     "backend": &outcome.backend,
                     "proposal_count": outcome.proposals.len(),
                     "wall_seconds": wall_seconds,
-                    "cost_usd": outcome.cost_usd,
+                    "cost_usd": outcome.reported_cost_usd,
                     "usage": &outcome.usage,
                 }),
             )?;
@@ -8179,7 +8248,7 @@ fn record_runtime_job_transitions(
                 outcome.cache_hit,
                 outcome.dispatch_wall_seconds.unwrap_or(wall_seconds),
                 wall_seconds,
-                outcome.cost_usd,
+                outcome.reported_cost_usd,
                 serde_json::to_value(&outcome.usage)?,
                 end_ms,
             )?;
@@ -8198,7 +8267,7 @@ fn record_runtime_job_transitions(
                     outcome.cache_hit,
                     outcome.dispatch_wall_seconds.unwrap_or(wall_seconds),
                     wall_seconds,
-                    outcome.cost_usd,
+                    outcome.reported_cost_usd,
                     serde_json::to_value(&outcome.usage)?,
                     end_ms,
                 )?;
@@ -8220,7 +8289,7 @@ fn record_rollout_transition_span(
     cache_hit: bool,
     dispatch_wall_seconds: f64,
     job_wall_seconds: f64,
-    cost_usd: f64,
+    cost_usd: Option<f64>,
     usage: Value,
     end_ms: i64,
 ) -> Result<()> {
@@ -8493,11 +8562,8 @@ fn plan_next_rollout_group_batch(
         if remaining_rows.is_empty() {
             continue;
         }
-        let take_count = take_count_for_group_rollout_chunk(
-            &context.config,
-            remaining_rows.len(),
-            &mut remaining_budget,
-        );
+        let take_count =
+            take_count_for_group_rollout_chunk(remaining_rows.len(), &mut remaining_budget);
         if take_count == 0 {
             break;
         }
@@ -8729,6 +8795,13 @@ fn plan_rollout_runtime_batch_job_for_candidates(
                 continue;
             };
             let seed = row.get("seed").and_then(Value::as_i64).unwrap_or(0);
+            let example_id = row_example_id(row)?;
+            let rollout_id = deterministic_child_rollout_id(
+                &context.config.run.run_id,
+                &group.candidate.candidate_id,
+                &group.stage,
+                &example_id,
+            );
             let overlay = CandidateOverlay {
                 candidate: PromptCandidatePayload::from_map(group.candidate.payload.clone()),
                 metadata: Map::new(),
@@ -8736,6 +8809,7 @@ fn plan_rollout_runtime_batch_job_for_candidates(
             let prompt_assertions =
                 prompt_assertions_for_candidate(&overlay.candidate, &context.config);
             let request = json!({
+                "rollout_id": rollout_id,
                 "submission_mode": rollout_submission_mode_for_request(&context.config),
                 "task_id": resources.rollout_task_id,
                 "candidate": overlay.candidate.to_value(),
@@ -8755,7 +8829,6 @@ fn plan_rollout_runtime_batch_job_for_candidates(
                 json!(group.candidate.candidate_id),
             );
             cache_metadata.insert("evaluation_stage".to_string(), json!(group.stage));
-            let example_id = row_example_id(row)?;
             cache_metadata.insert("example_id".to_string(), json!(example_id.clone()));
             cache_metadata.insert("task_id".to_string(), json!(resources.rollout_task_id));
             batch_requests.push(request.clone());
@@ -8897,6 +8970,16 @@ fn sha256_text(text: &str) -> String {
     format!("{:x}", digest.finalize())
 }
 
+fn deterministic_child_rollout_id(
+    run_id: &str,
+    candidate_id: &str,
+    stage: &str,
+    example_id: &str,
+) -> String {
+    let digest = sha256_text(&format!("{run_id}\0{candidate_id}\0{stage}\0{example_id}"));
+    format!("gepa_{}", &digest[..24])
+}
+
 fn consume_completed_runtime_job(
     context: &mut GepaRunContext,
     state: &mut GepaRunState,
@@ -8964,7 +9047,7 @@ fn consume_completed_runtime_job(
                 },
             )?;
         }
-        StoredRuntimeOutcome::RolloutBatch { outcomes } => {
+        StoredRuntimeOutcome::RolloutBatch { outcomes, failures } => {
             for outcome in outcomes {
                 let stage = outcome.stage.clone();
                 let example_id = outcome.example_id.clone();
@@ -9004,6 +9087,41 @@ fn consume_completed_runtime_job(
                     state.cursor.phase.clone(),
                     "running",
                     "persisted child rollout outcome",
+                    Map::new(),
+                )?;
+            }
+            for failure in failures {
+                let provider_signal =
+                    provider_signal_from_failure(&context.config, Some(&failure.failure));
+                consume_failed_rollout_attempt(
+                    context,
+                    state,
+                    Some(&failure.candidate_id),
+                    &failure.stage,
+                    &failure.example_id,
+                    &job,
+                    &failure.failure,
+                    &provider_signal,
+                )?;
+                record_rollout_resilience_sample(
+                    &context.config,
+                    Some(&mut context.events),
+                    &mut state.cursor.pipeline_state.rollout_resilience,
+                    RolloutResilienceObservation {
+                        stage: &failure.stage,
+                        example_id: &failure.example_id,
+                        degraded: true,
+                        failure: Some(&failure.failure),
+                        provider_signal: &provider_signal,
+                    },
+                )?;
+                persist_gepa_run_state(
+                    context,
+                    state,
+                    resources,
+                    state.cursor.phase.clone(),
+                    "running",
+                    "persisted failed child rollout outcome",
                     Map::new(),
                 )?;
             }
@@ -9328,6 +9446,10 @@ fn consume_proposer_outcome(
         proposals: proposals.clone(),
         usage: usage.clone(),
         cost_usd,
+        reported_cost_usd: response
+            .get("usage")
+            .and_then(|usage| usage.get("cost_usd"))
+            .and_then(Value::as_f64),
         backend: backend.clone(),
         runtime_substrate: response
             .get("runtime_substrate")
@@ -9880,7 +10002,15 @@ fn record_rollout_materialization_from_outcome(
         metadata: Map::new(),
     };
     let prompt_assertions = prompt_assertions_for_candidate(&overlay.candidate, &context.config);
+    let example_id = row_example_id(row)?;
+    let rollout_id = deterministic_child_rollout_id(
+        &context.config.run.run_id,
+        &candidate.candidate_id,
+        stage,
+        &example_id,
+    );
     let request = json!({
+        "rollout_id": rollout_id,
         "submission_mode": rollout_submission_mode_for_request(&context.config),
         "task_id": resources.rollout_task_id,
         "candidate": overlay.candidate.to_value(),
@@ -9898,7 +10028,6 @@ fn record_rollout_materialization_from_outcome(
     let materialization =
         rollout_materialization_identity(&resources.program, candidate, &resources.objective_set);
     let candidate_payload_value = serde_json::to_value(&candidate.payload)?;
-    let example_id = row_example_id(row)?;
     let mut materialization_metadata = Map::new();
     materialization_metadata.insert("cache_hit".to_string(), json!(cache_hit));
     materialization_metadata.insert(
@@ -9971,6 +10100,81 @@ fn emit_proposer_deltas(
         events.emit_proposer_delta(generation as u64, &channel, &text)?;
     }
     Ok(())
+}
+
+fn emit_runtime_rollout_progress(
+    events: &mut EventWriter,
+    progress: &runtime::RuntimeRolloutProgress,
+) -> Result<()> {
+    match progress {
+        runtime::RuntimeRolloutProgress::Started {
+            active_workers,
+            semaphore_size,
+            queued,
+        } => events.emit(
+            "optimizer.rollout_queue.updated",
+            "Rollout workers admitted queued evaluations",
+            json!({
+                "active_workers": active_workers,
+                "semaphore_size": semaphore_size,
+                "queued_rollouts": queued,
+            }),
+        ),
+        runtime::RuntimeRolloutProgress::Completed {
+            outcome,
+            active_workers,
+            semaphore_size,
+            queued,
+        } => {
+            let child = child_evaluation_resource_ref(&outcome.typed_response)?;
+            let rollout_id = outcome
+                .typed_response
+                .rollout_id
+                .as_deref()
+                .expect("validated rollout progress requires rollout_id");
+            events.emit(
+                "optimizer.evaluation_result.received",
+                "Candidate evaluation result received",
+                json!({
+                    "evaluation_id": format!("{}:{}:{}", outcome.candidate_id, outcome.stage, outcome.example_id),
+                    "candidate_id": outcome.candidate_id,
+                    "stage": outcome.stage,
+                    "example_id": outcome.example_id,
+                    "rollout_id": rollout_id,
+                    "child_resource_ref": child,
+                    "reward": outcome.reward,
+                    "usage": outcome.usage,
+                    "cost_usd": outcome.reported_cost_usd,
+                    "partial": true,
+                    "active_workers": active_workers,
+                    "semaphore_size": semaphore_size,
+                    "queued_rollouts": queued,
+                }),
+            )
+        }
+        runtime::RuntimeRolloutProgress::Failed {
+            failure,
+            active_workers,
+            semaphore_size,
+            queued,
+        } => events.emit(
+            "optimizer.candidate_evaluation.attempt.failed",
+            "Candidate evaluation attempt failed",
+            json!({
+                "evaluation_id": format!("{}:{}:{}", failure.candidate_id, failure.stage, failure.example_id),
+                "candidate_id": failure.candidate_id,
+                "stage": failure.stage,
+                "example_id": failure.example_id,
+                "failure": failure.failure,
+                "reward": Value::Null,
+                "cost_usd": Value::Null,
+                "partial": true,
+                "active_workers": active_workers,
+                "semaphore_size": semaphore_size,
+                "queued_rollouts": queued,
+            }),
+        ),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -10335,6 +10539,7 @@ fn terminalize_pending_runtime_job_for_abort(
             reservation: &reservation,
             status,
             cost_usd: 0.0,
+            reported_cost_usd: None,
             usage: &UsageTotals::default(),
             rollout_count: 0,
             failure: Some(&failure),
@@ -10384,6 +10589,7 @@ fn terminalize_pending_runtime_work_for_abort(
                 reservation: &reservation,
                 status,
                 cost_usd: 0.0,
+                reported_cost_usd: None,
                 usage: &UsageTotals::default(),
                 rollout_count: 0,
                 failure: Some(&failure),
@@ -10479,6 +10685,7 @@ fn terminalize_gepa_run_state(
             )
         };
     let usage_value = serde_json::to_value(&state.total_usage)?;
+    let reported_cost = reported_cost_from_usage_ledger(&state.usage_ledger);
     context
         .workspace
         .record_usage_ledger(&context.config.run.run_id, &state.usage_ledger)?;
@@ -10524,7 +10731,7 @@ fn terminalize_gepa_run_state(
         "run_id": context.config.run.run_id,
         "status": terminal_state.as_str(),
         "best_candidate_id": manifest_best_candidate_id,
-        "cost_usd": state.total_cost,
+        "cost_usd": reported_cost,
         "usage": usage_value,
         "failure": error_summary,
         "state_history": state_history,
@@ -10540,7 +10747,7 @@ fn terminalize_gepa_run_state(
         &context.config.run.run_id,
         &context.paths.manifest_path,
         manifest_best_candidate_id,
-        state.total_cost,
+        reported_cost,
         &usage_value,
         &failure_manifest,
     )?;
@@ -10550,7 +10757,7 @@ fn terminalize_gepa_run_state(
         json!({
             "run_id": context.config.run.run_id,
             "state": context.state_machine.state().as_str(),
-            "cost_usd": state.total_cost,
+            "cost_usd": reported_cost,
             "usage": usage_value,
             "failure": failure_manifest["failure"],
         }),
@@ -10574,7 +10781,7 @@ fn terminalize_gepa_run_state(
         context.workspace.record_run_cancelled_result(
             &context.config.run.run_id,
             best_candidate_id.as_deref(),
-            state.total_cost,
+            reported_cost,
             &usage_value,
         )?;
         context.registry.append(&RunRegistryEntry::cancelled(
@@ -10582,7 +10789,7 @@ fn terminalize_gepa_run_state(
             &context.config,
             context.cache_mode,
             &context.cache_namespace,
-            state.total_cost,
+            reported_cost,
             usage_value.clone(),
             Some(storage_summary.clone()),
         ))?;
@@ -10590,7 +10797,7 @@ fn terminalize_gepa_run_state(
         context.workspace.record_run_failed(
             &context.config.run.run_id,
             best_candidate_id.as_deref(),
-            state.total_cost,
+            reported_cost,
             &usage_value,
         )?;
         context.registry.append(&RunRegistryEntry::failed(
@@ -10598,7 +10805,7 @@ fn terminalize_gepa_run_state(
             &context.config,
             context.cache_mode,
             &context.cache_namespace,
-            state.total_cost,
+            reported_cost,
             usage_value.clone(),
             Some(storage_summary.clone()),
         ))?;
@@ -13606,6 +13813,7 @@ fn finalize_completed_gepa_run(
     let cache_access_log = context.cache.access_log().to_vec();
     let cache_profile = serde_json::to_value(&cache_profile_record.profile)?;
     let usage_value = serde_json::to_value(&state.total_usage)?;
+    let reported_cost = reported_cost_from_usage_ledger(&state.usage_ledger);
     let state_history = serde_json::to_value(&context.state_machine.history)?;
     let candidate_values = candidate_registry.as_array().cloned().unwrap_or_default();
     context
@@ -13648,7 +13856,7 @@ fn finalize_completed_gepa_run(
         "GEPA run finished",
         json!({
             "best_candidate_id": state.candidates[best_idx].candidate_id,
-            "cost_usd": state.total_cost,
+            "cost_usd": reported_cost,
             "heldout_reward": heldout_best_reward,
             "heldout_skipped": heldout_skipped,
             "rollout_count": state.rollout_count,
@@ -13678,7 +13886,7 @@ fn finalize_completed_gepa_run(
         context.cache_mode,
         &context.cache_namespace,
         state.candidates[best_idx].candidate_id.clone(),
-        state.total_cost,
+        reported_cost,
         usage_value.clone(),
         Some(storage_summary.clone()),
     ))?;
@@ -13744,7 +13952,7 @@ fn finalize_completed_gepa_run(
         run_registry_path: context.paths.run_registry_path.display().to_string(),
         workspace_db_path: context.paths.workspace_db_path.display().to_string(),
         artifact_refs,
-        cost_usd: state.total_cost,
+        cost_usd: reported_cost,
         usage: usage_value,
         state_history,
     };
@@ -13773,14 +13981,14 @@ fn finalize_completed_gepa_run(
         &context.config.run.run_id,
         &context.paths.manifest_path,
         &state.candidates[best_idx].candidate_id,
-        state.total_cost,
+        reported_cost,
         &result.usage,
         &result_value,
     )?;
     context.workspace.record_run_finished(
         &context.config.run.run_id,
         &state.candidates[best_idx].candidate_id,
-        state.total_cost,
+        reported_cost,
         &result.usage,
     )?;
     context
@@ -14753,7 +14961,7 @@ fn execute_gepa_monolithic_with_options(
                 "model": config.proposer.model,
                 "provider": config.proposer.provider,
                 "backend": proposer_outcome.backend,
-                "cost_usd": proposer_outcome.cost_usd,
+                "cost_usd": proposer_outcome.reported_cost_usd,
                 "runtime_substrate": proposer_outcome.runtime_substrate,
                 "workspace": proposer_outcome.workspace,
                 "warning_count": proposer_outcome.evidence_warnings.len(),
@@ -16161,6 +16369,7 @@ fn execute_gepa_monolithic_with_options(
     let cache_access_log = cache.access_log().to_vec();
     let cache_profile = serde_json::to_value(&cache_profile_record.profile)?;
     let usage_value = serde_json::to_value(&total_usage)?;
+    let reported_cost = reported_cost_from_usage_ledger(&usage_ledger);
     let state_history = serde_json::to_value(&state_machine.history)?;
     let candidate_values = candidate_registry.as_array().cloned().unwrap_or_default();
     workspace.persist_candidate_registry(&config.run.run_id, &candidate_values)?;
@@ -16190,7 +16399,7 @@ fn execute_gepa_monolithic_with_options(
         "GEPA run finished",
         json!({
             "best_candidate_id": candidates[best_idx].candidate_id,
-            "cost_usd": total_cost,
+            "cost_usd": reported_cost,
             "heldout_reward": heldout_best_reward,
             "heldout_skipped": heldout_skipped,
             "rollout_count": rollout_count,
@@ -16215,7 +16424,7 @@ fn execute_gepa_monolithic_with_options(
         cache_mode,
         &cache_namespace,
         candidates[best_idx].candidate_id.clone(),
-        total_cost,
+        reported_cost,
         usage_value.clone(),
         Some(storage_summary.clone()),
     ))?;
@@ -16268,7 +16477,7 @@ fn execute_gepa_monolithic_with_options(
         run_registry_path: paths.run_registry_path.display().to_string(),
         workspace_db_path: paths.workspace_db_path.display().to_string(),
         artifact_refs,
-        cost_usd: total_cost,
+        cost_usd: reported_cost,
         usage: usage_value,
         state_history,
     };
@@ -16281,14 +16490,14 @@ fn execute_gepa_monolithic_with_options(
         &config.run.run_id,
         &paths.manifest_path,
         &candidates[best_idx].candidate_id,
-        total_cost,
+        reported_cost,
         &result.usage,
         &result_value,
     )?;
     workspace.record_run_finished(
         &config.run.run_id,
         &candidates[best_idx].candidate_id,
-        total_cost,
+        reported_cost,
         &result.usage,
     )?;
     paths.write_json(&paths.manifest_path, &result_value)?;
@@ -19278,6 +19487,48 @@ fn append_rollout_usage(records: &mut Vec<UsageLedgerRecord>, eval: &CandidateEv
     );
 }
 
+/// A monetary total is authoritative only when every chargeable ledger row
+/// reports one. Returning a partial sum would make unknown provider spend look
+/// cheaper than it was; an empty ledger is unknown as well.
+fn reported_cost_from_usage_ledger(records: &[UsageLedgerRecord]) -> Option<f64> {
+    fold_reported_cost(records.iter().map(|record| record.cost_usd))
+}
+
+#[cfg(test)]
+mod reported_cost_tests {
+    use super::*;
+
+    fn row(id: &str, cost_usd: Option<f64>) -> UsageLedgerRecord {
+        UsageLedgerRecord::from_input(UsageLedgerInput {
+            boundary: "provider",
+            source_type: "call",
+            source_id: id,
+            candidate_id: None,
+            evaluation_stage: None,
+            model: None,
+            provider: None,
+            call_count: 1,
+            usage: json!({}),
+            cost_usd,
+            metadata: Map::new(),
+        })
+    }
+
+    #[test]
+    fn aggregate_is_null_if_any_provider_cost_is_unknown() {
+        assert_eq!(reported_cost_from_usage_ledger(&[]), None);
+        assert_eq!(reported_cost_from_usage_ledger(&[row("a", None)]), None);
+        assert_eq!(
+            reported_cost_from_usage_ledger(&[row("a", Some(0.12)), row("b", None)]),
+            None
+        );
+        assert_eq!(
+            reported_cost_from_usage_ledger(&[row("a", Some(0.0)), row("b", Some(0.12))]),
+            Some(0.12)
+        );
+    }
+}
+
 fn proposer_usage_record(
     config: &SynthOptimizerConfig,
     parent: &CandidateRecord,
@@ -19320,7 +19571,7 @@ fn proposer_usage_record(
         provider: Some(&config.proposer.provider),
         call_count: outcome.usage.proposer_calls.max(1),
         usage: serde_json::to_value(&outcome.usage)?,
-        cost_usd: outcome.cost_usd,
+        cost_usd: outcome.reported_cost_usd,
         metadata,
     }))
 }
@@ -19424,6 +19675,7 @@ struct RuntimeEffectCompletionInput<'a> {
     reservation: &'a BudgetReservationRecord,
     status: &'a str,
     cost_usd: f64,
+    reported_cost_usd: Option<f64>,
     usage: &'a UsageTotals,
     rollout_count: u64,
     failure: Option<&'a FailurePayload>,
@@ -19995,6 +20247,7 @@ fn record_runtime_effect_completed(
         input.planned,
         &completed,
         input.cost_usd,
+        input.reported_cost_usd,
         input.usage,
         input.rollout_count,
         metadata.clone(),
@@ -20011,7 +20264,7 @@ fn record_runtime_effect_completed(
         run_id: &input.planned.run_id,
         runtime_effect_id: &input.planned.runtime_effect_id,
         budget_reservation_id: &input.reservation.budget_reservation_id,
-        cost_usd: input.cost_usd,
+        cost_usd: input.reported_cost_usd,
         prompt_tokens: input.usage.prompt_tokens,
         completion_tokens: input.usage.completion_tokens,
         total_tokens: input.usage.total_tokens,
@@ -20054,7 +20307,8 @@ fn record_run_phase_timing_from_effect(
     workspace: &WorkspaceStore,
     planned: &RuntimeEffectRecord,
     completed: &RuntimeEffectRecord,
-    cost_usd: f64,
+    _cost_usd: f64,
+    reported_cost_usd: Option<f64>,
     usage: &UsageTotals,
     rollout_count: u64,
     metadata: Map<String, Value>,
@@ -20086,7 +20340,7 @@ fn record_run_phase_timing_from_effect(
         prompt_tokens: usage.prompt_tokens,
         completion_tokens: usage.completion_tokens,
         total_tokens: usage.total_tokens,
-        cost_usd: Some(cost_usd),
+        cost_usd: reported_cost_usd,
         source_effect_id: &planned.runtime_effect_id,
         metadata,
     });
@@ -20213,7 +20467,17 @@ fn budget_release_for_completion(
         } else {
             status
         },
-        released_cost_usd: (reserved.cost_usd - committed.cost_usd).max(0.0),
+        // Unknown settled spend keeps the reservation unavailable. The next
+        // paid admission observes `unknown_cost` and stops instead of treating
+        // this effect as free.
+        released_cost_usd: committed
+            .cost_usd
+            .and_then(|committed| {
+                reserved
+                    .cost_usd
+                    .map(|reserved| (reserved - committed).max(0.0))
+            })
+            .unwrap_or(0.0),
         released_prompt_tokens: reserved
             .prompt_tokens
             .saturating_sub(committed.prompt_tokens),
@@ -20243,6 +20507,7 @@ fn record_runtime_effect_failed(
             reservation,
             status: "failed",
             cost_usd: 0.0,
+            reported_cost_usd: None,
             usage: &UsageTotals::default(),
             rollout_count: 0,
             failure: Some(&failure),
@@ -20352,12 +20617,20 @@ fn evaluate_candidate(call: EvaluationCall<'_>) -> Result<CandidateEvaluation> {
     for row in call.rows {
         check_cancelled(call.cancellation)?;
         let task_id = row_task_id(row);
+        let example_id = row_example_id(row)?;
+        let rollout_id = deterministic_child_rollout_id(
+            &call.config.run.run_id,
+            &call.candidate.candidate_id,
+            call.stage,
+            &example_id,
+        );
         let overlay = CandidateOverlay {
             candidate: PromptCandidatePayload::from_map(call.candidate.payload.clone()),
             metadata: Map::new(),
         };
         let prompt_assertions = prompt_assertions_for_candidate(&overlay.candidate, call.config);
         let request = json!({
+            "rollout_id": rollout_id,
             "submission_mode": rollout_submission_mode_for_request(call.config),
             "task_id": call.task_id,
             "task_id": task_id,
@@ -20378,7 +20651,6 @@ fn evaluate_candidate(call: EvaluationCall<'_>) -> Result<CandidateEvaluation> {
             json!(call.candidate.candidate_id),
         );
         cache_metadata.insert("evaluation_stage".to_string(), json!(call.stage));
-        let example_id = row_example_id(row)?;
         cache_metadata.insert("example_id".to_string(), json!(example_id));
         cache_metadata.insert("task_id".to_string(), json!(call.task_id));
         let rollout_namespace = format!("{}:container.rollout", call.cache_namespace);
@@ -20822,6 +21094,7 @@ fn propose_candidates(call: ProposerCall<'_>) -> Result<ProposerOutcome> {
         proposals: proposer_runtime_outcome.proposals,
         usage: proposer_runtime_outcome.usage,
         cost_usd: proposer_runtime_outcome.cost_usd,
+        reported_cost_usd: proposer_runtime_outcome.reported_cost_usd,
         backend: proposer_runtime_outcome.backend,
         runtime_substrate: proposer_runtime_outcome.runtime_substrate,
         workspace: proposer_runtime_outcome.workspace,
@@ -21098,6 +21371,7 @@ struct FailedGepaRunInput<'a> {
 
 fn fail_gepa_run_and_return<T>(input: FailedGepaRunInput<'_>, error: OptimizerError) -> Result<T> {
     let failure = FailurePayload::from_optimizer_error(&error);
+    let reported_cost = reported_cost_from_usage_ledger(input.usage_ledger);
     let mut details = input.details.as_object().cloned().unwrap_or_default();
     details.insert("error_code".to_string(), json!(error.error_code()));
     details.insert("failure".to_string(), serde_json::to_value(&failure)?);
@@ -21143,7 +21417,7 @@ fn fail_gepa_run_and_return<T>(input: FailedGepaRunInput<'_>, error: OptimizerEr
         "run_id": input.config.run.run_id,
         "status": terminal_state.as_str(),
         "best_candidate_id": manifest_best_candidate_id,
-        "cost_usd": input.total_cost,
+        "cost_usd": reported_cost,
         "usage": usage_value,
         "failure": serde_json::to_value(&failure)?,
         "state_history": serde_json::to_value(&input.state_machine.history)?,
@@ -21159,7 +21433,7 @@ fn fail_gepa_run_and_return<T>(input: FailedGepaRunInput<'_>, error: OptimizerEr
         &input.config.run.run_id,
         &input.paths.manifest_path,
         manifest_best_candidate_id,
-        input.total_cost,
+        reported_cost,
         &usage_value,
         &failure_manifest,
     )?;
@@ -21188,7 +21462,7 @@ fn fail_gepa_run_and_return<T>(input: FailedGepaRunInput<'_>, error: OptimizerEr
         &input.config.run.run_id,
         &input.paths.manifest_path,
         manifest_best_candidate_id,
-        input.total_cost,
+        reported_cost,
         &usage_value,
         &failure_manifest,
     )?;
@@ -21270,7 +21544,7 @@ fn fail_gepa_run_and_return<T>(input: FailedGepaRunInput<'_>, error: OptimizerEr
         input.workspace.record_run_cancelled_result(
             &input.config.run.run_id,
             input.best_candidate_id,
-            input.total_cost,
+            reported_cost,
             &usage_value,
         )?;
         input.registry.append(&RunRegistryEntry::cancelled(
@@ -21278,7 +21552,7 @@ fn fail_gepa_run_and_return<T>(input: FailedGepaRunInput<'_>, error: OptimizerEr
             input.config,
             input.cache_mode,
             input.cache_namespace,
-            input.total_cost,
+            reported_cost,
             usage_value,
             Some(storage_summary.clone()),
         ))?;
@@ -21286,7 +21560,7 @@ fn fail_gepa_run_and_return<T>(input: FailedGepaRunInput<'_>, error: OptimizerEr
         input.workspace.record_run_failed(
             &input.config.run.run_id,
             input.best_candidate_id,
-            input.total_cost,
+            reported_cost,
             &usage_value,
         )?;
         input.registry.append(&RunRegistryEntry::failed(
@@ -21294,7 +21568,7 @@ fn fail_gepa_run_and_return<T>(input: FailedGepaRunInput<'_>, error: OptimizerEr
             input.config,
             input.cache_mode,
             input.cache_namespace,
-            input.total_cost,
+            reported_cost,
             usage_value,
             Some(storage_summary.clone()),
         ))?;

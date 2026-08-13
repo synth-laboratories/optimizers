@@ -87,7 +87,8 @@ pub trait RunLimitPolicy {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct BudgetLedgerSnapshot {
     pub run_id: String,
-    pub spent_cost_usd: f64,
+    /// Missing after a completed effect means spend is unknown, not zero.
+    pub spent_cost_usd: Option<f64>,
     pub reserved_cost_usd: f64,
     pub spent_prompt_tokens: u64,
     pub reserved_prompt_tokens: u64,
@@ -130,7 +131,7 @@ pub struct BudgetLedgerSnapshot {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BudgetLedgerTotals {
-    pub cost_usd: f64,
+    pub cost_usd: Option<f64>,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub total_tokens: u64,
@@ -199,7 +200,7 @@ impl RuntimeEffectBudgetEstimate {
         let prompt_tokens = self.max_prompt_tokens.unwrap_or(0);
         let completion_tokens = self.max_completion_tokens.unwrap_or(0);
         BudgetLedgerTotals {
-            cost_usd: self.max_cost_usd.unwrap_or(0.0),
+            cost_usd: Some(self.max_cost_usd.unwrap_or(0.0)),
             prompt_tokens,
             completion_tokens,
             total_tokens: self
@@ -360,7 +361,7 @@ pub struct BudgetCommitRecord {
     pub run_id: String,
     pub runtime_effect_id: String,
     pub budget_reservation_id: String,
-    pub cost_usd: f64,
+    pub cost_usd: Option<f64>,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub total_tokens: u64,
@@ -375,7 +376,7 @@ pub struct BudgetCommitInput<'a> {
     pub run_id: &'a str,
     pub runtime_effect_id: &'a str,
     pub budget_reservation_id: &'a str,
-    pub cost_usd: f64,
+    pub cost_usd: Option<f64>,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub total_tokens: u64,
@@ -412,9 +413,12 @@ impl BudgetLedgerSnapshot {
         reserved: BudgetLedgerTotals,
     ) -> Self {
         let status = budget_ledger_status(limits, &spent, &reserved);
-        let remaining_cost_usd = limits
-            .max_cost_usd
-            .map(|max| (max - spent.cost_usd - reserved.cost_usd).max(0.0));
+        let remaining_cost_usd = limits.max_cost_usd.and_then(|max| {
+            spent
+                .cost_usd
+                .zip(reserved.cost_usd)
+                .map(|(spent, reserved)| (max - spent - reserved).max(0.0))
+        });
         let remaining_prompt_tokens = remaining_u64(
             limits.max_prompt_tokens,
             spent.prompt_tokens,
@@ -440,7 +444,7 @@ impl BudgetLedgerSnapshot {
         Self {
             run_id: run_id.to_string(),
             spent_cost_usd: spent.cost_usd,
-            reserved_cost_usd: reserved.cost_usd,
+            reserved_cost_usd: reserved.cost_usd.unwrap_or(0.0),
             spent_prompt_tokens: spent.prompt_tokens,
             reserved_prompt_tokens: reserved.prompt_tokens,
             spent_completion_tokens: spent.completion_tokens,
@@ -473,7 +477,8 @@ impl BudgetLedgerSnapshot {
         f64_limit_breach(
             "max_cost_usd",
             self.max_cost_usd,
-            self.spent_cost_usd + self.reserved_cost_usd,
+            self.spent_cost_usd
+                .map(|spent| spent + self.reserved_cost_usd),
             request.cost_usd,
         )
         .or_else(|| {
@@ -522,7 +527,8 @@ impl BudgetLedgerSnapshot {
         f64_limit_exceeded(
             "max_cost_usd",
             self.max_cost_usd,
-            self.spent_cost_usd + self.reserved_cost_usd,
+            self.spent_cost_usd
+                .map(|spent| spent + self.reserved_cost_usd),
         )
         .or_else(|| {
             u64_limit_exceeded(
@@ -587,7 +593,7 @@ impl BudgetLedgerSnapshot {
 
     pub fn active_reservations(&self) -> BudgetLedgerTotals {
         BudgetLedgerTotals {
-            cost_usd: self.reserved_cost_usd,
+            cost_usd: Some(self.reserved_cost_usd),
             prompt_tokens: self.reserved_prompt_tokens,
             completion_tokens: self.reserved_completion_tokens,
             total_tokens: self.reserved_total_tokens,
@@ -597,7 +603,7 @@ impl BudgetLedgerSnapshot {
     }
 
     pub fn is_exhausted(&self) -> bool {
-        self.status == "exhausted"
+        matches!(self.status.as_str(), "exhausted" | "unknown_cost")
     }
 }
 
@@ -662,7 +668,7 @@ impl BudgetReservationRecord {
 
     pub fn reserved_budget(&self) -> BudgetLedgerTotals {
         BudgetLedgerTotals {
-            cost_usd: self.max_cost_usd.unwrap_or(0.0),
+            cost_usd: Some(self.max_cost_usd.unwrap_or(0.0)),
             prompt_tokens: self.max_prompt_tokens.unwrap_or(0),
             completion_tokens: self.max_completion_tokens.unwrap_or(0),
             total_tokens: self.max_total_tokens.unwrap_or_else(|| {
@@ -749,7 +755,13 @@ fn budget_ledger_status(
         .unwrap_or(false)
         || limits
             .max_cost_usd
-            .map(|max| spent.cost_usd + reserved.cost_usd >= max)
+            .map(|max| {
+                spent
+                    .cost_usd
+                    .zip(reserved.cost_usd)
+                    .map(|(spent, reserved)| spent + reserved >= max)
+                    .unwrap_or(false)
+            })
             .unwrap_or(false)
         || limits
             .max_total_tokens
@@ -767,7 +779,9 @@ fn budget_ledger_status(
             .max_time_seconds
             .map(|max| spent.wall_seconds + reserved.wall_seconds >= max)
             .unwrap_or(false);
-    if exhausted {
+    if limits.max_cost_usd.is_some() && spent.cost_usd.is_none() {
+        "unknown_cost".to_string()
+    } else if exhausted {
         "exhausted".to_string()
     } else {
         "within_limits".to_string()
@@ -800,10 +814,20 @@ fn remaining_u64(max: Option<u64>, spent: u64, reserved: u64) -> Option<u64> {
 fn f64_limit_breach(
     limit: &str,
     max: Option<f64>,
-    current: f64,
-    requested: f64,
+    current: Option<f64>,
+    requested: Option<f64>,
 ) -> Option<BudgetLimitBreach> {
     let max = max?;
+    let Some(current) = current else {
+        return Some(BudgetLimitBreach {
+            limit: "unknown_cost".to_string(),
+            requested: requested
+                .map(|value| format!("{value:.6}"))
+                .unwrap_or_else(|| "unknown".to_string()),
+            available: "unknown".to_string(),
+        });
+    };
+    let requested = requested?;
     let available = (max - current).max(0.0);
     if current >= max || requested > available {
         Some(BudgetLimitBreach {
@@ -829,8 +853,19 @@ fn u64_limit_exceeded(limit: &str, max: Option<u64>, current: u64) -> Option<Bud
     }
 }
 
-fn f64_limit_exceeded(limit: &str, max: Option<f64>, current: f64) -> Option<BudgetLimitBreach> {
+fn f64_limit_exceeded(
+    limit: &str,
+    max: Option<f64>,
+    current: Option<f64>,
+) -> Option<BudgetLimitBreach> {
     let max = max?;
+    let Some(current) = current else {
+        return Some(BudgetLimitBreach {
+            limit: "unknown_cost".to_string(),
+            requested: "unknown".to_string(),
+            available: format!("{max:.6}"),
+        });
+    };
     if current > max {
         Some(BudgetLimitBreach {
             limit: limit.to_string(),
@@ -879,4 +914,76 @@ fn now_rfc3339() -> String {
     OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn limits() -> RunLimitsRecord {
+        RunLimitsRecord::from_input(RunLimitsInput {
+            run_id: "run",
+            max_total_rollouts: Some(10),
+            max_cost_usd: Some(1.0),
+            max_time_seconds: None,
+            max_prompt_tokens: None,
+            max_completion_tokens: None,
+            max_total_tokens: None,
+            hard_limit: true,
+            stop_policy: "stop",
+            metadata: Map::new(),
+        })
+    }
+
+    #[test]
+    fn unknown_settled_cost_blocks_the_next_paid_effect() {
+        let snapshot = BudgetLedgerSnapshot::from_totals(
+            "run",
+            &limits(),
+            BudgetLedgerTotals {
+                cost_usd: None,
+                rollouts: 1,
+                ..BudgetLedgerTotals::default()
+            },
+            BudgetLedgerTotals {
+                cost_usd: Some(0.0),
+                ..BudgetLedgerTotals::default()
+            },
+        );
+        assert_eq!(snapshot.status, "unknown_cost");
+        assert_eq!(snapshot.spent_cost_usd, None);
+        assert_eq!(snapshot.remaining_cost_usd, None);
+        let breach = snapshot
+            .breach_for_request(BudgetLedgerTotals {
+                cost_usd: Some(0.1),
+                ..BudgetLedgerTotals::default()
+            })
+            .expect("unknown cost must fail closed");
+        assert_eq!(breach.limit, "unknown_cost");
+        assert!(snapshot.is_exhausted());
+    }
+
+    #[test]
+    fn explicit_zero_cost_remains_admissible() {
+        let snapshot = BudgetLedgerSnapshot::from_totals(
+            "run",
+            &limits(),
+            BudgetLedgerTotals {
+                cost_usd: Some(0.0),
+                ..BudgetLedgerTotals::default()
+            },
+            BudgetLedgerTotals {
+                cost_usd: Some(0.0),
+                ..BudgetLedgerTotals::default()
+            },
+        );
+        assert_eq!(snapshot.status, "within_limits");
+        assert_eq!(snapshot.spent_cost_usd, Some(0.0));
+        assert!(snapshot
+            .breach_for_request(BudgetLedgerTotals {
+                cost_usd: Some(0.1),
+                ..BudgetLedgerTotals::default()
+            })
+            .is_none());
+    }
 }

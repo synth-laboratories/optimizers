@@ -838,7 +838,7 @@ components:
         best_candidate_id: { type: [string, 'null'] }
         candidate_count: { type: integer, minimum: 0 }
         rollout_count: { type: integer, minimum: 0 }
-        cost_usd: { type: number }
+        cost_usd: { type: [number, 'null'], minimum: 0 }
         usage:
           type: object
           additionalProperties: true
@@ -965,7 +965,7 @@ components:
           type: object
           properties:
             total_tokens: { type: integer, minimum: 0 }
-            cost_usd: { type: number, minimum: 0 }
+            cost_usd: { type: [number, 'null'], minimum: 0 }
 
     RunTransitionStatsSource:
       type: object
@@ -1213,7 +1213,7 @@ components:
       properties:
         input_tokens: { type: integer }
         output_tokens: { type: integer }
-        cost_usd: { type: number }
+        cost_usd: { type: [number, 'null'], minimum: 0 }
 
     Outcome:
       type: object

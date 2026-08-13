@@ -4,6 +4,26 @@ use sha2::{Digest, Sha256};
 
 use crate::sensors::SensorFrame;
 
+/// Fold settled cost receipts without ever treating absence as free.
+///
+/// The result is `Some(total)` only when at least one receipt exists and every
+/// receipt is a finite, non-negative number. An empty set, a missing receipt,
+/// or an invalid number is `None`. An explicit `Some(0.0)` remains a known
+/// zero-cost receipt.
+pub fn fold_reported_cost<I>(costs: I) -> Option<f64>
+where
+    I: IntoIterator<Item = Option<f64>>,
+{
+    let mut total = 0.0;
+    let mut saw_receipt = false;
+    for cost in costs {
+        saw_receipt = true;
+        let cost = cost.filter(|value| value.is_finite() && *value >= 0.0)?;
+        total += cost;
+    }
+    saw_receipt.then_some(total)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UsageLedgerRecord {
     pub schema_version: String,
@@ -23,7 +43,8 @@ pub struct UsageLedgerRecord {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub total_tokens: u64,
-    pub cost_usd: f64,
+    /// Settled/provider-priced cost. Missing is unknown, never free.
+    pub cost_usd: Option<f64>,
     #[serde(default)]
     pub usage: Value,
     #[serde(default)]
@@ -40,7 +61,7 @@ pub struct UsageLedgerInput<'a> {
     pub provider: Option<&'a str>,
     pub call_count: u64,
     pub usage: Value,
-    pub cost_usd: f64,
+    pub cost_usd: Option<f64>,
     pub metadata: Map<String, Value>,
 }
 
@@ -81,11 +102,7 @@ impl UsageLedgerRecord {
         if let Some(rollout_id) = &frame.rollout_id {
             metadata.insert("rollout_id".to_string(), Value::String(rollout_id.clone()));
         }
-        let cost_usd = frame
-            .usage
-            .get("cost_usd")
-            .and_then(Value::as_f64)
-            .unwrap_or(0.0);
+        let cost_usd = frame.usage.get("cost_usd").and_then(Value::as_f64);
         Self::from_input(UsageLedgerInput {
             boundary: "container.rollout",
             source_type: "sensor_frame",
@@ -117,4 +134,59 @@ fn stable_id(prefix: &str, parts: &[&str]) -> String {
     }
     let hex = format!("{:x}", digest.finalize());
     format!("{prefix}_{}", &hex[..16])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn usage_ledger_preserves_unknown_and_real_zero_costs() {
+        let unknown = UsageLedgerRecord::from_input(UsageLedgerInput {
+            boundary: "provider",
+            source_type: "call",
+            source_id: "unknown",
+            candidate_id: None,
+            evaluation_stage: None,
+            model: Some("model"),
+            provider: Some("provider"),
+            call_count: 1,
+            usage: json!({"total_tokens": 10}),
+            cost_usd: None,
+            metadata: Map::new(),
+        });
+        let free = UsageLedgerRecord::from_input(UsageLedgerInput {
+            source_id: "free",
+            cost_usd: Some(0.0),
+            ..UsageLedgerInput {
+                boundary: "provider",
+                source_type: "call",
+                source_id: "ignored",
+                candidate_id: None,
+                evaluation_stage: None,
+                model: Some("local"),
+                provider: Some("local"),
+                call_count: 1,
+                usage: json!({"total_tokens": 10}),
+                cost_usd: None,
+                metadata: Map::new(),
+            }
+        });
+        assert_eq!(unknown.cost_usd, None);
+        assert_eq!(
+            serde_json::to_value(&unknown).unwrap()["cost_usd"],
+            Value::Null
+        );
+        assert_eq!(free.cost_usd, Some(0.0));
+    }
+
+    #[test]
+    fn reported_cost_fold_is_any_unknown_to_none() {
+        assert_eq!(fold_reported_cost([]), None);
+        assert_eq!(fold_reported_cost([Some(0.0)]), Some(0.0));
+        assert!((fold_reported_cost([Some(0.1), Some(0.2)]).unwrap() - 0.3).abs() < f64::EPSILON);
+        assert_eq!(fold_reported_cost([Some(0.1), None, Some(0.2)]), None);
+        assert_eq!(fold_reported_cost([Some(f64::NAN)]), None);
+        assert_eq!(fold_reported_cost([Some(-0.01)]), None);
+    }
 }

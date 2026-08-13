@@ -31,7 +31,6 @@ from .hosted import (
     ContainerPoolTarget,
     HostedOptimizerClient,
     HostedOptimizerError,
-    validate_online_reflexion_evidence_notes,
 )
 from .tunnels import TunnelError, TunnelProvider
 from .victorialogs import project_gepa_run_artifacts, project_gepa_run_started
@@ -829,6 +828,10 @@ def _submit_hosted_gelo(args: argparse.Namespace) -> int:
 
 
 def _submit_hosted_mapo(args: argparse.Namespace) -> int:
+    raise ImportError(
+        "HostedOptimizerClient.submit_mapo is not available; "
+        "MAPO remains WIP and is not exported from synth_optimizers.hosted"
+    )
     tunnel: Any | None = None
     try:
         _validate_container_args(args)
@@ -891,6 +894,10 @@ def _submit_hosted_mapo(args: argparse.Namespace) -> int:
 
 
 def _submit_hosted_reflexion(args: argparse.Namespace) -> int:
+    raise ImportError(
+        "HostedOptimizerClient.submit_online_reflexion is not available; "
+        "online-reflexion remains WIP and is not exported from synth_optimizers.hosted"
+    )
     try:
         client = _hosted_client(args)
         submit = client.submit_online_reflexion(
@@ -1065,9 +1072,10 @@ def _online_reflexion_validate_evidence_notes(args: argparse.Namespace) -> int:
         raise SystemExit("provide --evidence-notes or --evidence-notes-file, not both")
     if evidence_notes is None and inline_notes is None:
         raise SystemExit("provide --evidence-notes or --evidence-notes-file")
-    payload = validate_online_reflexion_evidence_notes(evidence_notes or inline_notes or {})
-    _print_json_payload(payload, json_output=args.json)
-    return 0 if payload.get("status") == "pass" else 1
+    raise ImportError(
+        "validate_online_reflexion_evidence_notes is not exported from "
+        "synth_optimizers.hosted; online-reflexion remains WIP"
+    )
 
 
 def _materialize_hosted_gelo(args: argparse.Namespace) -> int:

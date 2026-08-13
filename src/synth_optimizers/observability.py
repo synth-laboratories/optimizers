@@ -80,7 +80,7 @@ class OptimizerItem:
 @dataclass(frozen=True, slots=True)
 class OptimizerEvent:
     type: OptimizerEventType | str
-    sequence_number: int
+    sequence_number: int | None
     run_id: str
     algorithm: str | None = None
     created_at: str | None = None
@@ -94,11 +94,11 @@ class OptimizerEvent:
         event_type = str(
             payload.get("type") or payload.get("event_type") or "optimizer.event"
         ).strip()
-        sequence_number = payload.get("sequence_number", payload.get("_seq", payload.get("seq", 0)))
+        sequence_number = _first_present(payload, "sequence_number", "_seq", "seq")
         return cls(
             type=_enum_or_raw(OptimizerEventType, event_type),
-            sequence_number=_int_or_zero(sequence_number),
-            run_id=str(payload.get("run_id") or ""),
+            sequence_number=_int_or_none(sequence_number),
+            run_id=str(payload.get("run_id") or payload.get("optimizer_run_id") or ""),
             algorithm=_str_or_none(payload.get("algorithm")),
             created_at=_str_or_none(payload.get("created_at") or payload.get("ts")),
             item=OptimizerItem.from_payload(_mapping_or_none(payload.get("item"))),
@@ -108,12 +108,98 @@ class OptimizerEvent:
         )
 
 
+def container_child_eval_ref(
+    rollout_id: str,
+    stream_id: str,
+    reward_url: str,
+) -> dict[str, Any]:
+    """Containers resource ref for an optimizer child eval. No NEV/frames."""
+    return {
+        "schema": "synth.resource-ref.v1",
+        "kind": "container_rollout",
+        "id": rollout_id,
+        "attributes": {
+            "stream_id": stream_id,
+            "reward_url": reward_url,
+        },
+    }
+
+
+def gepa_policy_ref(*, proposer_model: str, harness: str = "gepa") -> dict[str, Any]:
+    """Policy = harness + config. Missing proposer_model fails closed."""
+    model = str(proposer_model or "").strip()
+    if not model:
+        raise ValueError("policy_ref.config.proposer_model is required")
+    return {
+        "harness": harness,
+        "config": {"proposer_model": model},
+    }
+
+
+@dataclass
+class InMemoryRunLog:
+    """One optimizer_event.v1 spool. Missing sequence/reward stay None."""
+
+    run_id: str
+    policy_ref: dict[str, Any]
+    log_id: str = ""
+    live: bool = True
+    _events: list[OptimizerEvent] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.log_id:
+            self.log_id = f"optimizer_event.v1:{self.run_id}"
+
+    def append(self, payload: Mapping[str, Any]) -> OptimizerEvent:
+        if not self.live:
+            raise RuntimeError(f"run {self.run_id} is sealed")
+        event = OptimizerEvent.from_payload({**dict(payload), "run_id": self.run_id})
+        self._events.append(event)
+        return event
+
+    @property
+    def events(self) -> tuple[OptimizerEvent, ...]:
+        return tuple(self._events)
+
+
+class DualGepaHub:
+    """Two concurrent GEPA-shaped logs. Not a hosted Banking77 job (A3)."""
+
+    def __init__(self) -> None:
+        self._runs: dict[str, InMemoryRunLog] = {}
+
+    def start(self, run_id: str, policy_ref: Mapping[str, Any]) -> InMemoryRunLog:
+        if run_id in self._runs:
+            raise ValueError(f"duplicate optimizer_run_id {run_id}")
+        log = InMemoryRunLog(run_id=run_id, policy_ref=dict(policy_ref))
+        log.append({"type": "optimizer.run.started", "sequence_number": 1, "algorithm": "gepa"})
+        self._runs[run_id] = log
+        return log
+
+    def get(self, run_id: str) -> InMemoryRunLog:
+        try:
+            return self._runs[run_id]
+        except KeyError as exc:
+            raise KeyError(f"unknown optimizer_run_id {run_id}") from exc
+
+    def flip_read(
+        self, first: str, second: str
+    ) -> tuple[tuple[OptimizerEvent, ...], tuple[OptimizerEvent, ...]]:
+        """Open visual A then B. Both stay live; logs do not cross."""
+        a = self.get(first).events
+        b = self.get(second).events
+        if not self.get(first).live or not self.get(second).live:
+            raise RuntimeError("flip_read stalled a live run")
+        return a, b
+
+
+
 @dataclass(frozen=True, slots=True)
 class OptimizerStateSlice:
     slice: OptimizerStateSliceKind | str
     run_id: str
     algorithm: str | None = None
-    cursor_seq: int = 0
+    cursor_seq: int | None = None
     updated_at: str | None = None
     data: Mapping[str, Any] = field(default_factory=dict)
     raw: Mapping[str, Any] = field(default_factory=dict)
@@ -125,7 +211,7 @@ class OptimizerStateSlice:
             slice=_enum_or_raw(OptimizerStateSliceKind, raw_slice) if raw_slice else raw_slice,
             run_id=str(payload.get("run_id") or ""),
             algorithm=_str_or_none(payload.get("algorithm")),
-            cursor_seq=_int_or_zero(payload.get("cursor_seq")),
+            cursor_seq=_int_or_none(payload.get("cursor_seq")),
             updated_at=_str_or_none(payload.get("updated_at")),
             data=dict(_mapping_or_none(payload.get("data")) or {}),
             raw=dict(payload),
@@ -143,11 +229,20 @@ def _enum_or_raw(enum_type: type[StrEnum], value: str) -> StrEnum | str:
         return value
 
 
-def _int_or_zero(value: Any) -> int:
+def _first_present(payload: Mapping[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in payload and payload[key] is not None:
+            return payload[key]
+    return None
+
+
+def _int_or_none(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
     try:
-        return max(0, int(value))
+        return int(value)
     except (TypeError, ValueError):
-        return 0
+        return None
 
 
 def _str_or_none(value: Any) -> str | None:

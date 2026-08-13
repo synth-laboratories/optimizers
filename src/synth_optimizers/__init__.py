@@ -72,9 +72,6 @@ from .hosted import (
     OptimizerRunSubmitResponse,
     OptimizerStartupCatalog,
     RunStatus as HostedRunStatus,
-    submit_mapo,
-    submit_online_reflexion,
-    validate_online_reflexion_evidence_notes,
 )
 from .hosted_config import HostedOptimizerConfig
 from .o11y import (
@@ -88,6 +85,8 @@ from .o11y import (
     project_run_events,
 )
 from .observability import (
+    DualGepaHub,
+    InMemoryRunLog,
     OptimizerEvent,
     OptimizerEventType,
     OptimizerItem,
@@ -95,9 +94,12 @@ from .observability import (
     OptimizerLogLevel,
     OptimizerStateSlice,
     OptimizerStateSliceKind,
+    container_child_eval_ref,
+    gepa_policy_ref,
 )
 from .sdk import OptimizerConfig, OptimizerRun
 from .tunnels import (
+    attach_synth_tunnel_lease,
     CloudflaredTunnelLease,
     ContainerDirectTarget,
     ManagedTunnelLease,
@@ -155,8 +157,9 @@ __all__ = [
     "CacheMissError",
     "CancelledError",
     "CloudflaredTunnelLease",
-    "ConfigError",
+    "container_child_eval_ref",
     "ContainerContractError",
+    "DualGepaHub",
     "EventCompareError",
     "BudgetConfig",
     "CacheConfig",
@@ -240,6 +243,7 @@ __all__ = [
     "RunUsage",
     "StateTransitionError",
     "SynthTunnelLease",
+    "attach_synth_tunnel_lease",
     "SynthOptimizerError",
     "TasksetSelection",
     "TunnelLease",
@@ -255,8 +259,7 @@ __all__ = [
     "events_replay",
     "gepa_compact_run_storage",
     "gepa_delete_run_storage",
+    "gepa_policy_ref",
     "gepa_serve",
-    "submit_mapo",
-    "submit_online_reflexion",
-    "validate_online_reflexion_evidence_notes",
+    "InMemoryRunLog",
 ]

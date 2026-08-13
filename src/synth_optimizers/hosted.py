@@ -21,6 +21,7 @@ from .tunnels import (
     SynthTunnelLease,
     TunnelLease,
     TunnelProvider,
+    attach_synth_tunnel_lease,
     create_tunnel_lease,
     tunnel_provider_value,
 )
@@ -550,6 +551,27 @@ class HostedOptimizerClient:
         if not isinstance(lease, SynthTunnelLease):
             raise HostedOptimizerError("open_synth_tunnel did not return a SynthTunnel lease")
         return lease
+
+    def attach_synth_tunnel(
+        self,
+        lease_id: str,
+        local_base_url: str,
+        *,
+        heartbeat_extend_ttl_seconds: int = 3600,
+        wait_ready: bool = True,
+    ) -> SynthTunnelLease:
+        """Reattach a local target to an existing SynthTunnel lease and URL."""
+
+        try:
+            return attach_synth_tunnel_lease(
+                self,
+                lease_id,
+                local_base_url,
+                heartbeat_extend_ttl_seconds=heartbeat_extend_ttl_seconds,
+                wait_ready=wait_ready,
+            )
+        except Exception as exc:
+            raise HostedOptimizerError(f"failed to attach SynthTunnel lease: {exc}") from exc
 
     def open_tunnel(
         self,

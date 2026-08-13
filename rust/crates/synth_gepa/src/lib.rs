@@ -2211,6 +2211,7 @@ fn open_gepa_run_context(
     } else {
         EventWriter::new(&paths.event_feed_path)?
     }
+    .with_optimizer_context(&config.run.run_id, "gepa")
     .with_disk_budget(disk_budget.clone());
     let mut state_machine = OptimizerStateMachine::new(config.run.run_id.clone());
     transition_run(

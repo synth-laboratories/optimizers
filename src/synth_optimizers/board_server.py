@@ -73,12 +73,12 @@ class ServiceRunBoard:
         return sum(1 for run in self.runs if run["state"] == state)
 
     @property
-    def total_cost_usd(self) -> float:
-        return sum(float(run.get("cost_usd") or 0.0) for run in self.runs)
+    def total_cost_usd(self) -> float | None:
+        return _sum_present(run.get("cost_usd") for run in self.runs)
 
     @property
-    def total_tokens(self) -> int:
-        return sum(int((run.get("usage") or {}).get("total_tokens") or 0) for run in self.runs)
+    def total_tokens(self) -> int | None:
+        return _sum_present((run.get("usage") or {}).get("total_tokens") for run in self.runs)
 
     def to_data(self) -> dict:
         liveness = self.liveness or {}
@@ -786,8 +786,8 @@ def _summary_from_runs(runs: list[dict]) -> dict:
         "succeeded": sum(1 for run in runs if run.get("state") == "succeeded"),
         "failed": sum(1 for run in runs if run.get("state") == "failed"),
         "unknown": sum(1 for run in runs if run.get("state") == "unknown"),
-        "total_cost_usd": sum(float(run.get("cost_usd") or 0.0) for run in runs),
-        "total_tokens": sum(int((run.get("usage") or {}).get("total_tokens") or 0) for run in runs),
+        "total_cost_usd": _sum_present(run.get("cost_usd") for run in runs),
+        "total_tokens": _sum_present((run.get("usage") or {}).get("total_tokens") for run in runs),
     }
 
 
@@ -1212,7 +1212,7 @@ def _project_service_run(run: dict) -> dict:
     started_at = _parse_ts(run.get("started_at")) or submitted_at
     finished_at = _parse_ts(run.get("finished_at"))
     last_activity = finished_at or started_at or submitted_at
-    cost_usd = float(usage.get("cost_usd") or 0.0)
+    cost_usd = _number(usage.get("cost_usd"))
     return {
         "run_id": str(run.get("run_id") or ""),
         "domain": _infer_domain(config),
@@ -1300,15 +1300,18 @@ def _project_budget_summary(config: dict) -> dict:
 
 
 def _usage_dict(usage: dict) -> dict:
-    prompt = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
-    completion = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+    prompt = _int_or_none(usage.get("prompt_tokens", usage.get("input_tokens")))
+    completion = _int_or_none(usage.get("completion_tokens", usage.get("output_tokens")))
+    total = _int_or_none(usage.get("total_tokens"))
+    if total is None and prompt is not None and completion is not None:
+        total = prompt + completion
     return {
         "prompt_tokens": prompt,
         "completion_tokens": completion,
-        "total_tokens": int(usage.get("total_tokens") or prompt + completion),
-        "proposer_calls": int(usage.get("proposer_calls") or 0),
-        "rollout_calls": int(usage.get("rollout_calls") or 0),
-        "cost_usd": float(usage.get("cost_usd") or 0.0),
+        "total_tokens": total,
+        "proposer_calls": _int_or_none(usage.get("proposer_calls")),
+        "rollout_calls": _int_or_none(usage.get("rollout_calls")),
+        "cost_usd": _number(usage.get("cost_usd")),
     }
 
 
@@ -1484,6 +1487,22 @@ def _number(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _sum_present(values) -> float | int | None:
+    present = []
+    for value in values:
+        if value is None or value == "":
+            continue
+        try:
+            present.append(value if isinstance(value, int) and not isinstance(value, bool) else float(value))
+        except (TypeError, ValueError):
+            continue
+    if not present:
+        return None
+    if all(isinstance(value, int) and not isinstance(value, bool) for value in present):
+        return int(sum(present))
+    return float(sum(present))
 
 
 def _int_or_none(value: object) -> int | None:

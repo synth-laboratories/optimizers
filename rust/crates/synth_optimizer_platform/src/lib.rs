@@ -33,6 +33,8 @@ pub mod rollouts;
 pub mod runtime_records;
 pub mod scores;
 pub mod sensors;
+pub mod sft_backend;
+pub mod sft_compat;
 pub mod state_machine;
 pub mod stopper;
 pub mod storage_maintenance;
@@ -91,8 +93,8 @@ pub use data_models::{
 pub use disk_budget::{directory_size_bytes, DiskBudget, DiskBudgetConfig, DiskBudgetState};
 pub use error::{OptimizerError, Result};
 pub use events::{
-    compare_normalized_event_feeds, normalize_event_feed, replay_event_feed, EventStreamRecord,
-    EventWriter,
+    compare_normalized_event_feeds, normalize_event_feed, optimizer_event_feed_path_for,
+    replay_event_feed, EventStreamRecord, EventWriter,
 };
 pub use evidence::{
     EvidenceFrame, SensorDerivedRecords, SubagentInvocation, SubagentResult, TraceAnnotation,
@@ -127,9 +129,12 @@ pub use limits::{
     RUNTIME_EFFECT_ADMISSION_SCHEMA_VERSION, RUN_LIMITS_SCHEMA_VERSION,
 };
 pub use observability::{
-    OptimizerAlgorithm as ObservationOptimizerAlgorithm, OptimizerEvent, OptimizerItem,
-    OptimizerItemType, OptimizerLogLevel, OptimizerStateSlice, OptimizerStateSliceKind,
-    OPTIMIZER_EVENT_SCHEMA_VERSION, OPTIMIZER_STATE_SLICE_SCHEMA_VERSION,
+    algorithm_ids, item_kinds, slice_ids, AlgorithmId,
+    OptimizerAlgorithm as ObservationOptimizerAlgorithm, OptimizerCapabilities, OptimizerEvent,
+    OptimizerExecutionBinding, OptimizerItem, OptimizerItemType, OptimizerLogLevel,
+    OptimizerRelationship, OptimizerResourceRef, OptimizerRunRecord, OptimizerStateSlice,
+    OptimizerStateSliceKind, OptimizerUsageSummary, OPTIMIZER_EVENT_SCHEMA_VERSION,
+    OPTIMIZER_RUN_SCHEMA_VERSION, OPTIMIZER_STATE_SLICE_SCHEMA_VERSION,
 };
 pub use operations::OperationRecord;
 pub use process::ManagedContainerProcess;
@@ -155,6 +160,16 @@ pub use scores::{
     SensorScoreRecords,
 };
 pub use sensors::{ObjectiveScore, SensorFrame, TraceDigest};
+pub use sft_backend::{
+    FakeSftBackend, SftBackend, SftCheckpointRef, SftInferenceTarget, SftJobStatus,
+    SftMaterializedCheckpoint, SftSubmitRequest, SftSubmitResponse,
+};
+pub use sft_compat::{
+    checkpoint_to_fine_tuning_checkpoint, fine_tuning_create_to_run_record,
+    openai_status_to_optimizer, optimizer_event_to_fine_tuning_event, run_record_to_fine_tuning_job,
+    sft_status_to_openai, FineTuningFileObject, FineTuningJob, FineTuningJobCheckpoint,
+    FineTuningJobCreateRequest, FineTuningJobEvent, SynthFineTuningExtensions,
+};
 pub use state_machine::{
     OptimizerRunState, OptimizerStateMachine, OptimizerTransition, OptimizerTransitionTrigger,
 };

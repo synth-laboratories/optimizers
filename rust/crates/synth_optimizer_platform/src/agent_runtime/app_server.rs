@@ -16,6 +16,7 @@ use crate::{OptimizerError, ProposerConfig, Result};
 
 use super::codex_home::{persist_refreshed_chatgpt_codex_auth, prepare_proposer_codex_launch};
 use super::jsonrpc_read_window::JsonRpcReadWindow;
+use super::session::AgentMessageObserver;
 use super::substrate::normalize_execution_mode;
 
 pub struct CodexAppServerLaunch<'a> {
@@ -50,6 +51,7 @@ pub struct CodexAppServerClient {
     next_id: u64,
     sent_messages: Vec<Value>,
     received_messages: Vec<Value>,
+    message_observer: Option<AgentMessageObserver>,
 }
 
 impl CodexAppServerClient {
@@ -132,6 +134,7 @@ impl CodexAppServerClient {
             next_id: 1,
             sent_messages: Vec::new(),
             received_messages: Vec::new(),
+            message_observer: None,
         })
     }
 
@@ -192,6 +195,7 @@ impl CodexAppServerClient {
             next_id: 1,
             sent_messages: Vec::new(),
             received_messages: Vec::new(),
+            message_observer: None,
         })
     }
 
@@ -205,6 +209,10 @@ impl CodexAppServerClient {
 
     pub fn process_id(&self) -> u32 {
         self.child.id()
+    }
+
+    pub fn set_message_observer(&mut self, observer: Option<AgentMessageObserver>) {
+        self.message_observer = observer;
     }
 
     pub fn send_request(&mut self, method: &str, params: Value) -> Result<u64> {
@@ -462,6 +470,9 @@ impl CodexAppServerClient {
             Ok(result) => match result {
                 Ok(message) => {
                     self.received_messages.push(message.clone());
+                    if let Some(observer) = &self.message_observer {
+                        observer(&message)?;
+                    }
                     Ok(message)
                 }
                 Err(error) => Err(error),

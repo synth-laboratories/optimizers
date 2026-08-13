@@ -670,6 +670,7 @@ fn known_artifact_report(run_dir: &Path) -> Result<Vec<Value>> {
         ("best_candidate", "best_candidate.json"),
         ("score_chart", "score_chart.json"),
         ("events", "events.jsonl"),
+        ("optimizer_events", "events.optimizer.jsonl"),
         ("normalized_events", "events.normalized.jsonl"),
         ("workspace", "workspace.sqlite"),
         ("transitions", "transitions.sqlite"),

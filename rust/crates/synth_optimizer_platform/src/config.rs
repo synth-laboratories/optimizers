@@ -1190,6 +1190,8 @@ pub const CHATGPT_PROPOSER_MODELS: &[&str] = &[
     "gpt-5.3-codex",
     "gpt-5.3-codex-spark",
     "gpt-5.5",
+    "gpt-5.6-luna",
+    "gpt-5.6-sol",
 ];
 
 pub fn proposer_auth_mode_normalized(auth_mode: &str) -> String {
@@ -2800,6 +2802,25 @@ fn validate_gepa_pipeline_config(config: &GepaPipelineConfig) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn locked_luna_and_sol_chatgpt_proposers_are_allowed() {
+        for model in ["gpt-5.6-luna", "gpt-5.6-sol"] {
+            assert!(CHATGPT_PROPOSER_MODELS.contains(&model));
+            validate_chatgpt_proposer_model(model).expect("locked ChatGPT proposer model");
+            validate_chatgpt_proposer_model(&model.to_ascii_uppercase())
+                .expect("ChatGPT proposer validation normalizes case");
+        }
+    }
+
+    #[test]
+    fn unknown_chatgpt_proposer_still_fails_closed() {
+        let error = validate_chatgpt_proposer_model("gpt-5.6-unlisted")
+            .expect_err("unknown model must remain rejected");
+        assert!(error.to_string().contains("not allowed"));
+        assert!(error.to_string().contains("gpt-5.6-luna"));
+        assert!(error.to_string().contains("gpt-5.6-sol"));
+    }
 
     #[test]
     fn flash_evolve_accepts_reflective_speculative_and_adaptive_stage_workers() {

@@ -683,6 +683,14 @@ def _fmt_reward(value: float | None) -> str:
     return "—" if value is None else f"{value:.3f}"
 
 
+def _fmt_cost(value: float | None) -> str:
+    return "—" if value is None else f"${value:.4f}"
+
+
+def _fmt_tokens(value: int | None) -> str:
+    return "—" if value is None else f"{value:,}"
+
+
 def _fmt_duration(seconds: float | None) -> str:
     if seconds is None:
         return "—"
@@ -899,7 +907,7 @@ def _render_rows(runs: list[dict]) -> str:
             "<td class='num dur'>{dur}</td>"
             "<td class='storage-cell'>{storage}</td>"
             "<td class='num tokens'>{tokens}</td>"
-            "<td class='num cost'>${cost}</td>"
+            "<td class='num cost'>{cost}</td>"
             "<td class='ts updated'>{updated}</td>"
             "</tr>".format(
                 rid=_esc(run["run_id"]),
@@ -912,8 +920,8 @@ def _render_rows(runs: list[dict]) -> str:
                 eta=_eta_html(run.get("eta")),
                 dur=_fmt_duration(run["duration_seconds"]),
                 storage=_storage_badge(run),
-                tokens=f"{run['usage']['total_tokens']:,}",
-                cost=f"{run['cost_usd']:.4f}",
+                tokens=_fmt_tokens((run.get("usage") or {}).get("total_tokens")),
+                cost=_fmt_cost(run.get("cost_usd")),
                 updated=_fmt_updated(run),
             )
         )
@@ -956,6 +964,10 @@ def render_board_html(
     active_workers = int(s.get("service_active_workers") or 0)
     queued_runnable = int(s.get("service_queued_runnable") or 0)
     queued_blocked = int(s.get("service_queued_blocked") or 0)
+    cost_label = _fmt_cost(s.get("total_cost_usd"))
+    tokens_label = (
+        "unknown tokens" if s.get("total_tokens") is None else f"{s['total_tokens']:,} tokens"
+    )
 
     return f"""<!doctype html>
 <html lang="en">
@@ -1145,7 +1157,7 @@ def render_board_html(
   <span class="live"><span id="dot" class="dot"></span><span id="livetext">static</span></span>
 </header>
 <div class="sub" id="subline">
-  {s['total']} run(s) · {queued} queued · {running} running · workers {active_workers}/{service_workers} · queue {queued_runnable} runnable/{queued_blocked} blocked · service running {service_running} · service progress {service_progress} · oldest queued {oldest_queued} · board poll {board_poll} · {s['unknown']} unknown · ${s['total_cost_usd']:.4f} · {s['total_tokens']:,} tokens
+  {s['total']} run(s) · {queued} queued · {running} running · workers {active_workers}/{service_workers} · queue {queued_runnable} runnable/{queued_blocked} blocked · service running {service_running} · service progress {service_progress} · oldest queued {oldest_queued} · board poll {board_poll} · {s['unknown']} unknown · {cost_label} · {tokens_label}
 </div>
 <div class="cards">
   <div class="card queue"><div class="n" data-k="queued">{queued}</div><div class="l">Queued</div></div>
@@ -1268,6 +1280,8 @@ _BOARD_JS = r"""
 var GepaBoard = (function () {
   var q, st, dm, body, empty, boardData=null;
   function fmtReward(v){ return v==null? '—' : Number(v).toFixed(3); }
+  function fmtCost(v){ return v==null||v===''? '—' : '$'+Number(v).toFixed(4); }
+  function fmtTokens(v){ return v==null||v===''? '—' : Number(v).toLocaleString(); }
   function fmtDur(s){
     if(s==null) return '—';
     if(s<60) return Math.round(s)+'s';
@@ -1499,8 +1513,8 @@ var GepaBoard = (function () {
       +"<td class='eta'>"+etaHtml(r.eta)+"</td>"
       +"<td class='num'>"+fmtDur(r.duration_seconds)+"</td>"
       +"<td class='storage-cell'>"+storageBadge(r)+"</td>"
-      +"<td class='num'>"+Number(r.usage.total_tokens).toLocaleString()+"</td>"
-      +"<td class='num'>$"+Number(r.cost_usd).toFixed(4)+"</td>"
+      +"<td class='num'>"+fmtTokens((r.usage||{}).total_tokens)+"</td>"
+      +"<td class='num'>"+fmtCost(r.cost_usd)+"</td>"
       +"<td class='ts'>"+fmtUpdated(r)+"</td></tr>";
   }
   function storageBadge(r){
@@ -1543,8 +1557,8 @@ var GepaBoard = (function () {
       +' · service progress '+ageOrDash(s.service_last_progress_at)
       +' · oldest queued '+fmtDur(s.service_oldest_queued_age_seconds)
       +' · board poll '+ageOrDash(data.generated_at)
-      +' · '+(s.unknown||0)+' unknown · $'+Number(s.total_cost_usd).toFixed(4)
-      +' · '+Number(s.total_tokens).toLocaleString()+' tokens';
+      +' · '+(s.unknown||0)+' unknown · '+fmtCost(s.total_cost_usd)
+      +' · '+(s.total_tokens==null||s.total_tokens===''? 'unknown tokens' : Number(s.total_tokens).toLocaleString()+' tokens');
     // keep domain filter options in sync
     var have={}; Array.prototype.forEach.call(dm.options, function(o){ have[o.value]=1; });
     Array.from(new Set(data.runs.map(function(r){return r.domain;}))).sort().forEach(function(d){

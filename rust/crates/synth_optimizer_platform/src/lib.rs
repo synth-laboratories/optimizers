@@ -92,8 +92,8 @@ pub use data_models::{
 pub use disk_budget::{directory_size_bytes, DiskBudget, DiskBudgetConfig, DiskBudgetState};
 pub use error::{OptimizerError, Result};
 pub use events::{
-    compare_normalized_event_feeds, normalize_event_feed, replay_event_feed, EventStreamRecord,
-    EventWriter,
+    compare_normalized_event_feeds, normalize_event_feed, optimizer_event_feed_path_for,
+    replay_event_feed, EventStreamRecord, EventWriter,
 };
 pub use evidence::{
     EvidenceFrame, SensorDerivedRecords, SubagentInvocation, SubagentResult, TraceAnnotation,
@@ -124,9 +124,14 @@ pub use limits::{
     RUNTIME_EFFECT_ADMISSION_SCHEMA_VERSION, RUN_LIMITS_SCHEMA_VERSION,
 };
 pub use observability::{
+    container_child_eval_ref, gepa_proposer_policy_ref, optimizer_event_log_id, policy_ref,
+    proposer_delta_chunks_from_protocol, proposer_delta_chunks_from_response, proposer_delta_fields,
     OptimizerAlgorithm as ObservationOptimizerAlgorithm, OptimizerEvent, OptimizerItem,
     OptimizerItemType, OptimizerLogLevel, OptimizerStateSlice, OptimizerStateSliceKind,
+    A3_TASK, BANKING77_EVAL_HARNESS, CHILD_ROLLOUT_ATTACHED_EVENT_TYPE,
+    DEFAULT_PROPOSER_DELTA_CHANNEL, GEPA_PROPOSER_HARNESS, LUNA_MED_POLICY_CONFIG,
     OPTIMIZER_EVENT_SCHEMA_VERSION, OPTIMIZER_STATE_SLICE_SCHEMA_VERSION,
+    PROPOSER_DELTA_EVENT_TYPE, SOL_MED_POLICY_CONFIG,
 };
 pub use operations::OperationRecord;
 pub use process::ManagedContainerProcess;

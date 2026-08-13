@@ -716,14 +716,8 @@ impl WorkspaceStore {
                         OR active.lease_expires_at > datetime('now')
                       )
                       AND (
-                        (
-                          active.container_url != ''
-                          AND active.container_url = queued.container_url
-                        )
-                        OR (
                           active.cache_namespace != ''
                           AND active.cache_namespace = queued.cache_namespace
-                        )
                       )
                   )
                 ORDER BY queued.priority DESC, queued.submitted_at ASC, queued.request_id ASC

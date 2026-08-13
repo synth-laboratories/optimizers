@@ -179,6 +179,30 @@ paths:
                 schema: { $ref: '#/components/schemas/RunStateSnapshot' }
         '404': { $ref: '#/components/responses/RunNotFound' }
 
+  /runs/{run_id}/optimizer-events:
+    parameters: [ { $ref: '#/components/parameters/RunId' } ]
+    get:
+      operationId: listOptimizerEvents
+      summary: Read the durable canonical optimizer event stream
+      description: |
+        Returns only `optimizer_event.v1` records owned by this Run. The
+        `after_sequence` cursor is exclusive, so retrying the same request is
+        idempotent and reconnecting from N returns only records after N.
+      parameters:
+        - name: after_sequence
+          in: query
+          schema: { type: integer, minimum: 0, default: 0 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 2000, default: 500 }
+      responses:
+        '200':
+          description: A cursor page from the per-Run durable optimizer log.
+          content:
+            application/json:
+              schema: { type: object }
+        '404': { $ref: '#/components/responses/RunNotFound' }
+
   /runs/{run_id}/timings:
     parameters: [ { $ref: '#/components/parameters/RunId' } ]
     get:

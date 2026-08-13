@@ -19,28 +19,30 @@ use synth_optimizer_platform::limits::{
     RuntimeEffectAdmissionInput, RuntimeEffectAdmissionRecord, RuntimeEffectBudgetEstimate,
 };
 use synth_optimizer_platform::{
-    budget_limit_engine_input, normalize_event_feed, stable_json_hash, task_identity,
-    write_run_storage_report, ArtifactPaths, ArtifactRef, CacheMode, CacheProfileRecord,
-    CandidateOverlay, CheckpointInput, CheckpointRecord, CheckpointSummaryRecord,
-    ConfiguredGepaRunLimits, ContainerClient, ContainerContractSnapshotInput,
-    ContainerContractSnapshotRecord, DiskBudget, EvaluationCacheRecord, EvaluationCacheRecordInput,
-    EventStreamRecord, EventWriter, EvidenceFrame, FailurePayload, ForecastConfidence,
-    GepaBatchSamplerConfig, GepaCandidateSelectorConfig, GepaObjectiveAcceptanceConfig,
-    GepaPipelineMode, GepaRunResult, LeverBundle, LeverKind, LeverManifest, LimitDefinition,
-    LimitEngine, LimitEngineInput, LimitForecast, LimitKind, LimitObservation, LimitSnapshot,
-    LimitStatus, ManagedContainerProcess, MaterializationRecord, MaterializationRecordInput,
-    ObjectiveScore, ObjectiveSetRecord, ObjectiveSpec, OptimizerError, OptimizerJob,
-    OptimizerJobKind, OptimizerJobStatus, OptimizerRunState, OptimizerStateMachine,
-    OptimizerTransition, OptimizerTransitionTrigger, ParetoComparisonRecord, PlanLinkInput,
-    PlanLinkRecord, PromptCandidatePayload, PromptProgram, PromptProgramSnapshotInput,
-    PromptProgramSnapshotRecord, RequestCache, ResolvedRunConfigInput, ResolvedRunConfigRecord,
-    Result, RetryPolicy, RolloutMaterializationIdentity, RunArtifactStore, RunPhaseTimingInput,
-    RunRegistry, RunRegistryEntry, RunStorageInspectionInput, RuntimeEffectInput,
-    RuntimeEffectRecord, ScoreRecord, ScoreVectorRecord, SensorFrame, StateMachineEntity,
-    StopperStateInput, StopperStateRecord, SynthOptimizerConfig, TasksetResponse,
-    TasksetSnapshotInput, TasksetSnapshotRecord, TasksetTasksRequest, TasksetTasksResponse,
-    TransitionInput, TransitionLog, TransitionSink, UsageLedgerInput, UsageLedgerRecord,
-    WorkspaceStore, LIMIT_ENGINE_SCHEMA_VERSION,
+    budget_limit_engine_input, container_child_eval_ref, normalize_event_feed,
+    proposer_delta_chunks_from_response, stable_json_hash,
+    task_identity, write_run_storage_report, ArtifactPaths, ArtifactRef, CacheMode,
+    CacheProfileRecord, CandidateOverlay, CheckpointInput, CheckpointRecord,
+    CheckpointSummaryRecord, ConfiguredGepaRunLimits, ContainerClient,
+    ContainerContractSnapshotInput, ContainerContractSnapshotRecord, DiskBudget,
+    EvaluationCacheRecord, EvaluationCacheRecordInput, EventStreamRecord, EventWriter,
+    EvidenceFrame, FailurePayload, ForecastConfidence, GepaBatchSamplerConfig,
+    GepaCandidateSelectorConfig, GepaObjectiveAcceptanceConfig, GepaPipelineMode, GepaRunResult,
+    LeverBundle, LeverKind, LeverManifest, LimitDefinition, LimitEngine, LimitEngineInput,
+    LimitForecast, LimitKind, LimitObservation, LimitSnapshot, LimitStatus,
+    ManagedContainerProcess, MaterializationRecord, MaterializationRecordInput, ObjectiveScore,
+    ObjectiveSetRecord, ObjectiveSpec, OptimizerError, OptimizerJob, OptimizerJobKind,
+    OptimizerJobStatus, OptimizerRunState, OptimizerStateMachine, OptimizerTransition,
+    OptimizerTransitionTrigger, ParetoComparisonRecord, PlanLinkInput, PlanLinkRecord,
+    PromptCandidatePayload, PromptProgram, PromptProgramSnapshotInput, PromptProgramSnapshotRecord,
+    RequestCache, ResolvedRunConfigInput, ResolvedRunConfigRecord, Result, RetryPolicy,
+    RolloutMaterializationIdentity, RunArtifactStore, RunPhaseTimingInput, RunRegistry,
+    RunRegistryEntry, RunStorageInspectionInput, RuntimeEffectInput, RuntimeEffectRecord,
+    ScoreRecord, ScoreVectorRecord, SensorFrame, StateMachineEntity, StopperStateInput,
+    StopperStateRecord, SynthOptimizerConfig, TasksetResponse, TasksetSnapshotInput,
+    TasksetSnapshotRecord, TasksetTasksRequest, TasksetTasksResponse, TransitionInput,
+    TransitionLog, TransitionSink, UsageLedgerInput, UsageLedgerRecord, WorkspaceStore,
+    LIMIT_ENGINE_SCHEMA_VERSION,
 };
 
 mod codex_app_server;
@@ -593,6 +595,8 @@ pub struct ProposerOutcome {
     pub workspace: Option<String>,
     #[serde(default)]
     pub evidence_warnings: Vec<String>,
+    #[serde(default, skip_serializing, skip_deserializing)]
+    pub response: Value,
 }
 
 /// Public, workspace-backed proposer result for optimizer experiments that need
@@ -1958,6 +1962,10 @@ pub(crate) fn append_global_gepa_run_index(
         .open(&index_path)
         .map_err(|source| OptimizerError::io(&index_path, source))?;
     writeln!(file, "{}", serde_json::to_string(&entry)?)
+        .map_err(|source| OptimizerError::io(&index_path, source))?;
+    file.flush()
+        .map_err(|source| OptimizerError::io(&index_path, source))?;
+    file.sync_data()
         .map_err(|source| OptimizerError::io(&index_path, source))
 }
 
@@ -2240,6 +2248,10 @@ fn open_gepa_run_context(
     } else {
         EventWriter::new(&paths.event_feed_path)?
     }
+    .with_optimizer_context(
+        config.run.run_id.clone(),
+        synth_optimizer_platform::ObservationOptimizerAlgorithm::Gepa,
+    )
     .with_disk_budget(disk_budget.clone());
     let mut state_machine = OptimizerStateMachine::new(config.run.run_id.clone());
     transition_run(
@@ -7347,7 +7359,12 @@ fn advance_initializing(
         context.events.emit(
             "candidate.registered",
             "Seed candidate registered",
-            json!({"candidate_id": state.candidates[0].candidate_id, "source": "seed"}),
+            json!({
+                "candidate_id": &state.candidates[0].candidate_id,
+                "source": "seed",
+                "status": "registered",
+                "values": &state.candidates[0].payload,
+            }),
         )?;
         persist_candidate_snapshot(
             &mut context.workspace,
@@ -9028,6 +9045,7 @@ fn consume_proposer_outcome(
             .into_iter()
             .filter_map(|value| value.as_str().map(str::to_string))
             .collect(),
+        response: response.clone(),
     };
     state.total_usage.merge(&usage);
     state.total_cost += cost_usd;
@@ -9046,6 +9064,7 @@ fn consume_proposer_outcome(
         &response,
         workspace.as_deref(),
     )?;
+    emit_proposer_deltas(&mut context.events, active.generation, &response)?;
     let mut metadata = Map::new();
     metadata.insert("stage".to_string(), Value::String("proposer".to_string()));
     metadata.insert("generation".to_string(), json!(active.generation));
@@ -9383,6 +9402,16 @@ fn consume_rollout_outcome(
         &cache_key,
         cache_hit,
     )?;
+    emit_child_evaluation_lifecycle(
+        context,
+        &candidate.candidate_id,
+        &stage,
+        &example_id,
+        &typed_response,
+        reward,
+        &usage,
+        cost_usd,
+    )?;
     active.reward_sum += reward;
     active.rollout_count += 1;
     active.usage.merge(&usage);
@@ -9504,6 +9533,16 @@ fn consume_group_rollout_outcome(
         &cache_key,
         cache_hit,
     )?;
+    emit_child_evaluation_lifecycle(
+        context,
+        &candidate.candidate_id,
+        &stage,
+        &example_id,
+        &typed_response,
+        reward,
+        &usage,
+        cost_usd,
+    )?;
     candidate_eval.reward_sum += reward;
     candidate_eval.rollout_count += 1;
     candidate_eval.usage.merge(&usage);
@@ -9619,6 +9658,212 @@ fn record_rollout_materialization_from_outcome(
             metadata: Map::new(),
         }),
     )
+}
+
+fn emit_proposer_deltas(
+    events: &mut EventWriter,
+    generation: usize,
+    response: &Value,
+) -> Result<()> {
+    for (channel, text) in proposer_delta_chunks_from_response(response) {
+        events.emit_proposer_delta(generation as u64, &channel, &text)?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_child_evaluation_lifecycle(
+    context: &mut GepaRunContext,
+    candidate_id: &str,
+    stage: &str,
+    example_id: &str,
+    response: &synth_optimizer_platform::RolloutResponse,
+    reward: f64,
+    usage: &UsageTotals,
+    cost_usd: f64,
+) -> Result<()> {
+    let child = child_evaluation_resource_ref(response)?;
+    let rollout_id = response
+        .rollout_id
+        .as_deref()
+        .expect("child resource extraction requires rollout_id");
+    let common = json!({
+        "candidate_id": candidate_id,
+        "stage": stage,
+        "example_id": example_id,
+        "child_resource_ref": child,
+    });
+    context.events.emit(
+        "optimizer.candidate_evaluation.allocated",
+        "Candidate evaluation allocated to a child rollout",
+        common.clone(),
+    )?;
+    context.events.emit(
+        "optimizer.child_rollout.attached",
+        "Child rollout resource reference attached",
+        common,
+    )?;
+    context.events.emit(
+        "optimizer.evaluation_result.received",
+        "Candidate evaluation result received",
+        json!({
+            "candidate_id": candidate_id,
+            "stage": stage,
+            "example_id": example_id,
+            "rollout_id": rollout_id,
+            "child_resource_ref": child,
+            "reward": reward,
+            "usage": usage,
+            "cost_usd": cost_usd,
+        }),
+    )?;
+    Ok(())
+}
+
+fn child_evaluation_resource_ref(
+    response: &synth_optimizer_platform::RolloutResponse,
+) -> Result<Value> {
+    let rollout_id = response
+        .rollout_id
+        .as_deref()
+        .ok_or_else(|| OptimizerError::Container("child rollout_id is required".to_string()))?;
+    let stream = response
+        .extra
+        .get("stream")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            OptimizerError::Container(format!(
+                "child rollout {rollout_id} omitted its declared stream descriptor"
+            ))
+        })?;
+    let stream_id = stream
+        .get("id")
+        .or_else(|| stream.get("stream.id"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            OptimizerError::Container(format!(
+                "child rollout {rollout_id} stream descriptor omitted stream.id"
+            ))
+        })?;
+    let reward_url = stream
+        .get("reward")
+        .and_then(Value::as_object)
+        .and_then(|reward| reward.get("url"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            OptimizerError::Container(format!(
+                "child rollout {rollout_id} stream descriptor omitted reward.url"
+            ))
+        })?;
+    Ok(container_child_eval_ref(rollout_id, stream_id, reward_url))
+}
+
+#[cfg(test)]
+mod child_evaluation_resource_ref_tests {
+    use super::*;
+
+    fn response(value: Value) -> synth_optimizer_platform::RolloutResponse {
+        synth_optimizer_platform::RolloutResponse::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn extracts_declared_container_stream_resource() {
+        let response = response(json!({
+            "rollout_id": "roll_123",
+            "reward": 1.0,
+            "stream": {
+                "schema": "synth.rollout.stream.v1",
+                "id": "stream_123",
+                "reward": {"url": "/reward?rollout_id=roll_123"}
+            }
+        }));
+        let child = child_evaluation_resource_ref(&response).unwrap();
+        assert_eq!(child["schema"], "synth.resource-ref.v1");
+        assert_eq!(child["kind"], "container_rollout");
+        assert_eq!(child["id"], "roll_123");
+        assert_eq!(child["attributes"]["stream_id"], "stream_123");
+        assert_eq!(
+            child["attributes"]["reward_url"],
+            "/reward?rollout_id=roll_123"
+        );
+    }
+
+    #[test]
+    fn rejects_rollout_without_declared_stream() {
+        let response = response(json!({"rollout_id": "roll_123", "reward": 1.0}));
+        let error = child_evaluation_resource_ref(&response).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("omitted its declared stream descriptor"));
+    }
+}
+
+#[cfg(test)]
+mod proposer_delta_producer_tests {
+    use super::*;
+    use serde_json::json;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use synth_optimizer_platform::{
+        proposer_delta_chunks_from_response, ObservationOptimizerAlgorithm, OptimizerEvent,
+        PROPOSER_DELTA_EVENT_TYPE,
+    };
+
+    fn scratch_dir() -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("synth_gepa_proposer_delta_{nanos}"));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn gepa_event_path_emits_proposer_delta_then_child_ref() {
+        let dir = scratch_dir();
+        let mut events = EventWriter::new(dir.join("events.jsonl"))
+            .unwrap()
+            .with_optimizer_context("gepa_luna", ObservationOptimizerAlgorithm::Gepa);
+        let response = json!({
+            "proposer_stream_chunks": [
+                {"channel": "reasoning", "text": "chunk0 "},
+                {"channel": "content", "text": "Final proposal."}
+            ]
+        });
+        emit_proposer_deltas(&mut events, 0, &response).unwrap();
+        events
+            .emit_child_rollout_attached(container_child_eval_ref(
+                "rollout_abc",
+                "stream:abc",
+                "/reward?rollout_id=rollout_abc",
+            ))
+            .unwrap();
+        let lines: Vec<Value> = fs::read_to_string(events.optimizer_event_feed_path())
+            .unwrap()
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0]["type"], PROPOSER_DELTA_EVENT_TYPE);
+        assert_eq!(lines[0]["sequence_number"], 1);
+        assert_eq!(lines[0]["delta"]["generation"], 0);
+        assert_eq!(lines[0]["delta"]["channel"], "reasoning");
+        assert_eq!(lines[1]["delta"]["text"], "Final proposal.");
+        assert_eq!(lines[2]["delta"]["child_resource_ref"]["schema"], "synth.resource-ref.v1");
+        let parsed: OptimizerEvent = serde_json::from_value(lines[0].clone()).unwrap();
+        assert_eq!(parsed.sequence_number, Some(1));
+        assert_eq!(
+            proposer_delta_chunks_from_response(&response),
+            vec![
+                ("reasoning".to_string(), "chunk0 ".to_string()),
+                ("content".to_string(), "Final proposal.".to_string()),
+            ]
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
 
 fn attach_rollout_trace_artifact(
@@ -12013,6 +12258,19 @@ fn advance_proposer_waiting(
                     "proposal_index": proposal_index,
                 }),
             )?;
+            context.events.emit(
+                "candidate.registered",
+                "Proposed candidate registered",
+                json!({
+                    "candidate_id": &candidate.candidate_id,
+                    "parent_id": &candidate.parent_id,
+                    "source": &candidate.source,
+                    "status": &candidate.status,
+                    "generation": state.cursor.generation,
+                    "proposal_index": proposal_index,
+                    "values": &candidate.payload,
+                }),
+            )?;
             state.candidates.push(candidate);
             state.candidates.len() - 1
         };
@@ -14054,6 +14312,7 @@ fn execute_gepa_monolithic_with_options(
             generation,
             &proposer_outcome,
         )?);
+        emit_proposer_deltas(&mut events, generation, &proposer_outcome.response)?;
         let mut metadata = Map::new();
         metadata.insert("stage".to_string(), Value::String("proposer".to_string()));
         metadata.insert("generation".to_string(), json!(generation));
@@ -20259,6 +20518,7 @@ fn propose_candidates(call: ProposerCall<'_>) -> Result<ProposerOutcome> {
         runtime_substrate: proposer_runtime_outcome.runtime_substrate,
         workspace: proposer_runtime_outcome.workspace,
         evidence_warnings: proposer_runtime_outcome.evidence_warnings,
+        response: proposer_runtime_outcome.response,
     })
 }
 
@@ -20355,11 +20615,12 @@ pub fn propose_workspace_candidates(
         .unwrap_or_default();
     let mut proposals = Vec::with_capacity(proposal_values.len());
     for (proposal_index, value) in proposal_values.into_iter().enumerate() {
-        let mut proposal = serde_json::from_value::<ProposedCandidate>(value).map_err(|source| {
-            OptimizerError::Proposer(format!(
-                "workspace proposer proposal index={proposal_index} is invalid: {source}"
-            ))
-        })?;
+        let mut proposal =
+            serde_json::from_value::<ProposedCandidate>(value).map_err(|source| {
+                OptimizerError::Proposer(format!(
+                    "workspace proposer proposal index={proposal_index} is invalid: {source}"
+                ))
+            })?;
         if proposal.evidence.is_null() {
             proposal.evidence = default_evidence.clone();
         }

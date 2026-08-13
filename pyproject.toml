@@ -8,7 +8,7 @@ requires-python = ">=3.11"
 license = "Apache-2.0"
 dependencies = [
     "pydantic>=2.0.0",
-    "synth-containers==0.2.0.20260604",
+    "synth-containers==0.4.0.20260730",
     "websocket-client>=1.8.0",
 ]
 

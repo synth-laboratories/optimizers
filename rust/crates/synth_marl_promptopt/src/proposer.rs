@@ -26,7 +26,9 @@ pub struct ProposeGenerationInput<'a> {
 
 pub fn propose_generation(input: ProposeGenerationInput<'_>) -> Result<Vec<MarlCandidate>> {
     let mut proposer_config = input.config.clone();
-    let target_fields = input.strategy.target_fields(input.generation, input.program);
+    let target_fields = input
+        .strategy
+        .target_fields(input.generation, input.program);
     if target_fields.is_empty() {
         return Err(OptimizerError::Invariant(format!(
             "strategy {} selected no target fields for generation {}",

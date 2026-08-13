@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs::{self, OpenOptions};
-use std::io::Write as IoWrite;
+use std::io::{Read, Seek, SeekFrom, Write as IoWrite};
 use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -10,6 +10,7 @@ use std::sync::{
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -20,10 +21,9 @@ use synth_optimizer_platform::limits::{
 };
 use synth_optimizer_platform::{
     budget_limit_engine_input, container_child_eval_ref, normalize_event_feed,
-    proposer_delta_chunks_from_response, stable_json_hash,
-    task_identity, write_run_storage_report, ArtifactPaths, ArtifactRef, CacheMode,
-    CacheProfileRecord, CandidateOverlay, CheckpointInput, CheckpointRecord,
-    CheckpointSummaryRecord, ConfiguredGepaRunLimits, ContainerClient,
+    proposer_delta_chunks_from_response, stable_json_hash, task_identity, write_run_storage_report,
+    ArtifactPaths, ArtifactRef, CacheMode, CacheProfileRecord, CandidateOverlay, CheckpointInput,
+    CheckpointRecord, CheckpointSummaryRecord, ConfiguredGepaRunLimits, ContainerClient,
     ContainerContractSnapshotInput, ContainerContractSnapshotRecord, DiskBudget,
     EvaluationCacheRecord, EvaluationCacheRecordInput, EventStreamRecord, EventWriter,
     EvidenceFrame, FailurePayload, ForecastConfidence, GepaBatchSamplerConfig,
@@ -579,10 +579,26 @@ fn terminal_result_from_cursor(
 pub struct CandidateEvaluation {
     pub average_reward: f64,
     pub rollout_count: usize,
+    #[serde(default)]
+    pub required_rollout_count: usize,
+    #[serde(default)]
+    pub failed_attempts: Vec<FailedRolloutAttempt>,
     pub usage: UsageTotals,
     pub cost_usd: f64,
     pub scores: Vec<RolloutScore>,
     pub sensor_frames: Vec<SensorFrame>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FailedRolloutAttempt {
+    pub candidate_id: String,
+    pub stage: String,
+    pub example_id: String,
+    pub job_id: String,
+    pub attempt: u32,
+    pub max_attempts: u32,
+    pub failure: FailurePayload,
+    pub provider_signal: ProviderSignal,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1260,6 +1276,8 @@ struct GepaActiveEvaluation {
     #[serde(default)]
     scores: Vec<RolloutScore>,
     #[serde(default)]
+    failed_attempts: Vec<FailedRolloutAttempt>,
+    #[serde(default)]
     sensor_frames: Vec<SensorFrame>,
     #[serde(default)]
     reward_sum: f64,
@@ -1322,6 +1340,8 @@ struct GepaActiveCandidateEvaluation {
     parent_id: Option<String>,
     #[serde(default)]
     scores: Vec<RolloutScore>,
+    #[serde(default)]
+    failed_attempts: Vec<FailedRolloutAttempt>,
     #[serde(default)]
     sensor_frames: Vec<SensorFrame>,
     #[serde(default)]
@@ -1418,7 +1438,7 @@ struct StoredRolloutOutcome {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-struct ProviderSignal {
+pub struct ProviderSignal {
     #[serde(default)]
     status_code: Option<u16>,
     #[serde(default)]
@@ -1431,10 +1451,13 @@ struct ProviderSignal {
 
 #[derive(Clone, Debug)]
 struct RolloutExecutionRecord {
-    outcome: runtime::RuntimeRolloutOutcome,
+    outcome: Option<runtime::RuntimeRolloutOutcome>,
     degraded: bool,
     failure: Option<FailurePayload>,
     provider_signal: ProviderSignal,
+    job_id: String,
+    attempt: u32,
+    max_attempts: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -1933,19 +1956,6 @@ pub(crate) fn append_global_gepa_run_index(
 ) -> Result<()> {
     let home = gepa_home_dir();
     fs::create_dir_all(&home).map_err(|source| OptimizerError::io(&home, source))?;
-    let index_path = home.join("index.jsonl");
-    if index_path.exists() {
-        let text = fs::read_to_string(&index_path)
-            .map_err(|source| OptimizerError::io(&index_path, source))?;
-        for line in text.lines() {
-            let Ok(value) = serde_json::from_str::<Value>(line) else {
-                continue;
-            };
-            if value.get("run_id").and_then(Value::as_str) == Some(config.run.run_id.as_str()) {
-                return Ok(());
-            }
-        }
-    }
     let entry = json!({
         "schema": "synth.gepa_run_index.v1",
         "run_id": config.run.run_id.clone(),
@@ -1956,17 +1966,106 @@ pub(crate) fn append_global_gepa_run_index(
         "started_at": rfc3339_now(),
         "owning_service_url": owning_service_url,
     });
+    append_global_gepa_run_index_entry(&home, &entry)
+}
+
+fn append_global_gepa_run_index_entry(home: &Path, entry: &Value) -> Result<()> {
+    fs::create_dir_all(home).map_err(|source| OptimizerError::io(home, source))?;
+    let index_path = home.join("index.jsonl");
     let mut file = OpenOptions::new()
         .create(true)
+        .read(true)
+        .write(true)
         .append(true)
         .open(&index_path)
         .map_err(|source| OptimizerError::io(&index_path, source))?;
-    writeln!(file, "{}", serde_json::to_string(&entry)?)
+
+    // The global index is shared by every live GEPA process. Hold one
+    // cross-process lock across dedupe, append, flush, and sync so concurrent
+    // writers cannot interleave two JSON objects on the same JSONL line.
+    file.lock_exclusive()
+        .map_err(|source| OptimizerError::io(&index_path, source))?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|source| OptimizerError::io(&index_path, source))?;
+    let mut text = String::new();
+    file.read_to_string(&mut text)
+        .map_err(|source| OptimizerError::io(&index_path, source))?;
+    let run_id = entry.get("run_id").and_then(Value::as_str);
+    if text.lines().any(|line| {
+        serde_json::from_str::<Value>(line)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("run_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .as_deref()
+            == run_id
+    }) {
+        return Ok(());
+    }
+    file.seek(SeekFrom::End(0))
+        .map_err(|source| OptimizerError::io(&index_path, source))?;
+    writeln!(file, "{}", serde_json::to_string(entry)?)
         .map_err(|source| OptimizerError::io(&index_path, source))?;
     file.flush()
         .map_err(|source| OptimizerError::io(&index_path, source))?;
     file.sync_data()
         .map_err(|source| OptimizerError::io(&index_path, source))
+}
+
+#[cfg(test)]
+mod global_gepa_run_index_tests {
+    use super::*;
+    use std::sync::{Arc, Barrier};
+
+    #[test]
+    fn concurrent_appends_remain_distinct_valid_jsonl_records() {
+        let home = std::env::temp_dir().join(format!(
+            "synth_gepa_index_concurrency_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let barrier = Arc::new(Barrier::new(3));
+        let mut writers = Vec::new();
+        for run_id in ["gepa_luna", "gepa_sol"] {
+            let home = home.clone();
+            let barrier = Arc::clone(&barrier);
+            writers.push(thread::spawn(move || {
+                let entry = json!({
+                    "schema": "synth.gepa_run_index.v1",
+                    "run_id": run_id,
+                    "run_dir": home.join(run_id),
+                    "event_feed_path": home.join(run_id).join("optimizer_events.jsonl"),
+                });
+                barrier.wait();
+                append_global_gepa_run_index_entry(&home, &entry).unwrap();
+            }));
+        }
+        barrier.wait();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+
+        let lines = fs::read_to_string(home.join("index.jsonl")).unwrap();
+        let entries = lines
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            entries
+                .iter()
+                .filter_map(|entry| entry.get("run_id").and_then(Value::as_str))
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["gepa_luna", "gepa_sol"])
+        );
+        fs::remove_dir_all(home).unwrap();
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -4418,6 +4517,8 @@ fn absorb_obsolete_speculative_tail(
             let eval = CandidateEvaluation {
                 average_reward: active.average_reward(),
                 rollout_count: active.rollout_count,
+                required_rollout_count: active.row_ids.len(),
+                failed_attempts: active.failed_attempts.clone(),
                 usage: active.usage.clone(),
                 cost_usd: active.cost_usd,
                 scores: active.scores.clone(),
@@ -5044,6 +5145,7 @@ fn schedule_async_proposer_job(
         heldout_candidate_index: None,
         parent_id: None,
         scores: Vec::new(),
+        failed_attempts: Vec::new(),
         sensor_frames: Vec::new(),
         reward_sum: 0.0,
         usage: UsageTotals::default(),
@@ -5456,7 +5558,8 @@ fn active_candidate_rollout_complete(candidate: &GepaActiveCandidateEvaluation) 
 }
 
 fn active_candidate_completed_rows(candidate: &GepaActiveCandidateEvaluation) -> usize {
-    completed_score_example_count(&candidate.scores).min(candidate.row_ids.len())
+    completed_example_count(&candidate.scores, &candidate.failed_attempts)
+        .min(candidate.row_ids.len())
 }
 
 fn completed_score_example_count(scores: &[RolloutScore]) -> usize {
@@ -5474,23 +5577,108 @@ fn rollout_scores_contain_example(scores: &[RolloutScore], example_id: &str) -> 
     scores.iter().any(|score| score.example_id == example_id)
 }
 
-fn next_unscored_row_index(row_ids: &[String], scores: &[RolloutScore]) -> usize {
-    let scored = scored_example_ids(scores);
+fn failed_example_ids(failures: &[FailedRolloutAttempt]) -> BTreeSet<&str> {
+    failures
+        .iter()
+        .map(|failure| failure.example_id.as_str())
+        .collect()
+}
+
+fn completed_example_count(scores: &[RolloutScore], failures: &[FailedRolloutAttempt]) -> usize {
+    scored_example_ids(scores)
+        .into_iter()
+        .chain(failed_example_ids(failures))
+        .collect::<BTreeSet<_>>()
+        .len()
+}
+
+fn next_unscored_row_index(
+    row_ids: &[String],
+    scores: &[RolloutScore],
+    failures: &[FailedRolloutAttempt],
+) -> usize {
+    let completed = scored_example_ids(scores)
+        .into_iter()
+        .chain(failed_example_ids(failures))
+        .collect::<BTreeSet<_>>();
     row_ids
         .iter()
-        .position(|row_id| !scored.contains(row_id.as_str()))
+        .position(|row_id| !completed.contains(row_id.as_str()))
         .unwrap_or(row_ids.len())
 }
 
-fn unscored_rollout_rows(rows: &[Value], scores: &[RolloutScore]) -> Result<Vec<Value>> {
-    let scored = scored_example_ids(scores);
+fn unscored_rollout_rows(
+    rows: &[Value],
+    scores: &[RolloutScore],
+    failures: &[FailedRolloutAttempt],
+) -> Result<Vec<Value>> {
+    let completed = scored_example_ids(scores)
+        .into_iter()
+        .chain(failed_example_ids(failures))
+        .collect::<BTreeSet<_>>();
     rows.iter()
         .filter_map(|row| match row_example_id(row) {
-            Ok(example_id) if scored.contains(example_id.as_str()) => None,
+            Ok(example_id) if completed.contains(example_id.as_str()) => None,
             Ok(_) => Some(Ok(row.clone())),
             Err(error) => Some(Err(error)),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod failed_rollout_coverage_tests {
+    use super::*;
+
+    fn failed(example_id: &str) -> FailedRolloutAttempt {
+        FailedRolloutAttempt {
+            candidate_id: "candidate".to_string(),
+            stage: "heldout".to_string(),
+            example_id: example_id.to_string(),
+            job_id: format!("job-{example_id}"),
+            attempt: 3,
+            max_attempts: 3,
+            failure: FailurePayload::from_optimizer_error(&OptimizerError::Container(
+                "stream timeout".to_string(),
+            )),
+            provider_signal: ProviderSignal::default(),
+        }
+    }
+
+    #[test]
+    fn exhausted_examples_advance_the_cursor_without_becoming_scores() {
+        let rows = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let scores = vec![RolloutScore {
+            example_id: "a".to_string(),
+            task_id: "task-a".to_string(),
+            reward: 1.0,
+        }];
+        let failures = vec![failed("b")];
+        assert_eq!(completed_example_count(&scores, &failures), 2);
+        assert_eq!(next_unscored_row_index(&rows, &scores, &failures), 2);
+        assert_eq!(
+            scores.len(),
+            1,
+            "failure evidence must not synthesize a zero score"
+        );
+        let encoded = serde_json::to_value(&failures[0]).unwrap();
+        assert!(encoded.get("reward").is_none());
+        assert!(encoded.get("cost_usd").is_none());
+    }
+
+    #[test]
+    fn pre_coverage_checkpoint_keeps_its_completed_meaning() {
+        let eval = CandidateEvaluation {
+            average_reward: 0.75,
+            rollout_count: 4,
+            required_rollout_count: 0,
+            failed_attempts: Vec::new(),
+            usage: UsageTotals::default(),
+            cost_usd: 0.0,
+            scores: Vec::new(),
+            sensor_frames: Vec::new(),
+        };
+        assert_eq!(effective_required_rollout_count(&eval), 4);
+    }
 }
 
 fn rollout_row_index_by_example_id(rows: &[Value], stage: &str, example_id: &str) -> Result<usize> {
@@ -5539,6 +5727,7 @@ fn speculative_partial_exceeds_threshold(
                 heldout_candidate_index: active.heldout_candidate_index,
                 parent_id: active.parent_id.clone(),
                 scores: active.scores.clone(),
+                failed_attempts: active.failed_attempts.clone(),
                 sensor_frames: active.sensor_frames.clone(),
                 reward_sum: active.reward_sum,
                 usage: active.usage.clone(),
@@ -6131,12 +6320,13 @@ fn record_rollout_resilience_sample(
     if observation.degraded {
         if let Some(events) = &mut events {
             events.emit(
-                "rollout.degraded",
-                "Rollout degraded",
+                "rollout.attempt.failed",
+                "Rollout attempt failed",
                 json!({
                     "stage": observation.stage,
                     "example_id": observation.example_id,
-                    "reward": 0.0,
+                    "reward": Value::Null,
+                    "cost_usd": Value::Null,
                     "failure_class": observation.failure.map(FailurePayload::failure_class),
                     "provider_status_code": observation.provider_signal.status_code,
                     "rolling_failure_rate": resilience.last_failure_rate,
@@ -6532,7 +6722,11 @@ fn rows_for_active_rollout_chunk(
                 candidate_eval.generation,
                 candidate_eval.proposal_index,
             );
-            let remaining = unscored_rollout_rows(&stage_rows, &candidate_eval.scores)?;
+            let remaining = unscored_rollout_rows(
+                &stage_rows,
+                &candidate_eval.scores,
+                &candidate_eval.failed_attempts,
+            )?;
             let take_count =
                 take_count_for_group_rollout_chunk(config, remaining.len(), &mut remaining_budget);
             if take_count == 0 {
@@ -6549,7 +6743,7 @@ fn rows_for_active_rollout_chunk(
         active.generation,
         active.proposal_index,
     );
-    let remaining = unscored_rollout_rows(&rows, &active.scores)?;
+    let remaining = unscored_rollout_rows(&rows, &active.scores, &active.failed_attempts)?;
     Ok(rollout_rows_for_chunk(config, &remaining).to_vec())
 }
 
@@ -6562,11 +6756,17 @@ fn first_unscored_row_index_for_active(active: &GepaActiveEvaluation) -> usize {
         return active
             .candidate_evaluations
             .iter()
-            .map(|candidate| next_unscored_row_index(&candidate.row_ids, &candidate.scores))
+            .map(|candidate| {
+                next_unscored_row_index(
+                    &candidate.row_ids,
+                    &candidate.scores,
+                    &candidate.failed_attempts,
+                )
+            })
             .min()
             .unwrap_or(active.next_row_index);
     }
-    next_unscored_row_index(&active.row_ids, &active.scores)
+    next_unscored_row_index(&active.row_ids, &active.scores, &active.failed_attempts)
 }
 
 fn async_rollout_chunk_id(active: &GepaActiveEvaluation, rows: &[Value]) -> Result<String> {
@@ -7565,7 +7765,8 @@ fn active_rollout_evaluation_complete(active: &GepaActiveEvaluation) -> bool {
             .all(active_candidate_rollout_complete)
     } else {
         !active.row_ids.is_empty()
-            && completed_score_example_count(&active.scores) >= active.row_ids.len()
+            && completed_example_count(&active.scores, &active.failed_attempts)
+                >= active.row_ids.len()
     }
 }
 
@@ -7577,7 +7778,7 @@ fn active_rollout_completed_rows(active: &GepaActiveEvaluation) -> usize {
             .map(active_candidate_completed_rows)
             .sum()
     } else {
-        completed_score_example_count(&active.scores).min(active.row_ids.len())
+        completed_example_count(&active.scores, &active.failed_attempts).min(active.row_ids.len())
     }
 }
 
@@ -7619,6 +7820,7 @@ fn new_rollout_evaluation(
         heldout_candidate_index,
         parent_id: None,
         scores: Vec::new(),
+        failed_attempts: Vec::new(),
         sensor_frames: Vec::new(),
         reward_sum: 0.0,
         usage: UsageTotals::default(),
@@ -7653,6 +7855,7 @@ fn new_active_candidate_evaluation(
         heldout_candidate_index,
         parent_id: None,
         scores: Vec::new(),
+        failed_attempts: Vec::new(),
         sensor_frames: Vec::new(),
         reward_sum: 0.0,
         usage: UsageTotals::default(),
@@ -7691,6 +7894,7 @@ fn new_rollout_group_evaluation(
         heldout_candidate_index: None,
         parent_id: None,
         scores: Vec::new(),
+        failed_attempts: Vec::new(),
         sensor_frames: Vec::new(),
         reward_sum: 0.0,
         usage: UsageTotals::default(),
@@ -8191,7 +8395,7 @@ fn plan_next_rollout_batch(
             }),
         )?;
     }
-    let remaining_rows = unscored_rollout_rows(&rows, &active.scores)?;
+    let remaining_rows = unscored_rollout_rows(&rows, &active.scores, &active.failed_attempts)?;
     if remaining_rows.is_empty() {
         return finalize_active_rollout_evaluation(context, state, resources);
     }
@@ -8281,7 +8485,11 @@ fn plan_next_rollout_group_batch(
             candidate_eval.generation,
             candidate_eval.proposal_index,
         );
-        let remaining_rows = unscored_rollout_rows(&rows, &candidate_eval.scores)?;
+        let remaining_rows = unscored_rollout_rows(
+            &rows,
+            &candidate_eval.scores,
+            &candidate_eval.failed_attempts,
+        )?;
         if remaining_rows.is_empty() {
             continue;
         }
@@ -8786,6 +8994,18 @@ fn consume_completed_runtime_job(
                         provider_signal: &ProviderSignal::default(),
                     },
                 )?;
+                // A batch is a dispatch optimization, not a durability
+                // boundary. Persist every child before consuming the next so
+                // a crash or reconnect never hides already-scored evidence.
+                persist_gepa_run_state(
+                    context,
+                    state,
+                    resources,
+                    state.cursor.phase.clone(),
+                    "running",
+                    "persisted child rollout outcome",
+                    Map::new(),
+                )?;
             }
         }
     }
@@ -8821,7 +9041,7 @@ fn consume_completed_runtime_job(
 fn consume_failed_rollout_job_as_degraded(
     context: &mut GepaRunContext,
     state: &mut GepaRunState,
-    resources: &GepaStepResources,
+    _resources: &GepaStepResources,
     job: &OptimizerJob,
 ) -> Result<bool> {
     if !matches!(job.kind, OptimizerJobKind::Rollout)
@@ -8848,33 +9068,15 @@ fn consume_failed_rollout_job_as_degraded(
             example_id,
             ..
         } => {
-            let cache_key = job
-                .payload
-                .get("cache_key")
-                .and_then(Value::as_str)
-                .unwrap_or(&job.job_id)
-                .to_string();
-            let outcome = degraded_runtime_rollout_outcome_for_cache_key(
-                &candidate_id,
-                &stage,
-                &example_id,
-                &cache_key,
-                &failure,
-                &provider_signal,
-            )?;
-            consume_rollout_outcome(
+            consume_failed_rollout_attempt(
                 context,
                 state,
-                resources,
-                None,
-                outcome.response,
-                outcome.reward,
-                outcome.usage,
-                outcome.cost_usd,
-                outcome.cache_key,
-                outcome.cache_hit,
-                outcome.stage.clone(),
-                outcome.example_id.clone(),
+                Some(&candidate_id),
+                &stage,
+                &example_id,
+                job,
+                &failure,
+                &provider_signal,
             )?;
             record_rollout_resilience_sample(
                 &context.config,
@@ -8889,34 +9091,17 @@ fn consume_failed_rollout_job_as_degraded(
                 },
             )?;
         }
-        runtime::RuntimeEffectDispatchKind::RolloutBatch {
-            cache_profile,
-            rollouts,
-            ..
-        } => {
-            for (idx, rollout) in rollouts.into_iter().enumerate() {
-                let cache_key = format!("{}:{}:{}", job.job_id, cache_profile, idx);
-                let outcome = degraded_runtime_rollout_outcome_for_cache_key(
-                    &rollout.candidate_id,
-                    &rollout.stage,
-                    &rollout.example_id,
-                    &cache_key,
-                    &failure,
-                    &provider_signal,
-                )?;
-                consume_rollout_outcome(
+        runtime::RuntimeEffectDispatchKind::RolloutBatch { rollouts, .. } => {
+            for rollout in rollouts {
+                consume_failed_rollout_attempt(
                     context,
                     state,
-                    resources,
-                    Some(outcome.candidate_id.clone()),
-                    outcome.response,
-                    outcome.reward,
-                    outcome.usage,
-                    outcome.cost_usd,
-                    outcome.cache_key,
-                    outcome.cache_hit,
-                    outcome.stage.clone(),
-                    outcome.example_id.clone(),
+                    Some(&rollout.candidate_id),
+                    &rollout.stage,
+                    &rollout.example_id,
+                    job,
+                    &failure,
+                    &provider_signal,
                 )?;
                 record_rollout_resilience_sample(
                     &context.config,
@@ -8935,6 +9120,119 @@ fn consume_failed_rollout_job_as_degraded(
         runtime::RuntimeEffectDispatchKind::Proposer { .. } => return Ok(false),
     }
     Ok(true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn consume_failed_rollout_attempt(
+    context: &mut GepaRunContext,
+    state: &mut GepaRunState,
+    candidate_id: Option<&str>,
+    stage: &str,
+    example_id: &str,
+    job: &OptimizerJob,
+    failure: &FailurePayload,
+    provider_signal: &ProviderSignal,
+) -> Result<()> {
+    let active = state.active_evaluation.as_mut().ok_or_else(|| {
+        OptimizerError::Invariant("failed rollout attempt has no active evaluation".to_string())
+    })?;
+    if active.stage != stage {
+        return Err(OptimizerError::Invariant(format!(
+            "failed rollout stage {stage} does not match active stage {}",
+            active.stage
+        )));
+    }
+    let (resolved_candidate_id, failures, scores, row_ids, next_row_index) = if active.is_group() {
+        let candidate_id = candidate_id.ok_or_else(|| {
+            OptimizerError::Invariant("grouped failed rollout omitted candidate_id".to_string())
+        })?;
+        let candidate = active
+            .candidate_evaluations
+            .iter_mut()
+            .find(|candidate| candidate.candidate_id == candidate_id)
+            .ok_or_else(|| {
+                OptimizerError::Invariant(format!(
+                    "failed rollout candidate {candidate_id} is not active"
+                ))
+            })?;
+        (
+            candidate.candidate_id.clone(),
+            &mut candidate.failed_attempts,
+            &candidate.scores,
+            &candidate.row_ids,
+            &mut candidate.next_row_index,
+        )
+    } else {
+        let candidate_index = active.candidate_index.ok_or_else(|| {
+            OptimizerError::Invariant("failed rollout has no candidate index".to_string())
+        })?;
+        let resolved = state
+            .candidates
+            .get(candidate_index)
+            .map(|candidate| candidate.candidate_id.clone())
+            .ok_or_else(|| {
+                OptimizerError::Invariant(format!(
+                    "failed rollout candidate index {candidate_index} is missing"
+                ))
+            })?;
+        (
+            resolved,
+            &mut active.failed_attempts,
+            &active.scores,
+            &active.row_ids,
+            &mut active.next_row_index,
+        )
+    };
+    if rollout_scores_contain_example(scores, example_id)
+        || failures
+            .iter()
+            .any(|attempt| attempt.example_id == example_id)
+    {
+        return Ok(());
+    }
+    failures.push(FailedRolloutAttempt {
+        candidate_id: resolved_candidate_id.clone(),
+        stage: stage.to_string(),
+        example_id: example_id.to_string(),
+        job_id: job.job_id.clone(),
+        attempt: job.attempt,
+        max_attempts: job.retry_policy.max_attempts,
+        failure: failure.clone(),
+        provider_signal: provider_signal.clone(),
+    });
+    *next_row_index = next_unscored_row_index(row_ids, scores, failures);
+    let required = row_ids.len();
+    let scored = completed_score_example_count(scores);
+    let failed = failures.len();
+    context.events.emit(
+        "optimizer.candidate_evaluation.attempt.failed",
+        "Candidate evaluation attempt failed",
+        json!({
+            "candidate_id": resolved_candidate_id,
+            "stage": stage,
+            "example_id": example_id,
+            "job_id": job.job_id,
+            "attempt": job.attempt,
+            "max_attempts": job.retry_policy.max_attempts,
+            "failure": failure,
+            "provider_signal": provider_signal,
+            "reward": Value::Null,
+            "cost_usd": Value::Null,
+        }),
+    )?;
+    context.events.emit(
+        "optimizer.evaluation.coverage.updated",
+        "Evaluation coverage updated",
+        json!({
+            "candidate_id": resolved_candidate_id,
+            "stage": stage,
+            "required": required,
+            "scored": scored,
+            "failed": failed,
+            "pending": required.saturating_sub(scored.saturating_add(failed)),
+        }),
+    )?;
+    Ok(())
 }
 
 fn schedule_failed_rollout_retry_if_allowed(
@@ -9423,7 +9721,8 @@ fn consume_rollout_outcome(
         reward,
     });
     active.sensor_frames.push(sensor_frame);
-    active.next_row_index = next_unscored_row_index(&active.row_ids, &active.scores);
+    active.next_row_index =
+        next_unscored_row_index(&active.row_ids, &active.scores, &active.failed_attempts);
     Ok(())
 }
 
@@ -9554,8 +9853,11 @@ fn consume_group_rollout_outcome(
         reward,
     });
     candidate_eval.sensor_frames.push(sensor_frame);
-    candidate_eval.next_row_index =
-        next_unscored_row_index(&candidate_eval.row_ids, &candidate_eval.scores);
+    candidate_eval.next_row_index = next_unscored_row_index(
+        &candidate_eval.row_ids,
+        &candidate_eval.scores,
+        &candidate_eval.failed_attempts,
+    );
     Ok(())
 }
 
@@ -9852,7 +10154,10 @@ mod proposer_delta_producer_tests {
         assert_eq!(lines[0]["delta"]["generation"], 0);
         assert_eq!(lines[0]["delta"]["channel"], "reasoning");
         assert_eq!(lines[1]["delta"]["text"], "Final proposal.");
-        assert_eq!(lines[2]["delta"]["child_resource_ref"]["schema"], "synth.resource-ref.v1");
+        assert_eq!(
+            lines[2]["delta"]["child_resource_ref"]["schema"],
+            "synth.resource-ref.v1"
+        );
         let parsed: OptimizerEvent = serde_json::from_value(lines[0].clone()).unwrap();
         assert_eq!(parsed.sequence_number, Some(1));
         assert_eq!(
@@ -10378,11 +10683,19 @@ fn finalize_active_rollout_evaluation(
     let eval = CandidateEvaluation {
         average_reward: active.average_reward(),
         rollout_count: active.rollout_count,
+        required_rollout_count: active.row_ids.len(),
+        failed_attempts: active.failed_attempts.clone(),
         usage: active.usage.clone(),
         cost_usd: active.cost_usd,
         scores: active.scores.clone(),
         sensor_frames: active.sensor_frames.clone(),
     };
+    emit_evaluation_coverage(
+        context,
+        active.candidate_id.as_deref(),
+        &active.stage,
+        &eval,
+    )?;
     state.total_usage.merge(&eval.usage);
     state.total_cost += eval.cost_usd;
     state.rollout_count += eval.rollout_count;
@@ -10439,6 +10752,9 @@ fn finalize_active_rollout_group(
             (candidate, eval)
         })
         .collect::<Vec<_>>();
+    for (candidate, eval) in &evaluations {
+        emit_evaluation_coverage(context, Some(&candidate.candidate_id), &active.stage, eval)?;
+    }
     match active.stage.as_str() {
         "candidate_minibatch" => {
             finalize_candidate_minibatch_group(context, state, resources, active, evaluations)
@@ -10450,6 +10766,72 @@ fn finalize_active_rollout_group(
         stage => Err(OptimizerError::Invariant(format!(
             "unsupported grouped rollout stage {stage}"
         ))),
+    }
+}
+
+fn emit_evaluation_coverage(
+    context: &mut GepaRunContext,
+    candidate_id: Option<&str>,
+    stage: &str,
+    eval: &CandidateEvaluation,
+) -> Result<()> {
+    let required = effective_required_rollout_count(eval);
+    let failed = eval.failed_attempts.len();
+    let completed = eval.rollout_count.saturating_add(failed);
+    context.events.emit(
+        "optimizer.evaluation.coverage.updated",
+        "Evaluation coverage updated",
+        json!({
+            "candidate_id": candidate_id,
+            "stage": stage,
+            "required": required,
+            "scored": eval.rollout_count,
+            "failed": failed,
+            "pending": required.saturating_sub(completed),
+            "complete": eval.rollout_count == required && failed == 0,
+        }),
+    )?;
+    Ok(())
+}
+
+fn require_complete_heldout_coverage(
+    context: &mut GepaRunContext,
+    candidate_id: &str,
+    eval: &CandidateEvaluation,
+) -> Result<()> {
+    let required = effective_required_rollout_count(eval);
+    if eval.rollout_count == required && eval.failed_attempts.is_empty() {
+        return Ok(());
+    }
+    let failed = eval.failed_attempts.len();
+    let missing = required.saturating_sub(eval.rollout_count.saturating_add(failed));
+    context.events.emit(
+        "heldout.blocked",
+        "Heldout evidence is incomplete",
+        json!({
+            "candidate_id": candidate_id,
+            "required": required,
+            "scored": eval.rollout_count,
+            "failed": failed,
+            "missing": missing,
+            "promotion_eligible": false,
+            "reason": "incomplete_heldout_coverage",
+        }),
+    )?;
+    Err(OptimizerError::Failed(format!(
+        "heldout coverage incomplete for candidate {candidate_id}: scored={} failed={} required={}",
+        eval.rollout_count, failed, required
+    )))
+}
+
+fn effective_required_rollout_count(eval: &CandidateEvaluation) -> usize {
+    if eval.required_rollout_count == 0 && eval.rollout_count > 0 && eval.failed_attempts.is_empty()
+    {
+        // Checkpoints created before coverage was explicit contain only the
+        // scored count. Preserve their already-complete meaning on reopen.
+        eval.rollout_count
+    } else {
+        eval.required_rollout_count
     }
 }
 
@@ -10543,6 +10925,8 @@ fn commit_budget_deferred_active_rollout(
     let eval = CandidateEvaluation {
         average_reward: active.average_reward(),
         rollout_count: active.rollout_count,
+        required_rollout_count: active.row_ids.len(),
+        failed_attempts: active.failed_attempts.clone(),
         usage: active.usage.clone(),
         cost_usd: active.cost_usd,
         scores: active.scores.clone(),
@@ -10640,6 +11024,8 @@ fn evaluation_from_active_candidate(
     CandidateEvaluation {
         average_reward: candidate.average_reward(),
         rollout_count: candidate.rollout_count,
+        required_rollout_count: candidate.row_ids.len(),
+        failed_attempts: candidate.failed_attempts.clone(),
         usage: candidate.usage.clone(),
         cost_usd: candidate.cost_usd,
         scores: candidate.scores.clone(),
@@ -11989,6 +12375,7 @@ fn advance_generation_start(
         heldout_candidate_index: None,
         parent_id: None,
         scores: Vec::new(),
+        failed_attempts: Vec::new(),
         sensor_frames: Vec::new(),
         reward_sum: 0.0,
         usage: UsageTotals::default(),
@@ -12905,6 +13292,8 @@ fn finalize_heldout_candidate(
     let candidate_idx = active.candidate_index.ok_or_else(|| {
         OptimizerError::Invariant("heldout evaluation missing candidate index".to_string())
     })?;
+    let candidate_id = state.candidates[candidate_idx].candidate_id.clone();
+    require_complete_heldout_coverage(context, &candidate_id, &eval)?;
     state.candidates[candidate_idx].heldout_reward = Some(eval.average_reward);
     state.candidates[candidate_idx]
         .sensor_frames
@@ -12967,6 +13356,10 @@ fn finalize_heldout_group(
     _active: GepaActiveEvaluation,
     evaluations: Vec<(GepaActiveCandidateEvaluation, CandidateEvaluation)>,
 ) -> Result<GepaAdvanceOutcome> {
+    for (candidate_active, eval) in &evaluations {
+        let candidate_id = &state.candidates[candidate_active.candidate_index].candidate_id;
+        require_complete_heldout_coverage(context, candidate_id, eval)?;
+    }
     for (candidate_active, eval) in evaluations {
         let candidate_idx = candidate_active.candidate_index;
         state.candidates[candidate_idx].heldout_reward = Some(eval.average_reward);
@@ -19952,6 +20345,7 @@ fn evaluate_candidate(call: EvaluationCall<'_>) -> Result<CandidateEvaluation> {
     let mut usage = UsageTotals::default();
     let mut cost_usd = 0.0;
     let mut scores = Vec::new();
+    let mut failed_attempts = Vec::new();
     let mut sensor_frames = Vec::new();
     let mut section_scored = 0usize;
     let mut section_degraded = 0usize;
@@ -20040,11 +20434,6 @@ fn evaluate_candidate(call: EvaluationCall<'_>) -> Result<CandidateEvaluation> {
             call.config,
             call.client,
             &queued_effect,
-            RolloutExecutionIdentity {
-                candidate_id: &call.candidate.candidate_id,
-                stage: call.stage,
-                example_id: &example_id,
-            },
         )?;
         if rollout_execution.degraded {
             section_degraded = section_degraded.saturating_add(1);
@@ -20063,7 +20452,41 @@ fn evaluate_candidate(call: EvaluationCall<'_>) -> Result<CandidateEvaluation> {
                 provider_signal: &rollout_execution.provider_signal,
             },
         )?;
-        let rollout_call = rollout_execution.outcome;
+        let Some(rollout_call) = rollout_execution.outcome else {
+            let failure = rollout_execution.failure.ok_or_else(|| {
+                OptimizerError::Invariant(
+                    "degraded rollout omitted its failure payload".to_string(),
+                )
+            })?;
+            let failed_attempt = FailedRolloutAttempt {
+                candidate_id: call.candidate.candidate_id.clone(),
+                stage: call.stage.to_string(),
+                example_id: example_id.clone(),
+                job_id: rollout_execution.job_id,
+                attempt: rollout_execution.attempt,
+                max_attempts: rollout_execution.max_attempts,
+                failure: failure.clone(),
+                provider_signal: rollout_execution.provider_signal.clone(),
+            };
+            call.events.emit(
+                "optimizer.candidate_evaluation.attempt.failed",
+                "Candidate evaluation attempt failed",
+                json!({
+                    "candidate_id": call.candidate.candidate_id,
+                    "stage": call.stage,
+                    "example_id": example_id,
+                    "job_id": failed_attempt.job_id,
+                    "attempt": failed_attempt.attempt,
+                    "max_attempts": failed_attempt.max_attempts,
+                    "failure": failure,
+                    "provider_signal": failed_attempt.provider_signal,
+                    "reward": Value::Null,
+                    "cost_usd": Value::Null,
+                }),
+            )?;
+            failed_attempts.push(failed_attempt);
+            continue;
+        };
         let response = rollout_call.response.clone();
         let typed_response = rollout_call.typed_response.clone();
         let reward = rollout_call.reward;
@@ -20151,7 +20574,7 @@ fn evaluate_candidate(call: EvaluationCall<'_>) -> Result<CandidateEvaluation> {
         usage.merge(&rollout_call.usage);
         cost_usd += rollout_call.cost_usd;
     }
-    let rollout_count = call.rows.len();
+    let rollout_count = scores.len();
     check_rollout_section_breaker(
         call.config,
         Some(&mut *call.events),
@@ -20167,17 +20590,13 @@ fn evaluate_candidate(call: EvaluationCall<'_>) -> Result<CandidateEvaluation> {
             reward_sum / rollout_count as f64
         },
         rollout_count,
+        required_rollout_count: call.rows.len(),
+        failed_attempts,
         usage,
         cost_usd,
         scores,
         sensor_frames,
     })
-}
-
-struct RolloutExecutionIdentity<'a> {
-    candidate_id: &'a str,
-    stage: &'a str,
-    example_id: &'a str,
 }
 
 fn execute_sync_rollout_job(
@@ -20186,7 +20605,6 @@ fn execute_sync_rollout_job(
     config: &SynthOptimizerConfig,
     client: &ContainerClient,
     queued_effect: &runtime::QueuedRuntimeEffect,
-    identity: RolloutExecutionIdentity<'_>,
 ) -> Result<RolloutExecutionRecord> {
     loop {
         match runtime::execute_one_pending_optimizer_job_from_run_workspace(
@@ -20200,10 +20618,13 @@ fn execute_sync_rollout_job(
         ) {
             Ok(runtime::RuntimeEffectOutcome::Rollout(outcome)) => {
                 return Ok(RolloutExecutionRecord {
-                    outcome: *outcome,
+                    outcome: Some(*outcome),
                     degraded: false,
                     failure: None,
                     provider_signal: ProviderSignal::default(),
+                    job_id: queued_effect.job.job_id.clone(),
+                    attempt: queued_effect.job.attempt,
+                    max_attempts: queued_effect.job.retry_policy.max_attempts,
                 });
             }
             Ok(runtime::RuntimeEffectOutcome::Proposer(_)) => {
@@ -20255,19 +20676,14 @@ fn execute_sync_rollout_job(
                     } else {
                         provider_signal_from_failure(config, Some(&failure))
                     };
-                    let outcome = degraded_runtime_rollout_outcome(
-                        queued_effect,
-                        identity.candidate_id,
-                        identity.stage,
-                        identity.example_id,
-                        &failure,
-                        &provider_signal,
-                    )?;
                     return Ok(RolloutExecutionRecord {
-                        outcome,
+                        outcome: None,
                         degraded: true,
                         failure: Some(failure),
                         provider_signal,
+                        job_id: updated_job.job_id,
+                        attempt: updated_job.attempt,
+                        max_attempts: updated_job.retry_policy.max_attempts,
                     });
                 }
                 return Err(error);
@@ -20286,114 +20702,6 @@ fn rollout_retry_backoff_seconds(job: &OptimizerJob) -> u64 {
         .backoff_seconds
         .saturating_mul(1_u64 << exponent)
         .max(1)
-}
-
-fn degraded_runtime_rollout_outcome(
-    queued_effect: &runtime::QueuedRuntimeEffect,
-    candidate_id: &str,
-    stage: &str,
-    example_id: &str,
-    failure: &FailurePayload,
-    provider_signal: &ProviderSignal,
-) -> Result<runtime::RuntimeRolloutOutcome> {
-    let cache_key = queued_effect
-        .effect
-        .cache_key
-        .clone()
-        .or_else(|| {
-            queued_effect
-                .job
-                .payload
-                .get("cache_key")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        })
-        .unwrap_or_else(|| queued_effect.effect.idempotency_key.clone());
-    degraded_runtime_rollout_outcome_for_cache_key(
-        candidate_id,
-        stage,
-        example_id,
-        &cache_key,
-        failure,
-        provider_signal,
-    )
-}
-
-fn degraded_runtime_rollout_outcome_for_cache_key(
-    candidate_id: &str,
-    stage: &str,
-    example_id: &str,
-    cache_key: &str,
-    failure: &FailurePayload,
-    provider_signal: &ProviderSignal,
-) -> Result<runtime::RuntimeRolloutOutcome> {
-    let response =
-        degraded_rollout_response(candidate_id, stage, example_id, failure, provider_signal)?;
-    let typed_response = synth_optimizer_platform::RolloutResponse::from_value(response.clone())?;
-    typed_response.validate_for_gepa()?;
-    let usage = UsageTotals {
-        rollout_calls: 1,
-        ..UsageTotals::default()
-    };
-    Ok(runtime::RuntimeRolloutOutcome {
-        candidate_id: candidate_id.to_string(),
-        response,
-        typed_response,
-        reward: 0.0,
-        usage,
-        cost_usd: 0.0,
-        cache_key: cache_key.to_string(),
-        cache_hit: false,
-        stage: stage.to_string(),
-        example_id: example_id.to_string(),
-        dispatch_wall_seconds: None,
-        dispatch_chunk_index: None,
-        dispatch_chunk_size: None,
-    })
-}
-
-fn degraded_rollout_response(
-    candidate_id: &str,
-    stage: &str,
-    example_id: &str,
-    failure: &FailurePayload,
-    provider_signal: &ProviderSignal,
-) -> Result<Value> {
-    let mut digest = Sha256::new();
-    digest.update(candidate_id.as_bytes());
-    digest.update(stage.as_bytes());
-    digest.update(example_id.as_bytes());
-    digest.update(failure.message.as_bytes());
-    let rollout_id = format!("degraded:{:x}", digest.finalize());
-    Ok(json!({
-        "rollout_id": rollout_id,
-        "status": "failed",
-        "success_status": "infra_degraded",
-        "summary": {
-            "outcome_reward": 0.0,
-            "degraded": true,
-            "failure_class": failure.failure_class(),
-        },
-        "reward_info": {
-            "outcome_reward": 0.0,
-            "score": 0.0,
-            "details": {
-                "objective": "outcome_reward",
-                "degraded": true,
-            },
-        },
-        "usage": {},
-        "metadata": {
-            "degraded": true,
-            "failure": serde_json::to_value(failure)?,
-            "provider_signal": serde_json::to_value(provider_signal)?,
-        },
-        "actionable_side_info": {
-            "degraded": true,
-            "failure_class": failure.failure_class(),
-            "message": &failure.message,
-        },
-    }))
 }
 
 fn propose_candidates(call: ProposerCall<'_>) -> Result<ProposerOutcome> {

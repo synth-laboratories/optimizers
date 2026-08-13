@@ -1309,6 +1309,7 @@ name = "synth_gepa"
 version = "0.2.5"
 dependencies = [
  "base64",
+ "fs2",
  "reqwest",
  "serde",
  "serde_json",

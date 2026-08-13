@@ -71,10 +71,7 @@ impl MarlStrategy for ComaStrategy {
                     "counterfactual_replay".to_string(),
                     json!("matched_checkpoint"),
                 ),
-                (
-                    "ablation_baseline_source".to_string(),
-                    json!(baseline_key),
-                ),
+                ("ablation_baseline_source".to_string(), json!(baseline_key)),
                 (baseline_key.to_string(), baseline_payload.clone()),
             ]);
             if let Some(candidate_id) = baseline_candidate_id {
@@ -250,12 +247,9 @@ fn score_observations(observations: &[RolloutObservation]) -> Result<StrategySco
         let task_key = TaskKey::from_observation(observation);
         match observation.arm_id.as_str() {
             "primary" => insert_unique(&mut primary, task_key, observation, "primary")?,
-            "channel_masked" => insert_unique(
-                &mut channel_masked,
-                task_key,
-                observation,
-                "channel_masked",
-            )?,
+            "channel_masked" => {
+                insert_unique(&mut channel_masked, task_key, observation, "channel_masked")?
+            }
             arm_id if arm_id.starts_with(ROLE_ABLATION_PREFIX) => {
                 let role = arm_id
                     .strip_prefix(ROLE_ABLATION_PREFIX)
@@ -285,7 +279,9 @@ fn score_observations(observations: &[RolloutObservation]) -> Result<StrategySco
     }
 
     if primary.is_empty() {
-        return Err(invariant("COMA score requires at least one factual primary arm"));
+        return Err(invariant(
+            "COMA score requires at least one factual primary arm",
+        ));
     }
     if role_ablations.is_empty() {
         return Err(invariant(
@@ -336,13 +332,10 @@ fn score_observations(observations: &[RolloutObservation]) -> Result<StrategySco
                 &factual_receipt.checkpoint_digest,
                 observation,
             )?;
-            axis_samples
-                .entry(axis)
-                .or_default()
-                .push(AxisSample {
-                    task_key: task_key.clone(),
-                    contribution: credit.contribution,
-                });
+            axis_samples.entry(axis).or_default().push(AxisSample {
+                task_key: task_key.clone(),
+                contribution: credit.contribution,
+            });
             counterfactuals.push(credit);
         }
 
@@ -376,8 +369,7 @@ fn score_observations(observations: &[RolloutObservation]) -> Result<StrategySco
         let failing_task_keys = samples
             .iter()
             .filter(|sample| {
-                sample.contribution.outcome_success <= 0.0
-                    || sample.contribution.reward <= 0.0
+                sample.contribution.outcome_success <= 0.0 || sample.contribution.reward <= 0.0
             })
             .map(|sample| sample.task_key.clone())
             .collect::<Vec<_>>();
@@ -463,10 +455,9 @@ fn score_observations(observations: &[RolloutObservation]) -> Result<StrategySco
         "minimum_success_contribution".to_string(),
         minimum_role_channel_success_contribution,
     );
-    score.metrics.insert(
-        "mean_contribution".to_string(),
-        mean_success_contribution,
-    );
+    score
+        .metrics
+        .insert("mean_contribution".to_string(), mean_success_contribution);
     score.metrics.insert(
         "mean_success_contribution".to_string(),
         mean_success_contribution,
@@ -536,7 +527,10 @@ fn require_role_coverage(
         }
         covered.extend(observations.keys().cloned());
     }
-    let missing = factual_keys.difference(&covered).cloned().collect::<Vec<_>>();
+    let missing = factual_keys
+        .difference(&covered)
+        .cloned()
+        .collect::<Vec<_>>();
     if missing.is_empty() {
         Ok(())
     } else {
@@ -643,8 +637,7 @@ fn parse_receipt(observation: &RolloutObservation) -> Result<AppliedIntervention
                 observation.rollout_id
             ))
         })?;
-    let checkpoint_digest =
-        required_receipt_string(receipt, "checkpoint_digest", observation)?;
+    let checkpoint_digest = required_receipt_string(receipt, "checkpoint_digest", observation)?;
     Ok(AppliedInterventionReceipt {
         arm_id,
         intervention_applied,

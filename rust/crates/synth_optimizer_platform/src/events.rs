@@ -416,7 +416,8 @@ fn stable_id(prefix: &str, parts: &[&str]) -> String {
 mod tests {
     use super::*;
     use crate::observability::{
-        CHILD_ROLLOUT_ATTACHED_EVENT_TYPE, DEFAULT_PROPOSER_DELTA_CHANNEL, PROPOSER_DELTA_EVENT_TYPE,
+        CHILD_ROLLOUT_ATTACHED_EVENT_TYPE, DEFAULT_PROPOSER_DELTA_CHANNEL,
+        PROPOSER_DELTA_EVENT_TYPE,
     };
     use serde_json::json;
     use std::time::{SystemTime, UNIX_EPOCH};

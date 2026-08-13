@@ -100,10 +100,8 @@ impl MarlStrategy for Ic3NetStrategy {
             .total_cmp(&higher_metric(right, "outcome_success"))
             .then_with(|| left.primary.total_cmp(&right.primary))
             .then_with(|| {
-                higher_metric(left, "positive_causal_channel_value").total_cmp(&higher_metric(
-                    right,
-                    "positive_causal_channel_value",
-                ))
+                higher_metric(left, "positive_causal_channel_value")
+                    .total_cmp(&higher_metric(right, "positive_causal_channel_value"))
             })
             .then_with(|| {
                 lower_metric(right, "congestion_cost")
@@ -117,8 +115,7 @@ impl MarlStrategy for Ic3NetStrategy {
                 lower_metric(right, "messages").total_cmp(&lower_metric(left, "messages"))
             })
             .then_with(|| {
-                lower_metric(right, "message_chars")
-                    .total_cmp(&lower_metric(left, "message_chars"))
+                lower_metric(right, "message_chars").total_cmp(&lower_metric(left, "message_chars"))
             })
     }
 }
@@ -235,20 +232,18 @@ fn score_matched_pairs(observations: &[RolloutObservation]) -> Result<StrategySc
         require_exact_match(&task_id, &primary, &masked)?;
 
         let reward_delta = primary.observation.reward - masked.observation.reward;
-        let causal_outcome_value =
-            primary.metrics.outcome_success - masked.metrics.outcome_success;
+        let causal_outcome_value = primary.metrics.outcome_success - masked.metrics.outcome_success;
         let causal_coordination_value =
             primary.metrics.coordination_success - masked.metrics.coordination_success;
         let causal_channel_value = 0.5 * (causal_outcome_value + causal_coordination_value);
         let positive_causal_channel_value = causal_channel_value.max(0.0);
-        let causal_alignment_value = primary.metrics.message_action_alignment
-            - masked.metrics.message_action_alignment;
+        let causal_alignment_value =
+            primary.metrics.message_action_alignment - masked.metrics.message_action_alignment;
         let congestion_interference_cost = primary.metrics.interference_actions
             + primary.metrics.idle_actions
             + primary.metrics.congestion_events.unwrap_or(0.0);
-        let congestion_cost = congestion_interference_cost
-            + primary.metrics.messages
-            + primary.metrics.message_chars;
+        let congestion_cost =
+            congestion_interference_cost + primary.metrics.messages + primary.metrics.message_chars;
         let gating_efficiency = positive_causal_channel_value / (1.0 + congestion_cost);
 
         aggregate.primary_reward += primary.observation.reward;
@@ -265,12 +260,11 @@ fn score_matched_pairs(observations: &[RolloutObservation]) -> Result<StrategySc
         aggregate.masked_idle_actions += masked.metrics.idle_actions;
         aggregate.congestion_events += primary.metrics.congestion_events.unwrap_or(0.0);
         aggregate.masked_congestion_events += masked.metrics.congestion_events.unwrap_or(0.0);
-        aggregate.congestion_events_reported +=
-            if primary.metrics.congestion_events.is_some() {
-                1.0
-            } else {
-                0.0
-            };
+        aggregate.congestion_events_reported += if primary.metrics.congestion_events.is_some() {
+            1.0
+        } else {
+            0.0
+        };
         aggregate.congestion_interference_cost += congestion_interference_cost;
         aggregate.congestion_cost += congestion_cost;
         aggregate.messages += primary.metrics.messages;
@@ -359,16 +353,14 @@ fn score_matched_pairs(observations: &[RolloutObservation]) -> Result<StrategySc
     let causal_channel_value = 0.5 * (causal_outcome_value + causal_coordination_value);
     let positive_causal_channel_value = causal_channel_value.max(0.0);
     let message_action_alignment = aggregate.message_action_alignment / denominator;
-    let masked_message_action_alignment =
-        aggregate.masked_message_action_alignment / denominator;
+    let masked_message_action_alignment = aggregate.masked_message_action_alignment / denominator;
     let interference_actions = aggregate.interference_actions / denominator;
     let masked_interference_actions = aggregate.masked_interference_actions / denominator;
     let idle_actions = aggregate.idle_actions / denominator;
     let masked_idle_actions = aggregate.masked_idle_actions / denominator;
     let congestion_events = aggregate.congestion_events / denominator;
     let masked_congestion_events = aggregate.masked_congestion_events / denominator;
-    let congestion_events_reported_fraction =
-        aggregate.congestion_events_reported / denominator;
+    let congestion_events_reported_fraction = aggregate.congestion_events_reported / denominator;
     let congestion_interference_cost = aggregate.congestion_interference_cost / denominator;
     let congestion_cost = aggregate.congestion_cost / denominator;
     let messages = aggregate.messages / denominator;
@@ -383,18 +375,9 @@ fn score_matched_pairs(observations: &[RolloutObservation]) -> Result<StrategySc
             primary_reward - masked_reward,
         ),
         ("outcome_success".to_string(), outcome_success),
-        (
-            "masked_outcome_success".to_string(),
-            masked_outcome_success,
-        ),
-        (
-            "causal_outcome_value".to_string(),
-            causal_outcome_value,
-        ),
-        (
-            "coordination_success".to_string(),
-            coordination_success,
-        ),
+        ("masked_outcome_success".to_string(), masked_outcome_success),
+        ("causal_outcome_value".to_string(), causal_outcome_value),
+        ("coordination_success".to_string(), coordination_success),
         (
             "masked_coordination_success".to_string(),
             masked_coordination_success,
@@ -542,14 +525,13 @@ fn validate_observation(observation: &RolloutObservation) -> Result<ValidatedArm
                 observation.rollout_id
             ))
         })?;
-    let receipt: InterventionReceipt = serde_json::from_value(receipt_value.clone()).map_err(
-        |source| {
+    let receipt: InterventionReceipt =
+        serde_json::from_value(receipt_value.clone()).map_err(|source| {
             invariant(format!(
                 "IC3Net rollout {} has an invalid typed intervention_evidence receipt: {source}",
                 observation.rollout_id
             ))
-        },
-    )?;
+        })?;
     if receipt.arm_id != observation.arm_id {
         return Err(invariant(format!(
             "IC3Net rollout {} arm mismatch: observation={:?}, receipt={:?}",
@@ -650,9 +632,7 @@ fn require_exact_match(
     Ok(())
 }
 
-fn required_coordination_metrics(
-    observation: &RolloutObservation,
-) -> Result<CoordinationMetrics> {
+fn required_coordination_metrics(observation: &RolloutObservation) -> Result<CoordinationMetrics> {
     let metrics = CoordinationMetrics {
         outcome_success: required_metric(observation, "outcome_success")?,
         coordination_success: required_metric(observation, "coordination_success")?,
@@ -695,10 +675,7 @@ fn required_metric(observation: &RolloutObservation, key: &str) -> Result<f64> {
     Ok(value)
 }
 
-fn optional_nonnegative_metric(
-    observation: &RolloutObservation,
-    key: &str,
-) -> Result<Option<f64>> {
+fn optional_nonnegative_metric(observation: &RolloutObservation, key: &str) -> Result<Option<f64>> {
     let Some(value) = observation.metrics.get(key).copied() else {
         return Ok(None);
     };
@@ -724,7 +701,9 @@ fn response_gate_diagnostics(response: &Value) -> Value {
 }
 
 fn optional_delta(primary: Option<f64>, masked: Option<f64>) -> Option<f64> {
-    primary.zip(masked).map(|(primary, masked)| primary - masked)
+    primary
+        .zip(masked)
+        .map(|(primary, masked)| primary - masked)
 }
 
 fn required_string<'a>(

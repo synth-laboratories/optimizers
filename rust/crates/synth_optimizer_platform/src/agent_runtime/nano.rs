@@ -167,8 +167,7 @@ impl NanoCodexSessionPool {
         let turns_dir = record_root.join("turns");
         let sessions_dir = record_root.join("sessions");
         let static_context_dir = record_root.join("static_context");
-        fs::create_dir_all(&turns_dir)
-            .map_err(|source| OptimizerError::io(&turns_dir, source))?;
+        fs::create_dir_all(&turns_dir).map_err(|source| OptimizerError::io(&turns_dir, source))?;
         fs::create_dir_all(&sessions_dir)
             .map_err(|source| OptimizerError::io(&sessions_dir, source))?;
         fs::create_dir_all(&static_context_dir)
@@ -183,16 +182,10 @@ impl NanoCodexSessionPool {
                     "nano-Codex replay requested without a replay_dir".to_string(),
                 )
             })?;
-            return replay_turn(
-                &request,
-                replay_root,
-                &receipt_path,
-                &static_context_sha256,
-            );
+            return replay_turn(&request, replay_root, &receipt_path, &static_context_sha256);
         }
 
-        let static_context_path =
-            static_context_dir.join(format!("{static_context_sha256}.json"));
+        let static_context_path = static_context_dir.join(format!("{static_context_sha256}.json"));
         let context_started = Instant::now();
         let static_context_cache_hit = static_context_path.is_file();
         if static_context_cache_hit {
@@ -469,9 +462,10 @@ fn replay_turn(
     output_receipt_path: &Path,
     static_context_sha256: &str,
 ) -> Result<NanoCodexExecution> {
-    let source_path = replay_root
-        .join("turns")
-        .join(format!("{}.json", sanitize_component(&request.identity.request_id)));
+    let source_path = replay_root.join("turns").join(format!(
+        "{}.json",
+        sanitize_component(&request.identity.request_id)
+    ));
     let source: NanoCodexTurnReceipt = read_json(&source_path)?;
     if source.identity != request.identity {
         return Err(OptimizerError::Invariant(format!(
@@ -662,10 +656,7 @@ fn collect_forbidden_tool_types(value: &Value, tools: &mut Vec<String>) {
         Value::Object(object) => {
             for (key, value) in object {
                 if key == "type" {
-                    if let Some(tool) = value
-                        .as_str()
-                        .and_then(normalize_forbidden_tool_name)
-                    {
+                    if let Some(tool) = value.as_str().and_then(normalize_forbidden_tool_name) {
                         tools.push(tool);
                     }
                 }

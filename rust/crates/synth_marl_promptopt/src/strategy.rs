@@ -41,7 +41,11 @@ pub fn primary_mean_score(observations: &[RolloutObservation]) -> StrategyScore 
         .filter(|observation| observation.is_primary())
         .collect::<Vec<_>>();
     let denominator = primary.len().max(1) as f64;
-    let reward = primary.iter().map(|observation| observation.reward).sum::<f64>() / denominator;
+    let reward = primary
+        .iter()
+        .map(|observation| observation.reward)
+        .sum::<f64>()
+        / denominator;
     let mut metrics = BTreeMap::new();
     metrics.insert("outcome_reward".to_string(), reward);
     for key in [
@@ -71,15 +75,22 @@ pub fn primary_mean_score(observations: &[RolloutObservation]) -> StrategyScore 
 }
 
 pub fn row_roles(row: &Value) -> Vec<String> {
-    for pointer in ["/roles", "/actors", "/task_payload/roles", "/metadata/roles"] {
+    for pointer in [
+        "/roles",
+        "/actors",
+        "/task_payload/roles",
+        "/metadata/roles",
+    ] {
         if let Some(values) = row.pointer(pointer).and_then(Value::as_array) {
             let roles = values
                 .iter()
                 .filter_map(|value| {
-                    value
-                        .as_str()
-                        .map(str::to_string)
-                        .or_else(|| value.get("role").and_then(Value::as_str).map(str::to_string))
+                    value.as_str().map(str::to_string).or_else(|| {
+                        value
+                            .get("role")
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                    })
                 })
                 .collect::<Vec<_>>();
             if !roles.is_empty() {

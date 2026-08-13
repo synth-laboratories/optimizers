@@ -2376,10 +2376,7 @@ fn validate_nano_codex_config(proposer: &ProposerConfig) -> Result<()> {
                 .to_string(),
         ));
     }
-    if mode == "replay"
-        && config.record_dir.is_some()
-        && config.record_dir == config.replay_dir
-    {
+    if mode == "replay" && config.record_dir.is_some() && config.record_dir == config.replay_dir {
         return Err(OptimizerError::Config(
             "proposer.nano_codex replay record_dir must differ from replay_dir so replay cannot overwrite live receipts".to_string(),
         ));

@@ -5061,7 +5061,7 @@ fn schedule_async_proposer_job(
         || state.cursor.generation >= context.config.gepa.max_generations
         || state.cursor.pipeline_state.in_flight_candidate_count >= plan.max_in_flight_candidates
         || train_rollout_budget_reached(&context.config, state.rollout_count)
-        || cost_budget_reached(&context.config, state.total_cost)
+        || cost_budget_blocked(&context.config, state.total_cost, &state.usage_ledger)
     {
         return Ok(None);
     }
@@ -6579,7 +6579,7 @@ fn async_pipeline_retry_scheduled(state: &GepaRunState) -> bool {
 fn async_pipeline_stopper_satisfied(context: &GepaRunContext, state: &GepaRunState) -> bool {
     state.cursor.generation >= context.config.gepa.max_generations
         || train_rollout_budget_reached(&context.config, state.rollout_count)
-        || cost_budget_reached(&context.config, state.total_cost)
+        || cost_budget_blocked(&context.config, state.total_cost, &state.usage_ledger)
         || score_threshold_reached(&context.config, state)
         || no_improvement_reached(&context.config, state)
 }
@@ -12499,7 +12499,7 @@ fn advance_generation_start(
         return move_to_pre_heldout(context, state, resources);
     }
     if train_rollout_budget_reached(&context.config, state.rollout_count)
-        || cost_budget_reached(&context.config, state.total_cost)
+        || cost_budget_blocked(&context.config, state.total_cost, &state.usage_ledger)
         || service_stop_condition_reached(&context.config, state)
     {
         return move_to_pre_heldout(context, state, resources);
@@ -12728,7 +12728,7 @@ fn advance_proposer_waiting(
         return complete_generation_boundary(context, state, resources);
     }
     if train_rollout_budget_reached(&context.config, state.rollout_count)
-        || cost_budget_reached(&context.config, state.total_cost)
+        || cost_budget_blocked(&context.config, state.total_cost, &state.usage_ledger)
     {
         state.cursor.proposal_index = state.proposal_queue.len();
         return complete_generation_boundary(context, state, resources);
@@ -14030,7 +14030,10 @@ fn stopped_by_value(config: &SynthOptimizerConfig, state: &GepaRunState) -> Valu
             "generations": config.gepa.no_improvement_generations,
         });
     }
-    if cost_budget_reached(config, state.total_cost) {
+    if cost_budget_blocked(config, state.total_cost, &state.usage_ledger) {
+        if reported_cost_from_usage_ledger(&state.usage_ledger).is_none() {
+            return json!({"kind": "unknown_cost", "value": Value::Null});
+        }
         return json!({"kind": "max_cost_usd", "value": config.gepa.max_cost_usd});
     }
     if train_rollout_budget_reached(config, state.rollout_count) {
@@ -14764,7 +14767,7 @@ fn execute_gepa_monolithic_with_options(
             )?;
             break;
         }
-        if cost_budget_reached(&config, total_cost) {
+        if cost_budget_blocked(&config, total_cost, &usage_ledger) {
             let mut metadata = Map::new();
             metadata.insert(
                 "stage".to_string(),
@@ -15021,7 +15024,7 @@ fn execute_gepa_monolithic_with_options(
                 );
                 break;
             }
-            if cost_budget_reached(&config, total_cost) {
+            if cost_budget_blocked(&config, total_cost, &usage_ledger) {
                 let mut metadata = Map::new();
                 metadata.insert(
                     "stage".to_string(),
@@ -19213,6 +19216,29 @@ fn cost_budget_reached(config: &SynthOptimizerConfig, cost_usd: f64) -> bool {
     config.gepa.max_cost_usd > 0.0 && cost_usd >= config.gepa.max_cost_usd
 }
 
+/// Once paid work has produced an unknown receipt, stop admitting more work.
+/// The scalar accumulator remains useful for known arithmetic, but cannot turn
+/// an incomplete ledger into an apparently-under-budget run.
+fn cost_budget_blocked(
+    config: &SynthOptimizerConfig,
+    cost_usd: f64,
+    usage_ledger: &[UsageLedgerRecord],
+) -> bool {
+    reported_cost_budget_blocked(config.gepa.max_cost_usd, cost_usd, usage_ledger)
+}
+
+fn reported_cost_budget_blocked(
+    max_cost_usd: f64,
+    cost_usd: f64,
+    usage_ledger: &[UsageLedgerRecord],
+) -> bool {
+    if max_cost_usd <= 0.0 {
+        return false;
+    }
+    cost_usd >= max_cost_usd
+        || (!usage_ledger.is_empty() && reported_cost_from_usage_ledger(usage_ledger).is_none())
+}
+
 fn train_rollout_budget_reached(config: &SynthOptimizerConfig, rollout_count: usize) -> bool {
     rollout_count >= config.gepa.train_rollout_limit()
 }
@@ -19526,6 +19552,23 @@ mod reported_cost_tests {
             reported_cost_from_usage_ledger(&[row("a", Some(0.0)), row("b", Some(0.12))]),
             Some(0.12)
         );
+    }
+
+    #[test]
+    fn configured_cost_budget_stops_on_unknown_receipt() {
+        assert!(!reported_cost_budget_blocked(1.0, 0.0, &[]));
+        assert!(reported_cost_budget_blocked(1.0, 0.0, &[row("a", None)]));
+        assert!(!reported_cost_budget_blocked(
+            1.0,
+            0.12,
+            &[row("a", Some(0.12))]
+        ));
+        assert!(reported_cost_budget_blocked(
+            1.0,
+            1.0,
+            &[row("a", Some(1.0))]
+        ));
+        assert!(!reported_cost_budget_blocked(0.0, 0.0, &[row("a", None)]));
     }
 }
 

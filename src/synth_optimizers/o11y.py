@@ -60,6 +60,13 @@ LIVE_WITHIN_SECONDS = 1200.0
 LOGGER = logging.getLogger(__name__)
 
 
+def _optional_float(value: object) -> float | None:
+    """Preserve missing provider telemetry instead of presenting it as free."""
+    if value is None:
+        return None
+    return float(value)
+
+
 class BoardSource(Protocol):
     @property
     def source_id(self) -> str: ...
@@ -406,7 +413,7 @@ class RunStatus:
     started_at: datetime | None
     ended_at: datetime | None
     last_activity_at: datetime | None
-    cost_usd: float
+    cost_usd: float | None
     usage: RunUsage
     best_candidate_id: str | None = None
     best_train_reward: float | None = None
@@ -458,7 +465,7 @@ class RunStatus:
                     started_at=record.ts or live.started_at,
                     ended_at=live.last_activity_at,
                     last_activity_at=live.last_activity_at,
-                    cost_usd=float(record.cost_usd or 0.0),
+                    cost_usd=_optional_float(record.cost_usd),
                     usage=live.usage if live.usage.total_tokens else RunUsage.from_dict(record.usage),
                     best_candidate_id=live.best_candidate_id or record.best_candidate_id,
                     best_train_reward=live.best_train_reward,
@@ -485,7 +492,7 @@ class RunStatus:
                 started_at=started,
                 ended_at=None,
                 last_activity_at=live.last_activity_at,
-                cost_usd=float(record.cost_usd or 0.0),
+                cost_usd=_optional_float(record.cost_usd),
                 usage=usage,
                 best_candidate_id=record.best_candidate_id,
                 best_train_reward=live.best_train_reward,
@@ -516,7 +523,9 @@ class RunStatus:
             started_at=_parse_ts(history[0].get("at")) if history else record.ts,
             ended_at=_parse_ts(history[-1].get("at")) if history else record.ts,
             last_activity_at=_parse_ts(history[-1].get("at")) if history else record.ts,
-            cost_usd=float(manifest.get("cost_usd") or record.cost_usd or 0.0),
+            cost_usd=_optional_float(
+                manifest["cost_usd"] if "cost_usd" in manifest else record.cost_usd
+            ),
             usage=RunUsage.from_dict(usage),
             best_candidate_id=best.get("candidate_id") or record.best_candidate_id,
             best_train_reward=best.get("train_reward"),
@@ -640,8 +649,11 @@ class RunBoard:
         return sum(1 for r in self.runs if r.state is state)
 
     @property
-    def total_cost_usd(self) -> float:
-        return sum(r.cost_usd for r in self.runs)
+    def total_cost_usd(self) -> float | None:
+        costs = [run.cost_usd for run in self.runs]
+        if any(cost is None for cost in costs):
+            return None
+        return sum(cost for cost in costs if cost is not None)
 
     @property
     def total_tokens(self) -> int:

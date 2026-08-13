@@ -70,6 +70,7 @@ from synth_optimizers.observability import (  # noqa: E402
     policy_ref,
     proposer_delta_payload,
 )
+from synth_optimizers.o11y import RunBoard, RunState, RunStatus, RunUsage  # noqa: E402
 
 
 def test_missing_sequence_is_not_zero() -> None:
@@ -101,6 +102,24 @@ def test_missing_reward_stays_none() -> None:
     assert projected["usage"]["total_tokens"] is None
     assert _sum_present([None, None]) is None
     assert _sum_present([None, 1.5]) == 1.5
+
+
+def test_run_board_cost_is_unknown_if_any_run_cost_is_unknown(tmp_path: Path) -> None:
+    def run(run_id: str, cost_usd: float | None) -> RunStatus:
+        return RunStatus(
+            run_id=run_id,
+            domain="test",
+            state=RunState.SUCCEEDED,
+            run_dir=tmp_path / run_id,
+            started_at=None,
+            ended_at=None,
+            last_activity_at=None,
+            cost_usd=cost_usd,
+            usage=RunUsage(),
+        )
+
+    assert RunBoard([run("known", 0.25)]).total_cost_usd == 0.25
+    assert RunBoard([run("known", 0.25), run("unknown", None)]).total_cost_usd is None
 
 
 def test_container_child_eval_ref_has_three_fields() -> None:

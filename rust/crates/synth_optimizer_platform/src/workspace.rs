@@ -4580,7 +4580,7 @@ impl WorkspaceStore {
                 run_id TEXT PRIMARY KEY,
                 manifest_path TEXT NOT NULL,
                 best_candidate_id TEXT NOT NULL,
-                cost_usd REAL NOT NULL,
+                cost_usd REAL,
                 usage_json TEXT NOT NULL,
                 manifest_json TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -4945,6 +4945,29 @@ impl WorkspaceStore {
                 );
                 INSERT INTO usage_ledger SELECT * FROM usage_ledger_nonnull_cost;
                 DROP TABLE usage_ledger_nonnull_cost;
+                COMMIT;
+                PRAGMA foreign_keys = ON;
+                "#,
+            )?;
+        }
+        if self.column_is_not_null("manifests", "cost_usd")? {
+            self.conn.execute_batch(
+                r#"
+                PRAGMA foreign_keys = OFF;
+                BEGIN IMMEDIATE;
+                ALTER TABLE manifests RENAME TO manifests_nonnull_cost;
+                CREATE TABLE manifests (
+                    run_id TEXT PRIMARY KEY,
+                    manifest_path TEXT NOT NULL,
+                    best_candidate_id TEXT NOT NULL,
+                    cost_usd REAL,
+                    usage_json TEXT NOT NULL,
+                    manifest_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(run_id) REFERENCES optimization_runs(run_id) ON DELETE CASCADE
+                );
+                INSERT INTO manifests SELECT * FROM manifests_nonnull_cost;
+                DROP TABLE manifests_nonnull_cost;
                 COMMIT;
                 PRAGMA foreign_keys = ON;
                 "#,
@@ -9304,6 +9327,12 @@ mod nullable_cost_migration_tests {
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY(run_id, usage_ledger_id)
             );
+            CREATE TABLE manifests (
+                run_id TEXT PRIMARY KEY, manifest_path TEXT NOT NULL,
+                best_candidate_id TEXT NOT NULL, cost_usd REAL NOT NULL,
+                usage_json TEXT NOT NULL, manifest_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             "#,
         )
         .unwrap();
@@ -9316,6 +9345,7 @@ mod nullable_cost_migration_tests {
         assert!(!store
             .column_is_not_null("usage_ledger", "cost_usd")
             .unwrap());
+        assert!(!store.column_is_not_null("manifests", "cost_usd").unwrap());
         drop(store);
         let _ = fs::remove_file(&path);
         let _ = fs::remove_file(path.with_extension("sqlite-wal"));

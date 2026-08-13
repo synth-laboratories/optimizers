@@ -323,6 +323,16 @@ impl CodexAppServerClient {
         timeout: Duration,
         message_stall_timeout: Duration,
     ) -> Result<Value> {
+        self.wait_for_turn_with_observer(turn_id, timeout, message_stall_timeout, None)
+    }
+
+    pub fn wait_for_turn_with_observer(
+        &mut self,
+        turn_id: &str,
+        timeout: Duration,
+        message_stall_timeout: Duration,
+        message_observer: Option<&super::session::AgentMessageObserver>,
+    ) -> Result<Value> {
         let window = JsonRpcReadWindow::new(timeout, message_stall_timeout);
         loop {
             if window.overall_expired() {
@@ -344,6 +354,9 @@ impl CodexAppServerClient {
                     ));
                 }
             };
+            if let Some(observer) = message_observer {
+                observer(&message)?;
+            }
             let method = message
                 .get("method")
                 .and_then(Value::as_str)

@@ -114,10 +114,7 @@ impl MarlStrategy for RodeStrategy {
     fn evaluation_arms(&self, context: ArmContext<'_>) -> Vec<EvaluationArm> {
         let primary = EvaluationArm::primary(&context.candidate.payload);
         let mut metadata = Map::from_iter([
-            (
-                "intervention_type".to_string(),
-                json!("role_permutation"),
-            ),
+            ("intervention_type".to_string(), json!("role_permutation")),
             ("matched_arm".to_string(), json!(PRIMARY_ARM)),
             (
                 "permutation_scope".to_string(),
@@ -157,17 +154,13 @@ impl MarlStrategy for RodeStrategy {
                 higher_metric(left, "role_specialization_signal")
                     .total_cmp(&higher_metric(right, "role_specialization_signal"))
             })
-            .then_with(|| {
-                compare_optional_higher(left, right, "valid_explicit_handoffs")
-            })
+            .then_with(|| compare_optional_higher(left, right, "valid_explicit_handoffs"))
             .then_with(|| compare_optional_lower(left, right, "selector_changes"))
             .then_with(|| {
                 lower_metric(right, "role_duplication")
                     .total_cmp(&lower_metric(left, "role_duplication"))
             })
-            .then_with(|| {
-                compare_optional_lower(left, right, "assignment_abandonment_cost")
-            })
+            .then_with(|| compare_optional_lower(left, right, "assignment_abandonment_cost"))
             .then_with(|| {
                 lower_metric(right, "interference_cost")
                     .total_cmp(&lower_metric(left, "interference_cost"))
@@ -180,8 +173,7 @@ impl MarlStrategy for RodeStrategy {
                 lower_metric(right, "messages").total_cmp(&lower_metric(left, "messages"))
             })
             .then_with(|| {
-                lower_metric(right, "message_chars")
-                    .total_cmp(&lower_metric(left, "message_chars"))
+                lower_metric(right, "message_chars").total_cmp(&lower_metric(left, "message_chars"))
             })
     }
 }
@@ -360,9 +352,7 @@ struct Aggregate {
     selector_changes: OptionalTotal,
 }
 
-fn score_matched_role_permutations(
-    observations: &[RolloutObservation],
-) -> Result<StrategyScore> {
+fn score_matched_role_permutations(observations: &[RolloutObservation]) -> Result<StrategyScore> {
     let Some(first) = observations.first() else {
         return Err(invariant("RODE scoring requires rollout observations"));
     };
@@ -475,10 +465,8 @@ fn score_matched_role_permutations(
     let primary_outcome_success = aggregate.primary_outcome_success / denominator;
     let role_permuted_outcome_success = aggregate.role_permuted_outcome_success / denominator;
     let primary_role_consistency = aggregate.primary_role_consistency / denominator;
-    let role_permuted_role_consistency =
-        aggregate.role_permuted_role_consistency / denominator;
-    let role_permutation_outcome_delta =
-        primary_outcome_success - role_permuted_outcome_success;
+    let role_permuted_role_consistency = aggregate.role_permuted_role_consistency / denominator;
+    let role_permutation_outcome_delta = primary_outcome_success - role_permuted_outcome_success;
     let role_permutation_consistency_delta =
         primary_role_consistency - role_permuted_role_consistency;
     let role_specialization_signal =
@@ -528,10 +516,7 @@ fn score_matched_role_permutations(
             role_specialization_signal,
         ),
         ("role_duplication".to_string(), role_duplication),
-        (
-            "interference_actions".to_string(),
-            interference_actions,
-        ),
+        ("interference_actions".to_string(), interference_actions),
         ("interference_cost".to_string(), interference_cost),
         ("messages".to_string(), messages),
         ("message_chars".to_string(), message_chars),
@@ -539,7 +524,11 @@ fn score_matched_role_permutations(
         ("matched_pair_count".to_string(), pair_count as f64),
     ]);
     insert_optional_metric(&mut metrics, "abandoned_assignments", abandoned_assignments);
-    insert_optional_metric(&mut metrics, "unfinished_assignments", unfinished_assignments);
+    insert_optional_metric(
+        &mut metrics,
+        "unfinished_assignments",
+        unfinished_assignments,
+    );
     insert_optional_metric(
         &mut metrics,
         "assignment_abandonment_cost",
@@ -656,7 +645,8 @@ fn validate_observation(observation: &RolloutObservation) -> Result<ValidatedArm
             observation.rollout_id
         )));
     }
-    let response_task_id = required_response_string(&observation.response, "/task_id", observation)?;
+    let response_task_id =
+        required_response_string(&observation.response, "/task_id", observation)?;
     if response_task_id != observation.task_id {
         return Err(invariant(format!(
             "RODE rollout {} task key mismatch: observation={:?}, response={response_task_id:?}",
@@ -684,14 +674,13 @@ fn validate_observation(observation: &RolloutObservation) -> Result<ValidatedArm
                 observation.rollout_id
             ))
         })?;
-    let receipt: InterventionReceipt = serde_json::from_value(receipt_value.clone()).map_err(
-        |source| {
+    let receipt: InterventionReceipt =
+        serde_json::from_value(receipt_value.clone()).map_err(|source| {
             invariant(format!(
                 "RODE rollout {} has an invalid typed intervention_evidence receipt: {source}",
                 observation.rollout_id
             ))
-        },
-    )?;
+        })?;
     if receipt.arm_id != observation.arm_id {
         return Err(invariant(format!(
             "RODE rollout {} arm mismatch: observation={:?}, receipt={:?}",
@@ -784,8 +773,7 @@ fn require_exact_match(
 
 fn required_role_metrics(observation: &RolloutObservation) -> Result<RoleMetrics> {
     let outcome_success = required_metric(observation, "outcome_success", &["outcome_success"])?;
-    let role_consistency =
-        required_metric(observation, "role_consistency", &["role_consistency"])?;
+    let role_consistency = required_metric(observation, "role_consistency", &["role_consistency"])?;
     for (key, value) in [
         ("outcome_success", outcome_success),
         ("role_consistency", role_consistency),
@@ -821,18 +809,12 @@ fn required_role_metrics(observation: &RolloutObservation) -> Result<RoleMetrics
         "message_chars",
         &["message_chars", "communication_chars"],
     )?;
-    let interference_cost = optional_nonnegative_metric(
-        observation,
-        "interference_cost",
-        &["interference_cost"],
-    )?
-    .unwrap_or(interference_actions);
-    let communication_cost = optional_nonnegative_metric(
-        observation,
-        "communication_cost",
-        &["communication_cost"],
-    )?
-    .unwrap_or(messages + message_chars);
+    let interference_cost =
+        optional_nonnegative_metric(observation, "interference_cost", &["interference_cost"])?
+            .unwrap_or(interference_actions);
+    let communication_cost =
+        optional_nonnegative_metric(observation, "communication_cost", &["communication_cost"])?
+            .unwrap_or(messages + message_chars);
 
     Ok(RoleMetrics {
         outcome_success,
@@ -969,11 +951,7 @@ fn required_response_string<'a>(
         })
 }
 
-fn insert_optional_metric(
-    metrics: &mut BTreeMap<String, f64>,
-    key: &str,
-    value: Option<f64>,
-) {
+fn insert_optional_metric(metrics: &mut BTreeMap<String, f64>, key: &str, value: Option<f64>) {
     if let Some(value) = value {
         metrics.insert(key.to_string(), value);
     }

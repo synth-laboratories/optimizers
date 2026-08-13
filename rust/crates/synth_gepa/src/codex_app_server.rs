@@ -9,9 +9,9 @@ use crate::{CandidateRecord, RolloutScore};
 use reqwest::blocking::Client;
 use serde_json::{json, Map, Value};
 use synth_optimizer_platform::{
-    record_manifest_validation, run_turn, AgentTurnOutcome, CodexTurnRequest,
-    NanoAgentTurnIdentity, NanoCodexExecution, NanoCodexSessionPool, NanoCodexTurnRequest,
-    OptimizerError, PromptProgram, Result, SynthOptimizerConfig,
+    proposer_delta_chunks_from_protocol, record_manifest_validation, run_turn, AgentTurnOutcome,
+    CodexTurnRequest, NanoAgentTurnIdentity, NanoCodexExecution, NanoCodexSessionPool,
+    NanoCodexTurnRequest, OptimizerError, PromptProgram, Result, SynthOptimizerConfig,
 };
 
 const GEPA_REFLECTIVE_FRAME_SCHEMA_VERSION: &str = "gepa_reflective_frame.v1";
@@ -83,6 +83,7 @@ pub(crate) fn run_codex_app_server_proposer(input: CodexProposerInput<'_>) -> Re
         turn_start_params: turn_start_params(&input, &model)?,
         timeout,
         message_stall_timeout,
+        message_observer: None,
     };
     if input.config.proposer.nano_codex.enabled {
         let execution = run_nano_codex_proposer(&input, turn_request)?;
@@ -133,6 +134,7 @@ pub(crate) fn run_codex_staleness_reviewer(
         turn_start_params: staleness_turn_start_params(&input, &model),
         timeout,
         message_stall_timeout,
+        message_observer: None,
     })?;
     build_staleness_review_response(&input, &model, outcome)
 }
@@ -286,6 +288,7 @@ pub(crate) fn run_deepseek_chat_proposer(input: CodexProposerInput<'_>) -> Resul
         "proposals": proposals,
         "usage": usage,
         "evidence_warnings": evidence_warnings,
+        "proposer_stream_chunks": chat_content_stream_chunks(&chat_response),
     }))
 }
 
@@ -401,6 +404,23 @@ fn write_deepseek_chat_artifacts(
     write_json(&artifact_dir.join("deepseek_chat_response.json"), response)
 }
 
+fn proposer_stream_chunks_from_messages(messages: &[Value]) -> Vec<Value> {
+    proposer_delta_chunks_from_protocol(messages)
+        .into_iter()
+        .map(|(channel, text)| json!({"channel": channel, "text": text}))
+        .collect()
+}
+
+fn chat_content_stream_chunks(chat_response: &Value) -> Vec<Value> {
+    chat_response
+        .pointer("/choices/0/message/content")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(|text| vec![json!({"channel": "content", "text": text})])
+        .unwrap_or_default()
+}
+
 fn build_response_from_outcome(
     input: &CodexProposerInput<'_>,
     model: &str,
@@ -456,6 +476,8 @@ fn build_response_from_outcome(
         "proposals": proposals,
         "usage": usage,
         "evidence_warnings": evidence_warnings,
+        "received_messages": outcome.received_messages,
+        "proposer_stream_chunks": proposer_stream_chunks_from_messages(&outcome.received_messages),
     });
     if let Some(receipt) = outcome.supervisor_receipt.as_ref() {
         response["supervisor_receipt"] = serde_json::to_value(receipt)?;

@@ -60,6 +60,13 @@ LIVE_WITHIN_SECONDS = 1200.0
 LOGGER = logging.getLogger(__name__)
 
 
+def _optional_float(value: object) -> float | None:
+    """Preserve missing provider telemetry instead of presenting it as free."""
+    if value is None:
+        return None
+    return float(value)
+
+
 class BoardSource(Protocol):
     @property
     def source_id(self) -> str: ...
@@ -406,7 +413,7 @@ class RunStatus:
     started_at: datetime | None
     ended_at: datetime | None
     last_activity_at: datetime | None
-    cost_usd: float
+    cost_usd: float | None
     usage: RunUsage
     best_candidate_id: str | None = None
     best_train_reward: float | None = None
@@ -458,7 +465,7 @@ class RunStatus:
                     started_at=record.ts or live.started_at,
                     ended_at=live.last_activity_at,
                     last_activity_at=live.last_activity_at,
-                    cost_usd=float(record.cost_usd or 0.0),
+                    cost_usd=_optional_float(record.cost_usd),
                     usage=live.usage if live.usage.total_tokens else RunUsage.from_dict(record.usage),
                     best_candidate_id=live.best_candidate_id or record.best_candidate_id,
                     best_train_reward=live.best_train_reward,
@@ -485,7 +492,7 @@ class RunStatus:
                 started_at=started,
                 ended_at=None,
                 last_activity_at=live.last_activity_at,
-                cost_usd=float(record.cost_usd or 0.0),
+                cost_usd=_optional_float(record.cost_usd),
                 usage=usage,
                 best_candidate_id=record.best_candidate_id,
                 best_train_reward=live.best_train_reward,
@@ -516,7 +523,9 @@ class RunStatus:
             started_at=_parse_ts(history[0].get("at")) if history else record.ts,
             ended_at=_parse_ts(history[-1].get("at")) if history else record.ts,
             last_activity_at=_parse_ts(history[-1].get("at")) if history else record.ts,
-            cost_usd=float(manifest.get("cost_usd") or record.cost_usd or 0.0),
+            cost_usd=_optional_float(
+                manifest["cost_usd"] if "cost_usd" in manifest else record.cost_usd
+            ),
             usage=RunUsage.from_dict(usage),
             best_candidate_id=best.get("candidate_id") or record.best_candidate_id,
             best_train_reward=best.get("train_reward"),
@@ -640,8 +649,11 @@ class RunBoard:
         return sum(1 for r in self.runs if r.state is state)
 
     @property
-    def total_cost_usd(self) -> float:
-        return sum(r.cost_usd for r in self.runs)
+    def total_cost_usd(self) -> float | None:
+        costs = [run.cost_usd for run in self.runs]
+        if any(cost is None for cost in costs):
+            return None
+        return sum(cost for cost in costs if cost is not None)
 
     @property
     def total_tokens(self) -> int:
@@ -681,6 +693,14 @@ class RunBoard:
 
 def _fmt_reward(value: float | None) -> str:
     return "—" if value is None else f"{value:.3f}"
+
+
+def _fmt_cost(value: float | None) -> str:
+    return "—" if value is None else f"${value:.4f}"
+
+
+def _fmt_tokens(value: int | None) -> str:
+    return "—" if value is None else f"{value:,}"
 
 
 def _fmt_duration(seconds: float | None) -> str:
@@ -899,7 +919,7 @@ def _render_rows(runs: list[dict]) -> str:
             "<td class='num dur'>{dur}</td>"
             "<td class='storage-cell'>{storage}</td>"
             "<td class='num tokens'>{tokens}</td>"
-            "<td class='num cost'>${cost}</td>"
+            "<td class='num cost'>{cost}</td>"
             "<td class='ts updated'>{updated}</td>"
             "</tr>".format(
                 rid=_esc(run["run_id"]),
@@ -912,8 +932,8 @@ def _render_rows(runs: list[dict]) -> str:
                 eta=_eta_html(run.get("eta")),
                 dur=_fmt_duration(run["duration_seconds"]),
                 storage=_storage_badge(run),
-                tokens=f"{run['usage']['total_tokens']:,}",
-                cost=f"{run['cost_usd']:.4f}",
+                tokens=_fmt_tokens((run.get("usage") or {}).get("total_tokens")),
+                cost=_fmt_cost(run.get("cost_usd")),
                 updated=_fmt_updated(run),
             )
         )
@@ -956,6 +976,10 @@ def render_board_html(
     active_workers = int(s.get("service_active_workers") or 0)
     queued_runnable = int(s.get("service_queued_runnable") or 0)
     queued_blocked = int(s.get("service_queued_blocked") or 0)
+    cost_label = _fmt_cost(s.get("total_cost_usd"))
+    tokens_label = (
+        "unknown tokens" if s.get("total_tokens") is None else f"{s['total_tokens']:,} tokens"
+    )
 
     return f"""<!doctype html>
 <html lang="en">
@@ -1145,7 +1169,7 @@ def render_board_html(
   <span class="live"><span id="dot" class="dot"></span><span id="livetext">static</span></span>
 </header>
 <div class="sub" id="subline">
-  {s['total']} run(s) · {queued} queued · {running} running · workers {active_workers}/{service_workers} · queue {queued_runnable} runnable/{queued_blocked} blocked · service running {service_running} · service progress {service_progress} · oldest queued {oldest_queued} · board poll {board_poll} · {s['unknown']} unknown · ${s['total_cost_usd']:.4f} · {s['total_tokens']:,} tokens
+  {s['total']} run(s) · {queued} queued · {running} running · workers {active_workers}/{service_workers} · queue {queued_runnable} runnable/{queued_blocked} blocked · service running {service_running} · service progress {service_progress} · oldest queued {oldest_queued} · board poll {board_poll} · {s['unknown']} unknown · {cost_label} · {tokens_label}
 </div>
 <div class="cards">
   <div class="card queue"><div class="n" data-k="queued">{queued}</div><div class="l">Queued</div></div>
@@ -1268,6 +1292,8 @@ _BOARD_JS = r"""
 var GepaBoard = (function () {
   var q, st, dm, body, empty, boardData=null;
   function fmtReward(v){ return v==null? '—' : Number(v).toFixed(3); }
+  function fmtCost(v){ return v==null||v===''? '—' : '$'+Number(v).toFixed(4); }
+  function fmtTokens(v){ return v==null||v===''? '—' : Number(v).toLocaleString(); }
   function fmtDur(s){
     if(s==null) return '—';
     if(s<60) return Math.round(s)+'s';
@@ -1499,8 +1525,8 @@ var GepaBoard = (function () {
       +"<td class='eta'>"+etaHtml(r.eta)+"</td>"
       +"<td class='num'>"+fmtDur(r.duration_seconds)+"</td>"
       +"<td class='storage-cell'>"+storageBadge(r)+"</td>"
-      +"<td class='num'>"+Number(r.usage.total_tokens).toLocaleString()+"</td>"
-      +"<td class='num'>$"+Number(r.cost_usd).toFixed(4)+"</td>"
+      +"<td class='num'>"+fmtTokens((r.usage||{}).total_tokens)+"</td>"
+      +"<td class='num'>"+fmtCost(r.cost_usd)+"</td>"
       +"<td class='ts'>"+fmtUpdated(r)+"</td></tr>";
   }
   function storageBadge(r){
@@ -1543,8 +1569,8 @@ var GepaBoard = (function () {
       +' · service progress '+ageOrDash(s.service_last_progress_at)
       +' · oldest queued '+fmtDur(s.service_oldest_queued_age_seconds)
       +' · board poll '+ageOrDash(data.generated_at)
-      +' · '+(s.unknown||0)+' unknown · $'+Number(s.total_cost_usd).toFixed(4)
-      +' · '+Number(s.total_tokens).toLocaleString()+' tokens';
+      +' · '+(s.unknown||0)+' unknown · '+fmtCost(s.total_cost_usd)
+      +' · '+(s.total_tokens==null||s.total_tokens===''? 'unknown tokens' : Number(s.total_tokens).toLocaleString()+' tokens');
     // keep domain filter options in sync
     var have={}; Array.prototype.forEach.call(dm.options, function(o){ have[o.value]=1; });
     Array.from(new Set(data.runs.map(function(r){return r.domain;}))).sort().forEach(function(d){

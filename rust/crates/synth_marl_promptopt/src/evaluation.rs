@@ -6,9 +6,7 @@ use synth_optimizer_platform::{
 };
 
 use crate::strategy::{ArmContext, MarlStrategy};
-use crate::types::{
-    BudgetLedger, EvaluationArm, MarlCandidate, RolloutObservation, StrategyScore,
-};
+use crate::types::{BudgetLedger, EvaluationArm, MarlCandidate, RolloutObservation, StrategyScore};
 
 #[derive(Clone, Debug, Default)]
 pub struct EvaluationBatch {
@@ -143,10 +141,7 @@ pub fn evaluate_candidate(input: EvaluateCandidateInput<'_>) -> Result<Evaluatio
     Ok(batch)
 }
 
-pub fn score_batch(
-    strategy: &dyn MarlStrategy,
-    batch: &EvaluationBatch,
-) -> Result<StrategyScore> {
+pub fn score_batch(strategy: &dyn MarlStrategy, batch: &EvaluationBatch) -> Result<StrategyScore> {
     strategy.score(&batch.observations)
 }
 
@@ -167,10 +162,7 @@ fn rollout_request(
     let payload = arm.payload;
     let policy = serde_json::to_value(&config.policy)?;
     let mut request_metadata = Map::from_iter([
-        (
-            "algorithm_id".to_string(),
-            json!("synth_marl_promptopt.v1"),
-        ),
+        ("algorithm_id".to_string(), json!("synth_marl_promptopt.v1")),
         ("variant".to_string(), json!(variant)),
         ("candidate_id".to_string(), json!(&candidate.candidate_id)),
         ("generation".to_string(), json!(candidate.generation)),
@@ -258,16 +250,26 @@ fn response_metrics(response: &Value) -> BTreeMap<String, f64> {
         flatten_numeric_metrics("", source, &mut metrics);
     }
     for (canonical, aliases) in [
-        ("outcome_success", &["success", "task_success", "outcome_success"][..]),
+        (
+            "outcome_success",
+            &["success", "task_success", "outcome_success"][..],
+        ),
         (
             "coordination_success",
             &["coordination_success", "coordination_success_rate"],
         ),
         (
             "message_action_alignment",
-            &["message_action_alignment", "message_action_alignment_rate", "request_action_alignment"],
+            &[
+                "message_action_alignment",
+                "message_action_alignment_rate",
+                "request_action_alignment",
+            ],
         ),
-        ("role_consistency", &["role_consistency", "assignment_consistency"]),
+        (
+            "role_consistency",
+            &["role_consistency", "assignment_consistency"],
+        ),
         (
             "role_duplication",
             &[
@@ -276,16 +278,25 @@ fn response_metrics(response: &Value) -> BTreeMap<String, f64> {
                 "duplicate_assignments",
             ],
         ),
-        ("invalid_actions", &["invalid_actions", "invalid_action_count"]),
+        (
+            "invalid_actions",
+            &["invalid_actions", "invalid_action_count"],
+        ),
         ("idle_actions", &["idle_actions", "idle_action_count"]),
         (
             "interference_actions",
             &["interference_actions", "interference_action_count"],
         ),
-        ("messages", &["messages", "message_count", "messages_delivered"]),
+        (
+            "messages",
+            &["messages", "message_count", "messages_delivered"],
+        ),
         ("message_chars", &["message_chars", "communication_chars"]),
     ] {
-        if let Some(value) = aliases.iter().find_map(|alias| metrics.get(*alias).copied()) {
+        if let Some(value) = aliases
+            .iter()
+            .find_map(|alias| metrics.get(*alias).copied())
+        {
             metrics.insert(canonical.to_string(), value);
         }
     }
@@ -329,7 +340,9 @@ fn attach_matched_diagnostics(response: &mut Value, observations: &[RolloutObser
             })
         })
         .collect::<Vec<_>>();
-    let object = response.as_object_mut().expect("rollout response is an object");
+    let object = response
+        .as_object_mut()
+        .expect("rollout response is an object");
     let actionable = object
         .entry("actionable_side_info")
         .or_insert_with(|| Value::Object(Map::new()));
@@ -339,5 +352,8 @@ fn attach_matched_diagnostics(response: &mut Value, observations: &[RolloutObser
     actionable
         .as_object_mut()
         .expect("actionable side info is an object")
-        .insert("matched_marl_diagnostics".to_string(), Value::Array(diagnostics));
+        .insert(
+            "matched_marl_diagnostics".to_string(),
+            Value::Array(diagnostics),
+        );
 }

@@ -153,7 +153,7 @@ impl GepaRunResult {
     }
 
     #[getter]
-    pub fn cost_usd(&self) -> f64 {
+    pub fn cost_usd(&self) -> Option<f64> {
         self.inner.cost_usd
     }
 

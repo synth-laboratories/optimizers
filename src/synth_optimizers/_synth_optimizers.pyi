@@ -46,7 +46,7 @@ class GepaRunResult:
     run_registry_path: str
     workspace_db_path: str
     artifact_refs: list[dict[str, Any]]
-    cost_usd: float
+    cost_usd: float | None
     usage: dict[str, Any]
     state_history: list[dict[str, Any]]
 

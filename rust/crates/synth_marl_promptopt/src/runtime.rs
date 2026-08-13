@@ -15,9 +15,7 @@ use crate::config::MarlPromptoptConfig;
 use crate::evaluation::{evaluate_candidate, score_batch, EvaluateCandidateInput};
 use crate::proposer::{propose_generation, ProposeGenerationInput};
 use crate::strategy::{primary_mean_score, MarlStrategy};
-use crate::types::{
-    BudgetLedger, MarlCandidate, MarlRunResult, RolloutObservation, StrategyScore,
-};
+use crate::types::{BudgetLedger, MarlCandidate, MarlRunResult, RolloutObservation, StrategyScore};
 use crate::variants::strategy_by_name;
 
 #[derive(Clone, Debug)]
@@ -206,7 +204,11 @@ pub fn execute_marl_promptopt(config: MarlPromptoptConfig) -> Result<MarlRunResu
         let mut generation_indices = (generation_start..generation_end).collect::<Vec<_>>();
         generation_indices.sort_by(|left, right| {
             compare_candidates(strategy.as_ref(), &candidates[*right], &candidates[*left])
-                .then_with(|| candidates[*left].candidate_id.cmp(&candidates[*right].candidate_id))
+                .then_with(|| {
+                    candidates[*left]
+                        .candidate_id
+                        .cmp(&candidates[*right].candidate_id)
+                })
         });
         generation_indices.truncate(
             config
@@ -323,14 +325,15 @@ pub fn execute_marl_promptopt(config: MarlPromptoptConfig) -> Result<MarlRunResu
         )));
     }
 
-    let heldout_uplift = heldout_seed
-        .as_ref()
-        .zip(heldout_champion.as_ref())
-        .map(|(seed_score, champion_score)| {
-            let seed_outcome = score_outcome(seed_score);
-            let champion_outcome = score_outcome(champion_score);
-            champion_outcome - seed_outcome
-        });
+    let heldout_uplift =
+        heldout_seed
+            .as_ref()
+            .zip(heldout_champion.as_ref())
+            .map(|(seed_score, champion_score)| {
+                let seed_outcome = score_outcome(seed_score);
+                let champion_outcome = score_outcome(champion_score);
+                champion_outcome - seed_outcome
+            });
     let manifest_path = run_dir.join("result_manifest.json");
     let frontier_candidate_ids = nondominated_candidate_indices(strategy.as_ref(), &candidates)
         .into_iter()
@@ -455,10 +458,7 @@ fn assert_no_task_overlap(
 }
 
 fn public_split_snapshot(rows: &[Value]) -> Result<Value> {
-    let task_ids = rows
-        .iter()
-        .map(task_identity)
-        .collect::<Result<Vec<_>>>()?;
+    let task_ids = rows.iter().map(task_identity).collect::<Result<Vec<_>>>()?;
     Ok(json!({
         "row_count": rows.len(),
         "task_ids": task_ids,
@@ -714,7 +714,8 @@ fn paired_heldout(
         champion_observations.extend(champion_batch.observations);
         index += 1;
     }
-    let seed_score = (!seed_observations.is_empty()).then(|| primary_mean_score(&seed_observations));
+    let seed_score =
+        (!seed_observations.is_empty()).then(|| primary_mean_score(&seed_observations));
     let champion_score =
         (!champion_observations.is_empty()).then(|| primary_mean_score(&champion_observations));
     let mut all = seed_observations;

@@ -37,7 +37,7 @@ with container.serve() as handle:
     ).execute()
 
 print(result.best_candidate)
-print(f"cost: ${result.cost_usd:.2f}")
+print("cost: unknown" if result.cost_usd is None else f"cost: ${result.cost_usd:.2f}")
 ```
 
 ## Runners: `OptimizerRun` vs `GepaRun`

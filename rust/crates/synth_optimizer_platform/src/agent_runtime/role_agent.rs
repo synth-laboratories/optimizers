@@ -112,6 +112,7 @@ impl ResolvedRoleAgentConfig {
             turn_start_params,
             timeout: input.timeout.unwrap_or_else(|| self.timeout()),
             message_stall_timeout: self.message_stall_timeout(),
+            message_observer: input.message_observer,
         }
     }
 
@@ -186,6 +187,7 @@ pub struct RoleAgentTurnRequestInput<'a> {
     pub thread_metadata: Option<Value>,
     pub turn_input: Value,
     pub timeout: Option<Duration>,
+    pub message_observer: Option<super::session::AgentMessageObserver>,
 }
 
 pub fn text_turn_input(text: impl Into<String>) -> Value {

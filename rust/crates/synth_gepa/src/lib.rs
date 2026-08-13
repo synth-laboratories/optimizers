@@ -3258,7 +3258,7 @@ fn advance_gepa_sync_serial_once(
         });
     }
     if let Err(error) = check_cancelled(options.cancellation.as_ref()) {
-        return terminalize_aborted_gepa_run(context, state, error, "GEPA run cancelled");
+        return terminalize_aborted_gepa_run(context, state, &error, "GEPA run cancelled");
     }
     if matches!(state.cursor.phase, GepaCursorPhase::Paused) {
         return Ok(paused_gepa_outcome(context));
@@ -3332,7 +3332,7 @@ fn advance_gepa_async_pipeline_once(
         state.cursor.pipeline_state.evaluate_queue.clear();
         state.cursor.pipeline_state.lane_leases.clear();
         state.cursor.pipeline_state.candidate_partials.clear();
-        return terminalize_aborted_gepa_run(context, state, error, "GEPA run cancelled");
+        return terminalize_aborted_gepa_run(context, state, &error, "GEPA run cancelled");
     }
     if matches!(state.cursor.phase, GepaCursorPhase::Paused) {
         return Ok(paused_gepa_outcome(context));
@@ -3493,7 +3493,7 @@ fn terminalize_restored_unclaimable_async_job(
         return terminalize_aborted_gepa_run(
             context,
             state,
-            error,
+            &error,
             "GEPA async runtime job was left running by a previous process",
         )
         .map(Some);
@@ -7030,7 +7030,7 @@ fn advance_pending_runtime_job(
                     return terminalize_aborted_gepa_run(
                         context,
                         state,
-                        error,
+                        &error,
                         "GEPA runtime job failed",
                     );
                 }
@@ -10473,7 +10473,7 @@ fn consume_failed_runtime_job(
 fn terminalize_aborted_gepa_run(
     context: &mut GepaRunContext,
     state: &mut GepaRunState,
-    error: OptimizerError,
+    error: &OptimizerError,
     message: &str,
 ) -> Result<GepaAdvanceOutcome> {
     let (phase, status) = if matches!(error, OptimizerError::Cancelled { .. }) {
@@ -10481,7 +10481,7 @@ fn terminalize_aborted_gepa_run(
     } else {
         (GepaCursorPhase::Failed, "failed")
     };
-    terminalize_pending_runtime_work_for_abort(context, state, status, &error)?;
+    terminalize_pending_runtime_work_for_abort(context, state, status, error)?;
     let error_summary = json!({
         "error_code": error.error_code(),
         "message": error.to_string(),
@@ -14098,7 +14098,24 @@ pub fn execute_gepa_with_options(
     let mut state = restore_gepa_run_state(&mut context)?;
     loop {
         let outcome =
-            advance_gepa_once(&mut context, &mut state, GepaAdvanceMode::RunLoop, &options)?;
+            match advance_gepa_once(&mut context, &mut state, GepaAdvanceMode::RunLoop, &options) {
+                Ok(outcome) => outcome,
+                Err(error) if terminal_message_for_run_loop_error(&error).is_some() => {
+                    // A budget denial is an expected terminal decision, not an
+                    // unrecorded orchestration exception. Persist the failed cursor,
+                    // typed failure manifest, terminal event, and run projection,
+                    // then preserve the original typed error for SDK callers.
+                    terminalize_aborted_gepa_run(
+                        &mut context,
+                        &mut state,
+                        &error,
+                        terminal_message_for_run_loop_error(&error)
+                            .expect("guard guarantees a terminal message"),
+                    )?;
+                    return Err(error);
+                }
+                Err(error) => return Err(error),
+            };
         if outcome.terminal {
             if let Some(result) = outcome.result {
                 return Ok(result);
@@ -14112,6 +14129,13 @@ pub fn execute_gepa_with_options(
         if matches!(outcome.action, planner::GepaTickAction::Noop) {
             thread::sleep(ASYNC_PIPELINE_NOOP_SLEEP);
         }
+    }
+}
+
+fn terminal_message_for_run_loop_error(error: &OptimizerError) -> Option<&'static str> {
+    match error {
+        OptimizerError::BudgetExceeded { .. } => Some("GEPA budget exhausted"),
+        _ => None,
     }
 }
 
@@ -21660,4 +21684,34 @@ fn candidate_id(payload: &BTreeMap<String, String>) -> String {
     digest.update(synth_optimizer_platform::cache::stable_json(&value).as_bytes());
     let hex = format!("{:x}", digest.finalize());
     format!("gepa_{}", &hex[..12])
+}
+
+#[cfg(test)]
+mod run_loop_terminalization_tests {
+    use super::*;
+
+    #[test]
+    fn budget_exhaustion_is_a_typed_terminal_run_loop_error() {
+        let error = OptimizerError::BudgetExceeded {
+            run_id: "gepa_budget_test".to_string(),
+            limit: "max_cost_usd".to_string(),
+            requested: "0.05".to_string(),
+            available: "0.04".to_string(),
+        };
+        assert_eq!(
+            terminal_message_for_run_loop_error(&error),
+            Some("GEPA budget exhausted")
+        );
+        assert_eq!(error.error_code(), "synth_optimizer_budget_exceeded");
+    }
+
+    #[test]
+    fn unrelated_orchestration_errors_are_not_reclassified_as_budget_terminal() {
+        assert_eq!(
+            terminal_message_for_run_loop_error(&OptimizerError::Container(
+                "provider unavailable".to_string()
+            )),
+            None
+        );
+    }
 }

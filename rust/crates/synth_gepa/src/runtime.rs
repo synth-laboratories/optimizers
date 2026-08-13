@@ -15,8 +15,8 @@ use synth_optimizer_platform::{
 
 use crate::{
     cached_profiled_call_with_access, record_runtime_effect_completed, run_proposer,
-    CandidateRecord, ProposedCandidate, RuntimeEffectCompletionInput, UsageTotals,
-    GEPA_ALGORITHM_ID,
+    usage_completion_tokens, usage_prompt_tokens, CandidateRecord, ProposedCandidate,
+    RuntimeEffectCompletionInput, UsageTotals, GEPA_ALGORITHM_ID,
 };
 
 pub const GEPA_RUNTIME_JOB_SCHEMA_VERSION: &str = "gepa_runtime_job.v1";
@@ -738,6 +738,8 @@ impl<'a> GepaRuntimeExecutor<'a> {
             call.cache_hit,
             stage,
             example_id,
+            &self.config.policy.provider,
+            &self.config.policy.model,
         )?;
         if !outcome.cache_hit {
             outcome.dispatch_wall_seconds = Some(dispatch_wall_seconds);
@@ -767,6 +769,8 @@ impl<'a> GepaRuntimeExecutor<'a> {
                     true,
                     rollout.stage.clone(),
                     rollout.example_id.clone(),
+                    &self.config.policy.provider,
+                    &self.config.policy.model,
                 ) {
                     Ok(outcome) => outcomes[index] = Some(outcome),
                     Err(error) => failures.push(RuntimeRolloutFailure {
@@ -868,6 +872,8 @@ impl<'a> GepaRuntimeExecutor<'a> {
                 false,
                 miss.rollout.stage.clone(),
                 miss.rollout.example_id.clone(),
+                &self.config.policy.provider,
+                &self.config.policy.model,
             ) {
                 Ok(outcome) => outcome,
                 Err(error) => {
@@ -1235,7 +1241,11 @@ fn rollout_outcome_from_value(
     cache_hit: bool,
     stage: String,
     example_id: String,
+    provider: &str,
+    model: &str,
 ) -> Result<RuntimeRolloutOutcome> {
+    let mut value = value;
+    normalize_rollout_cost(provider, model, &mut value);
     let typed_response = RolloutResponse::from_value(value.clone())?;
     typed_response.validate_for_gepa()?;
     let reward = typed_response.outcome_reward()?;
@@ -1266,6 +1276,56 @@ fn rollout_outcome_from_value(
         dispatch_chunk_index: None,
         dispatch_chunk_size: None,
     })
+}
+
+/// Fill a missing provider cost only when the policy model has a pinned public
+/// token price. Container adapters commonly return token counts but omit USD;
+/// treating that omission as a real zero silently disables the hard cost gate.
+/// Unknown models deliberately remain unpriced rather than inheriting a made-up
+/// default rate.
+fn normalize_rollout_cost(provider: &str, model: &str, response: &mut Value) {
+    let Some(usage) = response.get_mut("usage").and_then(Value::as_object_mut) else {
+        return;
+    };
+    if usage
+        .get("cost_usd")
+        .and_then(Value::as_f64)
+        .is_some_and(|cost| cost.is_finite() && cost > 0.0)
+    {
+        return;
+    }
+    let Some((input_per_million, output_per_million, source)) =
+        pinned_rollout_price(provider, model)
+    else {
+        return;
+    };
+    let prompt_tokens = usage_prompt_tokens(&Value::Object(usage.clone()));
+    let completion_tokens = usage_completion_tokens(&Value::Object(usage.clone()));
+    if prompt_tokens == 0 && completion_tokens == 0 {
+        return;
+    }
+    let cost_usd = prompt_tokens as f64 * input_per_million / 1_000_000.0
+        + completion_tokens as f64 * output_per_million / 1_000_000.0;
+    usage.insert("cost_usd".to_string(), json!(cost_usd));
+    usage.insert("cost_source".to_string(), json!(source));
+    usage.insert(
+        "cost_pricing".to_string(),
+        json!({
+            "input_usd_per_million": input_per_million,
+            "output_usd_per_million": output_per_million,
+        }),
+    );
+}
+
+fn pinned_rollout_price(provider: &str, model: &str) -> Option<(f64, f64, &'static str)> {
+    if !provider.trim().eq_ignore_ascii_case("openai") {
+        return None;
+    }
+    match model.trim().to_ascii_lowercase().as_str() {
+        "gpt-4.1-nano" => Some((0.10, 0.40, "openai_gpt_4_1_nano_static_price")),
+        "gpt-4o-mini" => Some((0.15, 0.60, "openai_gpt_4o_mini_static_price")),
+        _ => None,
+    }
 }
 
 fn record_runtime_effect_running(
@@ -1569,5 +1629,49 @@ mod partial_batch_tests {
         assert_eq!(resolve_rollout_concurrency(0, None), 1);
         assert_eq!(resolve_rollout_concurrency(3, Some("5")), 5);
         assert_eq!(resolve_rollout_concurrency(3, Some("invalid")), 3);
+    }
+}
+
+#[cfg(test)]
+mod cost_tests {
+    use super::*;
+
+    #[test]
+    fn prices_known_openai_rollout_when_container_omits_cost() {
+        let mut response = json!({
+            "usage": {
+                "prompt_tokens": 1_000_000,
+                "completion_tokens": 1_000_000
+            }
+        });
+        normalize_rollout_cost("openai", "gpt-4.1-nano", &mut response);
+        assert_eq!(response.pointer("/usage/cost_usd"), Some(&json!(0.5)));
+        assert_eq!(
+            response.pointer("/usage/cost_source"),
+            Some(&json!("openai_gpt_4_1_nano_static_price"))
+        );
+    }
+
+    #[test]
+    fn preserves_positive_provider_reported_cost() {
+        let mut response = json!({
+            "usage": {
+                "prompt_tokens": 1_000_000,
+                "completion_tokens": 1_000_000,
+                "cost_usd": 0.73
+            }
+        });
+        normalize_rollout_cost("openai", "gpt-4.1-nano", &mut response);
+        assert_eq!(response.pointer("/usage/cost_usd"), Some(&json!(0.73)));
+        assert!(response.pointer("/usage/cost_source").is_none());
+    }
+
+    #[test]
+    fn leaves_unknown_model_cost_unknown() {
+        let mut response = json!({
+            "usage": {"prompt_tokens": 50, "completion_tokens": 10}
+        });
+        normalize_rollout_cost("openai", "future-model", &mut response);
+        assert!(response.pointer("/usage/cost_usd").is_none());
     }
 }

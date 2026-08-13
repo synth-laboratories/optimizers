@@ -168,14 +168,19 @@ fn json_string_present(value: Option<&Value>) -> bool {
 }
 
 fn copy_codex_home(source: &Path, destination: &Path) -> Result<()> {
+    // A staged home is disposable process state. Reusing it can retain a cache
+    // written by a different Codex binary and makes a retry nondeterministic.
+    if destination.exists() {
+        fs::remove_dir_all(destination)
+            .map_err(|remove_error| OptimizerError::io(destination, remove_error))?;
+    }
     fs::create_dir_all(destination).map_err(|source| OptimizerError::io(destination, source))?;
     let mut copied_auth = false;
-    for filename in [
-        "auth.json",
-        "installation_id",
-        "version.json",
-        "models_cache.json",
-    ] {
+    // models_cache.json is intentionally not copied. Its schema belongs to the
+    // exact app-server binary being launched; Codex regenerates it. Copying a
+    // cache from another version can make model loading fail after the turn has
+    // already started (for example when a newly required field is absent).
+    for filename in ["auth.json", "installation_id", "version.json"] {
         let source_file = source.join(filename);
         if source_file.is_file() {
             let destination_file = destination.join(filename);
@@ -193,6 +198,48 @@ fn copy_codex_home(source: &Path, destination: &Path) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chatgpt_home_staging_is_clean_and_never_copies_model_cache() {
+        let root = std::env::temp_dir().join(format!(
+            "synth-codex-home-staging-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(source.join("auth.json"), b"{}\n").unwrap();
+        fs::write(source.join("installation_id"), b"installation\n").unwrap();
+        fs::write(
+            source.join("models_cache.json"),
+            br#"{"models":[{"slug":"stale","missing_new_fields":true}]}"#,
+        )
+        .unwrap();
+        fs::write(
+            destination.join("models_cache.json"),
+            b"stale retry cache\n",
+        )
+        .unwrap();
+        fs::write(destination.join("unrelated-runtime-state"), b"stale\n").unwrap();
+
+        copy_codex_home(&source, &destination).unwrap();
+
+        assert_eq!(fs::read(destination.join("auth.json")).unwrap(), b"{}\n");
+        assert_eq!(
+            fs::read(destination.join("installation_id")).unwrap(),
+            b"installation\n"
+        );
+        assert!(!destination.join("models_cache.json").exists());
+        assert!(!destination.join("unrelated-runtime-state").exists());
+        assert!(source.join("models_cache.json").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
 }
 
 fn prepare_api_key_codex_home(

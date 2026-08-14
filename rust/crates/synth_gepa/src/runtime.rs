@@ -468,7 +468,7 @@ impl<'a> GepaRuntimeExecutor<'a> {
             Ok(outcome) => outcome,
             Err(error) => {
                 if let Some(retry) =
-                    self.schedule_rollout_retry_if_allowed(&running_job, &lease_id, &error)?
+                    self.schedule_runtime_retry_if_allowed(&running_job, &lease_id, &error)?
                 {
                     return Err(retry);
                 }
@@ -528,14 +528,13 @@ impl<'a> GepaRuntimeExecutor<'a> {
         Ok(outcome)
     }
 
-    fn schedule_rollout_retry_if_allowed(
+    fn schedule_runtime_retry_if_allowed(
         &self,
         job: &OptimizerJob,
         lease_id: &str,
         error: &OptimizerError,
     ) -> Result<Option<OptimizerError>> {
-        if !matches!(job.kind, OptimizerJobKind::Rollout)
-            || !is_retryable_rollout_runtime_error(error)
+        if !is_retryable_runtime_job_error(job, error)
             || job.attempt >= job.retry_policy.max_attempts
         {
             return Ok(None);
@@ -556,8 +555,9 @@ impl<'a> GepaRuntimeExecutor<'a> {
             return Ok(None);
         };
         Ok(Some(OptimizerError::Failed(format!(
-            "retryable rollout runtime failure scheduled for retry job_id={} attempt={}/{} next_retry_at={}",
+            "retryable runtime failure scheduled for retry job_id={} kind={} attempt={}/{} next_retry_at={}",
             updated.job_id,
+            updated.kind.as_str(),
             updated.attempt.saturating_add(1),
             updated.retry_policy.max_attempts,
             updated.next_retry_at.unwrap_or_else(|| "now".to_string())
@@ -1095,6 +1095,32 @@ fn is_retryable_rollout_runtime_error(error: &OptimizerError) -> bool {
             | OptimizerError::Failed(_)
             | OptimizerError::Json(_)
     )
+}
+
+fn is_retryable_runtime_job_error(job: &OptimizerJob, error: &OptimizerError) -> bool {
+    match job.kind {
+        OptimizerJobKind::Rollout => is_retryable_rollout_runtime_error(error),
+        OptimizerJobKind::Proposer => matches!(error, OptimizerError::Proposer(_)),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod runtime_job_retry_tests {
+    use super::*;
+
+    #[test]
+    fn proposer_errors_are_retryable_runtime_job_errors() {
+        let job = OptimizerJob::new("proposer-job", "run", OptimizerJobKind::Proposer);
+        assert!(is_retryable_runtime_job_error(
+            &job,
+            &OptimizerError::Proposer("app-server stalled".to_string())
+        ));
+        assert!(!is_retryable_runtime_job_error(
+            &job,
+            &OptimizerError::Config("invalid proposer config".to_string())
+        ));
+    }
 }
 
 fn dispatch_async_rollout(

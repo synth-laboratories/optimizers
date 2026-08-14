@@ -1494,7 +1494,7 @@ dependencies = [
 
 [[package]]
 name = "synth-optimizers"
-version = "0.2.8.dev20260814"
+version = "0.2.9.dev20260814"
 source = { editable = "." }
 dependencies = [
     { name = "pydantic" },

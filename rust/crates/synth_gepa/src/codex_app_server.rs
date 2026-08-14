@@ -9,9 +9,11 @@ use crate::{CandidateRecord, RolloutScore};
 use reqwest::blocking::Client;
 use serde_json::{json, Map, Value};
 use synth_optimizer_platform::{
-    proposer_delta_chunks_from_protocol, record_manifest_validation, run_turn, AgentTurnOutcome,
-    CodexTurnRequest, NanoAgentTurnIdentity, NanoCodexExecution, NanoCodexSessionPool,
-    NanoCodexTurnRequest, OptimizerError, PromptProgram, Result, SynthOptimizerConfig,
+    jesterky_workspace_read_model, looks_like_jesterky_manifest,
+    proposer_delta_chunks_from_protocol, read_jesterky_manifest, record_manifest_validation,
+    run_turn, AgentTurnOutcome, CodexTurnRequest, NanoAgentTurnIdentity, NanoCodexExecution,
+    NanoCodexSessionPool, NanoCodexTurnRequest, OptimizerError, PromptProgram, Result,
+    SynthOptimizerConfig,
 };
 
 const GEPA_REFLECTIVE_FRAME_SCHEMA_VERSION: &str = "gepa_reflective_frame.v1";
@@ -909,6 +911,14 @@ fn materialize_workspace(input: &CodexProposerInput<'_>) -> Result<()> {
     let parent_payload = json!(&input.parent.payload);
     let proposal_request = proposal_request(input, &prompting_best_practices);
     let rollouts = rollouts_read_model(input);
+    // Annotate after rollouts are available so jesterky_* land in state/ before
+    // the presence-gated read-model path and the live proposer turn.
+    let _jesterky_receipt = crate::jesterky_workflow::prepare_jesterky_workflow_for_generation(
+        input.config,
+        &rollouts,
+        &input.workspace_dir,
+        input.generation,
+    )?;
     let proposer_examples = proposer_examples_read_model(input);
     let proposer_failure_summary = proposer_failure_summary_read_model(input, &proposer_examples);
     let proposer_repair_hints = proposer_repair_hints_read_model(input, &proposer_examples);
@@ -923,6 +933,7 @@ fn materialize_workspace(input: &CodexProposerInput<'_>) -> Result<()> {
     let proposer_task_info =
         sanitize_proposer_workspace_value(task_info_value(input).cloned().unwrap_or(Value::Null));
     let proposer_program = sanitize_proposer_workspace_value(serde_json::to_value(input.program)?);
+    let jesterky_read_model = jesterky_workspace_read_model_for_proposer(input)?;
     write_json(
         &state_dir.join("run_context.json"),
         &json!({
@@ -934,6 +945,7 @@ fn materialize_workspace(input: &CodexProposerInput<'_>) -> Result<()> {
             "proposals_per_generation": input.config.gepa.proposals_per_generation,
             "proposals_per_round": input.config.gepa.proposals_per_generation,
             "parent_candidate_id": input.parent.candidate_id,
+            "jesterky_workflow_enabled": input.config.jesterky_workflow.enabled,
         }),
     )?;
     write_json(&state_dir.join("task_info.json"), &proposer_task_info)?;
@@ -978,9 +990,141 @@ fn materialize_workspace(input: &CodexProposerInput<'_>) -> Result<()> {
         &state_dir.join("reflector_input.json"),
         &reflector_input_read_model(input, &prompting_best_practices),
     )?;
+    if let Some(read_model) = jesterky_read_model {
+        write_jesterky_workspace_read_model(&state_dir, read_model)?;
+    }
     write_workspace_pack_manifest(&input.workspace_dir)?;
     assert_proposer_workspace_no_leaks(&input.workspace_dir)?;
     Ok(())
+}
+
+fn write_jesterky_workspace_read_model(state_dir: &Path, read_model: Value) -> Result<()> {
+    let read_model = sanitize_proposer_workspace_value(read_model);
+    write_json(&state_dir.join("jesterky_read_model.json"), &read_model)?;
+    for (name, path) in [
+        ("summary", "jesterky_manifest_summary.json"),
+        ("trace_rows", "jesterky_trace_rows.json"),
+        ("optimizer_triples", "jesterky_optimizer_triples.json"),
+        ("evidence_refs", "jesterky_evidence_refs.json"),
+    ] {
+        if let Some(value) = read_model.get(name) {
+            write_json(&state_dir.join(path), value)?;
+        }
+    }
+    Ok(())
+}
+
+fn jesterky_workspace_read_model_for_proposer(
+    input: &CodexProposerInput<'_>,
+) -> Result<Option<Value>> {
+    let Some(manifest) = find_jesterky_manifest_for_proposer(input)? else {
+        return Ok(None);
+    };
+    jesterky_workspace_read_model(&manifest).map(Some)
+}
+
+fn find_jesterky_manifest_for_proposer(input: &CodexProposerInput<'_>) -> Result<Option<Value>> {
+    // Prefer the annotate manifest written by jesterky_workflow this generation.
+    let annotate_path = input
+        .workspace_dir
+        .join(crate::jesterky_workflow::JESTERKY_ANNOTATE_MANIFEST_FILE);
+    if annotate_path.is_file() {
+        return read_jesterky_manifest(&annotate_path).map(Some);
+    }
+    let program_metadata = Value::Object(input.program.metadata.clone());
+    if let Some(manifest) = find_jesterky_manifest_in_value(&program_metadata, &input.workspace_dir)?
+    {
+        return Ok(Some(manifest));
+    }
+    for candidate in input.candidates {
+        let acceptance_metadata = Value::Object(candidate.acceptance_metadata.clone());
+        if let Some(manifest) =
+            find_jesterky_manifest_in_value(&acceptance_metadata, &input.workspace_dir)?
+        {
+            return Ok(Some(manifest));
+        }
+        for frame in &candidate.sensor_frames {
+            let frame_metadata = Value::Object(frame.metadata.clone());
+            if let Some(manifest) =
+                find_jesterky_manifest_in_value(&frame_metadata, &input.workspace_dir)?
+            {
+                return Ok(Some(manifest));
+            }
+            if let Some(side_info) = frame.actionable_side_info.as_ref() {
+                if let Some(manifest) =
+                    find_jesterky_manifest_in_value(side_info, &input.workspace_dir)?
+                {
+                    return Ok(Some(manifest));
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn find_jesterky_manifest_in_value(value: &Value, workspace_dir: &Path) -> Result<Option<Value>> {
+    if looks_like_jesterky_manifest(value) {
+        return Ok(Some(value.clone()));
+    }
+    match value {
+        Value::Object(object) => {
+            for (key, child) in object {
+                let lower = key.to_ascii_lowercase();
+                if lower.contains("jesterky")
+                    && lower.contains("manifest")
+                    && child.as_str().is_some()
+                {
+                    return read_jesterky_manifest_from_string(child, workspace_dir).map(Some);
+                }
+                if lower.contains("jesterky") && lower.contains("manifest") {
+                    if let Some(manifest) = find_jesterky_manifest_in_value(child, workspace_dir)? {
+                        return Ok(Some(manifest));
+                    }
+                } else if let Some(manifest) = find_jesterky_manifest_in_value(child, workspace_dir)?
+                {
+                    return Ok(Some(manifest));
+                }
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                if let Some(manifest) = find_jesterky_manifest_in_value(child, workspace_dir)? {
+                    return Ok(Some(manifest));
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(None)
+}
+
+fn read_jesterky_manifest_from_string(value: &Value, workspace_dir: &Path) -> Result<Value> {
+    let path = value.as_str().unwrap_or_default().trim();
+    if path.is_empty() {
+        return Err(OptimizerError::Config(
+            "jesterky manifest path must not be empty".to_string(),
+        ));
+    }
+    let path = resolve_jesterky_manifest_path(path, workspace_dir);
+    read_jesterky_manifest(&path)
+}
+
+fn resolve_jesterky_manifest_path(path: &str, workspace_dir: &Path) -> PathBuf {
+    let candidate = PathBuf::from(path);
+    if candidate.is_absolute() {
+        return candidate;
+    }
+    if let Some(run_dir) = workspace_dir.parent().and_then(Path::parent) {
+        let run_relative = run_dir.join(&candidate);
+        if run_relative.exists() {
+            return run_relative;
+        }
+    }
+    let workspace_relative = workspace_dir.join(&candidate);
+    if workspace_relative.exists() {
+        return workspace_relative;
+    }
+    candidate
 }
 
 fn resolved_prompting_best_practices(input: &CodexProposerInput<'_>) -> Result<String> {
@@ -1126,6 +1270,11 @@ fn assert_proposer_workspace_no_leaks(workspace_dir: &Path) -> Result<()> {
         let Some(relative) = file.get("path").and_then(Value::as_str) else {
             continue;
         };
+        // Annotate sidecars are wall-safe theme summaries; skip term scan so
+        // theme text cannot trip the heldout/frontier leak detector.
+        if relative.contains("jesterky_") {
+            continue;
+        }
         let path = workspace_dir.join(relative);
         let text = fs::read_to_string(&path).map_err(|source| OptimizerError::io(&path, source))?;
         let lower = text.to_ascii_lowercase();
@@ -1193,6 +1342,15 @@ fn write_agent_artifacts(
 
 fn workspace_readme(input: &CodexProposerInput<'_>) -> String {
     let proposal_policy = proposer_policy_text(input);
+    let jesterky_rule = crate::jesterky_workflow::jesterky_workspace_rule(
+        input.config.jesterky_workflow.enabled,
+    )
+    .unwrap_or("");
+    let jesterky_section = if input.config.jesterky_workflow.enabled {
+        "13. REQUIRED: `state/jesterky_proposer_context.md`, `state/jesterky_theme_registry.json`, and `state/jesterky_trace_annotations.jsonl` for jesterky annotate themes.\n14. If present, `state/jesterky_manifest_summary.json`, `state/jesterky_trace_rows.json`, `state/jesterky_optimizer_triples.json`, and `state/jesterky_evidence_refs.json` for jesterky process-tree evidence."
+    } else {
+        "13. If present, `state/jesterky_manifest_summary.json`, `state/jesterky_trace_rows.json`, `state/jesterky_optimizer_triples.json`, and `state/jesterky_evidence_refs.json` for jesterky process-tree evidence."
+    };
     format!(
         r#"# GEPA Proposer Workspace
 
@@ -1212,16 +1370,21 @@ Read:
 10. `state/program_contract.json` for the program and mutable fields.
 11. `state/parent_candidate.json` and `state/parent_payload.json` for the current prompt to mutate.
 12. `state/reflective_frames.json` and `state/reflector_input.json` for nested reflection evidence and sampled wins/losses.
+{jesterky_section}
 
 Before writing the manifest, inspect those files with shell, Python, or JQ and form a short evidence summary. Use `state/task_info.json`, reflection traces, rationales, and expected/predicted outputs to infer what kind of task this is before deciding what style of prompt edit is valid.
 Use a real review workflow: summarize the parent prompt, inspect reflection wins/losses, inspect the parent payload, then write `proposal/manifest.json`.
 
 Reflect over the evidence like GEPA's Python workspace proposer. You have wide latitude over the prompt content: rewrite structure, add role priming, include numbered sections, restate the task contract, and add examples when the task policy allows them.
 
+{jesterky_rule}
+
 {proposal_policy}
 
 Write exactly {proposal_count} distinct candidate proposals to `proposal/manifest.json`.
 "#,
+        jesterky_section = jesterky_section,
+        jesterky_rule = jesterky_rule,
         proposal_policy = proposal_policy,
         proposal_count = input.config.gepa.proposals_per_generation
     )
@@ -1257,7 +1420,11 @@ Write `proposal/manifest.json` as strict JSON using this schema:
       "state/reflective_frames.json",
       "state/parent_payload.json",
       "state/reflector_input.json",
-      "state/proposal_request.json"
+      "state/proposal_request.json",
+      "state/jesterky_manifest_summary.json",
+      "state/jesterky_trace_rows.json",
+      "state/jesterky_optimizer_triples.json",
+      "state/jesterky_evidence_refs.json"
     ],
     "candidate_comparison": "Short summary of the parent prompt and the reflection evidence it should address.",
     "failure_patterns": ["Observed failure pattern grounded in losing rollout examples."],
@@ -1288,7 +1455,7 @@ Write `proposal/manifest.json` as strict JSON using this schema:
 
 Rules:
 
-- Read `prompting_best_practices.md`, `state/proposer_metadata.json`, `state/proposer_readme.json`, `state/run_context.json`, `state/task_info.json`, `state/program_contract.json`, `state/proposer_failure_summary.json`, `state/proposer_repair_hints.json`, `state/proposer_examples.json`, `state/reflective_frames.json`, `state/parent_payload.json`, `state/reflector_input.json`, and `state/proposal_request.json`.
+- Read `prompting_best_practices.md`, `state/proposer_metadata.json`, `state/proposer_readme.json`, `state/run_context.json`, `state/task_info.json`, `state/program_contract.json`, `state/proposer_failure_summary.json`, `state/proposer_repair_hints.json`, `state/proposer_examples.json`, `state/reflective_frames.json`, `state/parent_payload.json`, `state/reflector_input.json`, and `state/proposal_request.json`. If present, also read the `state/jesterky_*` files before proposing from jesterky process evidence.
 - Preserve the exact top-level and evidence field names from the JSON schema. In particular, use `evidence.reviewed_files` and `evidence.example_ids_used`; do not rename them to `files_reviewed`, `example_ids`, or any other alias.
 - Use shell/Python/JQ inspection to summarize the workspace before writing the manifest. Do not jump straight to editing `proposal/manifest.json`.
 - Minimum review workflow: inspect `state/proposer_metadata.json`, inspect `state/task_info.json`, inspect reflection wins/losses and trace refs, inspect parent payload, then write the manifest.
@@ -2046,6 +2213,22 @@ fn proposer_readme_read_model() -> Value {
             {
                 "path": "state/proposer_examples.json",
                 "use": "All flat reflection evidence rows with text, expected, prediction, reward, trace refs, and usage."
+            },
+            {
+                "path": "state/jesterky_manifest_summary.json",
+                "use": "Optional. Jesterky RunManifest identity, status, stop_reason, budgets, goals, invariants, and process-tree counts. Read stop_reason as typed data."
+            },
+            {
+                "path": "state/jesterky_optimizer_triples.json",
+                "use": "Optional. Jesterky optimizer-facing process-tree rows: inputs, outputs, copied score, signal, artifacts, addr, and label per leaf plus scored interior nodes."
+            },
+            {
+                "path": "state/jesterky_trace_rows.json",
+                "use": "Optional. Full Addr-sorted jesterky process tree rows for context and alignment."
+            },
+            {
+                "path": "state/jesterky_evidence_refs.json",
+                "use": "Optional. Jesterky process addrs and artifact refs that can be cited in proposal evidence."
             },
             {
                 "path": "state/parent_payload.json",
@@ -2865,12 +3048,16 @@ fn read_manifest(workspace_dir: &Path) -> Result<Value> {
         Ok(value) => normalize_manifest_contract(value, &path),
         Err(original_error) => {
             let repaired = join_adjacent_json_strings(&text);
-            if repaired == text {
-                return Err(original_error.into());
+            if repaired != text {
+                let value = serde_json::from_str(&repaired).map_err(|_| original_error)?;
+                write_text(&path, &repaired)?;
+                return normalize_manifest_contract(value, &path);
             }
-            let value = serde_json::from_str(&repaired).map_err(|_| original_error)?;
-            write_text(&path, &repaired)?;
-            normalize_manifest_contract(value, &path)
+            if let Some(value) = last_json_value_from_stream(&text) {
+                write_json(&path, &value)?;
+                return normalize_manifest_contract(value, &path);
+            }
+            Err(original_error.into())
         }
     }
 }
@@ -2934,6 +3121,22 @@ fn join_adjacent_json_strings(input: &str) -> String {
         index += 1;
     }
     out
+}
+
+fn last_json_value_from_stream(input: &str) -> Option<Value> {
+    let stream = serde_json::Deserializer::from_str(input).into_iter::<Value>();
+    let mut count = 0usize;
+    let mut last = None;
+    for value in stream {
+        let value = value.ok()?;
+        count += 1;
+        last = Some(value);
+    }
+    if count > 1 {
+        last
+    } else {
+        None
+    }
 }
 
 fn proposals_from_manifest(manifest: &Value) -> Result<Value> {

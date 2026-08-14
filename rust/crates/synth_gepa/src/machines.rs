@@ -174,6 +174,11 @@ impl StateMachineEntity for CandidateEntity {
                     Trigger::HeldoutStarted,
                 )
                 | (
+                    State::RejectedFullTrain,
+                    State::HeldoutEvaluating,
+                    Trigger::HeldoutStarted,
+                )
+                | (
                     State::HeldoutEvaluating,
                     State::HeldoutScored,
                     Trigger::HeldoutFinished,

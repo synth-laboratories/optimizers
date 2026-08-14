@@ -42,6 +42,7 @@ from .gelo import (
     GeloContainerSection,
     GeloDiskBudgetSection,
     GeloEngineSection,
+    GeloJesterkyWorkflowSection,
     GeloHostedConfig,
     GeloMaterializeError,
     GeloMaterializer,
@@ -71,6 +72,9 @@ from .hosted import (
     OptimizerRunSubmitResponse,
     OptimizerStartupCatalog,
     RunStatus as HostedRunStatus,
+    submit_mapo,
+    submit_online_reflexion,
+    validate_online_reflexion_evidence_notes,
 )
 from .hosted_config import HostedOptimizerConfig
 from .o11y import (
@@ -105,6 +109,7 @@ from .observability import (
 )
 from .sdk import OptimizerConfig, OptimizerRun
 from .tunnels import (
+    attach_synth_tunnel_lease,
     CloudflaredTunnelLease,
     ContainerDirectTarget,
     ManagedTunnelLease,
@@ -185,6 +190,7 @@ __all__ = [
     "GeloContainerSection",
     "GeloDiskBudgetSection",
     "GeloEngineSection",
+    "GeloJesterkyWorkflowSection",
     "GeloHostedConfig",
     "GeloMaterializeError",
     "GeloMaterializer",
@@ -257,6 +263,7 @@ __all__ = [
     "proposer_delta_payload",
     "StateTransitionError",
     "SynthTunnelLease",
+    "attach_synth_tunnel_lease",
     "SynthOptimizerError",
     "TasksetSelection",
     "TunnelLease",
@@ -273,4 +280,7 @@ __all__ = [
     "gepa_compact_run_storage",
     "gepa_delete_run_storage",
     "gepa_serve",
+    "submit_mapo",
+    "submit_online_reflexion",
+    "validate_online_reflexion_evidence_notes",
 ]

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -25,6 +26,9 @@ from synth_containers.tunnels import (
     AttachedSynthTunnelLease,
     SynthTunnelProvider,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class TunnelError(RuntimeError):
@@ -108,6 +112,15 @@ class SynthTunnelLease(TunnelLease):
     route_token: str | None = None
     agent_connect: Mapping[str, Any] | None = None
     attached_lease: AttachedSynthTunnelLease | None = field(default=None, repr=False)
+    agent: "_SynthTunnelAgent | None" = field(default=None, repr=False)
+    requested_ttl_seconds: int = field(default=3600, repr=False)
+    heartbeat_interval_seconds: float = field(default=30.0, repr=False)
+    heartbeat: "_SynthTunnelHeartbeatLoop | None" = field(default=None, repr=False)
+    owns_lease: bool = field(default=True, repr=False)
+    _credentials_lock: threading.RLock = field(
+        default_factory=threading.RLock,
+        repr=False,
+    )
     _closed: bool = field(default=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -118,38 +131,107 @@ class SynthTunnelLease(TunnelLease):
     def refresh_worker_token(self) -> str:
         if self.client is None:
             raise TunnelError("SynthTunnelLease has no client for token refresh")
-        payload = self.client._json_request(
-            "POST", f"/api/v1/synthtunnel/leases/{self.lease_id}/token:refresh"
-        )
-        self.worker_token = str(payload.get("worker_token") or "")
-        if not self.worker_token:
-            raise TunnelError("SynthTunnel token refresh returned no worker_token")
-        if self.attached_lease is not None:
-            self.attached_lease.worker_token = self.worker_token
-        return self.worker_token
+        with self._credentials_lock:
+            payload = self.client._json_request(
+                "POST", f"/api/v1/synthtunnel/leases/{self.lease_id}/token:refresh"
+            )
+            self.worker_token = str(payload.get("worker_token") or "")
+            self.expires_at = _optional_text(payload.get("lease_expires_at")) or self.expires_at
+            if not self.worker_token:
+                raise TunnelError("SynthTunnel token refresh returned no worker_token")
+            if self.attached_lease is not None:
+                self.attached_lease.worker_token = self.worker_token
+                self.attached_lease.expires_at = self.expires_at
+            return self.worker_token
+
+    def send_heartbeat(self) -> str:
+        """Extend the lease and atomically adopt the current worker/agent credentials."""
+
+        if self.client is None:
+            raise TunnelError("SynthTunnelLease has no client for heartbeat")
+        with self._credentials_lock:
+            payload = self.client._json_request(
+                "POST",
+                f"/api/v1/synthtunnel/leases/{self.lease_id}/heartbeat",
+                {"extend_ttl_seconds": self.requested_ttl_seconds},
+                context="Synth tunnel lease heartbeat response",
+            )
+            worker_token = _response_text(
+                payload,
+                "worker_token",
+                "Synth tunnel lease heartbeat response",
+            )
+            agent_connect = _required_mapping(
+                payload.get("agent_connect"),
+                "Synth tunnel heartbeat agent_connect",
+            )
+            self.worker_token = worker_token
+            self.agent_connect = agent_connect
+            self.expires_at = _optional_text(payload.get("expires_at")) or self.expires_at
+            agent_token = _required_text(
+                agent_connect.get("agent_token"),
+                "SynthTunnel heartbeat agent token",
+            )
+            if self.agent is not None:
+                self.agent.update_agent_token(agent_token)
+            if self.attached_lease is not None:
+                update_credentials = getattr(
+                    self.attached_lease,
+                    "update_credentials",
+                    None,
+                )
+                if callable(update_credentials):
+                    update_credentials(
+                        worker_token=worker_token,
+                        expires_at=self.expires_at,
+                        agent_token=agent_token,
+                    )
+                else:
+                    self.attached_lease.worker_token = worker_token
+                    self.attached_lease.expires_at = self.expires_at
+            return worker_token
 
     def wait_ready(self, timeout_seconds: float = 60.0) -> None:
         if not self.worker_token:
             raise TunnelError("SynthTunnel worker token is required for readiness checks")
         if self.attached_lease is not None:
             self.attached_lease.wait_ready(timeout_seconds)
-            return
-        _wait_for_http_ok(_join_health_url(self.local_target.base_url), timeout_seconds=10.0)
-        raise TunnelError(
-            "SynthTunnelLease has no container-owned attached relay; "
-            "open a new lease through HostedOptimizerClient"
-        )
+        elif self.agent is not None:
+            _wait_for_http_ok(
+                _join_health_url(self.local_target.base_url),
+                timeout_seconds=min(10.0, timeout_seconds),
+            )
+            self.agent.start(timeout_seconds=timeout_seconds)
+            _wait_for_http_ok(
+                _join_health_url(self.public_url),
+                headers={"Authorization": f"Bearer {self.worker_token}"},
+                timeout_seconds=timeout_seconds,
+            )
+        else:
+            raise TunnelError("SynthTunnelLease has no attached relay agent")
+        if self.heartbeat is None:
+            self.heartbeat = _SynthTunnelHeartbeatLoop(
+                lease=self,
+                interval_seconds=self.heartbeat_interval_seconds,
+            )
+            self.heartbeat.start()
 
     def close(self) -> None:
         if self._closed:
             return
+        if self.heartbeat is not None:
+            self.heartbeat.stop()
+            self.heartbeat = None
         if self.attached_lease is not None:
             attached = self.attached_lease
             attached.close()
             self.attached_lease = None
             self._closed = True
             return
-        if self.client is not None and self.lease_id:
+        if self.agent is not None:
+            self.agent.stop()
+            self.agent = None
+        if self.owns_lease and self.client is not None and self.lease_id:
             self.client._json_request(
                 "DELETE",
                 f"/api/v1/synthtunnel/leases/{self.lease_id}",
@@ -318,6 +400,45 @@ def create_tunnel_lease(
     return lease
 
 
+def attach_synth_tunnel_lease(
+    client: Any,
+    lease_id: str,
+    local_base_url: str,
+    *,
+    heartbeat_extend_ttl_seconds: int = 3600,
+    wait_ready: bool = True,
+) -> SynthTunnelLease:
+    """Attach a fresh local agent to an existing lease without changing its URL."""
+
+    normalized_lease_id = _required_text(lease_id, "lease_id")
+    target = parse_local_target(local_base_url)
+    response = client._json_request(
+        "POST",
+        f"/api/v1/synthtunnel/leases/{normalized_lease_id}/attach",
+        {},
+        context="Synth tunnel attach response",
+    )
+    lease = _synth_tunnel_lease_from_response(
+        client=client,
+        target=target,
+        response=response,
+        requested_ttl_seconds=heartbeat_extend_ttl_seconds,
+        context="Synth tunnel attach response",
+        owns_lease=False,
+    )
+    if wait_ready:
+        try:
+            lease.wait_ready()
+        except Exception:
+            # Attaching does not imply ownership of the underlying lease, so a
+            # failed local attach only stops the new agent and leaves the route.
+            if lease.agent is not None:
+                lease.agent.stop()
+                lease.agent = None
+            raise
+    return lease
+
+
 def parse_local_target(local_base_url: str) -> TunnelLocalTarget:
     raw = _required_text(local_base_url, "local_base_url")
     parsed = urlparse(raw)
@@ -389,6 +510,42 @@ def _create_synth_tunnel_lease(
         connector_mode=attached.connector_mode,
         diagnostics_hint=attached.diagnostics_hint,
         attached_lease=attached,
+        requested_ttl_seconds=requested_ttl_seconds,
+    )
+
+
+def _synth_tunnel_lease_from_response(
+    *,
+    client: Any,
+    target: TunnelLocalTarget,
+    response: Mapping[str, Any],
+    requested_ttl_seconds: int,
+    context: str,
+    owns_lease: bool,
+) -> SynthTunnelLease:
+    agent_connect = _required_mapping(
+        response.get("agent_connect"),
+        f"{context} agent_connect",
+    )
+    return SynthTunnelLease(
+        provider=TunnelProvider.SYNTH_TUNNEL,
+        lease_id=_response_text(response, "lease_id", context),
+        public_url=_response_text(response, "public_url", context),
+        worker_token=_response_text(response, "worker_token", context),
+        local_target=target,
+        client=client,
+        route_token=_optional_text(response.get("route_token")),
+        agent_connect=agent_connect,
+        expires_at=_optional_text(response.get("expires_at")),
+        requested_ttl_seconds=requested_ttl_seconds,
+        connector_mode="synth_tunnel_agent",
+        diagnostics_hint=_optional_text(response.get("diagnostics_hint")),
+        agent=_SynthTunnelAgent(
+            lease_id=_response_text(response, "lease_id", context),
+            local_target=target,
+            agent_connect=agent_connect,
+        ),
+        owns_lease=owns_lease,
     )
 
 
@@ -589,6 +746,263 @@ class _HeartbeatLoop:
             return
 
 
+class _SynthTunnelHeartbeatLoop:
+    def __init__(self, *, lease: SynthTunnelLease, interval_seconds: float) -> None:
+        self._lease = lease
+        self._interval_seconds = max(10.0, float(interval_seconds))
+        self._stop = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run,
+            name="synth-tunnel-lease-heartbeat",
+            daemon=True,
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not threading.current_thread():
+            self._thread.join(timeout=2.0)
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval_seconds):
+            try:
+                self._lease.send_heartbeat()
+            except Exception as error:
+                # The data-plane health/retry path remains authoritative. A
+                # transient control-plane miss must not tear down a live route.
+                logger.warning(
+                    "SynthTunnel lease heartbeat failed for lease %s: %s",
+                    self._lease.lease_id,
+                    error,
+                )
+                continue
+
+
+@dataclass(slots=True)
+class _SynthTunnelRequest:
+    method: str
+    path: str
+    query: str
+    headers: list[tuple[str, str]]
+    deadline_ms: int
+    body: bytearray = field(default_factory=bytearray)
+
+
+class _SynthTunnelAgent:
+    def __init__(
+        self,
+        *,
+        lease_id: str,
+        local_target: TunnelLocalTarget,
+        agent_connect: Mapping[str, Any],
+    ) -> None:
+        transport = _required_text(agent_connect.get("transport"), "SynthTunnel transport")
+        if transport != "ws":
+            raise TunnelError(f"unsupported SynthTunnel agent transport {transport!r}")
+        self._lease_id = lease_id
+        self._local_target = local_target
+        self._url = _required_text(agent_connect.get("url"), "SynthTunnel agent url")
+        self._agent_token = _required_text(
+            agent_connect.get("agent_token"),
+            "SynthTunnel agent token",
+        )
+        self._ready = threading.Event()
+        self._stop = threading.Event()
+        self._send_lock = threading.Lock()
+        self._requests_lock = threading.Lock()
+        self._requests: dict[str, _SynthTunnelRequest] = {}
+        self._thread: threading.Thread | None = None
+        self._ws: Any | None = None
+        self._startup_error: str | None = None
+
+    def update_agent_token(self, token: str) -> None:
+        self._agent_token = _required_text(token, "SynthTunnel agent token")
+
+    def start(self, *, timeout_seconds: float) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._ready.clear()
+        self._startup_error = None
+        self._thread = threading.Thread(
+            target=self._run,
+            name="synth-tunnel-agent",
+            daemon=True,
+        )
+        self._thread.start()
+        if self._ready.wait(timeout=max(1.0, timeout_seconds)):
+            return
+        self.stop()
+        detail = self._startup_error or "agent did not attach before the readiness deadline"
+        raise TunnelError(f"SynthTunnel agent attach failed: {detail}")
+
+    def stop(self) -> None:
+        self._stop.set()
+        ws = self._ws
+        if ws is not None:
+            try:
+                ws.close()
+            except Exception:
+                pass
+        if self._thread is not None:
+            self._thread.join(timeout=5.0)
+            self._thread = None
+        self._ws = None
+        with self._requests_lock:
+            self._requests.clear()
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            ws = None
+            try:
+                ws = _connect_websocket(
+                    self._url,
+                    headers={"Authorization": f"Bearer {self._agent_token}"},
+                )
+                self._ws = ws
+                self._send_frame({"type": "ATTACH", "leases": [{"lease_id": self._lease_id}]})
+                while not self._stop.is_set():
+                    raw = ws.recv()
+                    if raw in (None, b"", ""):
+                        raise TunnelError("SynthTunnel websocket closed")
+                    payload = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+                    if isinstance(payload, Mapping):
+                        self._handle_frame(payload)
+            except Exception as exc:
+                if not self._ready.is_set():
+                    self._startup_error = f"{self._url}: {exc}"
+                if self._stop.wait(1.0):
+                    break
+            finally:
+                if ws is not None:
+                    try:
+                        ws.close()
+                    except Exception:
+                        pass
+                if self._ws is ws:
+                    self._ws = None
+                with self._requests_lock:
+                    self._requests.clear()
+
+    def _handle_frame(self, payload: Mapping[str, Any]) -> None:
+        msg_type = str(payload.get("type") or "")
+        if msg_type == "ATTACH_ACK":
+            accepted = payload.get("accepted_leases") or []
+            if self._lease_id not in {str(item) for item in accepted}:
+                rejected = ", ".join(str(item) for item in payload.get("rejected_leases") or [])
+                raise TunnelError(
+                    "SynthTunnel agent attach was rejected" + (f": {rejected}" if rejected else "")
+                )
+            self._ready.set()
+            return
+
+        rid = str(payload.get("rid") or "")
+        if not rid:
+            return
+        if msg_type == "REQ_HEADERS":
+            request = _SynthTunnelRequest(
+                method=str(payload.get("method") or "GET").upper(),
+                path=_request_path(payload.get("path")),
+                query=str(payload.get("query") or ""),
+                headers=_header_pairs(payload.get("headers")),
+                deadline_ms=max(1000, int(payload.get("deadline_ms") or 120000)),
+            )
+            with self._requests_lock:
+                self._requests[rid] = request
+            return
+        if msg_type == "REQ_BODY":
+            chunk = _decode_bytes(str(payload.get("chunk_b64") or ""))
+            with self._requests_lock:
+                request = self._requests.get(rid)
+                if request is not None:
+                    request.body.extend(chunk)
+            return
+        if msg_type == "REQ_END":
+            with self._requests_lock:
+                request = self._requests.pop(rid, None)
+            if request is not None:
+                thread = threading.Thread(
+                    target=self._serve_request,
+                    args=(rid, request),
+                    name="synth-tunnel-request",
+                    daemon=True,
+                )
+                thread.start()
+
+    def _serve_request(self, rid: str, request: _SynthTunnelRequest) -> None:
+        timeout = max(1.0, request.deadline_ms / 1000.0)
+        upstream_url = _local_upstream_url(self._local_target, request.path, request.query)
+        headers = {
+            key: value
+            for key, value in request.headers
+            if key.strip().lower() not in _HOP_BY_HOP_HEADERS | _LOCAL_ONLY_AUTH_HEADERS
+        }
+        try:
+            upstream_request = urllib.request.Request(
+                upstream_url,
+                data=bytes(request.body) if request.body else None,
+                headers=headers,
+                method=request.method,
+            )
+            with urllib.request.urlopen(upstream_request, timeout=timeout) as response:
+                self._send_response(rid, response.status, response.headers, response)
+        except urllib.error.HTTPError as exc:
+            self._send_response(rid, exc.code, exc.headers, exc)
+        except Exception as exc:
+            self._send_frame(
+                {
+                    "type": "RESP_ERROR",
+                    "lease_id": self._lease_id,
+                    "rid": rid,
+                    "code": "LOCAL_REQUEST_FAILED",
+                    "message": str(exc),
+                }
+            )
+
+    def _send_response(
+        self,
+        rid: str,
+        status_code: int,
+        headers: Mapping[str, Any],
+        response: Any,
+    ) -> None:
+        header_list = [
+            [str(key), str(value)]
+            for key, value in headers.items()
+            if key.lower() not in {"connection", "content-length", "transfer-encoding"}
+        ]
+        self._send_frame(
+            {
+                "type": "RESP_HEADERS",
+                "lease_id": self._lease_id,
+                "rid": rid,
+                "status": int(status_code),
+                "headers": header_list,
+            }
+        )
+        while True:
+            chunk = response.read(65536)
+            if not chunk:
+                break
+            self._send_frame(
+                {
+                    "type": "RESP_BODY",
+                    "lease_id": self._lease_id,
+                    "rid": rid,
+                    "chunk_b64": _encode_bytes(chunk),
+                    "eof": False,
+                }
+            )
+        self._send_frame({"type": "RESP_END", "lease_id": self._lease_id, "rid": rid})
+
+    def _send_frame(self, payload: Mapping[str, Any]) -> None:
+        ws = self._ws
+        if ws is None:
+            raise TunnelError("SynthTunnel websocket is not connected")
+        with self._send_lock:
+            ws.send(json.dumps(dict(payload)))
 class _GatewayServer:
     def __init__(
         self,

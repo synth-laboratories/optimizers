@@ -116,7 +116,7 @@ jobs:
       - source
     runs-on: ubuntu-24.04
     environment:
-      name: pypi
+      name: pypi-release
       url: https://pypi.org/project/synth-optimizers/${{ needs.validate.outputs.version }}/
     permissions:
       id-token: write

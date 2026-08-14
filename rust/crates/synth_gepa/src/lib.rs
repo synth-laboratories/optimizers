@@ -3799,7 +3799,7 @@ fn consume_async_lane_work(
             | OptimizerJobStatus::Cancelled
             | OptimizerJobStatus::Expired => {
                 if let Some(outcome) =
-                    schedule_failed_rollout_retry_if_allowed(context, state, resources, &job)?
+                    schedule_failed_runtime_retry_if_allowed(context, state, resources, &job)?
                 {
                     if let Some(updated) =
                         state.cursor.pipeline_state.lane_leases.get_mut(&lease_key)
@@ -6956,7 +6956,7 @@ fn advance_pending_runtime_job(
                             });
                         }
                         if updated_job.status.is_terminal() {
-                            if let Some(outcome) = schedule_failed_rollout_retry_if_allowed(
+                            if let Some(outcome) = schedule_failed_runtime_retry_if_allowed(
                                 context,
                                 state,
                                 resources,
@@ -7078,7 +7078,7 @@ fn advance_pending_runtime_job(
         | OptimizerJobStatus::Cancelled
         | OptimizerJobStatus::Expired => {
             if let Some(outcome) =
-                schedule_failed_rollout_retry_if_allowed(context, state, resources, &job)?
+                schedule_failed_runtime_retry_if_allowed(context, state, resources, &job)?
             {
                 return Ok(outcome);
             }
@@ -9354,14 +9354,16 @@ fn consume_failed_rollout_attempt(
     Ok(())
 }
 
-fn schedule_failed_rollout_retry_if_allowed(
+fn schedule_failed_runtime_retry_if_allowed(
     context: &mut GepaRunContext,
     state: &mut GepaRunState,
     resources: &GepaStepResources,
     job: &OptimizerJob,
 ) -> Result<Option<GepaAdvanceOutcome>> {
-    if !matches!(job.kind, OptimizerJobKind::Rollout)
-        || matches!(job.status, OptimizerJobStatus::Cancelled)
+    if !matches!(
+        job.kind,
+        OptimizerJobKind::Rollout | OptimizerJobKind::Proposer
+    ) || matches!(job.status, OptimizerJobStatus::Cancelled)
     {
         return Ok(None);
     }
@@ -9391,7 +9393,7 @@ fn schedule_failed_rollout_retry_if_allowed(
         resources,
         state.cursor.phase.clone(),
         "retry_scheduled",
-        "scheduled GEPA failed rollout job retry",
+        "scheduled GEPA failed runtime job retry",
         Map::new(),
     )?;
     Ok(Some(GepaAdvanceOutcome {
@@ -9399,8 +9401,9 @@ fn schedule_failed_rollout_retry_if_allowed(
         terminal: false,
         result: None,
         message: format!(
-            "scheduled GEPA failed rollout job retry: {} attempt={}/{}",
+            "scheduled GEPA failed runtime job retry: {} kind={} attempt={}/{}",
             updated.job_id,
+            updated.kind.as_str(),
             updated.attempt.saturating_add(1),
             updated.retry_policy.max_attempts
         ),
@@ -20225,17 +20228,7 @@ fn record_runtime_effect_job(
     let mut job = OptimizerJob::new(input.job_id, input.run_id, input.kind);
     job.status = input.status;
     job.candidate_id = input.candidate_id.map(str::to_string);
-    if matches!(job.kind, OptimizerJobKind::Rollout) {
-        job.retry_policy = RetryPolicy {
-            max_attempts: 3,
-            backoff_seconds: 2,
-            retryable_failure_types: vec![
-                "synth_optimizer_http_error".to_string(),
-                "synth_optimizer_container_error".to_string(),
-                "synth_optimizer_failed".to_string(),
-            ],
-        };
-    }
+    job.retry_policy = runtime_effect_retry_policy(&job.kind);
     job.attempt = if matches!(job.status, OptimizerJobStatus::Pending) {
         input.effect.attempt.saturating_sub(1)
     } else {
@@ -20299,6 +20292,26 @@ fn record_runtime_effect_job(
         job.payload = compact_completed_optimizer_job_payload(&job.payload);
     }
     workspace.record_optimizer_job(&job)
+}
+
+fn runtime_effect_retry_policy(kind: &OptimizerJobKind) -> RetryPolicy {
+    match kind {
+        OptimizerJobKind::Rollout => RetryPolicy {
+            max_attempts: 3,
+            backoff_seconds: 2,
+            retryable_failure_types: vec![
+                "synth_optimizer_http_error".to_string(),
+                "synth_optimizer_container_error".to_string(),
+                "synth_optimizer_failed".to_string(),
+            ],
+        },
+        OptimizerJobKind::Proposer => RetryPolicy {
+            max_attempts: 2,
+            backoff_seconds: 2,
+            retryable_failure_types: vec!["synth_optimizer_proposer_error".to_string()],
+        },
+        _ => RetryPolicy::default(),
+    }
 }
 
 fn budget_exceeded_error(run_id: &str, breach: &BudgetLimitBreach) -> OptimizerError {
@@ -21713,5 +21726,23 @@ mod run_loop_terminalization_tests {
             )),
             None
         );
+    }
+
+    #[test]
+    fn proposer_runtime_jobs_get_one_bounded_retry() {
+        let policy = runtime_effect_retry_policy(&OptimizerJobKind::Proposer);
+        assert_eq!(policy.max_attempts, 2);
+        assert_eq!(policy.backoff_seconds, 2);
+        assert_eq!(
+            policy.retryable_failure_types,
+            vec!["synth_optimizer_proposer_error".to_string()]
+        );
+    }
+
+    #[test]
+    fn unrelated_runtime_jobs_keep_the_fail_closed_default() {
+        let policy = runtime_effect_retry_policy(&OptimizerJobKind::Annotation);
+        assert_eq!(policy.max_attempts, 1);
+        assert!(policy.retryable_failure_types.is_empty());
     }
 }

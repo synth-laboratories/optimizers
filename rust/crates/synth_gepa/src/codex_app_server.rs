@@ -10,10 +10,10 @@ use reqwest::blocking::Client;
 use serde_json::{json, Map, Value};
 use synth_optimizer_platform::{
     jesterky_workspace_read_model, looks_like_jesterky_manifest,
-    proposer_delta_chunks_from_protocol, read_jesterky_manifest, record_manifest_validation,
-    run_turn, AgentTurnOutcome, CodexTurnRequest, NanoAgentTurnIdentity, NanoCodexExecution,
-    NanoCodexSessionPool, NanoCodexTurnRequest, OptimizerError, PromptProgram, Result,
-    SynthOptimizerConfig,
+    proposer_delta_chunks_from_protocol, proposer_uses_chatgpt_auth, read_jesterky_manifest,
+    record_manifest_validation, run_turn, AgentTurnOutcome, CodexTurnRequest,
+    NanoAgentTurnIdentity, NanoCodexExecution, NanoCodexSessionPool, NanoCodexTurnRequest,
+    OptimizerError, PromptProgram, Result, SynthOptimizerConfig,
 };
 
 const GEPA_REFLECTIVE_FRAME_SCHEMA_VERSION: &str = "gepa_reflective_frame.v1";
@@ -556,7 +556,26 @@ fn normalize_proposer_usage(config: &SynthOptimizerConfig, model: &str, usage: V
     let provider = config.proposer.provider.trim().to_ascii_lowercase();
     let model_lower = model.trim().to_ascii_lowercase();
     let reported_cost = usage_f64_from_map(&usage_map, "cost_usd")
-        .filter(|value| value.is_finite() && *value > 0.0);
+        .filter(|value| value.is_finite() && *value >= 0.0);
+    if proposer_uses_chatgpt_auth(&config.proposer.auth_mode) {
+        usage_map.insert(
+            "provider".to_string(),
+            Value::String("chatgpt_subscription".to_string()),
+        );
+        usage_map.insert("model".to_string(), Value::String(model.to_string()));
+        if reported_cost.is_none() {
+            // ChatGPT-authenticated Codex turns are subscription-backed rather
+            // than metered API calls. Record an explicit zero incremental API
+            // charge so the hard cost ledger does not mistake the absence of
+            // an API receipt for unknown spend.
+            usage_map.insert("cost_usd".to_string(), json!(0.0));
+            usage_map.insert(
+                "cost_source".to_string(),
+                Value::String("chatgpt_subscription_no_incremental_api_charge".to_string()),
+            );
+        }
+        return Value::Object(usage_map);
+    }
     if provider.eq_ignore_ascii_case("openrouter") && model_lower == OPENROUTER_GROK43_MODEL {
         return normalize_openrouter_grok43_usage(model, usage_map);
     }
@@ -3376,5 +3395,40 @@ fn non_empty(value: Option<&str>) -> Option<&str> {
         None
     } else {
         Some(value)
+    }
+}
+
+#[cfg(test)]
+mod cost_tests {
+    use super::*;
+
+    #[test]
+    fn chatgpt_proposer_emits_explicit_zero_incremental_api_cost() {
+        let mut config = SynthOptimizerConfig::default();
+        config.proposer.auth_mode = "chatgpt".to_string();
+        let usage = normalize_proposer_usage(
+            &config,
+            "gpt-5.6-luna",
+            json!({"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}),
+        );
+        assert_eq!(usage.get("cost_usd"), Some(&json!(0.0)));
+        assert_eq!(
+            usage.get("cost_source"),
+            Some(&json!("chatgpt_subscription_no_incremental_api_charge"))
+        );
+        assert_eq!(usage.get("provider"), Some(&json!("chatgpt_subscription")));
+    }
+
+    #[test]
+    fn chatgpt_proposer_preserves_an_explicit_cost_receipt() {
+        let mut config = SynthOptimizerConfig::default();
+        config.proposer.auth_mode = "chatgpt".to_string();
+        let usage = normalize_proposer_usage(
+            &config,
+            "gpt-5.6-luna",
+            json!({"cost_usd": 0.25, "cost_source": "provider"}),
+        );
+        assert_eq!(usage.get("cost_usd"), Some(&json!(0.25)));
+        assert_eq!(usage.get("cost_source"), Some(&json!("provider")));
     }
 }

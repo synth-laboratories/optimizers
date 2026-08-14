@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
@@ -14,7 +15,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -45,6 +46,22 @@ class TunnelProvider(StrEnum):
 _CLIENT_INSTANCE_ID_ENV = "SYNTH_OPTIMIZERS_TUNNEL_CLIENT_INSTANCE_ID"
 _STATE_DIR_ENV = "SYNTH_OPTIMIZERS_STATE_DIR"
 _CLIENT_ID_SAFE_RE = re.compile(r"[^A-Za-z0-9_.:-]+")
+_HOP_BY_HOP_HEADERS = {
+    "connection",
+    "content-length",
+    "host",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "trailers",
+    "transfer-encoding",
+    "upgrade",
+}
+_LOCAL_ONLY_AUTH_HEADERS = {"authorization", "x-api-key", "x-api-keys"}
+
+
 @dataclass(frozen=True, slots=True)
 class ContainerDirectTarget:
     url: str
@@ -1003,6 +1020,8 @@ class _SynthTunnelAgent:
             raise TunnelError("SynthTunnel websocket is not connected")
         with self._send_lock:
             ws.send(json.dumps(dict(payload)))
+
+
 class _GatewayServer:
     def __init__(
         self,
@@ -1178,6 +1197,25 @@ def _start_cloudflared(binary: str, tunnel_token: str) -> subprocess.Popen[str]:
     return process
 
 
+def _connect_websocket(url: str, *, headers: Mapping[str, str]) -> Any:
+    try:
+        import websocket
+    except ImportError as exc:
+        raise TunnelError("synth_tunnel provider requires the 'websocket-client' package") from exc
+    ws = websocket.WebSocket()
+    header_lines = [f"{key}: {value}" for key, value in headers.items()]
+    try:
+        ws.connect(url, header=header_lines, timeout=10)
+        ws.settimeout(None)
+    except Exception:
+        try:
+            ws.close()
+        except Exception:
+            pass
+        raise
+    return ws
+
+
 def _start_ngrok(
     *,
     binary: str,
@@ -1302,6 +1340,42 @@ def _wait_for_http_ok(
 
 def _join_health_url(base_url: str) -> str:
     return urljoin(base_url.rstrip("/") + "/", "health")
+
+
+def _local_upstream_url(target: TunnelLocalTarget, path: str, query: str) -> str:
+    upstream_url = urljoin(target.base_url.rstrip("/") + "/", path.lstrip("/"))
+    if query:
+        return f"{upstream_url}?{query}"
+    return upstream_url
+
+
+def _request_path(value: Any) -> str:
+    path = str(value or "/").strip() or "/"
+    return path if path.startswith("/") else f"/{path}"
+
+
+def _header_pairs(value: Any) -> list[tuple[str, str]]:
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
+        return []
+    headers: list[tuple[str, str]] = []
+    for item in value:
+        if not isinstance(item, Sequence) or isinstance(item, str | bytes) or len(item) < 2:
+            continue
+        name = str(item[0])
+        if not name.strip():
+            continue
+        headers.append((name, str(item[1])))
+    return headers
+
+
+def _encode_bytes(data: bytes) -> str:
+    return base64.b64encode(data).decode("ascii")
+
+
+def _decode_bytes(data: str) -> bytes:
+    if not data:
+        return b""
+    return base64.b64decode(data.encode("ascii"))
 
 
 def _route_prefix_from_public_url(public_url: str) -> str:

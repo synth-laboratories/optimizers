@@ -85,7 +85,9 @@ _USAGE_REGISTRATION_TIMEOUT_SECONDS = 2.0
 class OptimizerAlgorithmSlug(StrEnum):
     GEPA = "gepa"
     GELO = "go-ex"
+    MAPO = "mapo"
     OHCO = "ohco"
+    ONLINE_REFLEXION = "online-reflexion"
 
 
 class RunStatus(StrEnum):
@@ -133,6 +135,7 @@ class OptimizerStartupCatalog:
     optimizers_beta_configured: bool
     billing_feature_ids: Mapping[str, OptimizerBillingFeatureConfig]
     billing_feature_ids_configured: Mapping[str, bool]
+    online_reflexion_release_evidence: Mapping[str, Any]
 
     @property
     def submit_supported(self) -> tuple[OptimizerAlgorithmSlug, ...]:
@@ -285,6 +288,9 @@ class HostedOptimizerClient:
             billing_feature_ids_configured=_billing_feature_ids_configured(
                 payload.get("billing_feature_ids_configured")
             ),
+            online_reflexion_release_evidence=(
+                _mapping_or_none(payload.get("online_reflexion_release_evidence")) or {}
+            ),
         )
 
     def submit_gepa(
@@ -320,13 +326,13 @@ class HostedOptimizerClient:
             context="optimizer GEPA submit",
         )
         if container_pool is not None and container_tunnel is not None:
-            raise HostedOptimizerError(
-                "container_pool and container_tunnel are mutually exclusive"
-            )
+            raise HostedOptimizerError("container_pool and container_tunnel are mutually exclusive")
         usage_registration_enabled = _usage_registration_enabled_from_toml(config_toml)
         usage_registration_models: list[dict[str, str]] = []
         try:
-            usage_registration_models = _usage_registration_models_from_config(tomllib.loads(config_toml))
+            usage_registration_models = _usage_registration_models_from_config(
+                tomllib.loads(config_toml)
+            )
         except tomllib.TOMLDecodeError:
             usage_registration_models = []
         if container_tunnel is not None:
@@ -385,6 +391,20 @@ class HostedOptimizerClient:
         **kwargs: Any,
     ) -> OptimizerRunSubmitResponse:
         return self._submit(OptimizerAlgorithmSlug.GELO, config, **kwargs)
+
+    def submit_mapo(
+        self,
+        config: Mapping[str, Any] | Any,
+        **kwargs: Any,
+    ) -> OptimizerRunSubmitResponse:
+        return self._submit(OptimizerAlgorithmSlug.MAPO, config, **kwargs)
+
+    def submit_online_reflexion(
+        self,
+        config: Mapping[str, Any] | Any,
+        **kwargs: Any,
+    ) -> OptimizerRunSubmitResponse:
+        return self._submit(OptimizerAlgorithmSlug.ONLINE_REFLEXION, config, **kwargs)
 
     def get_run(self, run_id: str) -> OptimizerRunRecord:
         payload = self._json_request("GET", f"/api/v1/optimizers/runs/{run_id}")
@@ -533,6 +553,100 @@ class HostedOptimizerClient:
         ):
             yield OptimizerEvent.from_payload(payload) if typed else payload
 
+    def online_reflexion_receipt(
+        self,
+        run_id: str,
+        *,
+        exposure_limit: int = 500,
+        outcome_limit: int = 500,
+    ) -> Mapping[str, Any]:
+        query = urlencode(
+            {
+                "exposure_limit": max(1, min(5000, int(exposure_limit))),
+                "outcome_limit": max(1, min(5000, int(outcome_limit))),
+            }
+        )
+        return self._json_request(
+            "GET",
+            f"/api/v1/optimizers/runs/{quote(run_id, safe='')}/online-reflexion/receipt?{query}",
+            context="online Reflexion receipt bundle",
+        )
+
+    def online_reflexion_receipt_audit(
+        self,
+        run_id: str,
+        *,
+        strict: bool = False,
+    ) -> Mapping[str, Any]:
+        query = urlencode({"strict": "true" if strict else "false"})
+        return self._json_request(
+            "GET",
+            f"/api/v1/optimizers/runs/{quote(run_id, safe='')}/online-reflexion/receipt-audit?{query}",
+            context="online Reflexion receipt audit",
+        )
+
+    def online_reflexion_receipt_audits(
+        self,
+        *,
+        run_ids: Sequence[str] | None = None,
+        layer_id: str | None = None,
+        project_id: str | None = None,
+        strict: bool = False,
+        limit: int = 50,
+    ) -> Mapping[str, Any]:
+        params: dict[str, str] = {
+            "strict": "true" if strict else "false",
+            "limit": str(max(1, min(100, int(limit)))),
+        }
+        clean_run_ids = [run_id.strip() for run_id in (run_ids or ()) if run_id.strip()]
+        if clean_run_ids:
+            params["run_ids"] = ",".join(clean_run_ids)
+        if layer_id:
+            params["layer_id"] = layer_id
+        if project_id:
+            params["project_id"] = project_id
+        return self._json_request(
+            "GET",
+            f"/api/v1/optimizers/online-reflexion/receipt-audits?{urlencode(params)}",
+            context="online Reflexion aggregate receipt audit",
+        )
+
+    def online_reflexion_evidence_packet(
+        self,
+        *,
+        run_ids: Sequence[str] | None = None,
+        layer_id: str | None = None,
+        project_id: str | None = None,
+        evidence_notes: Mapping[str, Any] | None = None,
+        blog_decision_owner: str = "Josh",
+        blog_approved_by_owner: bool = False,
+        include_receipt_summaries: bool = True,
+        limit: int = 50,
+    ) -> Mapping[str, Any]:
+        audit = self.online_reflexion_receipt_audits(
+            run_ids=run_ids,
+            layer_id=layer_id,
+            project_id=project_id,
+            strict=False,
+            limit=limit,
+        )
+        notes_review = validate_online_reflexion_evidence_notes(evidence_notes or {})
+        audit_status = str(audit.get("status") or "").strip().lower()
+        ready = (
+            notes_review["status"] == "pass"
+            and audit_status in {"pass", "passed", "ready", "complete", "completed"}
+            and blog_approved_by_owner
+        )
+        return {
+            "schema_version": "online_reflexion_evidence_packet.v1",
+            "status": "ready" if ready else "attention_required",
+            "audit": dict(audit),
+            "evidence_notes_review": notes_review,
+            "blog_decision_owner": blog_decision_owner,
+            "blog_approved_by_owner": blog_approved_by_owner,
+            "receipt_summaries_included": include_receipt_summaries,
+        }
+
     def open_synth_tunnel(
         self,
         local_base_url: str,
@@ -609,9 +723,7 @@ class HostedOptimizerClient:
         billing_mode: str | None = None,
     ) -> OptimizerRunSubmitResponse:
         if container_pool is not None and container_tunnel is not None:
-            raise HostedOptimizerError(
-                "container_pool and container_tunnel are mutually exclusive"
-            )
+            raise HostedOptimizerError("container_pool and container_tunnel are mutually exclusive")
         config_json = _config_to_json(config)
         usage_registration_enabled = _usage_registration_enabled_from_config(config_json)
         usage_registration_models = _usage_registration_models_from_config(config_json)
@@ -861,6 +973,78 @@ class HostedOptimizerClient:
             raise HostedOptimizerError(f"hosted optimizer events failed: {exc}") from exc
 
 
+def submit_mapo(
+    config: Mapping[str, Any] | Any,
+    *,
+    client: HostedOptimizerClient | None = None,
+    **kwargs: Any,
+) -> OptimizerRunSubmitResponse:
+    active_client = client or HostedOptimizerClient()
+    return active_client.submit_mapo(config, **kwargs)
+
+
+def submit_online_reflexion(
+    config: Mapping[str, Any] | Any,
+    *,
+    client: HostedOptimizerClient | None = None,
+    **kwargs: Any,
+) -> OptimizerRunSubmitResponse:
+    active_client = client or HostedOptimizerClient()
+    return active_client.submit_online_reflexion(config, **kwargs)
+
+
+def validate_online_reflexion_evidence_notes(
+    evidence_notes: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate the public release lanes without contacting the hosted service."""
+
+    lanes = (
+        "craftax_rotated_121_125",
+        "alfworld_6x6_x3",
+        "ebr_first_scale_compare",
+        "harvey_lab_pilot",
+        "hosted_staging_smoke",
+    )
+    complete_statuses = {"pass", "passed", "ready", "complete", "completed", "succeeded"}
+    required_evidence: list[dict[str, Any]] = []
+    remaining: list[str] = []
+    for lane in lanes:
+        raw = evidence_notes.get(lane)
+        status = str(raw.get("status") or "").strip().lower() if isinstance(raw, Mapping) else ""
+        complete = status in complete_statuses
+        required_evidence.append(
+            {
+                "key": lane,
+                "state": "complete" if complete else "attention_required",
+                "evidence": dict(raw) if isinstance(raw, Mapping) else raw,
+            }
+        )
+        if not complete:
+            remaining.append(f"attach complete evidence for {lane}")
+
+    release_raw = evidence_notes.get("release_blog_growth")
+    release_status = (
+        str(release_raw.get("status") or "").strip().lower()
+        if isinstance(release_raw, Mapping)
+        else ""
+    )
+    release_complete = release_status in complete_statuses
+    if not release_complete:
+        remaining.append("complete release/blog/growth readiness evidence")
+    return {
+        "schema_version": "online_reflexion_evidence_notes_review.v1",
+        "status": "pass" if not remaining else "attention_required",
+        "evidence_lanes_complete": all(item["state"] == "complete" for item in required_evidence),
+        "release_gate_complete": release_complete,
+        "release_gate": {
+            "state": "complete" if release_complete else "attention_required",
+            "evidence": dict(release_raw) if isinstance(release_raw, Mapping) else release_raw,
+        },
+        "required_evidence": required_evidence,
+        "remaining": remaining,
+    }
+
+
 def _api_endpoint(base_url: str, path: str) -> str:
     base = base_url.rstrip("/") + "/"
     return urljoin(base, path.lstrip("/"))
@@ -899,7 +1083,9 @@ def _usage_install_id() -> str:
     else:
         xdg_state = os.environ.get("XDG_STATE_HOME")
         state_root = (
-            Path(xdg_state).expanduser() if xdg_state and xdg_state.strip() else Path.home() / ".local" / "state"
+            Path(xdg_state).expanduser()
+            if xdg_state and xdg_state.strip()
+            else Path.home() / ".local" / "state"
         )
     path = state_root / "synth-optimizers" / "install-id"
     try:
@@ -982,7 +1168,9 @@ def _usage_registration_models_from_config(config_json: Mapping[str, Any]) -> li
     proposers = config_json.get("proposers")
     if isinstance(proposers, Mapping):
         defaults = proposers.get("defaults")
-        default_provider = str(defaults.get("provider") or "") if isinstance(defaults, Mapping) else ""
+        default_provider = (
+            str(defaults.get("provider") or "") if isinstance(defaults, Mapping) else ""
+        )
         default_model = str(defaults.get("model") or "") if isinstance(defaults, Mapping) else ""
         for role, raw in proposers.items():
             if role == "defaults" or not isinstance(raw, Mapping):

@@ -1,5 +1,10 @@
 # synth-optimizers changelog
 
+## 2026-08-14
+
+* Prepared `0.2.7.dev20260814` for the Workshop v0.3 development channel and pinned `synth-containers==0.4.1.dev20260814`.
+* Restored the hosted MAPO and Online Reflexion client exports required for clean installed-wheel imports while retaining the merged GEPA runtime and stream contracts from `dev`.
+
 ## 2026-06-26
 
 * Prepared `0.2.6.dev20260626` for the GELO 72-hour promo relaunch: added public `craftax_gamebench_rust_smoke` and `rogue_gamebench_rust_smoke` presets, refreshed the bundled hosted GELO docs, and updated the agent skill with the June 26 promo terms and GameBench Rust tunnel path.

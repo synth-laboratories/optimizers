@@ -2,6 +2,7 @@
 
 ## 2026-08-14
 
+* Prepared `0.2.8.dev20260814` for the Workshop v0.3 development channel: ChatGPT-authenticated proposer turns now emit an explicit zero incremental API-cost receipt, and completed runtime outcomes are durable before budget settlement.
 * Prepared `0.2.7.dev20260814` for the Workshop v0.3 development channel and pinned `synth-containers==0.4.1.dev20260814`.
 * Restored the hosted MAPO and Online Reflexion client exports required for clean installed-wheel imports while retaining the merged GEPA runtime and stream contracts from `dev`.
 

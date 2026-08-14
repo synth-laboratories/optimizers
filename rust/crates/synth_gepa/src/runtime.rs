@@ -509,6 +509,7 @@ impl<'a> GepaRuntimeExecutor<'a> {
                 json!(self.config.gepa.rollout_submission_mode),
             );
         }
+        persist_runtime_outcome_before_completion(self.workspace, run_id, job_id, &outcome)?;
         record_runtime_effect_completed(
             self.workspace,
             RuntimeEffectCompletionInput {
@@ -666,7 +667,7 @@ impl<'a> GepaRuntimeExecutor<'a> {
             .and_then(|usage| usage.get("cost_usd"))
             .or_else(|| response.get("cost_usd"))
             .and_then(Value::as_f64)
-            .filter(|value| value.is_finite() && *value > 0.0)
+            .filter(|value| value.is_finite() && *value >= 0.0)
             .or_else(|| proposer_static_cost_usd(self.config, &usage, &response));
         let cost_usd = reported_cost_usd.unwrap_or(0.0);
         let backend = response
@@ -1564,6 +1565,19 @@ fn ensure_job_lease(
         )));
     }
     Ok(())
+}
+
+fn persist_runtime_outcome_before_completion(
+    workspace: &WorkspaceStore,
+    run_id: &str,
+    job_id: &str,
+    outcome: &RuntimeEffectOutcome,
+) -> Result<()> {
+    let stored = crate::stored_runtime_outcome(outcome)?;
+    let mut job = workspace.optimizer_job(run_id, job_id)?;
+    job.payload
+        .insert("runtime_outcome".to_string(), serde_json::to_value(stored)?);
+    workspace.record_optimizer_job(&job)
 }
 
 fn runtime_lease_id(worker_id: &str, job_id: &str) -> String {

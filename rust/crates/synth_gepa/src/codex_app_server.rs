@@ -1032,7 +1032,8 @@ fn find_jesterky_manifest_for_proposer(input: &CodexProposerInput<'_>) -> Result
         return read_jesterky_manifest(&annotate_path).map(Some);
     }
     let program_metadata = Value::Object(input.program.metadata.clone());
-    if let Some(manifest) = find_jesterky_manifest_in_value(&program_metadata, &input.workspace_dir)?
+    if let Some(manifest) =
+        find_jesterky_manifest_in_value(&program_metadata, &input.workspace_dir)?
     {
         return Ok(Some(manifest));
     }
@@ -1080,7 +1081,8 @@ fn find_jesterky_manifest_in_value(value: &Value, workspace_dir: &Path) -> Resul
                     if let Some(manifest) = find_jesterky_manifest_in_value(child, workspace_dir)? {
                         return Ok(Some(manifest));
                     }
-                } else if let Some(manifest) = find_jesterky_manifest_in_value(child, workspace_dir)?
+                } else if let Some(manifest) =
+                    find_jesterky_manifest_in_value(child, workspace_dir)?
                 {
                     return Ok(Some(manifest));
                 }
@@ -1342,10 +1344,9 @@ fn write_agent_artifacts(
 
 fn workspace_readme(input: &CodexProposerInput<'_>) -> String {
     let proposal_policy = proposer_policy_text(input);
-    let jesterky_rule = crate::jesterky_workflow::jesterky_workspace_rule(
-        input.config.jesterky_workflow.enabled,
-    )
-    .unwrap_or("");
+    let jesterky_rule =
+        crate::jesterky_workflow::jesterky_workspace_rule(input.config.jesterky_workflow.enabled)
+            .unwrap_or("");
     let jesterky_section = if input.config.jesterky_workflow.enabled {
         "13. REQUIRED: `state/jesterky_proposer_context.md`, `state/jesterky_theme_registry.json`, and `state/jesterky_trace_annotations.jsonl` for jesterky annotate themes.\n14. If present, `state/jesterky_manifest_summary.json`, `state/jesterky_trace_rows.json`, `state/jesterky_optimizer_triples.json`, and `state/jesterky_evidence_refs.json` for jesterky process-tree evidence."
     } else {

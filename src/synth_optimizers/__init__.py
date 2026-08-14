@@ -5,6 +5,7 @@ PyO3 exports were demoted in the v2 service rebuild and are no longer importable
 """
 
 import importlib
+from importlib.metadata import PackageNotFoundError, version as distribution_version
 from typing import Any
 
 from ._synth_optimizers import (
@@ -28,13 +29,18 @@ from ._synth_optimizers import (
     RunFailedError,
     StateTransitionError,
     SynthOptimizerError,
-    __version__,
+    __version__ as _native_version,
     events_compare,
     events_replay,
     gepa_compact_run_storage,
     gepa_delete_run_storage,
     gepa_serve,
 )
+
+try:
+    __version__ = distribution_version("synth-optimizers")
+except PackageNotFoundError:
+    __version__ = _native_version
 from .gelo import (
     GeloCacheMode,
     GeloCacheSection,

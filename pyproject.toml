@@ -1,6 +1,6 @@
 [project]
 name = "synth-optimizers"
-version = "0.2.6.dev20260626"
+version = "0.2.7.dev20260814"
 description = "Public Synth optimizer tooling with a Rust GEPA core."
 authors = [{name = "Synth Laboratories", email = "josh@usesynth.ai"}]
 readme = "README.md"
@@ -8,7 +8,7 @@ requires-python = ">=3.11"
 license = "Apache-2.0"
 dependencies = [
     "pydantic>=2.0.0",
-    "synth-containers==0.4.0.20260730",
+    "synth-containers==0.4.1.dev20260814",
     "websocket-client>=1.8.0",
 ]
 
@@ -54,7 +54,7 @@ include = ["src/synth_optimizers/docs/**/*"]
 package = true
 
 [tool.uv.sources]
-synth-containers = { git = "https://github.com/synth-laboratories/containers.git", rev = "9b50c626c31469d015763bb0bbeb2d078788987e" }
+synth-containers = { git = "https://github.com/synth-laboratories/containers.git", rev = "e76f8e4ba3edae10dec24bf9e71ec1a7fb332bed" }
 
 [tool.ruff]
 line-length = 100

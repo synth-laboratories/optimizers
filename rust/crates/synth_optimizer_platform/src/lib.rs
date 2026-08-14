@@ -70,8 +70,8 @@ pub use config::{
     GepaAdaptiveStageWorkersConfig, GepaBatchSamplerConfig, GepaCandidateSelectorConfig,
     GepaConfig, GepaObjectiveAcceptanceConfig, GepaPipelineConfig, GepaPipelineMode,
     GepaPipelineWorkers, GepaSpeculativeCompletionConfig, GepaStalenessPolicy, GepaTaskPoolsConfig,
-    JesterkyWorkflowConfig, NanoCodexConfig, PolicyConfig, ProposerAuthLaunchMode,
-    ProposerConfig, ProposerDaytonaConfig, ProposerDockerConfig, ProposerPromptConfig, RunConfig,
+    JesterkyWorkflowConfig, NanoCodexConfig, PolicyConfig, ProposerAuthLaunchMode, ProposerConfig,
+    ProposerDaytonaConfig, ProposerDockerConfig, ProposerPromptConfig, RunConfig,
     SynthOptimizerConfig, TasksetConfig, CHATGPT_PROPOSER_MODELS,
 };
 pub use configured_limits::{

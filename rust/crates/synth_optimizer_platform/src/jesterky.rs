@@ -40,24 +40,26 @@ pub fn jesterky_workspace_read_model(manifest: &Value) -> Result<Value> {
                 .to_string(),
         ));
     }
-    let trace = manifest.get("trace").ok_or_else(|| {
-        OptimizerError::Config("jesterky manifest is missing trace".to_string())
-    })?;
+    let trace = manifest
+        .get("trace")
+        .ok_or_else(|| OptimizerError::Config("jesterky manifest is missing trace".to_string()))?;
     let mut rows = Vec::new();
     collect_trace_rows(trace, 0, &mut rows)?;
     rows.sort_by(|left, right| row_addr(&left.value).cmp(row_addr(&right.value)));
 
-    let trace_rows = rows
-        .iter()
-        .map(|row| row.value.clone())
-        .collect::<Vec<_>>();
+    let trace_rows = rows.iter().map(|row| row.value.clone()).collect::<Vec<_>>();
     let optimizer_triples = rows
         .iter()
         .filter(|row| !row.has_children || row.has_score)
         .map(|row| optimizer_triple_row(&row.value))
         .collect::<Vec<_>>();
     let evidence_refs = evidence_refs(&trace_rows);
-    let summary = manifest_summary(manifest, trace_rows.len(), &optimizer_triples, &evidence_refs);
+    let summary = manifest_summary(
+        manifest,
+        trace_rows.len(),
+        &optimizer_triples,
+        &evidence_refs,
+    );
 
     Ok(json!({
         "schema_version": JESTERKY_WORKSPACE_READ_MODEL_SCHEMA_VERSION,
@@ -254,16 +256,11 @@ fn addr_value_as_string(value: &Value) -> Option<String> {
                     other => other.to_string(),
                 })
                 .unwrap_or_default();
-            let iteration = addr
-                .get("iteration")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            let local_seq = addr
-                .get("local_seq")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
+            let iteration = addr.get("iteration").and_then(Value::as_u64).unwrap_or(0);
+            let local_seq = addr.get("local_seq").and_then(Value::as_u64).unwrap_or(0);
             let rendered = format!("{run_id}:{node_path}@{iteration}.{local_seq}");
-            if rendered.trim_matches(|c| c == ':' || c == '@' || c == '.')
+            if rendered
+                .trim_matches(|c| c == ':' || c == '@' || c == '.')
                 .is_empty()
                 && run_id.is_empty()
                 && node_path.is_empty()

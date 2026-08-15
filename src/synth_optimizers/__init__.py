@@ -84,6 +84,17 @@ from .hosted import (
     validate_online_reflexion_evidence_notes,
 )
 from .hosted_config import HostedOptimizerConfig
+from .sft import (
+    SFT_ALGORITHM_ID,
+    BetaSftExecutorClient,
+    SftArtifact,
+    SftConfig,
+    SftPublicServiceClient,
+    SftService,
+    SftServiceError,
+    create_sft_http_server,
+    serve_sft_service,
+)
 from .future_algorithms import (
     FUTURE_HOSTED_ALGORITHMS,
     FutureHostedAlgorithm,
@@ -226,6 +237,15 @@ __all__ = [
     "HostedOptimizerClient",
     "HostedOptimizerError",
     "HostedOptimizerConfig",
+    "SFT_ALGORITHM_ID",
+    "BetaSftExecutorClient",
+    "SftArtifact",
+    "SftConfig",
+    "SftPublicServiceClient",
+    "SftService",
+    "SftServiceError",
+    "create_sft_http_server",
+    "serve_sft_service",
     "FUTURE_HOSTED_ALGORITHMS",
     "FutureHostedAlgorithm",
     "FutureHostedAlgorithmSlug",

@@ -29,6 +29,36 @@ local algorithm; GELO and SFT are hosted-only in the public package and run on
 Synth hosted optimizer infrastructure. Hosted GEPA, GELO, and SFT submission is
 covered in [`docs/hosted-optimizers.md`](docs/hosted-optimizers.md).
 
+### Hosted SFT control plane
+
+SFT is served by `synth-optimizers`; Optimizers-beta is an internal training executor,
+not a Workshop-facing API. For local QA, start beta with its executor token and then
+start the public façade:
+
+```bash
+# In the Optimizers-beta checkout:
+OPTIMIZERS_BETA_SERVICE_TOKEN=local-dev-token \
+  cargo run --bin optimizers-beta -- serve --bind 127.0.0.1:8879
+
+# In this checkout:
+export SYNTH_OPTIMIZERS_BETA_URL=http://127.0.0.1:8879
+export OPTIMIZERS_BETA_SERVICE_TOKEN=local-dev-token  # held only by the façade
+export SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN=local-qa-token  # Workshop / CLI callers
+synth-optimizers sft service --db .sft/service.sqlite --bind 127.0.0.1:8878
+```
+
+Submit, inspect, and cancel only through the façade:
+
+```bash
+synth-optimizers sft validate --config sft.toml
+synth-optimizers sft submit --config sft.toml --follow
+synth-optimizers sft watch RUN_ID --events
+synth-optimizers sft cancel RUN_ID
+```
+
+The façade keeps executor-only workspace paths and service credentials private. Its
+artifact proxy is available at `/v1/runs/RUN_ID/artifacts/{manifest,events}`.
+
 ## Future hosted-algorithm compatibility
 
 MAPO, OHCO, Online Reflexion, and MARL prompt-optimization identifiers are retained

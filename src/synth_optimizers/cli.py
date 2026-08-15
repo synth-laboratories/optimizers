@@ -34,6 +34,7 @@ from .hosted import (
     HostedOptimizerError,
     validate_online_reflexion_evidence_notes,
 )
+from .sft import SftConfig, SftPublicServiceClient, SftServiceError, serve_sft_service
 from .tunnels import TunnelError, TunnelProvider
 from .victorialogs import project_gepa_run_artifacts, project_gepa_run_started
 
@@ -749,6 +750,97 @@ def _config_file_object(path: str) -> dict:
     if not isinstance(data, dict):
         raise SystemExit(f"{path} must contain an object")
     return data
+
+
+def _sft_service_client(args: argparse.Namespace) -> SftPublicServiceClient:
+    token = os.environ.get(args.service_token_env) if args.service_token_env else None
+    return SftPublicServiceClient(args.service_url, token, timeout_seconds=args.timeout_seconds)
+
+
+def _sft_validate(args: argparse.Namespace) -> int:
+    try:
+        config = SftConfig.from_toml(
+            Path(args.config).read_text(encoding="utf-8"), run_id=args.run_id
+        )
+    except OSError as exc:
+        raise SystemExit(f"cannot read {args.config}: {exc}") from exc
+    except SftServiceError as exc:
+        raise SystemExit(str(exc)) from exc
+    payload = {
+        "algorithm": "sft",
+        "run_id": config.run_id,
+        "backend": config.backend,
+        "base_model": config.base_model,
+        "checkpoint_steps": list(config.checkpoint_steps),
+        "accelerator_slots": config.accelerator_slots,
+    }
+    print(
+        json.dumps(payload, indent=2, sort_keys=True)
+        if args.json
+        else f"valid SFT config run_id={config.run_id} backend={config.backend}"
+    )
+    return 0
+
+
+def _sft_submit(args: argparse.Namespace) -> int:
+    try:
+        config_toml = Path(args.config).read_text(encoding="utf-8")
+        client = _sft_service_client(args)
+        submitted = client.submit_toml(
+            config_toml,
+            run_id=args.run_id,
+            idempotency_key=args.idempotency_key,
+        )
+        if args.json and not args.follow:
+            print(json.dumps(submitted, indent=2, sort_keys=True))
+            return 0
+        run_id = str(submitted["run_id"])
+        print(f"submitted run_id={run_id} status={submitted.get('status', 'queued')}")
+        if not args.follow:
+            return 0
+        while True:
+            record = client.get(run_id)
+            status = str(record.get("status", "unknown"))
+            print(f"status={status}")
+            if status in {"succeeded", "failed", "cancelled"}:
+                if args.json:
+                    print(json.dumps(record, indent=2, sort_keys=True))
+                return 1 if status == "failed" else 0
+            time.sleep(args.poll_seconds)
+    except (OSError, SftServiceError) as exc:
+        raise SystemExit(str(exc)) from exc
+
+
+def _sft_watch(args: argparse.Namespace) -> int:
+    try:
+        client = _sft_service_client(args)
+        record = client.get(args.run_id)
+        if args.events:
+            page = client.optimizer_events(
+                args.run_id, after_sequence=args.after_seq, limit=args.limit
+            )
+            record["events"] = page.get("events", [])
+        print(
+            json.dumps(record, indent=2, sort_keys=True)
+            if args.json
+            else f"run_id={args.run_id} status={record.get('status')}"
+        )
+        return 1 if record.get("status") == "failed" else 0
+    except SftServiceError as exc:
+        raise SystemExit(str(exc)) from exc
+
+
+def _sft_cancel(args: argparse.Namespace) -> int:
+    try:
+        record = _sft_service_client(args).cancel(args.run_id)
+    except SftServiceError as exc:
+        raise SystemExit(str(exc)) from exc
+    print(
+        json.dumps(record, indent=2, sort_keys=True)
+        if args.json
+        else f"run_id={args.run_id} status={record.get('status')}"
+    )
+    return 0
 
 
 def _submit_hosted_gelo(args: argparse.Namespace) -> int:
@@ -1577,6 +1669,45 @@ def build_parser() -> argparse.ArgumentParser:
         "--docs-set", default="gelo", help="Bundled docs set to serve (default: gelo)."
     )
 
+    sft = subcommands.add_parser("sft", help="Operate the public SFT control-plane service.")
+    sft_subcommands = sft.add_subparsers(dest="sft_command", required=True)
+    sft_validate = sft_subcommands.add_parser("validate")
+    sft_validate.add_argument("--config", required=True)
+    sft_validate.add_argument("--run-id")
+    sft_validate.add_argument("--json", action="store_true")
+
+    sft_service = sft_subcommands.add_parser("service")
+    sft_service.add_argument("--db", default=".sft/service.sqlite")
+    sft_service.add_argument("--bind", default="127.0.0.1:8878")
+    sft_service.add_argument(
+        "--service-token-env",
+        default="SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN",
+        help="Optional inbound bearer-token environment variable.",
+    )
+
+    for command_name in ("submit", "watch", "cancel"):
+        command = sft_subcommands.add_parser(command_name)
+        command.add_argument(
+            "--service-url",
+            default=os.environ.get("SYNTH_OPTIMIZERS_SFT_SERVICE_URL", "http://127.0.0.1:8878"),
+        )
+        command.add_argument("--service-token-env", default="SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN")
+        command.add_argument("--timeout-seconds", type=float, default=300.0)
+        command.add_argument("--json", action="store_true")
+    sft_submit = sft_subcommands.choices["submit"]
+    sft_submit.add_argument("--config", required=True)
+    sft_submit.add_argument("--run-id")
+    sft_submit.add_argument("--idempotency-key")
+    sft_submit.add_argument("--follow", action="store_true")
+    sft_submit.add_argument("--poll-seconds", type=float, default=1.0)
+    sft_watch = sft_subcommands.choices["watch"]
+    sft_watch.add_argument("run_id")
+    sft_watch.add_argument("--events", action="store_true")
+    sft_watch.add_argument("--after-seq", type=int, default=0)
+    sft_watch.add_argument("--limit", type=int, default=500)
+    sft_cancel = sft_subcommands.choices["cancel"]
+    sft_cancel.add_argument("run_id")
+
     mapo = subcommands.add_parser("mapo")
     mapo_subcommands = mapo.add_subparsers(dest="mapo_command", required=True)
     mapo_startup = mapo_subcommands.add_parser("startup")
@@ -2199,6 +2330,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         board = AggregateSource([], title=f"{args.title} — hosted")
         docs = DocsSource([docs_root], title=args.title)
         serve_console(board, docs, host=args.host, port=args.port)
+        return 0
+    if args.command == "sft" and args.sft_command == "validate":
+        return _sft_validate(args)
+    if args.command == "sft" and args.sft_command == "submit":
+        return _sft_submit(args)
+    if args.command == "sft" and args.sft_command == "watch":
+        return _sft_watch(args)
+    if args.command == "sft" and args.sft_command == "cancel":
+        return _sft_cancel(args)
+    if args.command == "sft" and args.sft_command == "service":
+        token = os.environ.get(args.service_token_env) if args.service_token_env else None
+        serve_sft_service(args.db, args.bind, service_token=token)
         return 0
     if args.command == "mapo" and args.mapo_command == "startup":
         return _gelo_startup(args)

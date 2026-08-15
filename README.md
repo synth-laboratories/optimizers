@@ -28,6 +28,15 @@ local algorithm; GELO is hosted-only in the public package and runs on Synth
 hosted optimizer infrastructure.
 Hosted GEPA/GELO submission is covered in [`docs/hosted-optimizers.md`](docs/hosted-optimizers.md).
 
+## Future hosted-algorithm compatibility
+
+MAPO, OHCO, Online Reflexion, and MARL prompt-optimization identifiers are retained
+in [`future_algorithms.py`](src/synth_optimizers/future_algorithms.py) so clients can
+parse hosted catalogs and historical runs. They are **not supported public optimizer
+algorithms**: they carry no local executor, cookbook, or release commitment. New
+public algorithms graduate into the table above only after their public API contract,
+replay semantics, and end-to-end evidence are ready.
+
 ## Install
 
 ```bash

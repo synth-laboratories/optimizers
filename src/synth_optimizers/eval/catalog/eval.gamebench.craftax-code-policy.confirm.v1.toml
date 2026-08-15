@@ -1,0 +1,62 @@
+# GameBench/Harbor confirmation. The target may use Harbor internally; from
+# eval's side it is still only a container that produces the standard result and
+# evidence tree.
+#
+# Parallelism is pinned to 1 until Harbor resource isolation is proven, and the
+# recipe stays `unavailable` until gamebench-harbor-eval-target is published and
+# pinned by digest.
+
+[recipe]
+id = "eval.gamebench.craftax-code-policy.confirm.v1"
+title = "GameBench Craftax code-policy confirmation"
+description = "Screen then confirm staged Craftax code policies through the Harbor target."
+task = "gamebench"
+policy_kind = "python-code.craftax-choose-actions.v1"
+image = "gamebench-harbor-eval-target"
+prerequisites = [
+    "Published gamebench-harbor-eval-target image pinned by digest",
+    "Harbor target writes the normalized Evals evidence layout",
+]
+scenarios = ["craftax-default-48x48"]
+screening_seeds = [101, 102, 103]
+confirmation_seeds = [201, 202, 203]
+secrets = []
+
+[recipe.target]
+schema_version = "eval.target.v1"
+policy_kinds = ["python-code.craftax-choose-actions.v1"]
+trial_mode = "one-policy-one-seed"
+required_gates = [
+    "policy_loaded",
+    "verifier_completed",
+    "reward_emitted",
+    "workspace_intact",
+]
+required_artifacts = ["trace"]
+supports_live_events = true
+network = "none"
+
+[[recipe.target.metrics]]
+id = "verifier_reward"
+direction = "maximize"
+
+[[recipe.target.metrics]]
+id = "achievements"
+direction = "maximize"
+
+[recipe.selection]
+primary_metric = "verifier_reward"
+min_lift = 0.05
+min_valid_trials = 3
+decision_mode = "promote"
+
+[recipe.selection.elimination]
+kind = "keep_top_k"
+value = 2
+
+[recipe.limits]
+max_parallel_trials = 1
+timeout_seconds = 1800
+cpus = 2.0
+memory_mb = 8192
+max_output_bytes = 536870912

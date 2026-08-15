@@ -1,0 +1,55 @@
+# Craftax native code-policy smoke. Report-only: it never promotes, so a green
+# run means "the rig and the three policies produced valid evidence", not "a
+# winner was found".
+#
+# `image_digest` is intentionally absent until craftax-eval-target is published
+# and pinned; the recipe reports `unavailable` rather than pretending to a tag.
+
+[recipe]
+id = "eval.craftax.code-policy.smoke.v1"
+title = "Craftax code-policy smoke"
+description = "Score staged Craftax code policies on one pinned world, report only."
+task = "craftax"
+policy_kind = "python-code.craftax-choose-actions.v1"
+image = "craftax-eval-target"
+prerequisites = [
+    "Published craftax-eval-target image pinned by digest",
+    "OCI runtime available to the Desktop app",
+]
+scenarios = ["craftax-default-48x48"]
+screening_seeds = [101, 102]
+confirmation_seeds = []
+secrets = []
+
+[recipe.target]
+schema_version = "eval.target.v1"
+policy_kinds = ["python-code.craftax-choose-actions.v1"]
+trial_mode = "one-policy-one-seed"
+required_gates = ["policy_loaded", "verifier_completed"]
+required_artifacts = ["trace"]
+supports_live_events = true
+network = "none"
+
+[[recipe.target.metrics]]
+id = "reward"
+direction = "maximize"
+
+[[recipe.target.metrics]]
+id = "achievements"
+direction = "maximize"
+
+[recipe.selection]
+primary_metric = "reward"
+min_lift = 0.0
+min_valid_trials = 2
+decision_mode = "report_only"
+
+[recipe.selection.elimination]
+kind = "none"
+
+[recipe.limits]
+max_parallel_trials = 2
+timeout_seconds = 300
+cpus = 2.0
+memory_mb = 4096
+max_output_bytes = 268435456

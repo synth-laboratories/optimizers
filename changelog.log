@@ -86,3 +86,4 @@
 * No main-branch package release.
 * Better SDK and auth work stayed staged off main.
 * Next release target: shorter SDK examples, acceptance evidence, and daily dev packaging.
+* Prepared `0.2.10.dev20260815` with explicit hosted SFT API support and a clear compatibility boundary for future hosted algorithms.

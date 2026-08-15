@@ -79,6 +79,7 @@ from .hosted import (
     OptimizerStartupCatalog,
     RunStatus as HostedRunStatus,
     submit_mapo,
+    submit_sft,
     submit_online_reflexion,
     validate_online_reflexion_evidence_notes,
 )
@@ -295,6 +296,7 @@ __all__ = [
     "gepa_delete_run_storage",
     "gepa_serve",
     "submit_mapo",
+    "submit_sft",
     "submit_online_reflexion",
     "validate_online_reflexion_evidence_notes",
 ]

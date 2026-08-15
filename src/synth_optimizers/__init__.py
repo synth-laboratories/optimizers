@@ -83,6 +83,11 @@ from .hosted import (
     validate_online_reflexion_evidence_notes,
 )
 from .hosted_config import HostedOptimizerConfig
+from .future_algorithms import (
+    FUTURE_HOSTED_ALGORITHMS,
+    FutureHostedAlgorithm,
+    FutureHostedAlgorithmSlug,
+)
 from .o11y import (
     LiveProgress,
     RegistryRecord,
@@ -220,6 +225,9 @@ __all__ = [
     "HostedOptimizerClient",
     "HostedOptimizerError",
     "HostedOptimizerConfig",
+    "FUTURE_HOSTED_ALGORITHMS",
+    "FutureHostedAlgorithm",
+    "FutureHostedAlgorithmSlug",
     "HostedRunStatus",
     "InvariantError",
     "InMemoryRunLog",

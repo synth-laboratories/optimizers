@@ -21,12 +21,13 @@ contract.
 | --- | --- | --- | --- |
 | **GEPA** — reflective prompt evolution | Supported | [`rust/crates/synth_gepa/`](rust/crates/synth_gepa/) (Rust engine + service), [`src/synth_optimizers/gepa.py`](src/synth_optimizers/gepa.py) (Python API), [`skills/gepa/SKILL.md`](skills/gepa/SKILL.md) (agent runbook) | [Paper](https://arxiv.org/abs/2507.19457) · [gepa-ai docs](https://gepa-ai.github.io/gepa/) · bundled HTML via `gepa console` |
 | **GELO** — Go-Explore in prompt space (hosted) | Hosted submit | [`src/synth_optimizers/gelo.py`](src/synth_optimizers/gelo.py), [`skills/gelo/SKILL.md`](skills/gelo/SKILL.md), [`GELO_HOSTED_SDK_CLI_SPEC.md`](GELO_HOSTED_SDK_CLI_SPEC.md) | Bundled HTML via `gelo console` — [`src/synth_optimizers/docs/gelo/`](src/synth_optimizers/docs/gelo/) |
+| **SFT** — supervised fine-tuning (hosted) | Hosted submit | `HostedOptimizerClient.submit_sft()` / `submit_sft()` | Executed by the private Optimizers-beta runtime; the public client uses the shared hosted run API. |
 
 The shared [`synth_optimizer_platform`](rust/crates/synth_optimizer_platform/)
 crate is the substrate for optimizer implementations; GEPA is the first public
-local algorithm; GELO is hosted-only in the public package and runs on Synth
-hosted optimizer infrastructure.
-Hosted GEPA/GELO submission is covered in [`docs/hosted-optimizers.md`](docs/hosted-optimizers.md).
+local algorithm; GELO and SFT are hosted-only in the public package and run on
+Synth hosted optimizer infrastructure. Hosted GEPA, GELO, and SFT submission is
+covered in [`docs/hosted-optimizers.md`](docs/hosted-optimizers.md).
 
 ## Future hosted-algorithm compatibility
 

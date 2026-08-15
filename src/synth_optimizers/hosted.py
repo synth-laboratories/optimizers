@@ -85,6 +85,7 @@ _USAGE_REGISTRATION_TIMEOUT_SECONDS = 2.0
 class OptimizerAlgorithmSlug(StrEnum):
     GEPA = "gepa"
     GELO = "go-ex"
+    SFT = "sft"
     MAPO = "mapo"
     OHCO = "ohco"
     ONLINE_REFLEXION = "online-reflexion"
@@ -391,6 +392,14 @@ class HostedOptimizerClient:
         **kwargs: Any,
     ) -> OptimizerRunSubmitResponse:
         return self._submit(OptimizerAlgorithmSlug.GELO, config, **kwargs)
+
+    def submit_sft(
+        self,
+        config: Mapping[str, Any] | Any,
+        **kwargs: Any,
+    ) -> OptimizerRunSubmitResponse:
+        """Submit a hosted SFT run executed by the Optimizers-beta backend."""
+        return self._submit(OptimizerAlgorithmSlug.SFT, config, **kwargs)
 
     def submit_mapo(
         self,
@@ -981,6 +990,17 @@ def submit_mapo(
 ) -> OptimizerRunSubmitResponse:
     active_client = client or HostedOptimizerClient()
     return active_client.submit_mapo(config, **kwargs)
+
+
+def submit_sft(
+    config: Mapping[str, Any] | Any,
+    *,
+    client: HostedOptimizerClient | None = None,
+    **kwargs: Any,
+) -> OptimizerRunSubmitResponse:
+    """Submit an SFT run through the public hosted Optimizers API."""
+    active_client = client or HostedOptimizerClient()
+    return active_client.submit_sft(config, **kwargs)
 
 
 def submit_online_reflexion(

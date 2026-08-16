@@ -1586,32 +1586,63 @@ fn route_request(request: HttpRequest, runtime: GepaServiceRuntime) -> HttpRespo
             Ok(None) => run_not_found_response(run_id),
             Err(error) => optimizer_error_response(error),
         },
+        // `route_not_found`, not `run_not_found`. They share a status but mean
+        // opposite things to a client polling a live run: a run that is not
+        // indexed yet may appear at any moment, while a route that does not
+        // exist never will. Reusing the run code told Workshop to keep retrying
+        // a route this build does not serve for as long as the run lasted,
+        // paying for rollouts whose events could never be read.
         _ => error_response(
             404,
-            "run_not_found",
+            "route_not_found",
             &format!("route not found: {} {}", request.method, path),
             None,
         ),
     }
 }
 
+/// What this service can do, answered by this service.
+///
+/// Two rules, both learned from the handshake gap that blocked v0.4:
+///
+/// 1. **Only facts this runtime owns.** Recipe ids and visual template ids are
+///    Workshop's vocabulary — they appear nowhere in this crate and only ever
+///    reached it because Workshop's install payload supplied them. Echoing them
+///    back proves nothing except that we were told what to say, and would tie a
+///    plugin release to every new host template. Workshop resolves those itself.
+/// 2. **Derived, never asserted.** `replay` and `cancellation` are read off the
+///    router below rather than written as literals, so they cannot claim a
+///    capability this build does not serve. A hand-written `replay: true` is
+///    true only by accident of which branch it was cut from.
 fn optimizer_capabilities_payload() -> Value {
     json!({
         "status": "ok",
+        "contractVersion": OPTIMIZER_CONTRACT_VERSION,
+        "serviceVersion": env!("CARGO_PKG_VERSION"),
         "algorithms": ["gepa"],
-        "recipes": [
-            "gepa.banking77.smoke.v1",
-            "gepa.banking77.luna.v1",
-            "gepa.banking77.sol.v1",
-            "gepa.craftax.smoke.v1"
-        ],
-        "replay": true,
-        "cancellation": true,
-        "compatibleTemplateIds": [
-            "optimizer.gepa.live.v1",
-            "optimizer.run.v1"
-        ]
+        "replay": documents_route("/runs/{run_id}/optimizer-events"),
+        "cancellation": documents_route("/runs/{run_id}/cancel"),
     })
+}
+
+/// Workshop's capability contract revision this service implements.
+const OPTIMIZER_CONTRACT_VERSION: &str = "optimizer.contract.v1";
+
+/// Is this route in the spec this build ships and serves at `/openapi.yaml`?
+///
+/// Not a second list to keep in step: the spec is a real artifact compiled into
+/// the binary and served to clients, so answering from it means a capability
+/// claim and the published contract cannot disagree. A hand-written
+/// `replay: true` has no such tether — it stays `true` when the route is
+/// dropped, or when the payload is copied to a branch that never had it, which
+/// is precisely how a green handshake ends up in front of a missing endpoint.
+///
+/// `router_and_spec_agree` closes the remaining gap by checking the spec
+/// against what the router actually serves.
+fn documents_route(path: &str) -> bool {
+    GEPA_SERVICE_OPENAPI_YAML
+        .lines()
+        .any(|line| line.trim_end().trim_end_matches(':').trim() == path)
 }
 
 fn handle_websocket_connection(
@@ -5795,20 +5826,207 @@ mod tests {
     }
 
     #[test]
-    fn workshop_capability_handshake_is_complete() {
+    /// The handshake answers for this service and nothing else.
+    ///
+    /// The previous form of this test read the payload's own literals back and
+    /// asserted they were non-empty strings — it tested the constant against
+    /// itself, and would have stayed green with `replay: true` on a build
+    /// serving no events route. Assert the two properties that can actually be
+    /// wrong instead: that we do not speak for Workshop, and that every boolean
+    /// is tied to a route this build ships.
+    #[test]
+    fn workshop_capability_handshake_answers_only_for_this_service() {
         let capabilities = optimizer_capabilities_payload();
-        for field in ["algorithms", "recipes", "compatibleTemplateIds"] {
-            let values = capabilities[field].as_array().unwrap();
-            assert!(!values.is_empty());
-            assert!(values.iter().all(Value::is_string));
+
+        // Workshop's vocabulary. This service does not define recipe ids or
+        // visual template ids and must not claim to.
+        for host_owned in ["recipes", "compatibleTemplateIds"] {
+            assert!(
+                capabilities.get(host_owned).is_none(),
+                "capabilities must not answer for Workshop's `{host_owned}`"
+            );
         }
+
+        let algorithms = capabilities["algorithms"].as_array().unwrap();
+        assert!(!algorithms.is_empty());
+        assert!(algorithms.iter().all(Value::is_string));
+        assert!(algorithms.iter().any(|id| id == "gepa"));
+        assert_eq!(capabilities["contractVersion"], OPTIMIZER_CONTRACT_VERSION);
+        assert_eq!(capabilities["serviceVersion"], env!("CARGO_PKG_VERSION"));
+
+        // Every boolean is derived from the shipped spec, so it cannot outlive
+        // the route it describes.
+        assert_eq!(
+            capabilities["replay"],
+            documents_route("/runs/{run_id}/optimizer-events")
+        );
+        assert_eq!(
+            capabilities["cancellation"],
+            documents_route("/runs/{run_id}/cancel")
+        );
         assert_eq!(capabilities["replay"], true);
         assert_eq!(capabilities["cancellation"], true);
-        assert!(capabilities["recipes"]
+
+        // The derivation has to be capable of saying no, or it is a literal
+        // wearing a function's clothes.
+        assert!(!documents_route("/runs/{run_id}/route-that-does-not-exist"));
+    }
+
+    /// The spec backs the capability booleans, so a route the router serves but
+    /// the spec omits would let a true claim rest on a stale document — and a
+    /// route the spec claims but the router drops would make it simply false.
+    #[test]
+    fn router_and_spec_agree_on_the_capability_routes() {
+        for path in [
+            "/health",
+            "/runs/{run_id}/optimizer-events",
+            "/runs/{run_id}/cancel",
+            "/v1/optimizer/capabilities",
+        ] {
+            assert!(
+                documents_route(path),
+                "{path} is served but missing from gepa-service-v1.yaml"
+            );
+        }
+    }
+
+    /// Drive the real service over a real socket.
+    ///
+    /// Everything above inspects functions and constants. This starts
+    /// `run_gepa_service` on a loopback port and speaks HTTP to it, so the
+    /// routes are asserted the way Workshop reaches them. The gap this closes
+    /// is the one that cost v0.4 an acceptance run: every test on both sides
+    /// passed while the endpoint Workshop required did not exist, because
+    /// nothing on either side had ever spoken to the other over a socket.
+    #[test]
+    fn the_running_service_answers_the_workshop_contract() {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+
+        let db = scratch_path("contract");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let mut config = GepaServiceConfig::new(db, addr.to_string());
+        config.worker_count = 1;
+        thread::spawn(move || {
+            let _ = run_gepa_service(config);
+        });
+
+        let get = |path: &str| -> (u16, String) {
+            // The service is starting concurrently; retry briefly rather than
+            // race it.
+            for attempt in 0..50 {
+                let Ok(mut stream) = TcpStream::connect(addr) else {
+                    thread::sleep(Duration::from_millis(40));
+                    continue;
+                };
+                let request =
+                    format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+                if stream.write_all(request.as_bytes()).is_err() {
+                    thread::sleep(Duration::from_millis(40));
+                    continue;
+                }
+                let mut raw = String::new();
+                if stream.read_to_string(&mut raw).is_err() && attempt < 49 {
+                    thread::sleep(Duration::from_millis(40));
+                    continue;
+                }
+                let status = raw
+                    .split_whitespace()
+                    .nth(1)
+                    .and_then(|code| code.parse().ok())
+                    .unwrap_or(0);
+                let body = raw.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+                return (status, body);
+            }
+            panic!("service never accepted a connection on {addr}");
+        };
+
+        let (status, body) = get("/health");
+        assert_eq!(status, 200, "/health: {body}");
+
+        // The route whose absence blocked v0.4.
+        let (status, body) = get("/v1/optimizer/capabilities");
+        assert_eq!(status, 200, "/v1/optimizer/capabilities: {body}");
+        let capabilities: Value = serde_json::from_str(&body).unwrap();
+        assert!(capabilities["algorithms"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|recipe| recipe == "gepa.banking77.smoke.v1"));
+            .any(|id| id == "gepa"));
+        assert_eq!(capabilities["replay"], true);
+        assert_eq!(capabilities["cancellation"], true);
+        assert!(capabilities.get("recipes").is_none());
+        assert!(capabilities.get("compatibleTemplateIds").is_none());
+
+        // Served, and 404s for an unknown run rather than for an unknown route.
+        let (status, body) = get("/runs/no_such_run/optimizer-events?after_sequence=0&limit=10");
+        assert_eq!(status, 404, "unexpected status for a missing run: {body}");
+        let error: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            error["error"]["code"], "run_not_found",
+            "a served route with a missing run must say run_not_found: {body}"
+        );
+
+        // And an unknown route is reported as such, so a client can tell "this
+        // build cannot do that" from "not indexed yet".
+        let (status, body) = get("/runs/no_such_run/not-a-route");
+        assert_eq!(status, 404);
+        let error: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            error["error"]["code"], "route_not_found",
+            "an unknown route must not masquerade as a missing run: {body}"
+        );
+    }
+
+    /// The wheel version and the crate version are set in different files and
+    /// neither is derived from the other, so only a test keeps them in step.
+    ///
+    /// `/whoami` and the capability handshake both report `CARGO_PKG_VERSION`.
+    /// When only `pyproject.toml` is bumped, an installed 0.2.12 wheel reports
+    /// itself as 0.2.9 over HTTP, and every version floor keyed on that number
+    /// is checking a value the release never had.
+    #[test]
+    fn the_wheel_and_the_crate_report_the_same_release() {
+        let pyproject = include_str!("../../../../pyproject.toml");
+        let declared = pyproject
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("version = "))
+            .map(|value| value.trim().trim_matches('"'))
+            .expect("pyproject version");
+        // PEP 440 pre-release suffixes (`0.2.12.dev20260816`) have no Cargo
+        // equivalent; the release triple in front of them must still match.
+        let release: String = declared
+            .split('.')
+            .take(3)
+            .collect::<Vec<_>>()
+            .join(".");
+        assert_eq!(
+            release,
+            env!("CARGO_PKG_VERSION"),
+            "pyproject.toml ({declared}) and the workspace Cargo.toml disagree; \
+             /whoami and the capability handshake report the Cargo value"
+        );
+    }
+
+    /// An unknown route is not a missing run. Workshop retries the latter for
+    /// the life of a paid run and fails fast on the former.
+    #[test]
+    fn unknown_routes_are_not_reported_as_missing_runs() {
+        let source = include_str!("service.rs");
+        let router = source
+            .split("fn optimizer_capabilities_payload")
+            .next()
+            .expect("router source");
+        let fallback = router
+            .rfind("route not found: ")
+            .expect("router fallback arm");
+        let arm = &router[fallback.saturating_sub(200)..fallback];
+        assert!(
+            arm.contains("route_not_found"),
+            "the router fallback must report route_not_found, not run_not_found"
+        );
     }
 
     #[test]

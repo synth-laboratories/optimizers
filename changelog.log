@@ -2,6 +2,11 @@
 
 ## 2026-08-16
 
+* Released `0.2.12` on the official channel — the first official build carrying both routes Workshop's optimizer lifecycle requires. `0.2.5`, the previous official release, served neither, so Workshop could not complete a capability handshake against any released version and no local GEPA run could start.
+* `GET /v1/optimizer/capabilities` answers only for this service: the algorithms it serves, plus `replay` and `cancellation` derived from the OpenAPI document this build compiles in and serves. It no longer reports Workshop's recipe ids or visual template ids, which are Workshop's to resolve and were only ever echoed back from what Workshop itself supplied at install time.
+* `GET /runs/{run_id}/optimizer-events` is available on the official channel.
+* Unknown routes now report `route_not_found` rather than `run_not_found`. The two share a status but mean opposite things to a client polling a live run: an unindexed run may appear at any moment, an absent route never will, and Workshop retried accordingly for the life of a paid run.
+* The workspace crate version now matches the wheel. `/whoami` and the capability handshake both report `CARGO_PKG_VERSION`, so a mismatch meant an installed wheel introducing itself under a version it never had.
 * Prepared `0.2.12.dev20260816` with the authenticated Workshop capability and status handshake routes required to start the GEPA sidecar end to end.
 * Prepared `0.2.11.dev20260816` with ChatGPT-authenticated proposer support for the locked `gpt-5.6-luna`, `gpt-5.6-sol`, and `gpt-5.6-terra` model ids. Unknown 5.6 ids remain fail-closed.
 * Updated the public GEPA proposer documentation to advertise the same allowlist enforced by the optimizer platform.

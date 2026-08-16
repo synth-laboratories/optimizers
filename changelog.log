@@ -1,5 +1,10 @@
 # synth-optimizers changelog
 
+## 2026-08-16
+
+* Prepared `0.2.11.dev20260816` with ChatGPT-authenticated proposer support for the locked `gpt-5.6-luna`, `gpt-5.6-sol`, and `gpt-5.6-terra` model ids. Unknown 5.6 ids remain fail-closed.
+* Updated the public GEPA proposer documentation to advertise the same allowlist enforced by the optimizer platform.
+
 ## 2026-08-14
 
 * Prepared `0.2.9.dev20260814` for the Workshop v0.3 development channel: transient proposer runtime failures now receive one bounded, durable optimizer-job retry while validation failures remain fail-closed.

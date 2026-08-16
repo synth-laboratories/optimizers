@@ -16,9 +16,10 @@ use serde_json::{json, Map, Value};
 use sha1::{Digest as Sha1Digest, Sha1};
 use sha2::{Digest as Sha2Digest, Sha256};
 use synth_optimizer_platform::{
-    compact_run_storage, delete_run_storage, inspect_run_storage, inspect_workspace_storage_health,
-    ArtifactPaths, CacheMode, CheckpointInput, CheckpointRecord, ContainerClient, FailurePayload,
-    GepaPipelineMode, GepaStalenessPolicy, GepaTaskPoolsConfig, OptimizerError, OptimizerJob,
+    compact_run_storage, delete_run_storage, fold_reported_cost, inspect_run_storage,
+    inspect_workspace_storage_health, optimizer_event_feed_path_for, ArtifactPaths, CacheMode,
+    CheckpointInput, CheckpointRecord, ContainerClient, FailurePayload, GepaPipelineMode,
+    GepaStalenessPolicy, GepaTaskPoolsConfig, OptimizerError, OptimizerEvent, OptimizerJob,
     OptimizerJobKind, OptimizerJobStatus, PromptProgram, Result, RunPhaseTimingRecord,
     RunStorageInspectionInput, RunStorageMaintenanceInput, RuntimeEffectInput, RuntimeEffectRecord,
     StorageHealthThresholds, StorageMaintenanceProfile, SynthOptimizerConfig, TransitionLog,
@@ -35,6 +36,7 @@ use crate::{
 };
 
 const DEFAULT_SERVICE_WORKER_COUNT: usize = 10;
+const MIN_CONCURRENT_GEPA_WORKERS: usize = 2;
 const MAX_SERVICE_WORKER_COUNT: usize = 10;
 const SERVICE_WORKER_IDLE_WAIT: Duration = Duration::from_millis(500);
 const SERVICE_WORKER_ERROR_WAIT: Duration = Duration::from_secs(2);
@@ -392,7 +394,9 @@ pub fn run_gepa_service(mut config: GepaServiceConfig) -> Result<()> {
 }
 
 fn normalize_service_worker_count(worker_count: usize) -> usize {
-    worker_count.clamp(1, MAX_SERVICE_WORKER_COUNT)
+    // G1: Luna vs Sol must progress concurrently. A singleton worker serializes
+    // the second optimizer_run_id even when logs are isolated.
+    worker_count.clamp(MIN_CONCURRENT_GEPA_WORKERS, MAX_SERVICE_WORKER_COUNT)
 }
 
 fn service_worker_id(base_worker_id: &str, worker_count: usize, slot: usize) -> String {
@@ -1504,6 +1508,9 @@ fn route_request(request: HttpRequest, runtime: GepaServiceRuntime) -> HttpRespo
     let config = &runtime.config;
     match (request.method.as_str(), segments.as_slice()) {
         ("GET", ["health"]) => json_response(200, &json!({"status": "ok"})),
+        ("GET", ["v1", "optimizer", "capabilities"]) | ("GET", ["v1", "optimizer", "status"]) => {
+            json_response(200, &optimizer_capabilities_payload())
+        }
         ("GET", ["whoami"]) => json_response(
             200,
             &service_identity_payload(config, &runtime.service_url, &runtime.started_at, None),
@@ -1522,6 +1529,9 @@ fn route_request(request: HttpRequest, runtime: GepaServiceRuntime) -> HttpRespo
         ("GET", ["runs"]) => result_response(list_runs(config, &query), 200),
         ("GET", ["runs", run_id]) => run_response(config, run_id),
         ("GET", ["runs", run_id, "state"]) => run_state_response(config, run_id),
+        ("GET", ["runs", run_id, "optimizer-events"]) => {
+            optimizer_events_response(config, run_id, &query)
+        }
         ("GET", ["runs", run_id, "limits"]) => run_limits_response(config, run_id),
         ("GET", ["runs", run_id, "timings"]) => run_timings_response(config, run_id),
         ("GET", ["runs", run_id, "stats"]) => run_stats_response(config, run_id),
@@ -1583,6 +1593,25 @@ fn route_request(request: HttpRequest, runtime: GepaServiceRuntime) -> HttpRespo
             None,
         ),
     }
+}
+
+fn optimizer_capabilities_payload() -> Value {
+    json!({
+        "status": "ok",
+        "algorithms": ["gepa"],
+        "recipes": [
+            "gepa.banking77.smoke.v1",
+            "gepa.banking77.luna.v1",
+            "gepa.banking77.sol.v1",
+            "gepa.craftax.smoke.v1"
+        ],
+        "replay": true,
+        "cancellation": true,
+        "compatibleTemplateIds": [
+            "optimizer.gepa.live.v1",
+            "optimizer.run.v1"
+        ]
+    })
 }
 
 fn handle_websocket_connection(
@@ -2038,15 +2067,6 @@ fn scheduler_block_reason(
         });
     }
     if let Some(blocker) = active.iter().find(|request| {
-        !request.container_url.is_empty() && request.container_url == queued.container_url
-    }) {
-        return Some(SchedulerBlockReason {
-            reason: "container_exclusive_conflict".to_string(),
-            blocked_by_run_id: Some(blocker.run_id.clone()),
-            blocked_by_request_id: Some(blocker.request_id.clone()),
-        });
-    }
-    if let Some(blocker) = active.iter().find(|request| {
         !request.cache_namespace.is_empty() && request.cache_namespace == queued.cache_namespace
     }) {
         return Some(SchedulerBlockReason {
@@ -2069,7 +2089,6 @@ fn scheduler_why_not_running(block: Option<&SchedulerBlockReason>) -> &'static s
     match block.map(|block| block.reason.as_str()) {
         None => "runnable; waiting for worker tick",
         Some("manual_step") => "manual step required",
-        Some("container_exclusive_conflict") => "waiting for active run using same container",
         Some("cache_namespace_conflict") => "waiting for active run using same cache namespace",
         Some("worker_capacity") => "waiting for an idle service worker",
         Some(_) => "blocked by scheduler policy",
@@ -2634,7 +2653,7 @@ fn persist_external_stop_result(
         "best_candidate": request.best_candidate_id.as_ref().map(|candidate_id| json!({
             "candidate_id": candidate_id,
         })),
-        "cost_usd": request.cost_usd.unwrap_or(0.0),
+        "cost_usd": request.cost_usd,
         "usage": request.usage.clone(),
     });
     store.record_run_request_result(&request.request_id, &result)
@@ -4113,9 +4132,9 @@ fn metadata_status_is_429(value: Option<&Value>) -> bool {
     }
 }
 
-fn transition_usage_totals(transitions: &[TransitionRow]) -> (u64, f64) {
+fn transition_usage_totals(transitions: &[TransitionRow]) -> (u64, Option<f64>) {
     let mut total_tokens = 0u64;
-    let mut cost_usd = 0.0f64;
+    let mut cost_receipts = Vec::new();
     for row in transitions {
         if row.entity_type == "proposer_round" && row.to_state != "closed" {
             continue;
@@ -4131,7 +4150,7 @@ fn transition_usage_totals(transitions: &[TransitionRow]) -> (u64, f64) {
         if !matches!(row.entity_type.as_str(), "proposer_round" | "rollout") {
             continue;
         }
-        cost_usd += value_as_f64(row.metadata.get("cost_usd")).unwrap_or(0.0);
+        cost_receipts.push(value_as_f64(row.metadata.get("cost_usd")));
         if let Some(usage) = row.metadata.get("usage").and_then(Value::as_object) {
             total_tokens = total_tokens.saturating_add(
                 value_as_u64(usage.get("total_tokens"))
@@ -4140,7 +4159,7 @@ fn transition_usage_totals(transitions: &[TransitionRow]) -> (u64, f64) {
             );
         }
     }
-    (total_tokens, cost_usd)
+    (total_tokens, fold_reported_cost(cost_receipts))
 }
 
 fn value_as_f64(value: Option<&Value>) -> Option<f64> {
@@ -4224,7 +4243,7 @@ fn project_run_state(store: &WorkspaceStore, request: &WorkspaceRunRequestStatus
             "best_candidate_id": request.best_candidate_id,
             "candidate_count": 0,
             "rollout_count": 0,
-            "cost_usd": request.cost_usd.unwrap_or(0.0),
+            "cost_usd": request.cost_usd,
             "usage": request.usage,
             "pending": {
                 "job_id": Value::Null,
@@ -4425,9 +4444,7 @@ fn project_usage(usage: &Value, cost_usd: Option<f64>) -> Value {
     json!({
         "input_tokens": usage_u64(usage, &["input_tokens", "prompt_tokens", "prompt"]),
         "output_tokens": usage_u64(usage, &["output_tokens", "completion_tokens", "completion"]),
-        "cost_usd": cost_usd
-            .or_else(|| usage.get("cost_usd").and_then(Value::as_f64))
-            .unwrap_or(0.0),
+        "cost_usd": cost_usd.or_else(|| usage.get("cost_usd").and_then(Value::as_f64)),
     })
 }
 
@@ -4894,6 +4911,171 @@ fn event_feed_path_for_request(request: &WorkspaceRunRequestStatus) -> PathBuf {
         .and_then(Value::as_str)
         .map(PathBuf::from)
         .unwrap_or_else(|| Path::new(&request.run_dir).join("events.jsonl"))
+}
+
+fn optimizer_events_response(
+    config: &GepaServiceConfig,
+    run_id: &str,
+    query: &BTreeMap<String, String>,
+) -> HttpResponse {
+    match read_optimizer_events_for_run(config, run_id, query) {
+        Ok(value) => json_response(200, &value),
+        Err(OptimizerError::Config(message)) if message.starts_with("run_not_found:") => {
+            run_not_found_response(run_id)
+        }
+        Err(error) => optimizer_error_response(error),
+    }
+}
+
+fn read_optimizer_events_for_run(
+    config: &GepaServiceConfig,
+    run_id: &str,
+    query: &BTreeMap<String, String>,
+) -> Result<Value> {
+    let store = WorkspaceStore::open_existing(&config.db_path)?;
+    let request = store.run_request_by_run_id(run_id)?;
+    let after_sequence = strict_query_u64(query, "after_sequence", 0)?;
+    let limit = strict_query_u64(query, "limit", 500)?.clamp(1, 2_000) as usize;
+    let (path, terminal) = if let Some(request) = request.as_ref() {
+        (
+            optimizer_event_feed_path_for(event_feed_path_for_request(request)),
+            is_terminal_status(project_request_status(&request.status)),
+        )
+    } else if let Some((event_feed_path, run_dir)) = indexed_run_paths(run_id)? {
+        (
+            optimizer_event_feed_path_for(event_feed_path),
+            indexed_run_is_terminal(&run_dir)?,
+        )
+    } else {
+        return Err(OptimizerError::Config(format!(
+            "run_not_found: no Run with id {run_id:?}"
+        )));
+    };
+    let events = read_optimizer_event_page(&path, run_id, after_sequence, limit)?;
+    let next_sequence = events
+        .last()
+        .and_then(|event| event.sequence_number)
+        .unwrap_or(after_sequence);
+    Ok(json!({
+        "schema_version": "optimizer_event_page.v1",
+        "run_id": run_id,
+        "log_id": format!("optimizer_event.v1:{run_id}"),
+        "after_sequence": after_sequence,
+        "next_sequence": next_sequence,
+        "terminal": terminal,
+        "events": events,
+    }))
+}
+
+fn indexed_run_paths(run_id: &str) -> Result<Option<(PathBuf, PathBuf)>> {
+    let index_path = crate::gepa_home_dir().join("index.jsonl");
+    if !index_path.is_file() {
+        return Ok(None);
+    }
+    let file =
+        fs::File::open(&index_path).map_err(|source| OptimizerError::io(&index_path, source))?;
+    let mut found = None;
+    for line in BufReader::new(file).lines() {
+        let line = line.map_err(|source| OptimizerError::io(&index_path, source))?;
+        let Ok(entry) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if entry.get("schema").and_then(Value::as_str) != Some("synth.gepa_run_index.v1")
+            || entry.get("run_id").and_then(Value::as_str) != Some(run_id)
+        {
+            continue;
+        }
+        let Some(event_feed_path) = entry.get("event_feed_path").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(run_dir) = entry.get("run_dir").and_then(Value::as_str) else {
+            continue;
+        };
+        found = Some((PathBuf::from(event_feed_path), PathBuf::from(run_dir)));
+    }
+    Ok(found)
+}
+
+fn indexed_run_is_terminal(run_dir: &Path) -> Result<bool> {
+    let path = run_dir.join("result_manifest.json");
+    if !path.is_file() {
+        return Ok(false);
+    }
+    let manifest: Value = serde_json::from_str(
+        &fs::read_to_string(&path).map_err(|source| OptimizerError::io(&path, source))?,
+    )?;
+    let status = manifest
+        .get("status")
+        .or_else(|| manifest.get("final_status"))
+        .or_else(|| manifest.get("run_status"))
+        .and_then(Value::as_str)
+        .unwrap_or("terminal");
+    Ok(matches!(
+        normalize_key(status).as_str(),
+        "terminal" | "completed" | "succeeded" | "failed" | "cancelled"
+    ))
+}
+
+fn strict_query_u64(query: &BTreeMap<String, String>, key: &str, default: u64) -> Result<u64> {
+    match query.get(key) {
+        None => Ok(default),
+        Some(value) => value
+            .parse::<u64>()
+            .map_err(|_| OptimizerError::Config(format!("{key} must be a non-negative integer"))),
+    }
+}
+
+fn read_optimizer_event_page(
+    path: &Path,
+    run_id: &str,
+    after_sequence: u64,
+    limit: usize,
+) -> Result<Vec<OptimizerEvent>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let file = fs::File::open(path).map_err(|source| OptimizerError::io(path, source))?;
+    let reader = BufReader::new(file);
+    let mut page = Vec::new();
+    let mut previous_sequence = 0;
+    for (index, line) in reader.lines().enumerate() {
+        let line = line.map_err(|source| OptimizerError::io(path, source))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let event: OptimizerEvent = serde_json::from_str(&line).map_err(|source| {
+            OptimizerError::Invariant(format!(
+                "invalid optimizer event at {}:{}: {source}",
+                path.display(),
+                index + 1
+            ))
+        })?;
+        if event.run_id != run_id {
+            return Err(OptimizerError::Invariant(format!(
+                "optimizer event for run {:?} appeared in spool for run {:?}",
+                event.run_id, run_id
+            )));
+        }
+        let sequence = event.sequence_number.ok_or_else(|| {
+            OptimizerError::Invariant(format!(
+                "optimizer event at {}:{} has no sequence_number",
+                path.display(),
+                index + 1
+            ))
+        })?;
+        if sequence == 0 || sequence <= previous_sequence {
+            return Err(OptimizerError::Invariant(format!(
+                "optimizer event sequence must be positive and strictly increasing at {}:{}",
+                path.display(),
+                index + 1
+            )));
+        }
+        previous_sequence = sequence;
+        if sequence > after_sequence && page.len() < limit {
+            page.push(event);
+        }
+    }
+    Ok(page)
 }
 
 fn public_event_kind(event_type: &str, raw: &Value) -> Option<&'static str> {
@@ -5576,3 +5758,118 @@ struct HttpResponse {
 }
 
 const GEPA_SERVICE_OPENAPI_YAML: &str = include_str!("../openapi/gepa-service-v1.yaml");
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use synth_optimizer_platform::ObservationOptimizerAlgorithm;
+
+    fn scratch_path(name: &str) -> PathBuf {
+        let suffix = now_millis();
+        std::env::temp_dir().join(format!("synth_gepa_service_{name}_{suffix}.jsonl"))
+    }
+
+    #[test]
+    fn service_refuses_singleton_worker() {
+        assert_eq!(
+            normalize_service_worker_count(0),
+            MIN_CONCURRENT_GEPA_WORKERS
+        );
+        assert_eq!(
+            normalize_service_worker_count(1),
+            MIN_CONCURRENT_GEPA_WORKERS
+        );
+        assert_eq!(normalize_service_worker_count(2), 2);
+        assert_eq!(
+            service_worker_id("synth-gepa-service", 2, 0),
+            "synth-gepa-service-slot-00"
+        );
+        assert_eq!(
+            service_worker_id("synth-gepa-service", 2, 1),
+            "synth-gepa-service-slot-01"
+        );
+        assert_ne!(
+            service_worker_id("synth-gepa-service", 2, 0),
+            service_worker_id("synth-gepa-service", 2, 1)
+        );
+    }
+
+    #[test]
+    fn workshop_capability_handshake_is_complete() {
+        let capabilities = optimizer_capabilities_payload();
+        for field in ["algorithms", "recipes", "compatibleTemplateIds"] {
+            let values = capabilities[field].as_array().unwrap();
+            assert!(!values.is_empty());
+            assert!(values.iter().all(Value::is_string));
+        }
+        assert_eq!(capabilities["replay"], true);
+        assert_eq!(capabilities["cancellation"], true);
+        assert!(capabilities["recipes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|recipe| recipe == "gepa.banking77.smoke.v1"));
+    }
+
+    #[test]
+    fn optimizer_event_pages_are_cursor_idempotent_and_run_isolated() {
+        let path = scratch_path("cursor");
+        let events = [1, 2, 3]
+            .into_iter()
+            .map(|sequence| {
+                OptimizerEvent::from_gepa_stream(
+                    sequence,
+                    "optimizer.candidate.updated",
+                    "advanced",
+                    format!("2026-08-12T00:00:0{sequence}Z"),
+                    json!({"candidate_id": format!("candidate_{sequence}")}),
+                    "gepa_luna",
+                    ObservationOptimizerAlgorithm::Gepa,
+                )
+            })
+            .map(|event| serde_json::to_string(&event).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&path, format!("{events}\n")).unwrap();
+
+        let first = read_optimizer_event_page(&path, "gepa_luna", 1, 500).unwrap();
+        let retry = read_optimizer_event_page(&path, "gepa_luna", 1, 500).unwrap();
+        let tail = read_optimizer_event_page(&path, "gepa_luna", 2, 500).unwrap();
+        assert_eq!(
+            first
+                .iter()
+                .filter_map(|event| event.sequence_number)
+                .collect::<Vec<_>>(),
+            vec![2, 3]
+        );
+        assert_eq!(
+            first
+                .iter()
+                .map(|event| &event.event_type)
+                .collect::<Vec<_>>(),
+            retry
+                .iter()
+                .map(|event| &event.event_type)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(tail.len(), 1);
+        assert_eq!(tail[0].sequence_number, Some(3));
+        assert!(read_optimizer_event_page(&path, "gepa_sol", 0, 500).is_err());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn optimizer_event_page_rejects_missing_or_non_monotonic_sequences() {
+        let path = scratch_path("bad_sequence");
+        fs::write(
+            &path,
+            concat!(
+                "{\"schema_version\":\"optimizer_event.v1\",\"type\":\"optimizer.run.started\",\"sequence_number\":2,\"run_id\":\"gepa_luna\",\"algorithm_id\":\"gepa\",\"slot\":\"optimizer_run\",\"created_at\":\"2026-08-12T00:00:00Z\",\"delta\":{},\"raw\":{}}\n",
+                "{\"schema_version\":\"optimizer_event.v1\",\"type\":\"optimizer.run.completed\",\"sequence_number\":1,\"run_id\":\"gepa_luna\",\"algorithm_id\":\"gepa\",\"slot\":\"optimizer_run\",\"created_at\":\"2026-08-12T00:00:01Z\",\"delta\":{},\"raw\":{}}\n"
+            ),
+        )
+        .unwrap();
+        assert!(read_optimizer_event_page(&path, "gepa_luna", 0, 500).is_err());
+        let _ = fs::remove_file(path);
+    }
+}

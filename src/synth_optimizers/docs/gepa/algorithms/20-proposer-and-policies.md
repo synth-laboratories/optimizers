@@ -18,7 +18,7 @@ The proposer is a Codex app-server. Configure it under `[proposer]` (TOML) or
 | `runtime_substrate` | `local` (host) or `docker` (`[proposer.docker].image`). |
 | `provider` | `openai`, `openrouter`, `deepseek`. |
 | `auth_mode` | `auto`, `api_key`, `chatgpt`, or `host`. |
-| `model` | e.g. `gpt-5.4-nano`, `gpt-5.4-mini`, `gpt-5.5`. |
+| `model` | e.g. `gpt-5.4-mini`, `gpt-5.5`, `gpt-5.6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`. |
 | `reasoning_effort` | `none` / `low` / `medium` / `high`. |
 | `execution_mode` | `local_process` / `stdio` (JSON-RPC over stdin/stdout) or `websocket` / `ws`. |
 | `service_tier` | `default` or `fast` (Codex Fast mode; requires ChatGPT auth). |

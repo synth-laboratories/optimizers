@@ -1,0 +1,82 @@
+[run]
+run_id = "nano_codex_gepa_banking77_proof_v6"
+output_dir = ".out/banking77_replay"
+seed = 0
+
+[container]
+url = "http://127.0.0.1:8875"
+command = [
+  "/usr/bin/env",
+  "BANKING77_TRAIN_SAMPLE=8",
+  "BANKING77_TEST_SAMPLE=4",
+  "BANKING77_POLICY_CONCURRENCY=4",
+  "BANKING77_POLICY_MODEL=gpt-4.1-nano",
+  "BANKING77_POLICY_API_KEY_ENV=OPENAI_API_KEY",
+  "uv", "run", "--project", "banking77_container",
+  "python", "banking77_container/synth_service_app.py",
+  "--host", "127.0.0.1", "--port", "8875",
+]
+cwd = "../../../synth-cookbooks-public/cookbooks/optimizers/gepa"
+startup_timeout_seconds = 60
+
+[taskset]
+train_split = "train"
+heldout_split = "test"
+train_ids = ["0", "1", "2"]
+heldout_ids = ["100"]
+
+[candidate]
+target_modules = ["stage2_system"]
+
+[seed_candidate]
+stage2_system = "Classify the customer banking query into exactly one Banking77 intent. Return only one allowed label with exact spelling."
+
+[policy]
+provider = "openai"
+model = "gpt-4.1-nano"
+api_key_env = "OPENAI_API_KEY"
+max_tokens = 16
+
+[proposer]
+backend = "codex_app_server"
+runtime_substrate = "local"
+execution_mode = "local_process"
+provider = "openai"
+auth_mode = "chatgpt"
+copy_host_auth = true
+model = "gpt-5.4-mini"
+reasoning_effort = "medium"
+timeout_seconds = 900
+sandbox_mode = "workspace-write"
+approval_policy = "never"
+
+[proposer.nano_codex]
+enabled = true
+mode = "replay"
+record_dir = ".out/nano-replay-v6"
+replay_dir = ".out/nano-live-v6"
+max_turns_per_session = 16
+allowed_tools = ["search", "read", "apply_patch", "exec"]
+
+[gepa]
+max_generations = 2
+proposals_per_generation = 1
+minibatch_size = 3
+max_total_rollouts = 28
+max_cost_usd = 0.0
+
+[gepa.pipeline]
+mode = "async_pipelined"
+max_in_flight_candidates = 1
+
+[gepa.pipeline.workers]
+rollout = 3
+
+[gepa.task_pools]
+pareto = ["0", "1", "2"]
+minibatch = ["0", "1", "2"]
+reflection = ["0", "1", "2"]
+heldout = ["100"]
+
+[cache]
+mode = "off"

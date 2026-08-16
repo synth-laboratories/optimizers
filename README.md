@@ -21,12 +21,52 @@ contract.
 | --- | --- | --- | --- |
 | **GEPA** — reflective prompt evolution | Supported | [`rust/crates/synth_gepa/`](rust/crates/synth_gepa/) (Rust engine + service), [`src/synth_optimizers/gepa.py`](src/synth_optimizers/gepa.py) (Python API), [`skills/gepa/SKILL.md`](skills/gepa/SKILL.md) (agent runbook) | [Paper](https://arxiv.org/abs/2507.19457) · [gepa-ai docs](https://gepa-ai.github.io/gepa/) · bundled HTML via `gepa console` |
 | **GELO** — Go-Explore in prompt space (hosted) | Hosted submit | [`src/synth_optimizers/gelo.py`](src/synth_optimizers/gelo.py), [`skills/gelo/SKILL.md`](skills/gelo/SKILL.md), [`GELO_HOSTED_SDK_CLI_SPEC.md`](GELO_HOSTED_SDK_CLI_SPEC.md) | Bundled HTML via `gelo console` — [`src/synth_optimizers/docs/gelo/`](src/synth_optimizers/docs/gelo/) |
+| **SFT** — supervised fine-tuning (hosted) | Hosted submit | `HostedOptimizerClient.submit_sft()` / `submit_sft()` | Executed by the private Optimizers-beta runtime; the public client uses the shared hosted run API. |
 
 The shared [`synth_optimizer_platform`](rust/crates/synth_optimizer_platform/)
 crate is the substrate for optimizer implementations; GEPA is the first public
-local algorithm; GELO is hosted-only in the public package and runs on Synth
-hosted optimizer infrastructure.
-Hosted GEPA/GELO submission is covered in [`docs/hosted-optimizers.md`](docs/hosted-optimizers.md).
+local algorithm; GELO and SFT are hosted-only in the public package and run on
+Synth hosted optimizer infrastructure. Hosted GEPA, GELO, and SFT submission is
+covered in [`docs/hosted-optimizers.md`](docs/hosted-optimizers.md).
+
+### Hosted SFT control plane
+
+SFT is served by `synth-optimizers`; Optimizers-beta is an internal training executor,
+not a Workshop-facing API. For local QA, start beta with its executor token and then
+start the public façade:
+
+```bash
+# In the Optimizers-beta checkout:
+OPTIMIZERS_BETA_SERVICE_TOKEN=local-dev-token \
+  cargo run --bin optimizers-beta -- serve --bind 127.0.0.1:8879
+
+# In this checkout:
+export SYNTH_OPTIMIZERS_BETA_URL=http://127.0.0.1:8879
+export OPTIMIZERS_BETA_SERVICE_TOKEN=local-dev-token  # held only by the façade
+export SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN=local-qa-token  # Workshop / CLI callers
+synth-optimizers sft service --db .sft/service.sqlite --bind 127.0.0.1:8878
+```
+
+Submit, inspect, and cancel only through the façade:
+
+```bash
+synth-optimizers sft validate --config sft.toml
+synth-optimizers sft submit --config sft.toml --follow
+synth-optimizers sft watch RUN_ID --events
+synth-optimizers sft cancel RUN_ID
+```
+
+The façade keeps executor-only workspace paths and service credentials private. Its
+artifact proxy is available at `/v1/runs/RUN_ID/artifacts/{manifest,events}`.
+
+## Future hosted-algorithm compatibility
+
+MAPO, OHCO, Online Reflexion, and MARL prompt-optimization identifiers are retained
+in [`future_algorithms.py`](src/synth_optimizers/future_algorithms.py) so clients can
+parse hosted catalogs and historical runs. They are **not supported public optimizer
+algorithms**: they carry no local executor, cookbook, or release commitment. New
+public algorithms graduate into the table above only after their public API contract,
+replay semantics, and end-to-end evidence are ready.
 
 ## Install
 
@@ -94,7 +134,7 @@ with container.serve() as handle:
     ).execute()
 
 print(result.best_candidate)
-print(f"cost: ${result.cost_usd:.2f}")
+print("cost: unknown" if result.cost_usd is None else f"cost: ${result.cost_usd:.2f}")
 ```
 
 Or load TOML directly: `GepaRun.from_toml("gepa.toml").execute()`.
@@ -151,7 +191,8 @@ policy can stay on OpenAI. See [skills/gepa/SKILL.md](skills/gepa/SKILL.md) for 
 
 - **OpenAI API key proposer** — run-local Codex home; does not use your host `~/.codex` login.
 - **OpenRouter proposer** — provider-aware Codex config and base URL; OpenRouter works for policy rollouts too.
-- **ChatGPT subscription proposer** — `auth_mode = "chatgpt"` with required `codex_home` (OAuth via [Codex CLI](https://github.com/openai/codex) or [opencode-openai-codex-auth](https://github.com/numman-ali/opencode-openai-codex-auth)); models include `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.3-codex-spark`, `gpt-5.5`; proposer usage is $0, policy rollouts still bill normally.
+- **ChatGPT subscription proposer** — `auth_mode = "chatgpt"` with required `codex_home` (OAuth via [Codex CLI](https://github.com/openai/codex) or [opencode-openai-codex-auth](https://github.com/numman-ali/opencode-openai-codex-auth)); models include `gpt-5.4-mini`, `gpt-5.4`, `gpt-5.3-codex`, `gpt-5.3-codex-spark`, `gpt-5.5`, `gpt-5.6-luna`, `gpt-5.6-sol`, and `gpt-5.6-terra`; proposer usage is $0, policy rollouts still bill normally.
+- **Nano-Codex proposer harness** — explicit `[proposer.nano_codex]` opt-in keeps one ChatGPT-authenticated app-server session warm across compatible GEPA generations, caches static task/program context by content digest, records monotonic JSONL events and typed turn receipts, and can replay receipts with zero live model or tool calls. See [`dev_examples/nano_codex_gepa/`](dev_examples/nano_codex_gepa/).
 - **Live usage** — `SYNTH_OPTIMIZERS_TERMINAL=1` prints running token and cost splits (`usage total=… policy=… proposer=…`).
 - **Docker proposer** — `runtime_substrate = "docker"` with `[proposer.docker].image`; workspaces stage under `~/.cache/synth-gepa-docker-workspaces/`, sync back, then cleanup; image: `docker/codex-gepa-proposer/Dockerfile`.
 - **Gemini and other policy providers** — supported on the policy side via `[policy].provider`, `base_url`, and container env keys; proposer stays Codex.

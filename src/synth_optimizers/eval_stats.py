@@ -44,7 +44,7 @@ class RunStats:
     rollout_count: int
     proposer_round_count: int
     total_tokens: int
-    cost_usd: float
+    cost_usd: float | None
 
     @property
     def minibatch_pass_rate(self) -> float | None:
@@ -133,7 +133,7 @@ def eval_stats_for_run(run_dir: Path) -> RunStats:
     upstream_429_count = sum(1 for row in rollout_terminal_rows if transition_has_429(row))
 
     total_tokens = 0
-    cost_usd = 0.0
+    cost_receipts: list[float | None] = []
     for row in transitions:
         if row.entity_type == "proposer_round" and row.to_state != "closed":
             continue
@@ -141,7 +141,10 @@ def eval_stats_for_run(run_dir: Path) -> RunStats:
             continue
         if row.entity_type not in {"proposer_round", "rollout"}:
             continue
-        cost_usd += float(row.metadata.get("cost_usd") or 0.0)
+        raw_cost = row.metadata.get("cost_usd")
+        cost_receipts.append(
+            float(raw_cost) if isinstance(raw_cost, (int, float)) else None
+        )
         usage = row.metadata.get("usage")
         if isinstance(usage, dict):
             total_tokens += int(usage.get("total_tokens") or usage.get("totalTokens") or 0)
@@ -167,7 +170,11 @@ def eval_stats_for_run(run_dir: Path) -> RunStats:
         rollout_count=len(rollout_terminal_rows),
         proposer_round_count=len({row.entity_id for row in transitions if row.entity_type == "proposer_round"}),
         total_tokens=total_tokens,
-        cost_usd=cost_usd,
+        cost_usd=(
+            sum(cost for cost in cost_receipts if cost is not None)
+            if cost_receipts and all(cost is not None for cost in cost_receipts)
+            else None
+        ),
     )
 
 
@@ -382,7 +389,8 @@ def render_eval_stats_table(stats: list[RunStats]) -> str:
         lines.append(
             f"{row.run_id}: wall={row.wall_seconds:.1f}s rollouts={row.rollout_count} "
             f"candidates={row.candidate_count} mb_pass={row.minibatch_passed} "
-            f"tokens={row.total_tokens} cost=${row.cost_usd:.4f} "
+            f"tokens={row.total_tokens} "
+            f"cost={'unknown' if row.cost_usd is None else f'${row.cost_usd:.4f}'} "
             f"generations={generation_count_hint(row.run_dir)}"
         )
     return "\n".join(lines)

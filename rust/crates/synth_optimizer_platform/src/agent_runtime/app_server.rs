@@ -16,6 +16,7 @@ use crate::{OptimizerError, ProposerConfig, Result};
 
 use super::codex_home::{persist_refreshed_chatgpt_codex_auth, prepare_proposer_codex_launch};
 use super::jsonrpc_read_window::JsonRpcReadWindow;
+use super::session::AgentMessageObserver;
 use super::substrate::normalize_execution_mode;
 
 pub struct CodexAppServerLaunch<'a> {
@@ -50,6 +51,7 @@ pub struct CodexAppServerClient {
     next_id: u64,
     sent_messages: Vec<Value>,
     received_messages: Vec<Value>,
+    message_observer: Option<AgentMessageObserver>,
 }
 
 impl CodexAppServerClient {
@@ -132,6 +134,7 @@ impl CodexAppServerClient {
             next_id: 1,
             sent_messages: Vec::new(),
             received_messages: Vec::new(),
+            message_observer: None,
         })
     }
 
@@ -192,6 +195,7 @@ impl CodexAppServerClient {
             next_id: 1,
             sent_messages: Vec::new(),
             received_messages: Vec::new(),
+            message_observer: None,
         })
     }
 
@@ -205,6 +209,10 @@ impl CodexAppServerClient {
 
     pub fn process_id(&self) -> u32 {
         self.child.id()
+    }
+
+    pub fn set_message_observer(&mut self, observer: Option<AgentMessageObserver>) {
+        self.message_observer = observer;
     }
 
     pub fn send_request(&mut self, method: &str, params: Value) -> Result<u64> {
@@ -323,6 +331,16 @@ impl CodexAppServerClient {
         timeout: Duration,
         message_stall_timeout: Duration,
     ) -> Result<Value> {
+        self.wait_for_turn_with_observer(turn_id, timeout, message_stall_timeout, None)
+    }
+
+    pub fn wait_for_turn_with_observer(
+        &mut self,
+        turn_id: &str,
+        timeout: Duration,
+        message_stall_timeout: Duration,
+        message_observer: Option<&super::session::AgentMessageObserver>,
+    ) -> Result<Value> {
         let window = JsonRpcReadWindow::new(timeout, message_stall_timeout);
         loop {
             if window.overall_expired() {
@@ -344,6 +362,9 @@ impl CodexAppServerClient {
                     ));
                 }
             };
+            if let Some(observer) = message_observer {
+                observer(&message)?;
+            }
             let method = message
                 .get("method")
                 .and_then(Value::as_str)
@@ -360,6 +381,23 @@ impl CodexAppServerClient {
                 return Ok(message);
             }
         }
+    }
+
+    pub fn interrupt_turn(
+        &mut self,
+        thread_id: &str,
+        turn_id: &str,
+        timeout: Duration,
+        message_stall_timeout: Duration,
+    ) -> Result<Value> {
+        let request_id = self.send_request(
+            "turn/interrupt",
+            serde_json::json!({
+                "threadId": thread_id,
+                "turnId": turn_id,
+            }),
+        )?;
+        self.wait_for_response(request_id, timeout, message_stall_timeout)
     }
 
     pub fn terminate(&mut self) -> Result<()> {
@@ -432,6 +470,9 @@ impl CodexAppServerClient {
             Ok(result) => match result {
                 Ok(message) => {
                     self.received_messages.push(message.clone());
+                    if let Some(observer) = &self.message_observer {
+                        observer(&message)?;
+                    }
                     Ok(message)
                 }
                 Err(error) => Err(error),

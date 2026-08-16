@@ -33,7 +33,10 @@ pub struct CodexTurnRequest<'a> {
     pub turn_start_params: Value,
     pub timeout: Duration,
     pub message_stall_timeout: Duration,
+    pub message_observer: Option<AgentMessageObserver>,
 }
+
+pub type AgentMessageObserver = Arc<dyn Fn(&Value) -> Result<()> + Send + Sync>;
 
 pub struct CodexCommandExecRequest<'a> {
     pub run_id: &'a str,
@@ -312,8 +315,12 @@ fn run_codex_jsonrpc_turn_inner(
         Duration::from_secs(60),
         request.message_stall_timeout,
     )?;
-    let final_turn =
-        client.wait_for_turn(&turn_id, request.timeout, request.message_stall_timeout)?;
+    let final_turn = client.wait_for_turn_with_observer(
+        &turn_id,
+        request.timeout,
+        request.message_stall_timeout,
+        request.message_observer.as_ref(),
+    )?;
     super::app_server::ensure_turn_completed(&final_turn)?;
     let usage = usage_from_messages(client.received_messages(), &turn_id)
         .or_else(|| usage_from_message(&final_turn));

@@ -1,27 +1,27 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::env;
 use std::path::PathBuf;
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use synth_optimizer_platform::{
-    BudgetReservationRecord, ContainerClient, FailurePayload, GepaPipelineMode, OptimizerError,
+    fold_reported_cost, BudgetReservationRecord, ContainerClient, FailurePayload, OptimizerError,
     OptimizerJob, OptimizerJobKind, OptimizerJobStatus, PromptProgram, RequestCache, Result,
     RolloutResponse, RuntimeEffectInput, RuntimeEffectRecord, SynthOptimizerConfig, WorkspaceStore,
 };
 
 use crate::{
     cached_profiled_call_with_access, record_runtime_effect_completed, run_proposer,
-    CandidateRecord, ProposedCandidate, RuntimeEffectCompletionInput, UsageTotals,
-    GEPA_ALGORITHM_ID,
+    usage_completion_tokens, usage_prompt_tokens, CandidateRecord, ProposedCandidate,
+    RuntimeEffectCompletionInput, UsageTotals, GEPA_ALGORITHM_ID,
 };
 
 pub const GEPA_RUNTIME_JOB_SCHEMA_VERSION: &str = "gepa_runtime_job.v1";
 const DEFAULT_RUNTIME_WORKER_ID: &str = "gepa_inline_executor";
 const DEFAULT_RUNTIME_LEASE_SECONDS: u64 = 3600;
-const DEFAULT_ROLLOUT_CONCURRENCY: usize = 128;
 const DEFAULT_ROLLOUT_HTTP_RETRIES: usize = 2;
 const DEFAULT_ROLLOUT_RETRY_BACKOFF_MS: u64 = 200;
 const DEEPSEEK_INPUT_USD_PER_MILLION: f64 = 0.27;
@@ -249,7 +249,59 @@ impl RuntimeEffectDispatchPayload {
 pub enum RuntimeEffectOutcome {
     Proposer(Box<RuntimeProposerOutcome>),
     Rollout(Box<RuntimeRolloutOutcome>),
-    RolloutBatch(Vec<RuntimeRolloutOutcome>),
+    RolloutBatch(RuntimeRolloutBatchOutcome),
+}
+
+#[derive(Clone, Debug)]
+pub struct RuntimeRolloutBatchOutcome {
+    pub outcomes: Vec<RuntimeRolloutOutcome>,
+    pub failures: Vec<RuntimeRolloutFailure>,
+}
+
+impl std::ops::Deref for RuntimeRolloutBatchOutcome {
+    type Target = Vec<RuntimeRolloutOutcome>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.outcomes
+    }
+}
+
+impl<'a> IntoIterator for &'a RuntimeRolloutBatchOutcome {
+    type Item = &'a RuntimeRolloutOutcome;
+    type IntoIter = std::slice::Iter<'a, RuntimeRolloutOutcome>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.outcomes.iter()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct RuntimeRolloutFailure {
+    pub candidate_id: String,
+    pub stage: String,
+    pub example_id: String,
+    pub failure: FailurePayload,
+}
+
+#[derive(Clone, Debug)]
+pub enum RuntimeRolloutProgress {
+    Started {
+        active_workers: usize,
+        semaphore_size: usize,
+        queued: usize,
+    },
+    Completed {
+        outcome: RuntimeRolloutOutcome,
+        active_workers: usize,
+        semaphore_size: usize,
+        queued: usize,
+    },
+    Failed {
+        failure: RuntimeRolloutFailure,
+        active_workers: usize,
+        semaphore_size: usize,
+        queued: usize,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -258,6 +310,9 @@ pub struct RuntimeProposerOutcome {
     pub proposals: Vec<ProposedCandidate>,
     pub usage: UsageTotals,
     pub cost_usd: f64,
+    /// Provider-reported or explicitly priced cost. `None` means unknown;
+    /// `cost_usd` remains the internal budget accumulator only.
+    pub reported_cost_usd: Option<f64>,
     pub backend: String,
     pub runtime_substrate: String,
     pub workspace: Option<String>,
@@ -274,6 +329,7 @@ pub struct RuntimeRolloutOutcome {
     pub reward: f64,
     pub usage: UsageTotals,
     pub cost_usd: f64,
+    pub reported_cost_usd: Option<f64>,
     pub cache_key: String,
     pub cache_hit: bool,
     pub stage: String,
@@ -289,6 +345,7 @@ pub struct GepaRuntimeExecutor<'a> {
     config: &'a SynthOptimizerConfig,
     client: &'a ContainerClient,
     executor_config: RuntimeEffectExecutorConfig,
+    progress_observer: Option<&'a mut dyn FnMut(&RuntimeRolloutProgress) -> Result<()>>,
 }
 
 pub fn execute_one_pending_optimizer_job_from_run_workspace(
@@ -301,6 +358,28 @@ pub fn execute_one_pending_optimizer_job_from_run_workspace(
     executor_config: RuntimeEffectExecutorConfig,
 ) -> Result<RuntimeEffectOutcome> {
     let mut executor = GepaRuntimeExecutor::new(workspace, cache, config, client, executor_config);
+    executor.execute_one_pending_optimizer_job(run_id, job_id)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_one_pending_optimizer_job_with_progress(
+    workspace: &WorkspaceStore,
+    cache: &mut RequestCache,
+    config: &SynthOptimizerConfig,
+    client: &ContainerClient,
+    run_id: &str,
+    job_id: &str,
+    executor_config: RuntimeEffectExecutorConfig,
+    progress_observer: &mut dyn FnMut(&RuntimeRolloutProgress) -> Result<()>,
+) -> Result<RuntimeEffectOutcome> {
+    let mut executor = GepaRuntimeExecutor {
+        workspace,
+        cache,
+        config,
+        client,
+        executor_config,
+        progress_observer: Some(progress_observer),
+    };
     executor.execute_one_pending_optimizer_job(run_id, job_id)
 }
 
@@ -318,6 +397,7 @@ impl<'a> GepaRuntimeExecutor<'a> {
             config,
             client,
             executor_config,
+            progress_observer: None,
         }
     }
 
@@ -388,7 +468,7 @@ impl<'a> GepaRuntimeExecutor<'a> {
             Ok(outcome) => outcome,
             Err(error) => {
                 if let Some(retry) =
-                    self.schedule_rollout_retry_if_allowed(&running_job, &lease_id, &error)?
+                    self.schedule_runtime_retry_if_allowed(&running_job, &lease_id, &error)?
                 {
                     return Err(retry);
                 }
@@ -402,7 +482,8 @@ impl<'a> GepaRuntimeExecutor<'a> {
             }
         };
         let wall_seconds = dispatch_started.elapsed().as_secs_f64();
-        let (usage, cost_usd, rollout_count, mut metadata) = terminal_metadata(&outcome);
+        let (usage, cost_usd, reported_cost_usd, rollout_count, mut metadata) =
+            terminal_metadata(&outcome);
         metadata.insert("wall_seconds".to_string(), json!(wall_seconds));
         if let Some(estimated_serial_wall_seconds) = metadata
             .get("estimated_serial_wall_seconds")
@@ -428,6 +509,7 @@ impl<'a> GepaRuntimeExecutor<'a> {
                 json!(self.config.gepa.rollout_submission_mode),
             );
         }
+        persist_runtime_outcome_before_completion(self.workspace, run_id, job_id, &outcome)?;
         record_runtime_effect_completed(
             self.workspace,
             RuntimeEffectCompletionInput {
@@ -435,6 +517,7 @@ impl<'a> GepaRuntimeExecutor<'a> {
                 reservation: &reservation,
                 status: "completed",
                 cost_usd,
+                reported_cost_usd,
                 usage: &usage,
                 rollout_count,
                 failure: None,
@@ -445,14 +528,13 @@ impl<'a> GepaRuntimeExecutor<'a> {
         Ok(outcome)
     }
 
-    fn schedule_rollout_retry_if_allowed(
+    fn schedule_runtime_retry_if_allowed(
         &self,
         job: &OptimizerJob,
         lease_id: &str,
         error: &OptimizerError,
     ) -> Result<Option<OptimizerError>> {
-        if !matches!(job.kind, OptimizerJobKind::Rollout)
-            || !is_retryable_rollout_runtime_error(error)
+        if !is_retryable_runtime_job_error(job, error)
             || job.attempt >= job.retry_policy.max_attempts
         {
             return Ok(None);
@@ -473,8 +555,9 @@ impl<'a> GepaRuntimeExecutor<'a> {
             return Ok(None);
         };
         Ok(Some(OptimizerError::Failed(format!(
-            "retryable rollout runtime failure scheduled for retry job_id={} attempt={}/{} next_retry_at={}",
+            "retryable runtime failure scheduled for retry job_id={} kind={} attempt={}/{} next_retry_at={}",
             updated.job_id,
+            updated.kind.as_str(),
             updated.attempt.saturating_add(1),
             updated.retry_policy.max_attempts,
             updated.next_retry_at.unwrap_or_else(|| "now".to_string())
@@ -579,14 +662,14 @@ impl<'a> GepaRuntimeExecutor<'a> {
         if let Some(response_usage) = response.get("usage") {
             usage.add_usage_payload(response_usage);
         }
-        let cost_usd = response
+        let reported_cost_usd = response
             .get("usage")
             .and_then(|usage| usage.get("cost_usd"))
             .or_else(|| response.get("cost_usd"))
             .and_then(Value::as_f64)
-            .filter(|value| value.is_finite() && *value > 0.0)
-            .or_else(|| proposer_static_cost_usd(self.config, &usage, &response))
-            .unwrap_or(0.0);
+            .filter(|value| value.is_finite() && *value >= 0.0)
+            .or_else(|| proposer_static_cost_usd(self.config, &usage, &response));
+        let cost_usd = reported_cost_usd.unwrap_or(0.0);
         let backend = response
             .get("backend")
             .and_then(Value::as_str)
@@ -615,6 +698,7 @@ impl<'a> GepaRuntimeExecutor<'a> {
                 proposals,
                 usage,
                 cost_usd,
+                reported_cost_usd,
                 backend,
                 runtime_substrate,
                 workspace,
@@ -655,6 +739,8 @@ impl<'a> GepaRuntimeExecutor<'a> {
             call.cache_hit,
             stage,
             example_id,
+            &self.config.policy.provider,
+            &self.config.policy.model,
         )?;
         if !outcome.cache_hit {
             outcome.dispatch_wall_seconds = Some(dispatch_wall_seconds);
@@ -669,6 +755,7 @@ impl<'a> GepaRuntimeExecutor<'a> {
         rollouts: Vec<RuntimeRolloutDispatchItem>,
     ) -> Result<RuntimeEffectOutcome> {
         let mut outcomes: Vec<Option<RuntimeRolloutOutcome>> = vec![None; rollouts.len()];
+        let mut failures = Vec::new();
         let mut misses = Vec::new();
         for (index, rollout) in rollouts.into_iter().enumerate() {
             let cache_request = rollout_cache_request(&rollout.request);
@@ -676,14 +763,24 @@ impl<'a> GepaRuntimeExecutor<'a> {
                 self.cache
                     .find_equivalent(&cache_namespace, &cache_request, &cache_profile)?
             {
-                outcomes[index] = Some(rollout_outcome_from_value(
-                    rollout.candidate_id,
+                match rollout_outcome_from_value(
+                    rollout.candidate_id.clone(),
                     entry.response,
                     entry.cache_key,
                     true,
-                    rollout.stage,
-                    rollout.example_id,
-                )?);
+                    rollout.stage.clone(),
+                    rollout.example_id.clone(),
+                    &self.config.policy.provider,
+                    &self.config.policy.model,
+                ) {
+                    Ok(outcome) => outcomes[index] = Some(outcome),
+                    Err(error) => failures.push(RuntimeRolloutFailure {
+                        candidate_id: rollout.candidate_id,
+                        stage: rollout.stage,
+                        example_id: rollout.example_id,
+                        failure: FailurePayload::from_optimizer_error(&error),
+                    }),
+                }
                 continue;
             }
             let cache_key = RequestCache::cache_key_with_profile(
@@ -701,61 +798,141 @@ impl<'a> GepaRuntimeExecutor<'a> {
 
         let concurrency = rollout_concurrency(self.config).max(1);
         let dispatch_config = RolloutDispatchConfig::from_config(self.config);
-        for (chunk_index, chunk) in misses.chunks(concurrency).enumerate() {
-            let mut handles = Vec::with_capacity(chunk.len());
-            for miss in chunk.iter().cloned() {
-                let client = self.client.clone();
-                let dispatch_config = dispatch_config.clone();
-                handles.push(thread::spawn(move || {
-                    let started = Instant::now();
-                    let response = dispatch_rollout_with_retries(
-                        &client,
-                        &miss.rollout.request,
-                        &dispatch_config,
-                    )?;
-                    Ok::<_, OptimizerError>((miss, response, started.elapsed().as_secs_f64()))
-                }));
+        let miss_count = misses.len();
+        let queue = Arc::new(Mutex::new(VecDeque::from(misses)));
+        let (sender, receiver) = mpsc::channel();
+        let worker_count = concurrency.min(miss_count);
+        if let Some(observer) = self.progress_observer.as_deref_mut() {
+            observer(&RuntimeRolloutProgress::Started {
+                active_workers: worker_count,
+                semaphore_size: worker_count,
+                queued: miss_count.saturating_sub(worker_count),
+            })?;
+        }
+        let mut handles = Vec::with_capacity(worker_count);
+        for _ in 0..worker_count {
+            let queue = Arc::clone(&queue);
+            let sender = sender.clone();
+            let client = self.client.clone();
+            let dispatch_config = dispatch_config.clone();
+            handles.push(thread::spawn(move || loop {
+                let miss = {
+                    let mut queue = queue.lock().expect("rollout queue mutex poisoned");
+                    queue.pop_front()
+                };
+                let Some(miss) = miss else {
+                    break;
+                };
+                let started = Instant::now();
+                let result = match dispatch_rollout_with_retries(
+                    &client,
+                    &miss.rollout.request,
+                    &dispatch_config,
+                ) {
+                    Ok(response) => Ok((miss, response, started.elapsed().as_secs_f64())),
+                    Err(error) => Err((miss, error)),
+                };
+                if sender.send(result).is_err() {
+                    break;
+                }
+            }));
+        }
+        drop(sender);
+        for completion_index in 0..miss_count {
+            let result = receiver.recv().map_err(|_| {
+                OptimizerError::Invariant("rollout worker pool stopped early".to_string())
+            })?;
+            let (miss, value, dispatch_wall_seconds) = match result {
+                Ok(value) => value,
+                Err((miss, error)) => {
+                    let failure = RuntimeRolloutFailure {
+                        candidate_id: miss.rollout.candidate_id,
+                        stage: miss.rollout.stage,
+                        example_id: miss.rollout.example_id,
+                        failure: FailurePayload::from_optimizer_error(&error),
+                    };
+                    let remaining = miss_count.saturating_sub(completion_index + 1);
+                    let active_workers = worker_count.min(remaining);
+                    let queued = remaining.saturating_sub(active_workers);
+                    if let Some(observer) = self.progress_observer.as_deref_mut() {
+                        observer(&RuntimeRolloutProgress::Failed {
+                            failure: failure.clone(),
+                            active_workers,
+                            semaphore_size: worker_count,
+                            queued,
+                        })?;
+                    }
+                    failures.push(failure);
+                    continue;
+                }
+            };
+            let mut outcome = match rollout_outcome_from_value(
+                miss.rollout.candidate_id.clone(),
+                value.clone(),
+                miss.cache_key.clone(),
+                false,
+                miss.rollout.stage.clone(),
+                miss.rollout.example_id.clone(),
+                &self.config.policy.provider,
+                &self.config.policy.model,
+            ) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    let failure = RuntimeRolloutFailure {
+                        candidate_id: miss.rollout.candidate_id,
+                        stage: miss.rollout.stage,
+                        example_id: miss.rollout.example_id,
+                        failure: FailurePayload::from_optimizer_error(&error),
+                    };
+                    let remaining = miss_count.saturating_sub(completion_index + 1);
+                    let active_workers = worker_count.min(remaining);
+                    let queued = remaining.saturating_sub(active_workers);
+                    if let Some(observer) = self.progress_observer.as_deref_mut() {
+                        observer(&RuntimeRolloutProgress::Failed {
+                            failure: failure.clone(),
+                            active_workers,
+                            semaphore_size: worker_count,
+                            queued,
+                        })?;
+                    }
+                    failures.push(failure);
+                    continue;
+                }
+            };
+            self.cache.put_with_metadata(
+                &cache_namespace,
+                &miss.cache_key,
+                &miss.cache_request,
+                &value,
+                &cache_profile,
+                miss.rollout.cache_metadata,
+            )?;
+            outcome.dispatch_wall_seconds = Some(dispatch_wall_seconds);
+            outcome.dispatch_chunk_index = Some(completion_index);
+            outcome.dispatch_chunk_size = Some(worker_count);
+            let remaining = miss_count.saturating_sub(completion_index + 1);
+            let active_workers = worker_count.min(remaining);
+            let queued = remaining.saturating_sub(active_workers);
+            if let Some(observer) = self.progress_observer.as_deref_mut() {
+                observer(&RuntimeRolloutProgress::Completed {
+                    outcome: outcome.clone(),
+                    active_workers,
+                    semaphore_size: worker_count,
+                    queued,
+                })?;
             }
-            let chunk_size = chunk.len();
-            for handle in handles {
-                let (miss, value, dispatch_wall_seconds) = handle.join().map_err(|_| {
-                    OptimizerError::Invariant("rollout worker thread panicked".to_string())
-                })??;
-                self.cache.put_with_metadata(
-                    &cache_namespace,
-                    &miss.cache_key,
-                    &miss.cache_request,
-                    &value,
-                    &cache_profile,
-                    miss.rollout.cache_metadata.clone(),
-                )?;
-                let mut outcome = rollout_outcome_from_value(
-                    miss.rollout.candidate_id,
-                    value,
-                    miss.cache_key,
-                    false,
-                    miss.rollout.stage,
-                    miss.rollout.example_id,
-                )?;
-                outcome.dispatch_wall_seconds = Some(dispatch_wall_seconds);
-                outcome.dispatch_chunk_index = Some(chunk_index);
-                outcome.dispatch_chunk_size = Some(chunk_size);
-                outcomes[miss.index] = Some(outcome);
-            }
+            outcomes[miss.index] = Some(outcome);
+        }
+        for handle in handles {
+            handle.join().map_err(|_| {
+                OptimizerError::Invariant("rollout worker thread panicked".to_string())
+            })?;
         }
 
-        let outcomes = outcomes
-            .into_iter()
-            .enumerate()
-            .map(|(index, outcome)| {
-                outcome.ok_or_else(|| {
-                    OptimizerError::Invariant(format!(
-                        "rollout batch finished without outcome for index {index}"
-                    ))
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        Ok(RuntimeEffectOutcome::RolloutBatch(outcomes))
+        let outcomes = outcomes.into_iter().flatten().collect::<Vec<_>>();
+        Ok(RuntimeEffectOutcome::RolloutBatch(
+            RuntimeRolloutBatchOutcome { outcomes, failures },
+        ))
     }
 }
 
@@ -840,18 +1017,20 @@ fn env_u64(name: &str) -> Option<u64> {
 }
 
 fn rollout_concurrency(config: &SynthOptimizerConfig) -> usize {
-    if matches!(
-        config.gepa.pipeline.mode,
-        GepaPipelineMode::AsyncPipelined | GepaPipelineMode::FlashEvolve
-    ) {
-        return config.gepa.pipeline.workers.rollout.max(1);
-    }
-    env::var("GEPA_ROLLOUT_CONCURRENCY")
+    let override_value = env::var("GEPA_ROLLOUT_CONCURRENCY")
         .or_else(|_| env::var("SYNTH_OPTIMIZERS_MAX_CONCURRENT_ROLLOUTS"))
-        .ok()
+        .ok();
+    resolve_rollout_concurrency(
+        config.gepa.pipeline.workers.rollout,
+        override_value.as_deref(),
+    )
+}
+
+fn resolve_rollout_concurrency(configured: usize, override_value: Option<&str>) -> usize {
+    override_value
         .and_then(|value| value.trim().parse::<usize>().ok())
         .filter(|value| *value > 0)
-        .unwrap_or(DEFAULT_ROLLOUT_CONCURRENCY)
+        .unwrap_or(configured.max(1))
 }
 
 fn rollout_cache_request(request: &Value) -> Value {
@@ -916,6 +1095,32 @@ fn is_retryable_rollout_runtime_error(error: &OptimizerError) -> bool {
             | OptimizerError::Failed(_)
             | OptimizerError::Json(_)
     )
+}
+
+fn is_retryable_runtime_job_error(job: &OptimizerJob, error: &OptimizerError) -> bool {
+    match job.kind {
+        OptimizerJobKind::Rollout => is_retryable_rollout_runtime_error(error),
+        OptimizerJobKind::Proposer => matches!(error, OptimizerError::Proposer(_)),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod runtime_job_retry_tests {
+    use super::*;
+
+    #[test]
+    fn proposer_errors_are_retryable_runtime_job_errors() {
+        let job = OptimizerJob::new("proposer-job", "run", OptimizerJobKind::Proposer);
+        assert!(is_retryable_runtime_job_error(
+            &job,
+            &OptimizerError::Proposer("app-server stalled".to_string())
+        ));
+        assert!(!is_retryable_runtime_job_error(
+            &job,
+            &OptimizerError::Config("invalid proposer config".to_string())
+        ));
+    }
 }
 
 fn dispatch_async_rollout(
@@ -1063,19 +1268,24 @@ fn rollout_outcome_from_value(
     cache_hit: bool,
     stage: String,
     example_id: String,
+    provider: &str,
+    model: &str,
 ) -> Result<RuntimeRolloutOutcome> {
+    let mut value = value;
+    normalize_rollout_cost(provider, model, &mut value);
     let typed_response = RolloutResponse::from_value(value.clone())?;
     typed_response.validate_for_gepa()?;
     let reward = typed_response.outcome_reward()?;
     let mut usage = UsageTotals::default();
-    let mut cost_usd = 0.0;
+    let mut reported_cost_usd = None;
     if let Some(response_usage) = value.get("usage") {
         usage.add_usage_payload(response_usage);
-        cost_usd = response_usage
+        reported_cost_usd = response_usage
             .get("cost_usd")
             .and_then(Value::as_f64)
-            .unwrap_or(0.0);
+            .filter(|value| value.is_finite() && *value >= 0.0);
     }
+    let cost_usd = reported_cost_usd.unwrap_or(0.0);
     usage.rollout_calls = 1;
     Ok(RuntimeRolloutOutcome {
         candidate_id,
@@ -1084,6 +1294,7 @@ fn rollout_outcome_from_value(
         reward,
         usage,
         cost_usd,
+        reported_cost_usd,
         cache_key,
         cache_hit,
         stage,
@@ -1092,6 +1303,56 @@ fn rollout_outcome_from_value(
         dispatch_chunk_index: None,
         dispatch_chunk_size: None,
     })
+}
+
+/// Fill a missing provider cost only when the policy model has a pinned public
+/// token price. Container adapters commonly return token counts but omit USD;
+/// treating that omission as a real zero silently disables the hard cost gate.
+/// Unknown models deliberately remain unpriced rather than inheriting a made-up
+/// default rate.
+fn normalize_rollout_cost(provider: &str, model: &str, response: &mut Value) {
+    let Some(usage) = response.get_mut("usage").and_then(Value::as_object_mut) else {
+        return;
+    };
+    if usage
+        .get("cost_usd")
+        .and_then(Value::as_f64)
+        .is_some_and(|cost| cost.is_finite() && cost > 0.0)
+    {
+        return;
+    }
+    let Some((input_per_million, output_per_million, source)) =
+        pinned_rollout_price(provider, model)
+    else {
+        return;
+    };
+    let prompt_tokens = usage_prompt_tokens(&Value::Object(usage.clone()));
+    let completion_tokens = usage_completion_tokens(&Value::Object(usage.clone()));
+    if prompt_tokens == 0 && completion_tokens == 0 {
+        return;
+    }
+    let cost_usd = prompt_tokens as f64 * input_per_million / 1_000_000.0
+        + completion_tokens as f64 * output_per_million / 1_000_000.0;
+    usage.insert("cost_usd".to_string(), json!(cost_usd));
+    usage.insert("cost_source".to_string(), json!(source));
+    usage.insert(
+        "cost_pricing".to_string(),
+        json!({
+            "input_usd_per_million": input_per_million,
+            "output_usd_per_million": output_per_million,
+        }),
+    );
+}
+
+fn pinned_rollout_price(provider: &str, model: &str) -> Option<(f64, f64, &'static str)> {
+    if !provider.trim().eq_ignore_ascii_case("openai") {
+        return None;
+    }
+    match model.trim().to_ascii_lowercase().as_str() {
+        "gpt-4.1-nano" => Some((0.10, 0.40, "openai_gpt_4_1_nano_static_price")),
+        "gpt-4o-mini" => Some((0.15, 0.60, "openai_gpt_4o_mini_static_price")),
+        _ => None,
+    }
 }
 
 fn record_runtime_effect_running(
@@ -1125,7 +1386,7 @@ fn record_runtime_effect_running(
 
 fn terminal_metadata(
     outcome: &RuntimeEffectOutcome,
-) -> (UsageTotals, f64, u64, Map<String, Value>) {
+) -> (UsageTotals, f64, Option<f64>, u64, Map<String, Value>) {
     match outcome {
         RuntimeEffectOutcome::Proposer(outcome) => {
             let mut metadata = Map::new();
@@ -1133,7 +1394,13 @@ fn terminal_metadata(
             metadata.insert("backend".to_string(), json!(&outcome.backend));
             metadata.insert("cache_hit".to_string(), json!(outcome.cache_hit));
             metadata.insert("cache_key".to_string(), json!(&outcome.cache_key));
-            (outcome.usage.clone(), outcome.cost_usd, 0, metadata)
+            (
+                outcome.usage.clone(),
+                outcome.cost_usd,
+                outcome.reported_cost_usd,
+                0,
+                metadata,
+            )
         }
         RuntimeEffectOutcome::Rollout(outcome) => {
             let mut metadata = Map::new();
@@ -1152,17 +1419,26 @@ fn terminal_metadata(
                     json!(dispatch_wall_seconds),
                 );
             }
-            (outcome.usage.clone(), outcome.cost_usd, 1, metadata)
+            (
+                outcome.usage.clone(),
+                outcome.cost_usd,
+                outcome.reported_cost_usd,
+                1,
+                metadata,
+            )
         }
         RuntimeEffectOutcome::RolloutBatch(outcomes) => {
             let mut usage = UsageTotals::default();
             let mut cost_usd = 0.0;
+            let mut cost_receipts = Vec::with_capacity(outcomes.len() + outcomes.failures.len());
+            cost_receipts.extend(std::iter::repeat_n(None, outcomes.failures.len()));
             let mut cache_hits = 0usize;
             let mut stages = BTreeMap::<String, usize>::new();
             let mut dispatch_latencies = Vec::new();
             for outcome in outcomes {
                 usage.merge(&outcome.usage);
                 cost_usd += outcome.cost_usd;
+                cost_receipts.push(outcome.reported_cost_usd);
                 if outcome.cache_hit {
                     cache_hits += 1;
                 } else if let Some(dispatch_wall_seconds) = outcome.dispatch_wall_seconds {
@@ -1175,6 +1451,18 @@ fn terminal_metadata(
             });
             let mut metadata = Map::new();
             metadata.insert("rollout_count".to_string(), json!(outcomes.len()));
+            metadata.insert(
+                "failed_rollout_count".to_string(),
+                json!(outcomes.failures.len()),
+            );
+            metadata.insert(
+                "failed_example_ids".to_string(),
+                json!(outcomes
+                    .failures
+                    .iter()
+                    .map(|failure| failure.example_id.as_str())
+                    .collect::<Vec<_>>()),
+            );
             metadata.insert("cache_hits".to_string(), json!(cache_hits));
             metadata.insert(
                 "cache_misses".to_string(),
@@ -1199,7 +1487,13 @@ fn terminal_metadata(
                     json!(dispatch_latencies.iter().sum::<f64>()),
                 );
             }
-            (usage, cost_usd, outcomes.len() as u64, metadata)
+            (
+                usage,
+                cost_usd,
+                fold_reported_cost(cost_receipts),
+                outcomes.len() as u64,
+                metadata,
+            )
         }
     }
 }
@@ -1299,6 +1593,19 @@ fn ensure_job_lease(
     Ok(())
 }
 
+fn persist_runtime_outcome_before_completion(
+    workspace: &WorkspaceStore,
+    run_id: &str,
+    job_id: &str,
+    outcome: &RuntimeEffectOutcome,
+) -> Result<()> {
+    let stored = crate::stored_runtime_outcome(outcome)?;
+    let mut job = workspace.optimizer_job(run_id, job_id)?;
+    job.payload
+        .insert("runtime_outcome".to_string(), serde_json::to_value(stored)?);
+    workspace.record_optimizer_job(&job)
+}
+
 fn runtime_lease_id(worker_id: &str, job_id: &str) -> String {
     format!("lease_{worker_id}_{job_id}_{}", now_millis())
 }
@@ -1308,4 +1615,103 @@ fn now_millis() -> u128 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod partial_batch_tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_child_stays_null_and_does_not_discard_successful_siblings() {
+        let successful = RuntimeRolloutOutcome {
+            candidate_id: "candidate".to_string(),
+            response: json!({"reward": 0.75}),
+            typed_response: RolloutResponse::from_value(json!({"reward": 0.75})).unwrap(),
+            reward: 0.75,
+            usage: UsageTotals::default(),
+            cost_usd: 0.01,
+            reported_cost_usd: Some(0.01),
+            cache_key: "cache-success".to_string(),
+            cache_hit: false,
+            stage: "seed_full_train".to_string(),
+            example_id: "train:0".to_string(),
+            dispatch_wall_seconds: Some(1.0),
+            dispatch_chunk_index: Some(0),
+            dispatch_chunk_size: Some(2),
+        };
+        let failed = RuntimeRolloutFailure {
+            candidate_id: "candidate".to_string(),
+            stage: "seed_full_train".to_string(),
+            example_id: "train:1".to_string(),
+            failure: FailurePayload::from_optimizer_error(&OptimizerError::Container(
+                "provider_connect_error".to_string(),
+            )),
+        };
+        let outcome = RuntimeEffectOutcome::RolloutBatch(RuntimeRolloutBatchOutcome {
+            outcomes: vec![successful],
+            failures: vec![failed],
+        });
+
+        let (_, _, reported_cost, rollout_count, metadata) = terminal_metadata(&outcome);
+        assert_eq!(rollout_count, 1);
+        assert_eq!(reported_cost, None, "partial spend must remain unknown");
+        assert_eq!(metadata.get("rollout_count"), Some(&json!(1)));
+        assert_eq!(metadata.get("failed_rollout_count"), Some(&json!(1)));
+        assert_eq!(
+            metadata.get("failed_example_ids"),
+            Some(&json!(["train:1"]))
+        );
+    }
+
+    #[test]
+    fn serial_pipeline_uses_its_configured_rollout_worker_bound() {
+        assert_eq!(resolve_rollout_concurrency(3, None), 3);
+        assert_eq!(resolve_rollout_concurrency(0, None), 1);
+        assert_eq!(resolve_rollout_concurrency(3, Some("5")), 5);
+        assert_eq!(resolve_rollout_concurrency(3, Some("invalid")), 3);
+    }
+}
+
+#[cfg(test)]
+mod cost_tests {
+    use super::*;
+
+    #[test]
+    fn prices_known_openai_rollout_when_container_omits_cost() {
+        let mut response = json!({
+            "usage": {
+                "prompt_tokens": 1_000_000,
+                "completion_tokens": 1_000_000
+            }
+        });
+        normalize_rollout_cost("openai", "gpt-4.1-nano", &mut response);
+        assert_eq!(response.pointer("/usage/cost_usd"), Some(&json!(0.5)));
+        assert_eq!(
+            response.pointer("/usage/cost_source"),
+            Some(&json!("openai_gpt_4_1_nano_static_price"))
+        );
+    }
+
+    #[test]
+    fn preserves_positive_provider_reported_cost() {
+        let mut response = json!({
+            "usage": {
+                "prompt_tokens": 1_000_000,
+                "completion_tokens": 1_000_000,
+                "cost_usd": 0.73
+            }
+        });
+        normalize_rollout_cost("openai", "gpt-4.1-nano", &mut response);
+        assert_eq!(response.pointer("/usage/cost_usd"), Some(&json!(0.73)));
+        assert!(response.pointer("/usage/cost_source").is_none());
+    }
+
+    #[test]
+    fn leaves_unknown_model_cost_unknown() {
+        let mut response = json!({
+            "usage": {"prompt_tokens": 50, "completion_tokens": 10}
+        });
+        normalize_rollout_cost("openai", "future-model", &mut response);
+        assert!(response.pointer("/usage/cost_usd").is_none());
+    }
 }

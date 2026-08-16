@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
 
+from . import __version__
 from ._synth_optimizers import (
     SynthOptimizerError,
     events_compare,
@@ -33,6 +34,7 @@ from .hosted import (
     HostedOptimizerError,
     validate_online_reflexion_evidence_notes,
 )
+from .sft import SftConfig, SftPublicServiceClient, SftServiceError, serve_sft_service
 from .tunnels import TunnelError, TunnelProvider
 from .victorialogs import project_gepa_run_artifacts, project_gepa_run_started
 
@@ -242,7 +244,9 @@ def _print_run_storage_detail(report: dict, json_output: bool, *, doctor: bool =
         print("\nnext command:")
         if report.get("terminal") and recommendation.get("action") == "compact":
             profile = recommendation.get("profile") or "compact"
-            print(f"  synth-optimizers gepa runs compact {report.get('run_dir')} --profile {profile}")
+            print(
+                f"  synth-optimizers gepa runs compact {report.get('run_dir')} --profile {profile}"
+            )
         elif report.get("terminal"):
             print("  no compaction needed; use gepa runs delete only if you want to remove the run")
         else:
@@ -299,9 +303,7 @@ def _hosted_client(args: argparse.Namespace) -> HostedOptimizerClient:
         backend_url=args.base_url,
         api_key=os.environ.get(args.api_key_env),
         timeout_seconds=args.timeout_seconds,
-        register_usage=False
-        if bool(getattr(args, "disable_usage_registration", False))
-        else None,
+        register_usage=False if bool(getattr(args, "disable_usage_registration", False)) else None,
         usage_registration_surface="cli",
     )
 
@@ -502,9 +504,7 @@ def _startup_catalog_payload(catalog: Any) -> dict[str, Any]:
             for algorithm, config in catalog.billing_feature_ids.items()
         },
         "billing_feature_ids_configured": dict(catalog.billing_feature_ids_configured),
-        "online_reflexion_release_evidence": dict(
-            catalog.online_reflexion_release_evidence
-        ),
+        "online_reflexion_release_evidence": dict(catalog.online_reflexion_release_evidence),
     }
 
 
@@ -542,19 +542,15 @@ def _print_hosted_startup(catalog: Any, json_output: bool) -> None:
         standard_artifacts = release_evidence.get("standard_artifacts")
         lane_count = (
             len(required_lanes)
-            if isinstance(required_lanes, Sequence)
-            and not isinstance(required_lanes, str | bytes)
+            if isinstance(required_lanes, Sequence) and not isinstance(required_lanes, str | bytes)
             else 0
         )
         check_count = (
             len(release_checks)
-            if isinstance(release_checks, Sequence)
-            and not isinstance(release_checks, str | bytes)
+            if isinstance(release_checks, Sequence) and not isinstance(release_checks, str | bytes)
             else 0
         )
-        artifact_count = (
-            len(standard_artifacts) if isinstance(standard_artifacts, Mapping) else 0
-        )
+        artifact_count = len(standard_artifacts) if isinstance(standard_artifacts, Mapping) else 0
         print(
             "online_reflexion_release_evidence "
             f"schema={release_evidence.get('schema_version') or '-'} "
@@ -581,9 +577,7 @@ def _online_reflexion_startup_preflight_failures(
     payload: Mapping[str, Any], args: argparse.Namespace
 ) -> list[str]:
     require_algorithm = bool(getattr(args, "require_online_reflexion", False))
-    require_metadata = bool(
-        getattr(args, "require_online_reflexion_release_metadata", False)
-    )
+    require_metadata = bool(getattr(args, "require_online_reflexion_release_metadata", False))
     if not require_algorithm and not require_metadata:
         return []
 
@@ -607,10 +601,7 @@ def _online_reflexion_startup_preflight_failures(
         failures.append("online_reflexion_release_evidence metadata is not advertised")
         return failures
 
-    if (
-        release_evidence.get("schema_version")
-        != "online_reflexion_release_evidence.v1"
-    ):
+    if release_evidence.get("schema_version") != "online_reflexion_release_evidence.v1":
         failures.append("online_reflexion_release_evidence schema_version is not v1")
     if release_evidence.get("release_gate_key") != "release_blog_growth":
         failures.append("online_reflexion release_gate_key is not release_blog_growth")
@@ -630,9 +621,7 @@ def _online_reflexion_startup_preflight_failures(
         if key not in lane_keys:
             failures.append(f"online_reflexion release lane missing: {key}")
 
-    release_checks = _startup_sequence(
-        release_evidence.get("release_gate_required_checks")
-    )
+    release_checks = _startup_sequence(release_evidence.get("release_gate_required_checks"))
     if not release_checks:
         failures.append("online_reflexion release_gate_required_checks is empty")
 
@@ -658,9 +647,7 @@ def _gelo_startup(args: argparse.Namespace) -> int:
     except HostedOptimizerError as exc:
         raise SystemExit(str(exc)) from exc
     _print_hosted_startup(catalog, args.json)
-    failures = _online_reflexion_startup_preflight_failures(
-        _startup_catalog_payload(catalog), args
-    )
+    failures = _online_reflexion_startup_preflight_failures(_startup_catalog_payload(catalog), args)
     if failures:
         for failure in failures:
             print(f"startup preflight failed: {failure}", file=sys.stderr)
@@ -763,6 +750,97 @@ def _config_file_object(path: str) -> dict:
     if not isinstance(data, dict):
         raise SystemExit(f"{path} must contain an object")
     return data
+
+
+def _sft_service_client(args: argparse.Namespace) -> SftPublicServiceClient:
+    token = os.environ.get(args.service_token_env) if args.service_token_env else None
+    return SftPublicServiceClient(args.service_url, token, timeout_seconds=args.timeout_seconds)
+
+
+def _sft_validate(args: argparse.Namespace) -> int:
+    try:
+        config = SftConfig.from_toml(
+            Path(args.config).read_text(encoding="utf-8"), run_id=args.run_id
+        )
+    except OSError as exc:
+        raise SystemExit(f"cannot read {args.config}: {exc}") from exc
+    except SftServiceError as exc:
+        raise SystemExit(str(exc)) from exc
+    payload = {
+        "algorithm": "sft",
+        "run_id": config.run_id,
+        "backend": config.backend,
+        "base_model": config.base_model,
+        "checkpoint_steps": list(config.checkpoint_steps),
+        "accelerator_slots": config.accelerator_slots,
+    }
+    print(
+        json.dumps(payload, indent=2, sort_keys=True)
+        if args.json
+        else f"valid SFT config run_id={config.run_id} backend={config.backend}"
+    )
+    return 0
+
+
+def _sft_submit(args: argparse.Namespace) -> int:
+    try:
+        config_toml = Path(args.config).read_text(encoding="utf-8")
+        client = _sft_service_client(args)
+        submitted = client.submit_toml(
+            config_toml,
+            run_id=args.run_id,
+            idempotency_key=args.idempotency_key,
+        )
+        if args.json and not args.follow:
+            print(json.dumps(submitted, indent=2, sort_keys=True))
+            return 0
+        run_id = str(submitted["run_id"])
+        print(f"submitted run_id={run_id} status={submitted.get('status', 'queued')}")
+        if not args.follow:
+            return 0
+        while True:
+            record = client.get(run_id)
+            status = str(record.get("status", "unknown"))
+            print(f"status={status}")
+            if status in {"succeeded", "failed", "cancelled"}:
+                if args.json:
+                    print(json.dumps(record, indent=2, sort_keys=True))
+                return 1 if status == "failed" else 0
+            time.sleep(args.poll_seconds)
+    except (OSError, SftServiceError) as exc:
+        raise SystemExit(str(exc)) from exc
+
+
+def _sft_watch(args: argparse.Namespace) -> int:
+    try:
+        client = _sft_service_client(args)
+        record = client.get(args.run_id)
+        if args.events:
+            page = client.optimizer_events(
+                args.run_id, after_sequence=args.after_seq, limit=args.limit
+            )
+            record["events"] = page.get("events", [])
+        print(
+            json.dumps(record, indent=2, sort_keys=True)
+            if args.json
+            else f"run_id={args.run_id} status={record.get('status')}"
+        )
+        return 1 if record.get("status") == "failed" else 0
+    except SftServiceError as exc:
+        raise SystemExit(str(exc)) from exc
+
+
+def _sft_cancel(args: argparse.Namespace) -> int:
+    try:
+        record = _sft_service_client(args).cancel(args.run_id)
+    except SftServiceError as exc:
+        raise SystemExit(str(exc)) from exc
+    print(
+        json.dumps(record, indent=2, sort_keys=True)
+        if args.json
+        else f"run_id={args.run_id} status={record.get('status')}"
+    )
+    return 0
 
 
 def _submit_hosted_gelo(args: argparse.Namespace) -> int:
@@ -1138,11 +1216,7 @@ def _gepa_watch(args: argparse.Namespace) -> int:
                     item = _as_mapping(event.get("item"))
                     item_type = _text_field(item.get("type"))
                     item_id = _text_field(item.get("id"))
-                    print(
-                        f"algorithm_event seq={seq} "
-                        f"type={event_type} "
-                        f"item={item_type}:{item_id}"
-                    )
+                    print(f"algorithm_event seq={seq} type={event_type} item={item_type}:{item_id}")
                 if event.get("type") in {
                     "optimizer.run.completed",
                     "optimizer.run.failed",
@@ -1277,11 +1351,7 @@ def _gelo_watch(args: argparse.Namespace) -> int:
                     item = _as_mapping(event.get("item"))
                     item_type = _text_field(item.get("type"))
                     item_id = _text_field(item.get("id"))
-                    print(
-                        f"algorithm_event seq={seq} "
-                        f"type={event_type} "
-                        f"item={item_type}:{item_id}"
-                    )
+                    print(f"algorithm_event seq={seq} type={event_type} item={item_type}:{item_id}")
                 if event.get("type") in {
                     "optimizer.run.completed",
                     "optimizer.run.failed",
@@ -1340,6 +1410,7 @@ def _gelo_watch(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="synth-optimizers")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     subcommands = parser.add_subparsers(dest="command", required=True)
 
     gepa = subcommands.add_parser("gepa")
@@ -1597,6 +1668,45 @@ def build_parser() -> argparse.ArgumentParser:
     gelo_console.add_argument(
         "--docs-set", default="gelo", help="Bundled docs set to serve (default: gelo)."
     )
+
+    sft = subcommands.add_parser("sft", help="Operate the public SFT control-plane service.")
+    sft_subcommands = sft.add_subparsers(dest="sft_command", required=True)
+    sft_validate = sft_subcommands.add_parser("validate")
+    sft_validate.add_argument("--config", required=True)
+    sft_validate.add_argument("--run-id")
+    sft_validate.add_argument("--json", action="store_true")
+
+    sft_service = sft_subcommands.add_parser("service")
+    sft_service.add_argument("--db", default=".sft/service.sqlite")
+    sft_service.add_argument("--bind", default="127.0.0.1:8878")
+    sft_service.add_argument(
+        "--service-token-env",
+        default="SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN",
+        help="Optional inbound bearer-token environment variable.",
+    )
+
+    for command_name in ("submit", "watch", "cancel"):
+        command = sft_subcommands.add_parser(command_name)
+        command.add_argument(
+            "--service-url",
+            default=os.environ.get("SYNTH_OPTIMIZERS_SFT_SERVICE_URL", "http://127.0.0.1:8878"),
+        )
+        command.add_argument("--service-token-env", default="SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN")
+        command.add_argument("--timeout-seconds", type=float, default=300.0)
+        command.add_argument("--json", action="store_true")
+    sft_submit = sft_subcommands.choices["submit"]
+    sft_submit.add_argument("--config", required=True)
+    sft_submit.add_argument("--run-id")
+    sft_submit.add_argument("--idempotency-key")
+    sft_submit.add_argument("--follow", action="store_true")
+    sft_submit.add_argument("--poll-seconds", type=float, default=1.0)
+    sft_watch = sft_subcommands.choices["watch"]
+    sft_watch.add_argument("run_id")
+    sft_watch.add_argument("--events", action="store_true")
+    sft_watch.add_argument("--after-seq", type=int, default=0)
+    sft_watch.add_argument("--limit", type=int, default=500)
+    sft_cancel = sft_subcommands.choices["cancel"]
+    sft_cancel.add_argument("run_id")
 
     mapo = subcommands.add_parser("mapo")
     mapo_subcommands = mapo.add_subparsers(dest="mapo_command", required=True)
@@ -1858,15 +1968,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     reflexion_packet.add_argument("--json", action="store_true")
 
-    reflexion_validate_notes = reflexion_subcommands.add_parser(
-        "validate-evidence-notes"
-    )
+    reflexion_validate_notes = reflexion_subcommands.add_parser("validate-evidence-notes")
     reflexion_validate_notes.add_argument(
         "--evidence-notes",
-        help=(
-            "Structured JSON object keyed by required evidence lane plus "
-            "release_blog_growth."
-        ),
+        help=("Structured JSON object keyed by required evidence lane plus release_blog_growth."),
     )
     reflexion_validate_notes.add_argument(
         "--evidence-notes-file",
@@ -2113,6 +2218,10 @@ def build_parser() -> argparse.ArgumentParser:
     gepa_runs_delete.add_argument("--yes", action="store_true", help="Apply the deletion.")
     gepa_runs_delete.add_argument("--json", action="store_true")
 
+    from .eval.commands import register as register_eval
+
+    register_eval(subcommands)
+
     events = subcommands.add_parser("events")
     events_subcommands = events.add_subparsers(dest="events_command", required=True)
     replay = events_subcommands.add_parser("replay")
@@ -2126,15 +2235,22 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "eval":
+        from .eval.commands import dispatch as dispatch_eval
+        from .eval.models import EvalContractError
+
+        try:
+            return dispatch_eval(args)
+        except EvalContractError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
     if args.command == "gepa" and args.gepa_command == "run":
         from .gepa import GepaRun, UsageRegistrationConfig
 
         old_terminal = os.environ.get("SYNTH_OPTIMIZERS_TERMINAL")
         old_proposer_execution_mode = os.environ.get("SYNTH_OPTIMIZERS_PROPOSER_EXECUTION_MODE")
         old_proposer_model = os.environ.get("SYNTH_OPTIMIZERS_PROPOSER_MODEL")
-        old_proposer_reasoning_effort = os.environ.get(
-            "SYNTH_OPTIMIZERS_PROPOSER_REASONING_EFFORT"
-        )
+        old_proposer_reasoning_effort = os.environ.get("SYNTH_OPTIMIZERS_PROPOSER_REASONING_EFFORT")
         old_proposer_service_tier = os.environ.get("SYNTH_OPTIMIZERS_PROPOSER_SERVICE_TIER")
         old_proposer_auth_mode = os.environ.get("SYNTH_OPTIMIZERS_PROPOSER_AUTH_MODE")
         old_proposer_codex_home = os.environ.get("SYNTH_OPTIMIZERS_PROPOSER_CODEX_HOME")
@@ -2178,9 +2294,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if old_proposer_execution_mode is None:
                 os.environ.pop("SYNTH_OPTIMIZERS_PROPOSER_EXECUTION_MODE", None)
             else:
-                os.environ["SYNTH_OPTIMIZERS_PROPOSER_EXECUTION_MODE"] = (
-                    old_proposer_execution_mode
-                )
+                os.environ["SYNTH_OPTIMIZERS_PROPOSER_EXECUTION_MODE"] = old_proposer_execution_mode
             if old_proposer_model is None:
                 os.environ.pop("SYNTH_OPTIMIZERS_PROPOSER_MODEL", None)
             else:
@@ -2229,6 +2343,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         board = AggregateSource([], title=f"{args.title} — hosted")
         docs = DocsSource([docs_root], title=args.title)
         serve_console(board, docs, host=args.host, port=args.port)
+        return 0
+    if args.command == "sft" and args.sft_command == "validate":
+        return _sft_validate(args)
+    if args.command == "sft" and args.sft_command == "submit":
+        return _sft_submit(args)
+    if args.command == "sft" and args.sft_command == "watch":
+        return _sft_watch(args)
+    if args.command == "sft" and args.sft_command == "cancel":
+        return _sft_cancel(args)
+    if args.command == "sft" and args.sft_command == "service":
+        token = os.environ.get(args.service_token_env) if args.service_token_env else None
+        serve_sft_service(args.db, args.bind, service_token=token)
         return 0
     if args.command == "mapo" and args.mapo_command == "startup":
         return _gelo_startup(args)

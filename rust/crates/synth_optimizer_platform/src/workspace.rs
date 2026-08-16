@@ -716,14 +716,8 @@ impl WorkspaceStore {
                         OR active.lease_expires_at > datetime('now')
                       )
                       AND (
-                        (
-                          active.container_url != ''
-                          AND active.container_url = queued.container_url
-                        )
-                        OR (
                           active.cache_namespace != ''
                           AND active.cache_namespace = queued.cache_namespace
-                        )
                       )
                   )
                 ORDER BY queued.priority DESC, queued.submitted_at ASC, queued.request_id ASC
@@ -2547,7 +2541,11 @@ impl WorkspaceStore {
         let limits = self.required_run_limits(run_id)?;
         let spent = self.conn.query_row(
             r#"
-            SELECT COALESCE(SUM(cost_usd), 0.0),
+            SELECT CASE
+                     WHEN COUNT(*) = 0 THEN 0.0
+                     WHEN COUNT(cost_usd) = COUNT(*) THEN SUM(cost_usd)
+                     ELSE NULL
+                   END,
                    COALESCE(SUM(prompt_tokens), 0),
                    COALESCE(SUM(completion_tokens), 0),
                    COALESCE(SUM(total_tokens), 0),
@@ -2559,7 +2557,7 @@ impl WorkspaceStore {
             params![run_id],
             |row| {
                 Ok(BudgetLedgerTotals {
-                    cost_usd: row.get::<_, f64>(0)?,
+                    cost_usd: row.get::<_, Option<f64>>(0)?,
                     prompt_tokens: nonnegative_u64(row.get::<_, i64>(1)?),
                     completion_tokens: nonnegative_u64(row.get::<_, i64>(2)?),
                     total_tokens: nonnegative_u64(row.get::<_, i64>(3)?),
@@ -2582,7 +2580,7 @@ impl WorkspaceStore {
             params![run_id],
             |row| {
                 Ok(BudgetLedgerTotals {
-                    cost_usd: row.get::<_, f64>(0)?,
+                    cost_usd: Some(row.get::<_, f64>(0)?),
                     prompt_tokens: nonnegative_u64(row.get::<_, i64>(1)?),
                     completion_tokens: nonnegative_u64(row.get::<_, i64>(2)?),
                     total_tokens: nonnegative_u64(row.get::<_, i64>(3)?),
@@ -2906,7 +2904,7 @@ impl WorkspaceStore {
         run_id: &str,
         manifest_path: &Path,
         best_candidate_id: &str,
-        cost_usd: f64,
+        cost_usd: Option<f64>,
         usage: &Value,
         manifest: &Value,
     ) -> Result<()> {
@@ -3431,7 +3429,7 @@ impl WorkspaceStore {
         &self,
         run_id: &str,
         best_candidate_id: &str,
-        cost_usd: f64,
+        cost_usd: Option<f64>,
         usage: &Value,
     ) -> Result<()> {
         self.conn.execute(
@@ -3454,7 +3452,7 @@ impl WorkspaceStore {
         &self,
         run_id: &str,
         best_candidate_id: Option<&str>,
-        cost_usd: f64,
+        cost_usd: Option<f64>,
         usage: &Value,
     ) -> Result<()> {
         self.conn.execute(
@@ -3477,7 +3475,7 @@ impl WorkspaceStore {
         &self,
         run_id: &str,
         best_candidate_id: Option<&str>,
-        cost_usd: f64,
+        cost_usd: Option<f64>,
         usage: &Value,
     ) -> Result<()> {
         self.conn.execute(
@@ -3872,7 +3870,7 @@ impl WorkspaceStore {
                 budget_commit_id TEXT NOT NULL,
                 runtime_effect_id TEXT NOT NULL,
                 budget_reservation_id TEXT NOT NULL,
-                cost_usd REAL NOT NULL,
+                cost_usd REAL,
                 prompt_tokens INTEGER NOT NULL,
                 completion_tokens INTEGER NOT NULL,
                 total_tokens INTEGER NOT NULL,
@@ -4174,7 +4172,7 @@ impl WorkspaceStore {
                 prompt_tokens INTEGER NOT NULL,
                 completion_tokens INTEGER NOT NULL,
                 total_tokens INTEGER NOT NULL,
-                cost_usd REAL NOT NULL,
+                cost_usd REAL,
                 usage_json TEXT NOT NULL,
                 metadata_json TEXT NOT NULL,
                 ledger_json TEXT NOT NULL,
@@ -4582,7 +4580,7 @@ impl WorkspaceStore {
                 run_id TEXT PRIMARY KEY,
                 manifest_path TEXT NOT NULL,
                 best_candidate_id TEXT NOT NULL,
-                cost_usd REAL NOT NULL,
+                cost_usd REAL,
                 usage_json TEXT NOT NULL,
                 manifest_json TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -4811,6 +4809,7 @@ impl WorkspaceStore {
         )?;
         self.ensure_run_request_schema()?;
         self.ensure_runtime_schema()?;
+        self.ensure_nullable_reported_cost_schema()?;
         self.ensure_runtime_indexes()?;
         self.backfill_candidate_seed_rewards()?;
         Ok(())
@@ -4820,15 +4819,7 @@ impl WorkspaceStore {
         let mut stmt = self.conn.prepare(
             r#"
             SELECT run_id, frame_json
-            FROM sensor_frames sf
-            WHERE NOT EXISTS (
-                SELECT 1
-                FROM candidate_seed_rewards csr
-                WHERE csr.run_id = sf.run_id
-                  AND csr.candidate_id = sf.candidate_id
-                  AND csr.evaluation_stage = sf.evaluation_stage
-                  AND csr.seed_id = sf.task_id
-            )
+            FROM sensor_frames
             "#,
         )?;
         let mut rows = stmt.query([])?;
@@ -4861,6 +4852,10 @@ impl WorkspaceStore {
     }
 
     fn ensure_runtime_schema(&self) -> Result<()> {
+        // v0.2.0 workspaces called this identity `seed`. The v0.2.12
+        // backfill used `task_id` before migrating the column, which made the
+        // sidecar fail during startup even when the legacy table was empty.
+        self.ensure_column("sensor_frames", "task_id", "TEXT NOT NULL DEFAULT ''")?;
         self.ensure_column(
             "budget_commits",
             "wall_seconds",
@@ -4881,6 +4876,114 @@ impl WorkspaceStore {
         Ok(())
     }
 
+    /// Migrate pre-tri-state workspaces whose provider cost columns rejected
+    /// SQL NULL. SQLite cannot drop a NOT NULL constraint in place, so each
+    /// table is rebuilt transactionally while preserving every row.
+    fn ensure_nullable_reported_cost_schema(&self) -> Result<()> {
+        if self.column_is_not_null("budget_commits", "cost_usd")? {
+            self.conn.execute_batch(
+                r#"
+                PRAGMA foreign_keys = OFF;
+                BEGIN IMMEDIATE;
+                ALTER TABLE budget_commits RENAME TO budget_commits_nonnull_cost;
+                CREATE TABLE budget_commits (
+                    run_id TEXT NOT NULL,
+                    budget_commit_id TEXT NOT NULL,
+                    runtime_effect_id TEXT NOT NULL,
+                    budget_reservation_id TEXT NOT NULL,
+                    cost_usd REAL,
+                    prompt_tokens INTEGER NOT NULL,
+                    completion_tokens INTEGER NOT NULL,
+                    total_tokens INTEGER NOT NULL,
+                    rollout_count INTEGER NOT NULL,
+                    wall_seconds INTEGER NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    record_json TEXT NOT NULL,
+                    committed_at TEXT NOT NULL,
+                    PRIMARY KEY(run_id, budget_commit_id),
+                    FOREIGN KEY(run_id, runtime_effect_id) REFERENCES runtime_effects(run_id, runtime_effect_id) ON DELETE CASCADE,
+                    FOREIGN KEY(run_id, budget_reservation_id) REFERENCES budget_reservations(run_id, budget_reservation_id) ON DELETE CASCADE
+                );
+                INSERT INTO budget_commits SELECT * FROM budget_commits_nonnull_cost;
+                DROP TABLE budget_commits_nonnull_cost;
+                COMMIT;
+                PRAGMA foreign_keys = ON;
+                "#,
+            )?;
+        }
+        if self.column_is_not_null("usage_ledger", "cost_usd")? {
+            self.conn.execute_batch(
+                r#"
+                PRAGMA foreign_keys = OFF;
+                BEGIN IMMEDIATE;
+                ALTER TABLE usage_ledger RENAME TO usage_ledger_nonnull_cost;
+                CREATE TABLE usage_ledger (
+                    run_id TEXT NOT NULL,
+                    usage_ledger_id TEXT NOT NULL,
+                    boundary TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    source_id TEXT NOT NULL,
+                    candidate_id TEXT,
+                    evaluation_stage TEXT,
+                    model TEXT,
+                    provider TEXT,
+                    call_count INTEGER NOT NULL,
+                    prompt_tokens INTEGER NOT NULL,
+                    completion_tokens INTEGER NOT NULL,
+                    total_tokens INTEGER NOT NULL,
+                    cost_usd REAL,
+                    usage_json TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    ledger_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(run_id, usage_ledger_id),
+                    FOREIGN KEY(run_id) REFERENCES optimization_runs(run_id) ON DELETE CASCADE
+                );
+                INSERT INTO usage_ledger SELECT * FROM usage_ledger_nonnull_cost;
+                DROP TABLE usage_ledger_nonnull_cost;
+                COMMIT;
+                PRAGMA foreign_keys = ON;
+                "#,
+            )?;
+        }
+        if self.column_is_not_null("manifests", "cost_usd")? {
+            self.conn.execute_batch(
+                r#"
+                PRAGMA foreign_keys = OFF;
+                BEGIN IMMEDIATE;
+                ALTER TABLE manifests RENAME TO manifests_nonnull_cost;
+                CREATE TABLE manifests (
+                    run_id TEXT PRIMARY KEY,
+                    manifest_path TEXT NOT NULL,
+                    best_candidate_id TEXT NOT NULL,
+                    cost_usd REAL,
+                    usage_json TEXT NOT NULL,
+                    manifest_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(run_id) REFERENCES optimization_runs(run_id) ON DELETE CASCADE
+                );
+                INSERT INTO manifests SELECT * FROM manifests_nonnull_cost;
+                DROP TABLE manifests_nonnull_cost;
+                COMMIT;
+                PRAGMA foreign_keys = ON;
+                "#,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn column_is_not_null(&self, table: &str, column: &str) -> Result<bool> {
+        let mut stmt = self.conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let name: String = row.get(1)?;
+            if name == column {
+                return Ok(row.get::<_, i64>(3)? != 0);
+            }
+        }
+        Ok(false)
+    }
+
     fn ensure_runtime_indexes(&self) -> Result<()> {
         self.conn.execute_batch(
             r#"
@@ -4889,6 +4992,15 @@ impl WorkspaceStore {
 
             CREATE INDEX IF NOT EXISTS idx_optimizer_jobs_run_retry
             ON optimizer_jobs(run_id, status, next_retry_at);
+
+            CREATE INDEX IF NOT EXISTS idx_budget_commits_run_reservation
+            ON budget_commits(run_id, budget_reservation_id);
+
+            CREATE INDEX IF NOT EXISTS idx_usage_ledger_run_boundary
+            ON usage_ledger(run_id, boundary);
+
+            CREATE INDEX IF NOT EXISTS idx_usage_ledger_run_source
+            ON usage_ledger(run_id, source_type, source_id);
             "#,
         )?;
         Ok(())
@@ -9173,4 +9285,116 @@ fn now_rfc3339() -> String {
     OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
+}
+
+#[cfg(test)]
+mod nullable_cost_migration_tests {
+    use super::*;
+
+    #[test]
+    fn opening_legacy_workspace_makes_reported_cost_columns_nullable() {
+        let path = std::env::temp_dir().join(format!(
+            "synth-cost-migration-{}-{}.sqlite",
+            std::process::id(),
+            OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE budget_commits (
+                run_id TEXT NOT NULL, budget_commit_id TEXT NOT NULL,
+                runtime_effect_id TEXT NOT NULL, budget_reservation_id TEXT NOT NULL,
+                cost_usd REAL NOT NULL, prompt_tokens INTEGER NOT NULL,
+                completion_tokens INTEGER NOT NULL, total_tokens INTEGER NOT NULL,
+                rollout_count INTEGER NOT NULL, wall_seconds INTEGER NOT NULL,
+                metadata_json TEXT NOT NULL, record_json TEXT NOT NULL,
+                committed_at TEXT NOT NULL,
+                PRIMARY KEY(run_id, budget_commit_id)
+            );
+            CREATE TABLE usage_ledger (
+                run_id TEXT NOT NULL, usage_ledger_id TEXT NOT NULL,
+                boundary TEXT NOT NULL, source_type TEXT NOT NULL,
+                source_id TEXT NOT NULL, candidate_id TEXT,
+                evaluation_stage TEXT, model TEXT, provider TEXT,
+                call_count INTEGER NOT NULL, prompt_tokens INTEGER NOT NULL,
+                completion_tokens INTEGER NOT NULL, total_tokens INTEGER NOT NULL,
+                cost_usd REAL NOT NULL, usage_json TEXT NOT NULL,
+                metadata_json TEXT NOT NULL, ledger_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(run_id, usage_ledger_id)
+            );
+            CREATE TABLE manifests (
+                run_id TEXT PRIMARY KEY, manifest_path TEXT NOT NULL,
+                best_candidate_id TEXT NOT NULL, cost_usd REAL NOT NULL,
+                usage_json TEXT NOT NULL, manifest_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            "#,
+        )
+        .unwrap();
+        drop(conn);
+
+        let store = WorkspaceStore::open_existing(&path).unwrap();
+        assert!(!store
+            .column_is_not_null("budget_commits", "cost_usd")
+            .unwrap());
+        assert!(!store
+            .column_is_not_null("usage_ledger", "cost_usd")
+            .unwrap());
+        assert!(!store.column_is_not_null("manifests", "cost_usd").unwrap());
+        drop(store);
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("sqlite-wal"));
+        let _ = fs::remove_file(path.with_extension("sqlite-shm"));
+    }
+
+    #[test]
+    fn opening_legacy_workspace_adds_sensor_frame_task_identity_before_backfill() {
+        let path = std::env::temp_dir().join(format!(
+            "synth-sensor-frame-migration-{}-{}.sqlite",
+            std::process::id(),
+            OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE sensor_frames (
+                run_id TEXT NOT NULL,
+                sensor_frame_id TEXT NOT NULL,
+                candidate_id TEXT NOT NULL,
+                rollout_id TEXT,
+                example_id TEXT NOT NULL,
+                seed INTEGER NOT NULL,
+                split TEXT NOT NULL,
+                evaluation_stage TEXT NOT NULL,
+                reward REAL NOT NULL,
+                status TEXT NOT NULL,
+                trace_digest_json TEXT,
+                usage_json TEXT NOT NULL,
+                failure_json TEXT,
+                frame_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(run_id, sensor_frame_id)
+            );
+            "#,
+        )
+        .unwrap();
+        drop(conn);
+
+        let store = WorkspaceStore::open_existing(&path).unwrap();
+        let mut columns = store
+            .conn
+            .prepare("PRAGMA table_info(sensor_frames)")
+            .unwrap();
+        let task_id = columns
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .any(|name| name.unwrap() == "task_id");
+        assert!(task_id);
+        drop(columns);
+        drop(store);
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("sqlite-wal"));
+        let _ = fs::remove_file(path.with_extension("sqlite-shm"));
+    }
 }

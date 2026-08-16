@@ -2,15 +2,18 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use crate::{CandidateRecord, RolloutScore};
 use reqwest::blocking::Client;
 use serde_json::{json, Map, Value};
 use synth_optimizer_platform::{
-    jesterky_workspace_read_model, looks_like_jesterky_manifest, read_jesterky_manifest, run_turn,
-    AgentTurnOutcome, CodexTurnRequest, OptimizerError, PromptProgram, Result,
-    SynthOptimizerConfig,
+    jesterky_workspace_read_model, looks_like_jesterky_manifest,
+    proposer_delta_chunks_from_protocol, proposer_uses_chatgpt_auth, read_jesterky_manifest,
+    record_manifest_validation, run_turn, AgentTurnOutcome, CodexTurnRequest,
+    NanoAgentTurnIdentity, NanoCodexExecution, NanoCodexSessionPool, NanoCodexTurnRequest,
+    OptimizerError, PromptProgram, Result, SynthOptimizerConfig,
 };
 
 const GEPA_REFLECTIVE_FRAME_SCHEMA_VERSION: &str = "gepa_reflective_frame.v1";
@@ -28,6 +31,8 @@ const DEEPSEEK_OUTPUT_USD_PER_MILLION: f64 = 1.10;
 const CHAT_COMPLETIONS_PROPOSER_MAX_TOKENS: u64 = 8_192;
 const CHAT_COMPLETIONS_PROPOSER_MAX_EVIDENCE_CHARS_PER_FILE: usize = 32_000;
 const CHAT_COMPLETIONS_PROPOSER_MAX_TOTAL_EVIDENCE_CHARS: usize = 160_000;
+
+static NANO_CODEX_SESSIONS: OnceLock<Mutex<NanoCodexSessionPool>> = OnceLock::new();
 
 pub(crate) struct CodexProposerInput<'a> {
     pub config: &'a SynthOptimizerConfig,
@@ -68,7 +73,7 @@ pub(crate) fn run_codex_app_server_proposer(input: CodexProposerInput<'_>) -> Re
     let timeout = Duration::from_secs(input.config.proposer.timeout_seconds.max(1));
     let message_stall_timeout =
         Duration::from_secs(input.config.proposer.message_stall_timeout_seconds.max(1));
-    let outcome = run_turn(CodexTurnRequest {
+    let turn_request = CodexTurnRequest {
         run_id: &input.config.run.run_id,
         proposer: &input.config.proposer,
         workspace_dir: &input.workspace_dir,
@@ -80,8 +85,19 @@ pub(crate) fn run_codex_app_server_proposer(input: CodexProposerInput<'_>) -> Re
         turn_start_params: turn_start_params(&input, &model)?,
         timeout,
         message_stall_timeout,
-    })?;
-    build_response_from_outcome(&input, &model, outcome)
+        message_observer: None,
+    };
+    if input.config.proposer.nano_codex.enabled {
+        let execution = run_nano_codex_proposer(&input, turn_request)?;
+        return build_response_from_outcome(
+            &input,
+            &model,
+            execution.outcome,
+            Some(execution.receipt_path),
+        );
+    }
+    let outcome = run_turn(turn_request)?;
+    build_response_from_outcome(&input, &model, outcome, None)
 }
 
 pub(crate) fn run_codex_staleness_reviewer(
@@ -91,6 +107,11 @@ pub(crate) fn run_codex_staleness_reviewer(
         return Err(OptimizerError::Config(
             "gepa.pipeline.staleness_policy = reflective requires proposer.backend = \"codex_app_server\" for the staleness reviewer"
                 .to_string(),
+        ));
+    }
+    if input.config.proposer.nano_codex.enabled {
+        return Err(OptimizerError::Config(
+            "nano-Codex does not yet support the reflective staleness reviewer; refusing to fall back to a one-shot proposer process".to_string(),
         ));
     }
     materialize_staleness_review_workspace(&input)?;
@@ -115,6 +136,7 @@ pub(crate) fn run_codex_staleness_reviewer(
         turn_start_params: staleness_turn_start_params(&input, &model),
         timeout,
         message_stall_timeout,
+        message_observer: None,
     })?;
     build_staleness_review_response(&input, &model, outcome)
 }
@@ -268,6 +290,7 @@ pub(crate) fn run_deepseek_chat_proposer(input: CodexProposerInput<'_>) -> Resul
         "proposals": proposals,
         "usage": usage,
         "evidence_warnings": evidence_warnings,
+        "proposer_stream_chunks": chat_content_stream_chunks(&chat_response),
     }))
 }
 
@@ -383,10 +406,28 @@ fn write_deepseek_chat_artifacts(
     write_json(&artifact_dir.join("deepseek_chat_response.json"), response)
 }
 
+fn proposer_stream_chunks_from_messages(messages: &[Value]) -> Vec<Value> {
+    proposer_delta_chunks_from_protocol(messages)
+        .into_iter()
+        .map(|(channel, text)| json!({"channel": channel, "text": text}))
+        .collect()
+}
+
+fn chat_content_stream_chunks(chat_response: &Value) -> Vec<Value> {
+    chat_response
+        .pointer("/choices/0/message/content")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(|text| vec![json!({"channel": "content", "text": text})])
+        .unwrap_or_default()
+}
+
 fn build_response_from_outcome(
     input: &CodexProposerInput<'_>,
     model: &str,
     outcome: AgentTurnOutcome,
+    nano_receipt_path: Option<PathBuf>,
 ) -> Result<Value> {
     let usage = normalize_proposer_usage(
         input.config,
@@ -418,8 +459,10 @@ fn build_response_from_outcome(
         &prevalidation_response,
         &outcome,
     )?;
+    let validation_started = std::time::Instant::now();
     let manifest = read_manifest(&input.workspace_dir)?;
     let proposals = proposals_from_manifest(&manifest)?;
+    let manifest_validation_ms = validation_started.elapsed().as_millis();
     let mut evidence_warnings = manifest_evidence_warnings(input, &manifest, &proposals);
     if outcome.usage.is_none() {
         evidence_warnings.push(
@@ -435,12 +478,21 @@ fn build_response_from_outcome(
         "proposals": proposals,
         "usage": usage,
         "evidence_warnings": evidence_warnings,
+        "received_messages": outcome.received_messages,
+        "proposer_stream_chunks": proposer_stream_chunks_from_messages(&outcome.received_messages),
     });
     if let Some(receipt) = outcome.supervisor_receipt.as_ref() {
         response["supervisor_receipt"] = serde_json::to_value(receipt)?;
     }
     if let Some(shutdown_warning) = outcome.shutdown_warning.as_ref() {
         response["shutdown_warning"] = Value::String(shutdown_warning.clone());
+    }
+    if let Some(receipt_path) = nano_receipt_path {
+        let receipt = record_manifest_validation(&receipt_path, manifest_validation_ms)?;
+        response["nano_codex"] = json!({
+            "receipt_path": receipt_path,
+            "receipt": receipt,
+        });
     }
     write_agent_artifacts(
         input,
@@ -456,6 +508,47 @@ fn build_response_from_outcome(
     Ok(response)
 }
 
+fn run_nano_codex_proposer(
+    input: &CodexProposerInput<'_>,
+    turn: CodexTurnRequest<'_>,
+) -> Result<NanoCodexExecution> {
+    let task_info_path = input.workspace_dir.join("state").join("task_info.json");
+    let task_info = read_json_value(&task_info_path)?;
+    let artifact_dir = input.workspace_dir.join(".nano_codex");
+    let identity = NanoAgentTurnIdentity {
+        request_id: format!(
+            "{}-generation-{:03}",
+            input.config.run.run_id, input.generation
+        ),
+        run_id: input.config.run.run_id.clone(),
+        role: "gepa_proposer".to_string(),
+        round: input.generation.to_string(),
+        treatment_preset: "prompt".to_string(),
+        parent_candidate_id: input.parent.candidate_id.clone(),
+        workspace_id: format!("generation_{:03}", input.generation),
+    };
+    let request = NanoCodexTurnRequest {
+        turn,
+        identity,
+        static_context: json!({
+            "schema_version": "gepa.nano_codex.static_context.v1",
+            "task_info": task_info,
+            "program": input.program,
+            "target_modules": input.config.candidate.target_modules,
+            "proposer_prompt": input.config.proposer.prompt,
+        }),
+        replay_artifact_paths: vec![PathBuf::from("proposal/manifest.json")],
+        artifact_dir: &artifact_dir,
+        cancel_before_start: false,
+    };
+    let pool = NANO_CODEX_SESSIONS.get_or_init(|| Mutex::new(NanoCodexSessionPool::default()));
+    pool.lock()
+        .map_err(|_| {
+            OptimizerError::Invariant("nano-Codex session pool mutex poisoned".to_string())
+        })?
+        .run(request)
+}
+
 fn normalize_proposer_usage(config: &SynthOptimizerConfig, model: &str, usage: Value) -> Value {
     let Some(mut usage_map) = usage.as_object().cloned() else {
         return usage;
@@ -463,7 +556,26 @@ fn normalize_proposer_usage(config: &SynthOptimizerConfig, model: &str, usage: V
     let provider = config.proposer.provider.trim().to_ascii_lowercase();
     let model_lower = model.trim().to_ascii_lowercase();
     let reported_cost = usage_f64_from_map(&usage_map, "cost_usd")
-        .filter(|value| value.is_finite() && *value > 0.0);
+        .filter(|value| value.is_finite() && *value >= 0.0);
+    if proposer_uses_chatgpt_auth(&config.proposer.auth_mode) {
+        usage_map.insert(
+            "provider".to_string(),
+            Value::String("chatgpt_subscription".to_string()),
+        );
+        usage_map.insert("model".to_string(), Value::String(model.to_string()));
+        if reported_cost.is_none() {
+            // ChatGPT-authenticated Codex turns are subscription-backed rather
+            // than metered API calls. Record an explicit zero incremental API
+            // charge so the hard cost ledger does not mistake the absence of
+            // an API receipt for unknown spend.
+            usage_map.insert("cost_usd".to_string(), json!(0.0));
+            usage_map.insert(
+                "cost_source".to_string(),
+                Value::String("chatgpt_subscription_no_incremental_api_charge".to_string()),
+            );
+        }
+        return Value::Object(usage_map);
+    }
     if provider.eq_ignore_ascii_case("openrouter") && model_lower == OPENROUTER_GROK43_MODEL {
         return normalize_openrouter_grok43_usage(model, usage_map);
     }
@@ -939,7 +1051,8 @@ fn find_jesterky_manifest_for_proposer(input: &CodexProposerInput<'_>) -> Result
         return read_jesterky_manifest(&annotate_path).map(Some);
     }
     let program_metadata = Value::Object(input.program.metadata.clone());
-    if let Some(manifest) = find_jesterky_manifest_in_value(&program_metadata, &input.workspace_dir)?
+    if let Some(manifest) =
+        find_jesterky_manifest_in_value(&program_metadata, &input.workspace_dir)?
     {
         return Ok(Some(manifest));
     }
@@ -987,7 +1100,8 @@ fn find_jesterky_manifest_in_value(value: &Value, workspace_dir: &Path) -> Resul
                     if let Some(manifest) = find_jesterky_manifest_in_value(child, workspace_dir)? {
                         return Ok(Some(manifest));
                     }
-                } else if let Some(manifest) = find_jesterky_manifest_in_value(child, workspace_dir)?
+                } else if let Some(manifest) =
+                    find_jesterky_manifest_in_value(child, workspace_dir)?
                 {
                     return Ok(Some(manifest));
                 }
@@ -1249,10 +1363,9 @@ fn write_agent_artifacts(
 
 fn workspace_readme(input: &CodexProposerInput<'_>) -> String {
     let proposal_policy = proposer_policy_text(input);
-    let jesterky_rule = crate::jesterky_workflow::jesterky_workspace_rule(
-        input.config.jesterky_workflow.enabled,
-    )
-    .unwrap_or("");
+    let jesterky_rule =
+        crate::jesterky_workflow::jesterky_workspace_rule(input.config.jesterky_workflow.enabled)
+            .unwrap_or("");
     let jesterky_section = if input.config.jesterky_workflow.enabled {
         "13. REQUIRED: `state/jesterky_proposer_context.md`, `state/jesterky_theme_registry.json`, and `state/jesterky_trace_annotations.jsonl` for jesterky annotate themes.\n14. If present, `state/jesterky_manifest_summary.json`, `state/jesterky_trace_rows.json`, `state/jesterky_optimizer_triples.json`, and `state/jesterky_evidence_refs.json` for jesterky process-tree evidence."
     } else {
@@ -2969,6 +3082,11 @@ fn read_manifest(workspace_dir: &Path) -> Result<Value> {
     }
 }
 
+fn read_json_value(path: &Path) -> Result<Value> {
+    let text = fs::read_to_string(path).map_err(|source| OptimizerError::io(path, source))?;
+    Ok(serde_json::from_str(&text)?)
+}
+
 fn normalize_manifest_contract(mut manifest: Value, path: &Path) -> Result<Value> {
     let Some(object) = manifest.as_object_mut() else {
         return Ok(manifest);
@@ -3277,5 +3395,40 @@ fn non_empty(value: Option<&str>) -> Option<&str> {
         None
     } else {
         Some(value)
+    }
+}
+
+#[cfg(test)]
+mod cost_tests {
+    use super::*;
+
+    #[test]
+    fn chatgpt_proposer_emits_explicit_zero_incremental_api_cost() {
+        let mut config = SynthOptimizerConfig::default();
+        config.proposer.auth_mode = "chatgpt".to_string();
+        let usage = normalize_proposer_usage(
+            &config,
+            "gpt-5.6-luna",
+            json!({"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}),
+        );
+        assert_eq!(usage.get("cost_usd"), Some(&json!(0.0)));
+        assert_eq!(
+            usage.get("cost_source"),
+            Some(&json!("chatgpt_subscription_no_incremental_api_charge"))
+        );
+        assert_eq!(usage.get("provider"), Some(&json!("chatgpt_subscription")));
+    }
+
+    #[test]
+    fn chatgpt_proposer_preserves_an_explicit_cost_receipt() {
+        let mut config = SynthOptimizerConfig::default();
+        config.proposer.auth_mode = "chatgpt".to_string();
+        let usage = normalize_proposer_usage(
+            &config,
+            "gpt-5.6-luna",
+            json!({"cost_usd": 0.25, "cost_source": "provider"}),
+        );
+        assert_eq!(usage.get("cost_usd"), Some(&json!(0.25)));
+        assert_eq!(usage.get("cost_source"), Some(&json!("provider")));
     }
 }

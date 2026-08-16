@@ -1,6 +1,6 @@
 [project]
 name = "synth-optimizers"
-version = "0.2.6.dev20260626"
+version = "0.2.13"
 description = "Public Synth optimizer tooling with a Rust GEPA core."
 authors = [{name = "Synth Laboratories", email = "josh@usesynth.ai"}]
 readme = "README.md"
@@ -8,7 +8,7 @@ requires-python = ">=3.11"
 license = "Apache-2.0"
 dependencies = [
     "pydantic>=2.0.0",
-    "synth-containers==0.2.0.20260604",
+    "synth-containers==0.4.1.dev20260814",
     "websocket-client>=1.8.0",
 ]
 
@@ -48,13 +48,13 @@ module-name = "synth_optimizers._synth_optimizers"
 python-source = "src"
 # Ship the bundled console docs (markdown + logo) as package data so a
 # pip-installed `gepa console` can serve them without a repo checkout.
-include = ["src/synth_optimizers/docs/**/*"]
+include = ["src/synth_optimizers/docs/**/*", "src/synth_optimizers/eval/catalog/*.toml"]
 
 [tool.uv]
 package = true
 
 [tool.uv.sources]
-synth-containers = { path = "../containers", editable = true }
+synth-containers = { git = "https://github.com/synth-laboratories/containers.git", rev = "e76f8e4ba3edae10dec24bf9e71ec1a7fb332bed" }
 
 [tool.ruff]
 line-length = 100

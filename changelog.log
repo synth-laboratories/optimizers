@@ -1,5 +1,18 @@
 # synth-optimizers changelog
 
+## 2026-08-16
+
+* Prepared `0.2.12.dev20260816` with the authenticated Workshop capability and status handshake routes required to start the GEPA sidecar end to end.
+* Prepared `0.2.11.dev20260816` with ChatGPT-authenticated proposer support for the locked `gpt-5.6-luna`, `gpt-5.6-sol`, and `gpt-5.6-terra` model ids. Unknown 5.6 ids remain fail-closed.
+* Updated the public GEPA proposer documentation to advertise the same allowlist enforced by the optimizer platform.
+
+## 2026-08-14
+
+* Prepared `0.2.9.dev20260814` for the Workshop v0.3 development channel: transient proposer runtime failures now receive one bounded, durable optimizer-job retry while validation failures remain fail-closed.
+* Prepared `0.2.8.dev20260814` for the Workshop v0.3 development channel: ChatGPT-authenticated proposer turns now emit an explicit zero incremental API-cost receipt, and completed runtime outcomes are durable before budget settlement.
+* Prepared `0.2.7.dev20260814` for the Workshop v0.3 development channel and pinned `synth-containers==0.4.1.dev20260814`.
+* Restored the hosted MAPO and Online Reflexion client exports required for clean installed-wheel imports while retaining the merged GEPA runtime and stream contracts from `dev`.
+
 ## 2026-06-26
 
 * Prepared `0.2.6.dev20260626` for the GELO 72-hour promo relaunch: added public `craftax_gamebench_rust_smoke` and `rogue_gamebench_rust_smoke` presets, refreshed the bundled hosted GELO docs, and updated the agent skill with the June 26 promo terms and GameBench Rust tunnel path.
@@ -79,3 +92,4 @@
 * No main-branch package release.
 * Better SDK and auth work stayed staged off main.
 * Next release target: shorter SDK examples, acceptance evidence, and daily dev packaging.
+* Prepared `0.2.10.dev20260815` with explicit hosted SFT API support and a clear compatibility boundary for future hosted algorithms.

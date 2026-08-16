@@ -131,6 +131,21 @@ fn default_message_stall_timeout_seconds() -> u64 {
     120
 }
 
+fn default_nano_codex_mode() -> String {
+    "live".to_string()
+}
+
+fn default_nano_codex_max_turns() -> usize {
+    16
+}
+
+fn default_nano_codex_allowed_tools() -> Vec<String> {
+    ["search", "read", "apply_patch", "exec"]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
 fn default_max_generations() -> usize {
     2
 }
@@ -545,6 +560,12 @@ impl SynthOptimizerConfig {
         if let Some(path) = &self.proposer.prompt.best_practices_path {
             self.proposer.prompt.best_practices_path = Some(absolutize(base_dir, path));
         }
+        if let Some(path) = &self.proposer.nano_codex.record_dir {
+            self.proposer.nano_codex.record_dir = Some(absolutize(base_dir, path));
+        }
+        if let Some(path) = &self.proposer.nano_codex.replay_dir {
+            self.proposer.nano_codex.replay_dir = Some(absolutize(base_dir, path));
+        }
         if let Some(path) = &self.cache.path {
             self.cache.path = Some(absolutize(base_dir, path));
         }
@@ -799,6 +820,7 @@ impl SynthOptimizerConfig {
         validate_proposer_service_tier(&self.proposer)?;
         validate_proposer_auth_config(&self.proposer)?;
         validate_proposer_prompt_config(&self.proposer.prompt)?;
+        validate_nano_codex_config(&self.proposer)?;
         Ok(())
     }
 }
@@ -1070,6 +1092,8 @@ pub struct ProposerConfig {
     pub docker: Option<ProposerDockerConfig>,
     #[serde(default)]
     pub daytona: Option<ProposerDaytonaConfig>,
+    #[serde(default)]
+    pub nano_codex: NanoCodexConfig,
 }
 
 impl Default for ProposerConfig {
@@ -1097,6 +1121,37 @@ impl Default for ProposerConfig {
             prompt: ProposerPromptConfig::default(),
             docker: None,
             daytona: None,
+            nano_codex: NanoCodexConfig::default(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NanoCodexConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_nano_codex_mode")]
+    pub mode: String,
+    #[serde(default = "default_nano_codex_max_turns")]
+    pub max_turns_per_session: usize,
+    #[serde(default)]
+    pub record_dir: Option<PathBuf>,
+    #[serde(default)]
+    pub replay_dir: Option<PathBuf>,
+    #[serde(default = "default_nano_codex_allowed_tools")]
+    pub allowed_tools: Vec<String>,
+}
+
+impl Default for NanoCodexConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mode: default_nano_codex_mode(),
+            max_turns_per_session: default_nano_codex_max_turns(),
+            record_dir: None,
+            replay_dir: None,
+            allowed_tools: default_nano_codex_allowed_tools(),
         }
     }
 }
@@ -1195,6 +1250,9 @@ pub const CHATGPT_PROPOSER_MODELS: &[&str] = &[
     "gpt-5.3-codex",
     "gpt-5.3-codex-spark",
     "gpt-5.5",
+    "gpt-5.6-luna",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
 ];
 
 pub fn proposer_auth_mode_normalized(auth_mode: &str) -> String {
@@ -2371,6 +2429,76 @@ fn validate_proposer_prompt_config(config: &ProposerPromptConfig) -> Result<()> 
     Ok(())
 }
 
+fn validate_nano_codex_config(proposer: &ProposerConfig) -> Result<()> {
+    let config = &proposer.nano_codex;
+    if !config.enabled {
+        return Ok(());
+    }
+    if proposer.backend.trim() != "codex_app_server" {
+        return Err(OptimizerError::Config(
+            "proposer.nano_codex.enabled requires proposer.backend = \"codex_app_server\""
+                .to_string(),
+        ));
+    }
+    if !matches!(proposer.runtime_substrate, ExecutionSubstrate::Local) {
+        return Err(OptimizerError::Config(
+            "proposer.nano_codex.enabled currently requires proposer.runtime_substrate = \"local\"; no substrate fallback is permitted".to_string(),
+        ));
+    }
+    if !proposer_uses_chatgpt_auth(&proposer.auth_mode)
+        || !proposer.copy_host_auth
+        || proposer.api_key_env.is_some()
+    {
+        return Err(OptimizerError::Config(
+            "proposer.nano_codex.enabled requires host ChatGPT bundle auth: auth_mode = \"chatgpt\" or \"host\", copy_host_auth = true, and no api_key_env".to_string(),
+        ));
+    }
+    let mode = normalize_enum_value(&config.mode);
+    if !matches!(mode.as_str(), "live" | "replay") {
+        return Err(OptimizerError::Config(format!(
+            "proposer.nano_codex.mode must be live or replay, got {:?}",
+            config.mode
+        )));
+    }
+    if config.max_turns_per_session == 0 {
+        return Err(OptimizerError::Config(
+            "proposer.nano_codex.max_turns_per_session must be positive".to_string(),
+        ));
+    }
+    if mode == "replay" && config.replay_dir.is_none() {
+        return Err(OptimizerError::Config(
+            "proposer.nano_codex.mode = \"replay\" requires proposer.nano_codex.replay_dir"
+                .to_string(),
+        ));
+    }
+    if mode == "replay" && config.record_dir.is_some() && config.record_dir == config.replay_dir {
+        return Err(OptimizerError::Config(
+            "proposer.nano_codex replay record_dir must differ from replay_dir so replay cannot overwrite live receipts".to_string(),
+        ));
+    }
+    let permitted = ["search", "read", "apply_patch", "exec"];
+    let mut seen = BTreeSet::new();
+    for tool in &config.allowed_tools {
+        let normalized = normalize_enum_value(tool);
+        if !permitted.contains(&normalized.as_str()) {
+            return Err(OptimizerError::Config(format!(
+                "proposer.nano_codex.allowed_tools contains unsupported tool {tool:?}; expected only search, read, apply_patch, and exec"
+            )));
+        }
+        if !seen.insert(normalized) {
+            return Err(OptimizerError::Config(format!(
+                "proposer.nano_codex.allowed_tools contains duplicate tool {tool:?}"
+            )));
+        }
+    }
+    if seen.is_empty() {
+        return Err(OptimizerError::Config(
+            "proposer.nano_codex.allowed_tools must not be empty".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_gepa_candidate_selector_config(config: &GepaCandidateSelectorConfig) -> Result<()> {
     let strategy = config.name.trim().to_ascii_lowercase().replace('-', "_");
     if !matches!(
@@ -2766,6 +2894,26 @@ fn validate_gepa_pipeline_config(config: &GepaPipelineConfig) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn locked_5_6_chatgpt_proposers_are_allowed() {
+        for model in ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"] {
+            assert!(CHATGPT_PROPOSER_MODELS.contains(&model));
+            validate_chatgpt_proposer_model(model).expect("locked ChatGPT proposer model");
+            validate_chatgpt_proposer_model(&model.to_ascii_uppercase())
+                .expect("ChatGPT proposer validation normalizes case");
+        }
+    }
+
+    #[test]
+    fn unknown_chatgpt_proposer_still_fails_closed() {
+        let error = validate_chatgpt_proposer_model("gpt-5.6-unlisted")
+            .expect_err("unknown model must remain rejected");
+        assert!(error.to_string().contains("not allowed"));
+        assert!(error.to_string().contains("gpt-5.6-luna"));
+        assert!(error.to_string().contains("gpt-5.6-sol"));
+        assert!(error.to_string().contains("gpt-5.6-terra"));
+    }
 
     #[test]
     fn flash_evolve_accepts_reflective_speculative_and_adaptive_stage_workers() {

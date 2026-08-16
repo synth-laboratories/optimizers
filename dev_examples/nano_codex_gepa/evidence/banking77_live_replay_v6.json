@@ -1,0 +1,79 @@
+{
+  "schema_version": "synth.nano_codex.gepa_evidence.v1",
+  "captured_at": "2026-07-24",
+  "task": "banking77",
+  "run_id": "nano_codex_gepa_banking77_proof_v6",
+  "configuration": {
+    "generations": 2,
+    "policy_model": "gpt-4.1-nano",
+    "proposer_model": "gpt-5.4-mini",
+    "proposer_backend": "codex_app_server",
+    "nano_codex_role": "gepa_proposer"
+  },
+  "live": {
+    "terminal_status": "completed",
+    "session_id": "ef2b4b9addff27f30f5abcb84c91d71bc47969ef24f1131f4d366f65ed48717b",
+    "static_context_sha256": "049a9b3ac239f2687571796d41188d93b134cb0ed08f7724a34e7d5aa934774a",
+    "turns": [
+      {
+        "round": "0",
+        "session_reused": false,
+        "static_context_cache_hit": false,
+        "cold_start_ms": 3671,
+        "total_turn_ms": 83023,
+        "live_model_calls": 1,
+        "live_tool_calls": 19,
+        "workspace_artifacts": ["proposal/manifest.json"]
+      },
+      {
+        "round": "1",
+        "session_reused": true,
+        "static_context_cache_hit": true,
+        "cold_start_ms": 0,
+        "total_turn_ms": 55000,
+        "live_model_calls": 1,
+        "live_tool_calls": 15,
+        "workspace_artifacts": ["proposal/manifest.json"]
+      }
+    ],
+    "best_candidate_id": "gepa_1c7014ae84ea",
+    "best_train_reward": 1.0,
+    "best_heldout_reward": 0.0
+  },
+  "replay": {
+    "terminal_status": "completed",
+    "session_id": "ef2b4b9addff27f30f5abcb84c91d71bc47969ef24f1131f4d366f65ed48717b",
+    "static_context_sha256": "049a9b3ac239f2687571796d41188d93b134cb0ed08f7724a34e7d5aa934774a",
+    "turns": [
+      {
+        "round": "0",
+        "terminal_reason": "replayed",
+        "session_reused": false,
+        "static_context_cache_hit": false,
+        "live_model_calls": 0,
+        "live_tool_calls": 0,
+        "workspace_artifacts": ["proposal/manifest.json"]
+      },
+      {
+        "round": "1",
+        "terminal_reason": "replayed",
+        "session_reused": true,
+        "static_context_cache_hit": true,
+        "live_model_calls": 0,
+        "live_tool_calls": 0,
+        "workspace_artifacts": ["proposal/manifest.json"]
+      }
+    ],
+    "best_candidate_id": "gepa_1c7014ae84ea",
+    "best_train_reward": 1.0,
+    "best_heldout_reward": 0.0
+  },
+  "claims": {
+    "persistent_session_reused": true,
+    "static_context_cache_reused": true,
+    "proposal_workspace_artifact_restored": true,
+    "replay_live_model_calls": 0,
+    "replay_live_tool_calls": 0,
+    "live_and_replay_best_candidate_match": true
+  }
+}

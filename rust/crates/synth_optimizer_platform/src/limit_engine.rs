@@ -366,7 +366,11 @@ fn budget_limit_observations(
     let mut observations = Vec::new();
     for admission in admissions {
         for definition in definitions {
-            let (mut spent, reserved) = ledger_values_for_kind(&definition.kind, &admission.ledger);
+            let Some((mut spent, reserved)) =
+                ledger_values_for_kind(&definition.kind, &admission.ledger)
+            else {
+                continue;
+            };
             if matches!(&definition.kind, LimitKind::WallSeconds) {
                 spent = wall_seconds_from_timings_until(timings, &admission.checked_at);
             }
@@ -386,7 +390,9 @@ fn budget_limit_observations(
     append_timing_observations(run_id, definitions, timings, &mut observations);
     let timestamp = generated_at.map(str::to_string).unwrap_or_else(now_rfc3339);
     for definition in definitions {
-        let (mut spent, reserved) = ledger_values_for_kind(&definition.kind, ledger);
+        let Some((mut spent, reserved)) = ledger_values_for_kind(&definition.kind, ledger) else {
+            continue;
+        };
         if matches!(&definition.kind, LimitKind::WallSeconds) {
             spent = wall_seconds_from_timings_until(timings, &timestamp);
         }
@@ -415,20 +421,23 @@ fn append_commit_observations(
             .cmp(&right.committed_at)
             .then_with(|| left.budget_commit_id.cmp(&right.budget_commit_id))
     });
-    let mut cost_usd = 0.0;
+    let mut cost_usd = Some(0.0);
     let mut prompt_tokens = 0.0;
     let mut completion_tokens = 0.0;
     let mut total_tokens = 0.0;
     let mut rollouts = 0.0;
     for commit in sorted {
-        cost_usd += commit.cost_usd;
+        cost_usd = crate::usage::fold_reported_cost([cost_usd, commit.cost_usd]);
         prompt_tokens += commit.prompt_tokens as f64;
         completion_tokens += commit.completion_tokens as f64;
         total_tokens += commit.total_tokens as f64;
         rollouts += commit.rollout_count as f64;
         for definition in definitions {
             let spent = match &definition.kind {
-                LimitKind::CostUsd => cost_usd,
+                LimitKind::CostUsd => {
+                    let Some(cost_usd) = cost_usd else { continue };
+                    cost_usd
+                }
                 LimitKind::PromptTokens => prompt_tokens,
                 LimitKind::CompletionTokens => completion_tokens,
                 LimitKind::TotalTokens => total_tokens,
@@ -776,30 +785,32 @@ fn latest_observation_for<'a>(
         .find(|observation| observation.limit_id == limit_id)
 }
 
-fn ledger_values_for_kind(kind: &LimitKind, ledger: &BudgetLedgerSnapshot) -> (f64, f64) {
+fn ledger_values_for_kind(kind: &LimitKind, ledger: &BudgetLedgerSnapshot) -> Option<(f64, f64)> {
     match kind {
-        LimitKind::CostUsd => (ledger.spent_cost_usd, ledger.reserved_cost_usd),
-        LimitKind::PromptTokens => (
+        LimitKind::CostUsd => ledger
+            .spent_cost_usd
+            .map(|spent| (spent, ledger.reserved_cost_usd)),
+        LimitKind::PromptTokens => Some((
             ledger.spent_prompt_tokens as f64,
             ledger.reserved_prompt_tokens as f64,
-        ),
-        LimitKind::CompletionTokens => (
+        )),
+        LimitKind::CompletionTokens => Some((
             ledger.spent_completion_tokens as f64,
             ledger.reserved_completion_tokens as f64,
-        ),
-        LimitKind::TotalTokens => (
+        )),
+        LimitKind::TotalTokens => Some((
             ledger.spent_total_tokens as f64,
             ledger.reserved_total_tokens as f64,
-        ),
-        LimitKind::TotalRollouts => (
+        )),
+        LimitKind::TotalRollouts => Some((
             ledger.spent_rollouts as f64,
             ledger.reserved_rollouts as f64,
-        ),
-        LimitKind::WallSeconds => (
+        )),
+        LimitKind::WallSeconds => Some((
             ledger.spent_wall_seconds as f64,
             ledger.reserved_wall_seconds as f64,
-        ),
-        _ => (0.0, 0.0),
+        )),
+        _ => Some((0.0, 0.0)),
     }
 }
 

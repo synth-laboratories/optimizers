@@ -1,0 +1,71 @@
+# GameBench/Harbor LLM policy confirmation. Screen then confirm, through the
+# Harbor verifier surface, with the candidate as data: an allowlisted model and
+# reasoning effort.
+#
+# `network = "bridge"` and one declared secret are the minimum a paid policy
+# needs; the route, the rates, and the caps stay recipe-owned so a candidate
+# cannot bill against an endpoint the product did not name.
+
+[recipe]
+id = "eval.gamebench.llm-policy.confirm.v1"
+title = "GameBench LLM policy confirmation"
+description = "Screen then confirm allowlisted LLM policies through the Harbor target."
+task = "gamebench"
+policy_kind = "llm-policy.v1"
+image = "gamebench-harbor-eval-target"
+prerequisites = [
+    "Published gamebench-harbor-eval-target image pinned by digest",
+    "OPENAI_API_KEY in the eval home's secrets.toml",
+]
+scenarios = ["craftax-default-48x48"]
+screening_seeds = [101, 102]
+confirmation_seeds = [201, 202]
+secrets = ["OPENAI_API_KEY"]
+
+[recipe.budget]
+max_llm_calls = 20
+max_usd = 0.30
+
+[[recipe.models]]
+id = "gpt-5.6-luna"
+route = "https://api.openai.com/v1/chat/completions"
+secret = "OPENAI_API_KEY"
+efforts = ["none", "low", "medium", "high"]
+usd_per_1m_input = 0.2
+usd_per_1m_output = 1.2
+usd_per_1m_cached_input = 0.02
+price_source = "https://developers.openai.com/api/docs/pricing (standard tier)"
+price_as_of = "2026-07-30"
+
+[recipe.target]
+schema_version = "eval.target.v1"
+policy_kinds = ["llm-policy.v1"]
+trial_mode = "one-policy-one-seed"
+required_gates = ["policy_loaded", "verifier_completed", "reward_emitted", "workspace_intact"]
+required_artifacts = ["trace"]
+supports_live_events = true
+network = "bridge"
+
+[[recipe.target.metrics]]
+id = "verifier_reward"
+direction = "maximize"
+
+[[recipe.target.metrics]]
+id = "achievements"
+direction = "maximize"
+
+[recipe.selection]
+primary_metric = "verifier_reward"
+min_lift = 0.05
+min_valid_trials = 2
+decision_mode = "promote"
+
+[recipe.selection.elimination]
+kind = "none"
+
+[recipe.limits]
+max_parallel_trials = 4
+timeout_seconds = 1800
+cpus = 2.0
+memory_mb = 4096
+max_output_bytes = 268435456

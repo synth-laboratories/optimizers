@@ -1,0 +1,20 @@
+[proposer]
+backend = "codex_app_server"
+runtime_substrate = "local"
+execution_mode = "local_process"
+provider = "openai"
+auth_mode = "chatgpt"
+copy_host_auth = true
+codex_home = "/absolute/path/to/.codex"
+model = "gpt-5.4-mini"
+reasoning_effort = "medium"
+timeout_seconds = 900
+sandbox_mode = "workspace-write"
+approval_policy = "never"
+
+[proposer.nano_codex]
+enabled = true
+mode = "live"
+record_dir = ".out/nano-live"
+max_turns_per_session = 16
+allowed_tools = ["search", "read", "apply_patch", "exec"]

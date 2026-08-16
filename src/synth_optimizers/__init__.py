@@ -5,6 +5,7 @@ PyO3 exports were demoted in the v2 service rebuild and are no longer importable
 """
 
 import importlib
+from importlib.metadata import PackageNotFoundError, version as distribution_version
 from typing import Any
 
 from ._synth_optimizers import (
@@ -28,13 +29,18 @@ from ._synth_optimizers import (
     RunFailedError,
     StateTransitionError,
     SynthOptimizerError,
-    __version__,
+    __version__ as _native_version,
     events_compare,
     events_replay,
     gepa_compact_run_storage,
     gepa_delete_run_storage,
     gepa_serve,
 )
+
+try:
+    __version__ = distribution_version("synth-optimizers")
+except PackageNotFoundError:
+    __version__ = _native_version
 from .gelo import (
     GeloCacheMode,
     GeloCacheSection,
@@ -73,10 +79,27 @@ from .hosted import (
     OptimizerStartupCatalog,
     RunStatus as HostedRunStatus,
     submit_mapo,
+    submit_sft,
     submit_online_reflexion,
     validate_online_reflexion_evidence_notes,
 )
 from .hosted_config import HostedOptimizerConfig
+from .sft import (
+    SFT_ALGORITHM_ID,
+    BetaSftExecutorClient,
+    SftArtifact,
+    SftConfig,
+    SftPublicServiceClient,
+    SftService,
+    SftServiceError,
+    create_sft_http_server,
+    serve_sft_service,
+)
+from .future_algorithms import (
+    FUTURE_HOSTED_ALGORITHMS,
+    FutureHostedAlgorithm,
+    FutureHostedAlgorithmSlug,
+)
 from .o11y import (
     LiveProgress,
     RegistryRecord,
@@ -88,6 +111,11 @@ from .o11y import (
     project_run_events,
 )
 from .observability import (
+    A3_TASK,
+    DualGepaHub,
+    InMemoryRunLog,
+    LUNA_MED_PROPOSER_POLICY_REF,
+    SOL_MED_PROPOSER_POLICY_REF,
     OptimizerEvent,
     OptimizerEventType,
     OptimizerItem,
@@ -95,6 +123,12 @@ from .observability import (
     OptimizerLogLevel,
     OptimizerStateSlice,
     OptimizerStateSliceKind,
+    banking77_eval_policy_ref,
+    container_child_eval_ref,
+    gepa_proposer_policy_ref,
+    optimizer_event_log_id,
+    policy_ref,
+    proposer_delta_payload,
 )
 from .sdk import OptimizerConfig, OptimizerRun
 from .tunnels import (
@@ -154,10 +188,13 @@ __all__ = [
     "CacheCorruptError",
     "CacheFullError",
     "CacheMissError",
+    "A3_TASK",
     "CancelledError",
     "CloudflaredTunnelLease",
     "ConfigError",
+    "container_child_eval_ref",
     "ContainerContractError",
+    "DualGepaHub",
     "EventCompareError",
     "BudgetConfig",
     "CacheConfig",
@@ -200,8 +237,22 @@ __all__ = [
     "HostedOptimizerClient",
     "HostedOptimizerError",
     "HostedOptimizerConfig",
+    "SFT_ALGORITHM_ID",
+    "BetaSftExecutorClient",
+    "SftArtifact",
+    "SftConfig",
+    "SftPublicServiceClient",
+    "SftService",
+    "SftServiceError",
+    "create_sft_http_server",
+    "serve_sft_service",
+    "FUTURE_HOSTED_ALGORITHMS",
+    "FutureHostedAlgorithm",
+    "FutureHostedAlgorithmSlug",
     "HostedRunStatus",
     "InvariantError",
+    "InMemoryRunLog",
+    "LUNA_MED_PROPOSER_POLICY_REF",
     "LiveProgress",
     "ObjectiveConfig",
     "OptimizerConfig",
@@ -236,9 +287,15 @@ __all__ = [
     "RunFailedError",
     "RunFailure",
     "RunSettings",
+    "SOL_MED_PROPOSER_POLICY_REF",
     "RunState",
     "RunStatus",
     "RunUsage",
+    "banking77_eval_policy_ref",
+    "gepa_proposer_policy_ref",
+    "optimizer_event_log_id",
+    "policy_ref",
+    "proposer_delta_payload",
     "StateTransitionError",
     "SynthTunnelLease",
     "attach_synth_tunnel_lease",
@@ -259,6 +316,7 @@ __all__ = [
     "gepa_delete_run_storage",
     "gepa_serve",
     "submit_mapo",
+    "submit_sft",
     "submit_online_reflexion",
     "validate_online_reflexion_evidence_notes",
 ]

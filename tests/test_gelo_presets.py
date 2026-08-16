@@ -3,6 +3,7 @@
 Guards the hosted config shape that `synth-optimizers gelo submit --preset ...`
 sends to the backend. Run: `python -m pytest tests/test_gelo_presets.py`.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -39,7 +40,8 @@ def test_sokoban_smoke_materializes_gamebench_shape() -> None:
     taskset = cfg["taskset"]
     assert taskset["profile"] == "sokoban_singleplayer_agent"
     assert taskset["reward_mode"] == "sokoban_sparse_shaped"
-    assert taskset["checkpoint_semantics"] == "true_environment_snapshot"
+    assert "checkpoint_semantics" not in taskset
+    assert taskset["context"]["checkpoint_restore_semantics"] == "true_environment_snapshot"
     # GameBench Sokoban seed ranges (proven config), not crafter's 3001/7001.
     assert taskset["train_seeds"] == [101, 102, 103, 104]
     assert taskset["heldout_seeds"] == [201, 202]
@@ -75,9 +77,7 @@ def test_sokoban_smoke_requires_container_target() -> None:
 
 
 def test_crafter_smoke_unchanged() -> None:
-    cfg = GeloPreset.from_name("crafter_smoke").materialize(
-        container_url="http://x", run_id="r"
-    )
+    cfg = GeloPreset.from_name("crafter_smoke").materialize(container_url="http://x", run_id="r")
     assert cfg["taskset"]["profile"] == "crafter_react"
 
 

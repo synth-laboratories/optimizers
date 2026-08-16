@@ -1,0 +1,53 @@
+# Deterministic fixture target. It exists to prove the runner: result parsing,
+# cancellation, resume, evidence layout, and global semaphore behaviour, with no
+# dependency on a benchmark substrate.
+#
+# Build the image with docker/eval-fixture-target/build.sh, then pin the digest
+# it prints via `synth-optimizers eval pin`.
+
+[recipe]
+id = "eval.fixture.policy-smoke.v1"
+title = "Fixture policy smoke"
+description = "Deterministic target used to verify the eval runner end to end."
+task = "fixture"
+policy_kind = "python-code.v1"
+image = "synth-eval-fixture-target"
+prerequisites = ["Locally built synth-eval-fixture-target image"]
+scenarios = ["default"]
+screening_seeds = [101, 102]
+confirmation_seeds = [201, 202]
+secrets = []
+
+[recipe.target]
+schema_version = "eval.target.v1"
+policy_kinds = ["python-code.v1"]
+trial_mode = "one-policy-one-seed"
+required_gates = ["policy_loaded", "verifier_completed"]
+required_artifacts = ["trace"]
+supports_live_events = true
+network = "none"
+
+[[recipe.target.metrics]]
+id = "reward"
+direction = "maximize"
+
+[[recipe.target.metrics]]
+id = "steps"
+direction = "minimize"
+
+[recipe.selection]
+primary_metric = "reward"
+min_lift = 0.0
+min_valid_trials = 2
+decision_mode = "promote"
+
+[recipe.selection.elimination]
+kind = "keep_top_k"
+value = 1
+
+[recipe.limits]
+max_parallel_trials = 2
+timeout_seconds = 120
+cpus = 1.0
+memory_mb = 512
+max_output_bytes = 16777216

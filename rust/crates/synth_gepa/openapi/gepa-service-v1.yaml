@@ -32,6 +32,28 @@ servers:
     description: Local single-workspace server
 
 paths:
+  /v1/optimizer/capabilities:
+    get:
+      operationId: getOptimizerCapabilities
+      summary: Advertise Workshop optimizer compatibility
+      responses:
+        '200':
+          description: Optimizer algorithms, recipes, and runtime capabilities.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OptimizerCapabilities' }
+
+  /v1/optimizer/status:
+    get:
+      operationId: getOptimizerStatus
+      summary: Return the Workshop-compatible optimizer status document
+      responses:
+        '200':
+          description: Alias of the optimizer capability document for compatibility.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OptimizerCapabilities' }
+
   # ---------------------------------------------------------------------------
   # Submission + lifecycle
   # ---------------------------------------------------------------------------
@@ -177,6 +199,30 @@ paths:
           content:
             application/json:
                 schema: { $ref: '#/components/schemas/RunStateSnapshot' }
+        '404': { $ref: '#/components/responses/RunNotFound' }
+
+  /runs/{run_id}/optimizer-events:
+    parameters: [ { $ref: '#/components/parameters/RunId' } ]
+    get:
+      operationId: listOptimizerEvents
+      summary: Read the durable canonical optimizer event stream
+      description: |
+        Returns only `optimizer_event.v1` records owned by this Run. The
+        `after_sequence` cursor is exclusive, so retrying the same request is
+        idempotent and reconnecting from N returns only records after N.
+      parameters:
+        - name: after_sequence
+          in: query
+          schema: { type: integer, minimum: 0, default: 0 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 2000, default: 500 }
+      responses:
+        '200':
+          description: A cursor page from the per-Run durable optimizer log.
+          content:
+            application/json:
+              schema: { type: object }
         '404': { $ref: '#/components/responses/RunNotFound' }
 
   /runs/{run_id}/timings:
@@ -624,7 +670,6 @@ paths:
 
 # =============================================================================
 components:
-
   parameters:
     RunId:
       name: run_id
@@ -674,6 +719,25 @@ components:
           schema: { $ref: '#/components/schemas/ErrorEnvelope' }
 
   schemas:
+    OptimizerCapabilities:
+      type: object
+      required: [status, algorithms, recipes, replay, cancellation, compatibleTemplateIds]
+      properties:
+        status: { type: string, const: ok }
+        algorithms:
+          type: array
+          minItems: 1
+          items: { type: string }
+        recipes:
+          type: array
+          minItems: 1
+          items: { type: string }
+        replay: { type: boolean }
+        cancellation: { type: boolean }
+        compatibleTemplateIds:
+          type: array
+          minItems: 1
+          items: { type: string }
 
     # ---- Enums -------------------------------------------------------------
     RunStatus:
@@ -814,7 +878,7 @@ components:
         best_candidate_id: { type: [string, 'null'] }
         candidate_count: { type: integer, minimum: 0 }
         rollout_count: { type: integer, minimum: 0 }
-        cost_usd: { type: number }
+        cost_usd: { type: [number, 'null'], minimum: 0 }
         usage:
           type: object
           additionalProperties: true
@@ -941,7 +1005,7 @@ components:
           type: object
           properties:
             total_tokens: { type: integer, minimum: 0 }
-            cost_usd: { type: number, minimum: 0 }
+            cost_usd: { type: [number, 'null'], minimum: 0 }
 
     RunTransitionStatsSource:
       type: object
@@ -1189,7 +1253,7 @@ components:
       properties:
         input_tokens: { type: integer }
         output_tokens: { type: integer }
-        cost_usd: { type: number }
+        cost_usd: { type: [number, 'null'], minimum: 0 }
 
     Outcome:
       type: object

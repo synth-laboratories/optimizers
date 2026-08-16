@@ -1508,6 +1508,9 @@ fn route_request(request: HttpRequest, runtime: GepaServiceRuntime) -> HttpRespo
     let config = &runtime.config;
     match (request.method.as_str(), segments.as_slice()) {
         ("GET", ["health"]) => json_response(200, &json!({"status": "ok"})),
+        ("GET", ["v1", "optimizer", "capabilities"]) | ("GET", ["v1", "optimizer", "status"]) => {
+            json_response(200, &optimizer_capabilities_payload())
+        }
         ("GET", ["whoami"]) => json_response(
             200,
             &service_identity_payload(config, &runtime.service_url, &runtime.started_at, None),
@@ -1590,6 +1593,25 @@ fn route_request(request: HttpRequest, runtime: GepaServiceRuntime) -> HttpRespo
             None,
         ),
     }
+}
+
+fn optimizer_capabilities_payload() -> Value {
+    json!({
+        "status": "ok",
+        "algorithms": ["gepa"],
+        "recipes": [
+            "gepa.banking77.smoke.v1",
+            "gepa.banking77.luna.v1",
+            "gepa.banking77.sol.v1",
+            "gepa.craftax.smoke.v1"
+        ],
+        "replay": true,
+        "cancellation": true,
+        "compatibleTemplateIds": [
+            "optimizer.gepa.live.v1",
+            "optimizer.run.v1"
+        ]
+    })
 }
 
 fn handle_websocket_connection(
@@ -5770,6 +5792,23 @@ mod tests {
             service_worker_id("synth-gepa-service", 2, 0),
             service_worker_id("synth-gepa-service", 2, 1)
         );
+    }
+
+    #[test]
+    fn workshop_capability_handshake_is_complete() {
+        let capabilities = optimizer_capabilities_payload();
+        for field in ["algorithms", "recipes", "compatibleTemplateIds"] {
+            let values = capabilities[field].as_array().unwrap();
+            assert!(!values.is_empty());
+            assert!(values.iter().all(Value::is_string));
+        }
+        assert_eq!(capabilities["replay"], true);
+        assert_eq!(capabilities["cancellation"], true);
+        assert!(capabilities["recipes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|recipe| recipe == "gepa.banking77.smoke.v1"));
     }
 
     #[test]

@@ -32,6 +32,28 @@ servers:
     description: Local single-workspace server
 
 paths:
+  /v1/optimizer/capabilities:
+    get:
+      operationId: getOptimizerCapabilities
+      summary: Advertise Workshop optimizer compatibility
+      responses:
+        '200':
+          description: Optimizer algorithms, recipes, and runtime capabilities.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OptimizerCapabilities' }
+
+  /v1/optimizer/status:
+    get:
+      operationId: getOptimizerStatus
+      summary: Return the Workshop-compatible optimizer status document
+      responses:
+        '200':
+          description: Alias of the optimizer capability document for compatibility.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OptimizerCapabilities' }
+
   # ---------------------------------------------------------------------------
   # Submission + lifecycle
   # ---------------------------------------------------------------------------
@@ -648,7 +670,6 @@ paths:
 
 # =============================================================================
 components:
-
   parameters:
     RunId:
       name: run_id
@@ -698,6 +719,25 @@ components:
           schema: { $ref: '#/components/schemas/ErrorEnvelope' }
 
   schemas:
+    OptimizerCapabilities:
+      type: object
+      required: [status, algorithms, recipes, replay, cancellation, compatibleTemplateIds]
+      properties:
+        status: { type: string, const: ok }
+        algorithms:
+          type: array
+          minItems: 1
+          items: { type: string }
+        recipes:
+          type: array
+          minItems: 1
+          items: { type: string }
+        replay: { type: boolean }
+        cancellation: { type: boolean }
+        compatibleTemplateIds:
+          type: array
+          minItems: 1
+          items: { type: string }
 
     # ---- Enums -------------------------------------------------------------
     RunStatus:

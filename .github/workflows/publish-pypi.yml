@@ -42,6 +42,12 @@ jobs:
 
           with open("pyproject.toml", "rb") as handle:
               version = tomllib.load(handle)["project"]["version"]
+          with open("Cargo.toml", "rb") as handle:
+              rust_version = tomllib.load(handle)["workspace"]["package"]["version"]
+          if rust_version != version:
+              raise SystemExit(
+                  f"Python package version {version} does not match Rust service version {rust_version}"
+              )
 
           channel = os.environ["REQUESTED_CHANNEL"]
           ref = os.environ["RELEASE_REF"]

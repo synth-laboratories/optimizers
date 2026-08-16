@@ -1,6 +1,6 @@
 [project]
 name = "synth-optimizers"
-version = "0.2.11.dev20260816"
+version = "0.2.12.dev20260816"
 description = "Public Synth optimizer tooling with a Rust GEPA core."
 authors = [{name = "Synth Laboratories", email = "josh@usesynth.ai"}]
 readme = "README.md"

@@ -182,7 +182,12 @@ def choose_actions(
             _STATE["exhausted_at_ply"] = ply
             _record({"event": "budget_exhausted", "reason": reason, "ply": ply})
         _STATE["filler_steps"] += 1
-        return {"actions": [fallback], "rationale": reason}
+        return {
+            "actions": [],
+            "rationale": reason,
+            "stop_episode": True,
+            "stop_reason": reason,
+        }
 
     if _STATE["budget_exhausted"]:
         return _exhaust(_STATE["budget_exhausted"])

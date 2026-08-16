@@ -7,6 +7,7 @@ matching real image for the end-to-end check.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import threading
 import time
@@ -593,10 +594,7 @@ def _scored(candidate_kind: str, usages: list[dict]):
 
 
 def test_a_budget_exhausted_policy_is_visible_on_the_scorecard():
-    """An LLM policy that spends its budget keeps returning actions — the
-    harness fills the rest of the episode with a fallback. The score that comes
-    back is then partly the fallback\'s, so the scorecard has to say so rather
-    than presenting one mean as if the model had played throughout."""
+    """Legacy evidence with fallback steps remains explicit on the scorecard."""
 
     payload = _scored(
         "llm-policy.v1",
@@ -611,6 +609,29 @@ def test_a_budget_exhausted_policy_is_visible_on_the_scorecard():
     assert payload["trials"]["valid"] == 2
     assert payload["trials"]["budget_exhausted"] == 1
     assert payload["policy_step_fraction"] == pytest.approx(0.52)
+
+
+def test_an_exhausted_llm_policy_requests_episode_stop(tmp_path: Path):
+    policy_path = Path(__file__).parents[1] / "docker/shared/llm_policy.py"
+    spec = importlib.util.spec_from_file_location("test_llm_policy_stop", policy_path)
+    assert spec is not None and spec.loader is not None
+    policy = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(policy)
+    policy.USAGE_PATH = str(tmp_path / "usage.jsonl")
+    policy._STATE["calls"] = policy.MAX_CALLS
+
+    decision = policy.choose_actions(
+        observation_text="test",
+        session={},
+        valid_actions=["noop", "left"],
+        readout={},
+        seed=101,
+        ply=19,
+    )
+
+    assert decision["actions"] == []
+    assert decision["stop_episode"] is True
+    assert decision["stop_reason"] == f"call cap reached ({policy.MAX_CALLS})"
 
 
 def test_a_policy_with_no_budget_reports_no_coverage_rather_than_zero():

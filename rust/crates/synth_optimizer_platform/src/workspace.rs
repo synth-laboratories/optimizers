@@ -4819,15 +4819,7 @@ impl WorkspaceStore {
         let mut stmt = self.conn.prepare(
             r#"
             SELECT run_id, frame_json
-            FROM sensor_frames sf
-            WHERE NOT EXISTS (
-                SELECT 1
-                FROM candidate_seed_rewards csr
-                WHERE csr.run_id = sf.run_id
-                  AND csr.candidate_id = sf.candidate_id
-                  AND csr.evaluation_stage = sf.evaluation_stage
-                  AND csr.seed_id = sf.task_id
-            )
+            FROM sensor_frames
             "#,
         )?;
         let mut rows = stmt.query([])?;
@@ -4860,6 +4852,10 @@ impl WorkspaceStore {
     }
 
     fn ensure_runtime_schema(&self) -> Result<()> {
+        // v0.2.0 workspaces called this identity `seed`. The v0.2.12
+        // backfill used `task_id` before migrating the column, which made the
+        // sidecar fail during startup even when the legacy table was empty.
+        self.ensure_column("sensor_frames", "task_id", "TEXT NOT NULL DEFAULT ''")?;
         self.ensure_column(
             "budget_commits",
             "wall_seconds",
@@ -9346,6 +9342,56 @@ mod nullable_cost_migration_tests {
             .column_is_not_null("usage_ledger", "cost_usd")
             .unwrap());
         assert!(!store.column_is_not_null("manifests", "cost_usd").unwrap());
+        drop(store);
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("sqlite-wal"));
+        let _ = fs::remove_file(path.with_extension("sqlite-shm"));
+    }
+
+    #[test]
+    fn opening_legacy_workspace_adds_sensor_frame_task_identity_before_backfill() {
+        let path = std::env::temp_dir().join(format!(
+            "synth-sensor-frame-migration-{}-{}.sqlite",
+            std::process::id(),
+            OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE sensor_frames (
+                run_id TEXT NOT NULL,
+                sensor_frame_id TEXT NOT NULL,
+                candidate_id TEXT NOT NULL,
+                rollout_id TEXT,
+                example_id TEXT NOT NULL,
+                seed INTEGER NOT NULL,
+                split TEXT NOT NULL,
+                evaluation_stage TEXT NOT NULL,
+                reward REAL NOT NULL,
+                status TEXT NOT NULL,
+                trace_digest_json TEXT,
+                usage_json TEXT NOT NULL,
+                failure_json TEXT,
+                frame_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(run_id, sensor_frame_id)
+            );
+            "#,
+        )
+        .unwrap();
+        drop(conn);
+
+        let store = WorkspaceStore::open_existing(&path).unwrap();
+        let mut columns = store
+            .conn
+            .prepare("PRAGMA table_info(sensor_frames)")
+            .unwrap();
+        let task_id = columns
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .any(|name| name.unwrap() == "task_id");
+        assert!(task_id);
+        drop(columns);
         drop(store);
         let _ = fs::remove_file(&path);
         let _ = fs::remove_file(path.with_extension("sqlite-wal"));

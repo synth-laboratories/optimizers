@@ -796,6 +796,14 @@ class CandidateScorecard:
     eliminated_at: str | None
     elimination_reason: str | None
     cost_usd: float | None
+    # How much of the scored episodes this candidate's own policy actually
+    # chose. A budget-exhausted LLM policy does not stop playing — it returns a
+    # fallback action for every remaining step — so without this a mean over
+    # model plays and filler is indistinguishable from a mean over model plays.
+    # `None` means no trial reported coverage, the ordinary case for a code
+    # policy with no budget to exhaust.
+    budget_exhausted_trials: int = 0
+    policy_step_fraction: float | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -808,6 +816,7 @@ class CandidateScorecard:
                 "total": self.trials_total,
                 "valid": self.trials_valid,
                 "failed": self.trials_failed,
+                "budget_exhausted": self.budget_exhausted_trials,
             },
             "metrics": [summary.to_json() for summary in self.metrics],
             "gate_failures": self.gate_failures,
@@ -816,6 +825,7 @@ class CandidateScorecard:
             "eliminated_at": self.eliminated_at,
             "elimination_reason": self.elimination_reason,
             "cost_usd": self.cost_usd,
+            "policy_step_fraction": self.policy_step_fraction,
         }
 
 

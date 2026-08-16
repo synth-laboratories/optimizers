@@ -99,6 +99,42 @@ def write_result(
     (OUTPUT / "result.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+def episode_steps(report: dict[str, Any]) -> int | None:
+    """Steps the episode actually ran, from the engine's own final state."""
+
+    steps: list[int] = []
+    for episode in report.get("episodes") or []:
+        state = (episode.get("state") or {}).get("private") or {}
+        index = state.get("step_index")
+        if isinstance(index, int):
+            steps.append(index)
+    return max(steps) if steps else None
+
+
+def with_policy_coverage(usage: dict[str, Any], report: dict[str, Any]) -> dict[str, Any]:
+    """Say how much of the episode the candidate's policy actually chose.
+
+    An LLM policy that spends its budget does not end the episode — it returns
+    `noop` for every remaining step. The reward that follows is the fallback's,
+    not the model's, and a mean that silently mixes the two is not evidence
+    about the candidate. A policy that never exhausted its budget covers the
+    whole episode, which is the ordinary case and reads as such.
+    """
+
+    steps = episode_steps(report)
+    exhausted_at = usage.get("exhausted_at_ply")
+    covered = steps if exhausted_at is None else min(exhausted_at, steps or exhausted_at)
+    return {
+        **usage,
+        "episode_steps": steps,
+        "policy_steps": covered,
+        "filler_steps": None if steps is None or covered is None else max(0, steps - covered),
+        "policy_step_fraction": (
+            None if not steps or covered is None else round(covered / steps, 4)
+        ),
+    }
+
+
 def write_trace(report: dict[str, Any], trial_id: str, seed: int) -> None:
     """Every engine event of every episode, one JSON object per line."""
 
@@ -287,7 +323,21 @@ def main() -> int:
     gates.append({"id": "verifier_completed", "passed": True})
     reward = float(report.get("mean_reward", 0.0))
     achievements = float(report.get("unique_achievement_count", 0))
-    emit("rollout.finished", reward=reward, achievements=achievements, cost_usd=usage["cost_usd"])
+    usage = with_policy_coverage(usage, report)
+    if usage["budget_exhausted"]:
+        emit(
+            "policy.budget_exhausted",
+            reason=usage["budget_exhausted"],
+            at_ply=usage["exhausted_at_ply"],
+            filler_steps=usage["filler_steps"],
+        )
+    emit(
+        "rollout.finished",
+        reward=reward,
+        achievements=achievements,
+        cost_usd=usage["cost_usd"],
+        policy_step_fraction=usage["policy_step_fraction"],
+    )
     write_result(
         trial_id,
         status="evaluated",

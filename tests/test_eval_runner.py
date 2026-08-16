@@ -23,6 +23,7 @@ from synth_optimizers.eval import (
     TrialSemaphore,
     WorkerManifest,
     catalog,
+    get_recipe,
 )
 from synth_optimizers.eval.executor import TrialExecution, TrialRunRequest
 from synth_optimizers.eval.staging import CandidateSource, stage_candidate_set
@@ -504,3 +505,118 @@ def test_pausing_holds_the_matrix_and_resuming_finishes_it(tmp_path):
         (home.run_dir("run_paused") / "selection.json").read_text(encoding="utf-8")
     )
     assert selection["status"] == "promoted"  # a pause changes timing, not evidence
+
+
+def test_a_broken_stdout_mirror_never_costs_a_run_its_evidence(tmp_path):
+    """The app restarting closed the worker's stdout mid-run and the whole run
+    was lost with two trials already sealed. The file is the record; the stream
+    is only a mirror, so losing the reader must not lose the run."""
+
+    class BrokenStream:
+        """A pipe whose reader has gone away, exactly as os.pipe() behaves."""
+
+        def __init__(self) -> None:
+            self.writes = 0
+
+        def write(self, _payload: str) -> int:
+            self.writes += 1
+            raise BrokenPipeError(32, "Broken pipe")
+
+        def flush(self) -> None:
+            raise BrokenPipeError(32, "Broken pipe")
+
+    home = make_home(tmp_path)
+    candidate_set = stage(home, tmp_path)
+    manifest = write_manifest(home, tmp_path, candidate_set, "run_broken_pipe")
+    stream = BrokenStream()
+
+    code = EvalRunner(
+        WorkerManifest.load(manifest), executor=FakeExecutor(), stream=stream
+    ).execute()
+
+    assert code == 0, "a dead log reader is not a failed run"
+    run_dir = home.run_dir("run_broken_pipe")
+    selection = json.loads((run_dir / "selection.json").read_text(encoding="utf-8"))
+    assert selection["status"] == "promoted"
+    events = [
+        json.loads(line)
+        for line in (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert events[-1]["event"] == "eval.run.terminal"
+    assert events[-1]["status"] == "completed"
+    # The mirror is dropped after the first failure rather than retried per event.
+    assert stream.writes == 1
+
+
+def _scored(candidate_kind: str, usages: list[dict]):
+    """Score one candidate over hand-written trial records."""
+
+    from synth_optimizers.eval.models import PolicyCandidate, TrialKey, TrialRecord
+    from synth_optimizers.eval.scoring import summarize_candidate
+
+    candidate = PolicyCandidate(
+        id="policy_a",
+        label="luna-med",
+        kind=candidate_kind,
+        artifact_uri="/tmp/policy_a",
+        artifact_digest="sha256:a",
+        entrypoint="policy.toml",
+    )
+    records = [
+        TrialRecord(
+            key=TrialKey(candidate_id="policy_a", seed=101 + index, scenario="s", stage="screen"),
+            trial_id=f"t{index}",
+            status="evaluated",
+            benchmark_status="passed",
+            metrics={"score": 1.0},
+            gates={},
+            missing_gates=(),
+            missing_artifacts=(),
+            usage=usage,
+            artifacts=(),
+            started_at="2026-08-16T00:00:00+00:00",
+            finished_at="2026-08-16T00:00:01+00:00",
+            exit_code=0,
+            error=None,
+            evidence_dir="/tmp/t",
+        )
+        for index, usage in enumerate(usages)
+    ]
+    return summarize_candidate(
+        candidate,
+        records,
+        target=get_recipe(FIXTURE_RECIPE).target,
+        stage="screen",
+        is_baseline=True,
+        primary_metric="score",
+    ).to_json()
+
+
+def test_a_budget_exhausted_policy_is_visible_on_the_scorecard():
+    """An LLM policy that spends its budget keeps returning actions — the
+    harness fills the rest of the episode with a fallback. The score that comes
+    back is then partly the fallback\'s, so the scorecard has to say so rather
+    than presenting one mean as if the model had played throughout."""
+
+    payload = _scored(
+        "llm-policy.v1",
+        [
+            # 20 of 500 steps were the model\'s; the rest was fallback filler.
+            {"cost_usd": 0.01, "budget_exhausted": "call cap reached (20)",
+             "policy_step_fraction": 0.04},
+            # Died before the budget mattered, so the model played it all.
+            {"cost_usd": 0.01, "budget_exhausted": None, "policy_step_fraction": 1.0},
+        ],
+    )
+    assert payload["trials"]["valid"] == 2
+    assert payload["trials"]["budget_exhausted"] == 1
+    assert payload["policy_step_fraction"] == pytest.approx(0.52)
+
+
+def test_a_policy_with_no_budget_reports_no_coverage_rather_than_zero():
+    """A code policy has no budget to exhaust. Absent coverage is absent, not
+    0.0 — a zero here would read as \"the policy never chose anything\"."""
+
+    payload = _scored("python-code.v1", [{"cost_usd": 0.0}])
+    assert payload["policy_step_fraction"] is None
+    assert payload["trials"]["budget_exhausted"] == 0

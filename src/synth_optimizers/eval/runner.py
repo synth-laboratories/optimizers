@@ -100,6 +100,10 @@ class EventEmitter:
     The runner emits its own lifecycle events even for containers that provide
     no live stream, so Workshop's timeline is never a function of how chatty a
     particular target happens to be.
+
+    The file is the record and the stream is a mirror. Losing the reader — the
+    app restarting, a pipe closing — must never cost evidence a trial already
+    produced, so a broken stream is dropped once and the run carries on writing.
     """
 
     def __init__(self, path: Path, *, run_id: str, stream: Any = None) -> None:
@@ -108,6 +112,7 @@ class EventEmitter:
         self.stream = stream
         self._lock = threading.Lock()
         self._sequence = 0
+        self.stream_broken_at: int | None = None
 
     def emit(self, event: str, **fields: Any) -> dict[str, Any]:
         with self._lock:
@@ -122,8 +127,15 @@ class EventEmitter:
             }
             append_jsonl(self.path, [payload])
             if self.stream is not None:
-                self.stream.write(canonical_json(payload) + "\n")
-                self.stream.flush()
+                try:
+                    self.stream.write(canonical_json(payload) + "\n")
+                    self.stream.flush()
+                except (BrokenPipeError, ValueError, OSError):
+                    # Detach the mirror and remember where it was lost, so a
+                    # reader that reconnects can tell a gap in the stream from a
+                    # gap in the run. events.jsonl stays complete either way.
+                    self.stream = None
+                    self.stream_broken_at = self._sequence
             return payload
 
 

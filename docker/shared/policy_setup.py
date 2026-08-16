@@ -114,6 +114,11 @@ def summarize_usage(work: Path) -> dict[str, Any]:
         "cost_usd": 0.0,
         "route_errors": 0,
         "llm_seconds": 0.0,
+        # Null for a policy that played its whole episode. Set once the model
+        # stopped choosing and the harness started filling, so a reader can tell
+        # a score the model earned from one a fallback coasted to.
+        "budget_exhausted": None,
+        "exhausted_at_ply": None,
     }
     if not path.is_file():
         return summary
@@ -123,6 +128,11 @@ def summarize_usage(work: Path) -> dict[str, Any]:
         try:
             entry = json.loads(line)
         except json.JSONDecodeError:
+            continue
+        if entry.get("event") == "budget_exhausted":
+            summary["budget_exhausted"] = str(entry.get("reason") or "budget exhausted")
+            ply = entry.get("ply")
+            summary["exhausted_at_ply"] = int(ply) if isinstance(ply, int) else None
             continue
         summary["llm_seconds"] += float(entry.get("elapsed_s") or 0.0)
         if entry.get("error"):

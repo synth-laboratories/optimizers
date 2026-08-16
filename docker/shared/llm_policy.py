@@ -64,6 +64,8 @@ _STATE: dict[str, Any] = {
     "cached_tokens": 0,
     "usd": 0.0,
     "budget_exhausted": None,
+    "exhausted_at_ply": None,
+    "filler_steps": 0,
     "errors": 0,
 }
 
@@ -169,14 +171,25 @@ def choose_actions(
 ) -> dict[str, Any]:
     fallback = "noop" if "noop" in valid_actions else valid_actions[0]
 
+    # Past the budget this is no longer the candidate's policy — it is `noop`
+    # wearing the candidate's name. Record the moment it stops so the trial can
+    # say how much of the episode the model actually played; a score averaged
+    # over model plays and filler steps, presented as one number, is not
+    # evidence about the model.
+    def _exhaust(reason: str) -> dict[str, Any]:
+        if not _STATE["budget_exhausted"]:
+            _STATE["budget_exhausted"] = reason
+            _STATE["exhausted_at_ply"] = ply
+            _record({"event": "budget_exhausted", "reason": reason, "ply": ply})
+        _STATE["filler_steps"] += 1
+        return {"actions": [fallback], "rationale": reason}
+
     if _STATE["budget_exhausted"]:
-        return {"actions": [fallback], "rationale": _STATE["budget_exhausted"]}
+        return _exhaust(_STATE["budget_exhausted"])
     if _STATE["calls"] >= MAX_CALLS:
-        _STATE["budget_exhausted"] = f"call cap reached ({MAX_CALLS})"
-        return {"actions": [fallback], "rationale": _STATE["budget_exhausted"]}
+        return _exhaust(f"call cap reached ({MAX_CALLS})")
     if _STATE["usd"] >= MAX_USD:
-        _STATE["budget_exhausted"] = f"spend cap reached (${MAX_USD})"
-        return {"actions": [fallback], "rationale": _STATE["budget_exhausted"]}
+        return _exhaust(f"spend cap reached (${MAX_USD})")
 
     user = (
         f"Step {ply}, seed {seed}.\n\n"
@@ -203,7 +216,9 @@ def choose_actions(
             }
         )
         if _STATE["errors"] >= 3:
-            _STATE["budget_exhausted"] = f"route failed {_STATE['errors']} times"
+            # A dead route stops the model just as surely as a spent budget, and
+            # the rest of the episode is filler either way. Record it the same.
+            return _exhaust(f"route failed {_STATE['errors']} times")
         return {"actions": [fallback], "rationale": "route error"}
 
     call_usd = _cost(usage["prompt_tokens"], usage["completion_tokens"], usage["cached_tokens"])

@@ -63,6 +63,14 @@ def summarize_candidate(
         for record in mine
         if isinstance(record.usage.get("cost_usd"), (int, float))
     ]
+    # Coverage is averaged over the valid trials, because those are the ones
+    # whose numbers a reader is being asked to believe.
+    exhausted = sum(1 for record in valid if record.usage.get("budget_exhausted"))
+    fractions = [
+        float(record.usage["policy_step_fraction"])
+        for record in valid
+        if isinstance(record.usage.get("policy_step_fraction"), (int, float))
+    ]
     return CandidateScorecard(
         candidate_id=candidate.id,
         label=candidate.label,
@@ -78,6 +86,8 @@ def summarize_candidate(
         eliminated_at=eliminated_at,
         elimination_reason=elimination_reason,
         cost_usd=sum(costs) if costs else None,
+        budget_exhausted_trials=exhausted,
+        policy_step_fraction=(sum(fractions) / len(fractions)) if fractions else None,
     )
 
 

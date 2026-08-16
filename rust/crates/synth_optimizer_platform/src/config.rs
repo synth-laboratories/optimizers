@@ -1252,6 +1252,7 @@ pub const CHATGPT_PROPOSER_MODELS: &[&str] = &[
     "gpt-5.5",
     "gpt-5.6-luna",
     "gpt-5.6-sol",
+    "gpt-5.6-terra",
 ];
 
 pub fn proposer_auth_mode_normalized(auth_mode: &str) -> String {
@@ -2895,8 +2896,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn locked_luna_and_sol_chatgpt_proposers_are_allowed() {
-        for model in ["gpt-5.6-luna", "gpt-5.6-sol"] {
+    fn locked_5_6_chatgpt_proposers_are_allowed() {
+        for model in ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"] {
             assert!(CHATGPT_PROPOSER_MODELS.contains(&model));
             validate_chatgpt_proposer_model(model).expect("locked ChatGPT proposer model");
             validate_chatgpt_proposer_model(&model.to_ascii_uppercase())
@@ -2911,6 +2912,7 @@ mod tests {
         assert!(error.to_string().contains("not allowed"));
         assert!(error.to_string().contains("gpt-5.6-luna"));
         assert!(error.to_string().contains("gpt-5.6-sol"));
+        assert!(error.to_string().contains("gpt-5.6-terra"));
     }
 
     #[test]

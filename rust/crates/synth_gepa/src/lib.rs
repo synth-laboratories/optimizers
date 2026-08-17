@@ -3187,6 +3187,12 @@ fn refresh_terminal_run_projection(
     context: &mut GepaRunContext,
     state: &GepaRunState,
 ) -> Result<()> {
+    if context
+        .workspace
+        .has_manifest(&context.config.run.run_id)?
+    {
+        return Ok(());
+    }
     let usage_value = serde_json::to_value(&state.total_usage)?;
     let reported_cost = reported_cost_from_usage_ledger(&state.usage_ledger);
     match state.cursor.phase {

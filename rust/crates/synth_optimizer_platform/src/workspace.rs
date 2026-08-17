@@ -2934,6 +2934,15 @@ impl WorkspaceStore {
         Ok(())
     }
 
+    pub fn has_manifest(&self, run_id: &str) -> Result<bool> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM manifests WHERE run_id = ?1",
+            params![run_id],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
     pub fn record_cache_profile(
         &mut self,
         run_id: &str,
@@ -3442,6 +3451,7 @@ impl WorkspaceStore {
                 completed_at = datetime('now'),
                 updated_at = datetime('now')
             WHERE run_id = ?4
+              AND completed_at IS NULL
             "#,
             params![best_candidate_id, cost_usd, stable_json(usage), run_id],
         )?;
@@ -3462,9 +3472,10 @@ impl WorkspaceStore {
                 best_candidate_id = COALESCE(?1, best_candidate_id),
                 cost_usd = ?2,
                 usage_json = ?3,
-                completed_at = COALESCE(completed_at, datetime('now')),
+                completed_at = datetime('now'),
                 updated_at = datetime('now')
             WHERE run_id = ?4
+              AND completed_at IS NULL
             "#,
             params![best_candidate_id, cost_usd, stable_json(usage), run_id],
         )?;
@@ -3485,9 +3496,10 @@ impl WorkspaceStore {
                 best_candidate_id = COALESCE(?1, best_candidate_id),
                 cost_usd = ?2,
                 usage_json = ?3,
-                completed_at = COALESCE(completed_at, datetime('now')),
+                completed_at = datetime('now'),
                 updated_at = datetime('now')
             WHERE run_id = ?4
+              AND completed_at IS NULL
             "#,
             params![best_candidate_id, cost_usd, stable_json(usage), run_id],
         )?;
@@ -9396,5 +9408,158 @@ mod nullable_cost_migration_tests {
         let _ = fs::remove_file(&path);
         let _ = fs::remove_file(path.with_extension("sqlite-wal"));
         let _ = fs::remove_file(path.with_extension("sqlite-shm"));
+    }
+}
+
+#[cfg(test)]
+mod write_once_terminal_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn scratch_store(label: &str) -> (PathBuf, WorkspaceStore) {
+        let path = std::env::temp_dir().join(format!(
+            "synth-write-once-{label}-{}-{}.sqlite",
+            std::process::id(),
+            OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        let store = WorkspaceStore::open(&path).unwrap();
+        (path, store)
+    }
+
+    fn cleanup(path: PathBuf) {
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("sqlite-wal"));
+        let _ = fs::remove_file(path.with_extension("sqlite-shm"));
+    }
+
+    fn start_run(store: &WorkspaceStore, run_id: &str, dir: &Path) {
+        store
+            .record_optimization_run_started(OptimizationRunStartedInput {
+                run_id,
+                state: "running",
+                config: &json!({}),
+                cache_mode: "readwrite",
+                cache_namespace: "test",
+                output_dir: dir,
+                run_dir: dir,
+                manifest_path: &dir.join("manifest.json"),
+            })
+            .unwrap();
+    }
+
+    fn run_row(store: &WorkspaceStore, run_id: &str) -> (String, Option<String>, Option<f64>, Value, Option<String>) {
+        store
+            .conn
+            .query_row(
+                r#"
+                SELECT state, best_candidate_id, cost_usd, usage_json, completed_at
+                FROM optimization_runs
+                WHERE run_id = ?1
+                "#,
+                params![run_id],
+                |row| {
+                    let usage = parse_json_or_null(row.get::<_, Option<String>>(3)?.as_deref());
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        usage,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn record_run_finished_is_write_once() {
+        let dir = std::env::temp_dir().join(format!(
+            "synth-write-once-dir-{}-{}",
+            std::process::id(),
+            OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let (path, store) = scratch_store("finished");
+        start_run(&store, "run_write_once", &dir);
+        store
+            .record_run_finished(
+                "run_write_once",
+                "cand_a",
+                Some(2.40),
+                &json!({"total_tokens": 240}),
+            )
+            .unwrap();
+        store
+            .record_run_finished(
+                "run_write_once",
+                "cand_b",
+                Some(2.24),
+                &json!({"total_tokens": 224}),
+            )
+            .unwrap();
+        store
+            .record_run_failed(
+                "run_write_once",
+                Some("cand_c"),
+                Some(0.01),
+                &json!({"total_tokens": 1}),
+            )
+            .unwrap();
+        let (state, best, cost, usage, completed_at) = run_row(&store, "run_write_once");
+        assert_eq!(state, "completed");
+        assert_eq!(best.as_deref(), Some("cand_a"));
+        assert_eq!(cost, Some(2.40));
+        assert_eq!(usage["total_tokens"], 240);
+        assert!(completed_at.is_some());
+        drop(store);
+        cleanup(path);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn refresh_projection_is_noop_when_manifest_exists() {
+        let dir = std::env::temp_dir().join(format!(
+            "synth-manifest-noop-{}-{}",
+            std::process::id(),
+            OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let (path, store) = scratch_store("manifest");
+        start_run(&store, "run_manifest", &dir);
+        store
+            .record_run_finished(
+                "run_manifest",
+                "cand_final",
+                Some(9.0),
+                &json!({"total_tokens": 900}),
+            )
+            .unwrap();
+        store
+            .record_manifest(
+                "run_manifest",
+                &dir.join("manifest.json"),
+                "cand_final",
+                Some(9.0),
+                &json!({"total_tokens": 900}),
+                &json!({"run_id": "run_manifest"}),
+            )
+            .unwrap();
+        assert!(store.has_manifest("run_manifest").unwrap());
+        store
+            .record_run_finished(
+                "run_manifest",
+                "cand_stale",
+                Some(1.0),
+                &json!({"total_tokens": 10}),
+            )
+            .unwrap();
+        let (state, best, cost, usage, _) = run_row(&store, "run_manifest");
+        assert_eq!(state, "completed");
+        assert_eq!(best.as_deref(), Some("cand_final"));
+        assert_eq!(cost, Some(9.0));
+        assert_eq!(usage["total_tokens"], 900);
+        drop(store);
+        cleanup(path);
+        let _ = fs::remove_dir_all(&dir);
     }
 }

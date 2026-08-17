@@ -8,6 +8,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 
 use crate::artifacts::{ArtifactPaths, ArtifactRef};
@@ -102,6 +103,14 @@ pub struct WorkspaceRunRequestStatus {
     pub usage: Value,
     pub result: Value,
     pub error: Value,
+    #[serde(default)]
+    pub campaign_id: Option<String>,
+    #[serde(default)]
+    pub supersedes_request_id: Option<String>,
+    #[serde(default)]
+    pub runtime_version: Option<String>,
+    #[serde(default)]
+    pub runtime_digest: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -626,16 +635,27 @@ impl WorkspaceStore {
             .unwrap_or_else(|| format!("gepa:{}", config.run.run_id));
         let request_id = format!("runreq_{}", uuid::Uuid::new_v4().simple());
         let config_json = stable_json(&serde_json::to_value(&config)?);
+        let campaign_id = metadata
+            .as_ref()
+            .and_then(|value| value.get("campaign_id"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let supersedes_request_id = metadata
+            .as_ref()
+            .and_then(|value| value.get("supersedes_request_id"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
         self.conn.execute(
             r#"
             INSERT INTO run_requests(
                 request_id, run_id, status, config_path, config_json,
                 container_url, cache_mode, cache_namespace, output_dir,
                 run_dir, priority, manual_step, idempotency_key,
-                request_body_sha256, submitted_at, updated_at
+                request_body_sha256, submitted_at, updated_at,
+                campaign_id, supersedes_request_id
             ) VALUES (
                 ?1, ?2, 'queued', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                datetime('now'), datetime('now')
+                datetime('now'), datetime('now'), ?14, ?15
             )
             "#,
             params![
@@ -652,6 +672,8 @@ impl WorkspaceStore {
                 if manual_step { 1 } else { 0 },
                 idempotency_key,
                 request_body_sha256,
+                campaign_id,
+                supersedes_request_id,
             ],
         )?;
         let request = self.run_request(&request_id)?;
@@ -731,6 +753,7 @@ impl WorkspaceStore {
             return Ok(None);
         };
         let lease_modifier = format!("+{lease_seconds} seconds");
+        let (runtime_version, runtime_digest) = optimizer_runtime_pin();
         let updated = self.conn.execute(
             r#"
             UPDATE run_requests
@@ -740,10 +763,19 @@ impl WorkspaceStore {
                 leased_at = datetime('now'),
                 lease_expires_at = datetime('now', ?3),
                 pause_expires_at = NULL,
-                updated_at = datetime('now')
-            WHERE request_id = ?4 AND status = 'queued'
+                updated_at = datetime('now'),
+                runtime_version = COALESCE(runtime_version, ?4),
+                runtime_digest = COALESCE(runtime_digest, ?5)
+            WHERE request_id = ?6 AND status = 'queued'
             "#,
-            params![lease_id, worker_id, lease_modifier, request_id],
+            params![
+                lease_id,
+                worker_id,
+                lease_modifier,
+                runtime_version,
+                runtime_digest,
+                request_id
+            ],
         )?;
         if updated == 0 {
             return Ok(None);
@@ -966,10 +998,7 @@ impl WorkspaceStore {
         Ok(failed)
     }
 
-    fn persist_failed_attempt_spend(
-        &self,
-        request: &WorkspaceRunRequestStatus,
-    ) -> Result<()> {
+    fn persist_failed_attempt_spend(&self, request: &WorkspaceRunRequestStatus) -> Result<()> {
         let (cost_usd, usage) = self.failed_attempt_usage(request)?;
         self.conn.execute(
             r#"
@@ -1081,7 +1110,8 @@ impl WorkspaceStore {
                        pause_expires_at, started_at, finished_at, updated_at, lease_id,
                        worker_id, run_workspace_db_path, result_manifest_path,
                        best_candidate_id, cost_usd, usage_json, result_json,
-                       error_json
+                       error_json, campaign_id, supersedes_request_id,
+                       runtime_version, runtime_digest
                 FROM run_requests
                 WHERE run_id = ?1
                 ORDER BY submitted_at DESC, request_id DESC
@@ -1108,7 +1138,8 @@ impl WorkspaceStore {
                        pause_expires_at, started_at, finished_at, updated_at, lease_id,
                        worker_id, run_workspace_db_path, result_manifest_path,
                        best_candidate_id, cost_usd, usage_json, result_json,
-                       error_json, request_body_sha256
+                       error_json, campaign_id, supersedes_request_id,
+                       runtime_version, runtime_digest, request_body_sha256
                 FROM run_requests
                 WHERE idempotency_key = ?1
                 ORDER BY submitted_at DESC, request_id DESC
@@ -1117,12 +1148,71 @@ impl WorkspaceStore {
                 params![idempotency_key],
                 |row| {
                     let request = run_request_from_row(row)?;
-                    let request_body_sha256 = row.get::<_, Option<String>>(27)?;
+                    let request_body_sha256 = row.get::<_, Option<String>>(31)?;
                     Ok((request, request_body_sha256))
                 },
             )
             .optional()
             .map_err(OptimizerError::from)
+    }
+
+    pub fn campaign_usage(&self, campaign_id: &str) -> Result<Value> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT request_id, run_id, status, cost_usd, usage_json, result_json
+            FROM run_requests
+            WHERE campaign_id = ?1
+              AND status IN ('completed', 'failed', 'cancelled')
+            ORDER BY submitted_at ASC, request_id ASC
+            "#,
+        )?;
+        let mut rows = stmt.query(params![campaign_id])?;
+        let mut run_count = 0u64;
+        let mut failed_count = 0u64;
+        let mut cancelled_count = 0u64;
+        let mut costs = Vec::new();
+        let mut items = Vec::new();
+        while let Some(row) = rows.next()? {
+            run_count += 1;
+            let status: String = row.get(2)?;
+            if status == "failed" {
+                failed_count += 1;
+            }
+            if status == "cancelled" {
+                cancelled_count += 1;
+            }
+            let cost_usd: Option<f64> = row.get(3)?;
+            costs.push(cost_usd);
+            items.push(json!({
+                "request_id": row.get::<_, String>(0)?,
+                "run_id": row.get::<_, String>(1)?,
+                "status": status,
+                "cost_usd": cost_usd,
+                "usage": parse_json_or_null(row.get::<_, Option<String>>(4)?.as_deref()),
+                "result": parse_json_or_null(row.get::<_, Option<String>>(5)?.as_deref()),
+            }));
+        }
+        Ok(json!({
+            "campaign_id": campaign_id,
+            "terminal_run_count": run_count,
+            "failed_run_count": failed_count,
+            "cancelled_run_count": cancelled_count,
+            "cost_usd": crate::fold_reported_cost(costs.into_iter()),
+            "runs": items,
+        }))
+    }
+
+    pub fn active_run_request_count(&self) -> Result<u64> {
+        let count: i64 = self.conn.query_row(
+            r#"
+            SELECT COUNT(*)
+            FROM run_requests
+            WHERE status IN ('queued', 'leased', 'running')
+            "#,
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count as u64)
     }
 
     pub fn delete_run_request_by_run_id(&self, run_id: &str) -> Result<bool> {
@@ -3762,7 +3852,11 @@ impl WorkspaceStore {
                 usage_json TEXT,
                 result_json TEXT,
                 error_json TEXT,
-                optimizer_terminal_cursor INTEGER
+                optimizer_terminal_cursor INTEGER,
+                campaign_id TEXT,
+                supersedes_request_id TEXT,
+                runtime_version TEXT,
+                runtime_digest TEXT
             );
 
             CREATE TABLE IF NOT EXISTS operations (
@@ -5001,6 +5095,10 @@ impl WorkspaceStore {
         self.ensure_column("run_requests", "usage_json", "TEXT")?;
         self.ensure_column("run_requests", "result_json", "TEXT")?;
         self.ensure_column("run_requests", "optimizer_terminal_cursor", "INTEGER")?;
+        self.ensure_column("run_requests", "campaign_id", "TEXT")?;
+        self.ensure_column("run_requests", "supersedes_request_id", "TEXT")?;
+        self.ensure_column("run_requests", "runtime_version", "TEXT")?;
+        self.ensure_column("run_requests", "runtime_digest", "TEXT")?;
         Ok(())
     }
 
@@ -5186,7 +5284,8 @@ impl WorkspaceStore {
                    pause_expires_at, started_at, finished_at, updated_at, lease_id, worker_id,
                    run_workspace_db_path, result_manifest_path,
                    best_candidate_id, cost_usd, usage_json, result_json,
-                   error_json
+                   error_json, campaign_id, supersedes_request_id,
+                   runtime_version, runtime_digest
             FROM run_requests
             ORDER BY submitted_at, request_id
             "#,
@@ -5209,7 +5308,8 @@ impl WorkspaceStore {
                        lease_expires_at, pause_expires_at, started_at, finished_at, updated_at, lease_id,
                        worker_id, run_workspace_db_path, result_manifest_path,
                        best_candidate_id, cost_usd, usage_json, result_json,
-                       error_json
+                       error_json, campaign_id, supersedes_request_id,
+                       runtime_version, runtime_digest
                 FROM run_requests
                 WHERE request_id = ?1
                 "#,
@@ -6904,7 +7004,19 @@ fn run_request_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkspaceRu
         usage: parse_json_or_null(usage_json.as_deref()),
         result: parse_json_or_null(result_json.as_deref()),
         error: parse_json_or_null(error_json.as_deref()),
+        campaign_id: row.get(27)?,
+        supersedes_request_id: row.get(28)?,
+        runtime_version: row.get(29)?,
+        runtime_digest: row.get(30)?,
     })
+}
+
+pub fn optimizer_runtime_pin() -> (String, String) {
+    let version = env!("CARGO_PKG_VERSION").to_string();
+    let mut hasher = Sha256::new();
+    hasher.update(b"gepa-service-v1\n");
+    hasher.update(version.as_bytes());
+    (version, format!("{:x}", hasher.finalize()))
 }
 
 fn optimizer_job_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OptimizerJob> {
@@ -9588,7 +9700,10 @@ mod write_once_terminal_tests {
             .unwrap();
     }
 
-    fn run_row(store: &WorkspaceStore, run_id: &str) -> (String, Option<String>, Option<f64>, Value, Option<String>) {
+    fn run_row(
+        store: &WorkspaceStore,
+        run_id: &str,
+    ) -> (String, Option<String>, Option<f64>, Value, Option<String>) {
         store
             .conn
             .query_row(
@@ -9600,13 +9715,7 @@ mod write_once_terminal_tests {
                 params![run_id],
                 |row| {
                     let usage = parse_json_or_null(row.get::<_, Option<String>>(3)?.as_deref());
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        usage,
-                        row.get(4)?,
-                    ))
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, usage, row.get(4)?))
                 },
             )
             .unwrap()

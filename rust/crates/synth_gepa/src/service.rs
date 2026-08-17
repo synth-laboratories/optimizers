@@ -176,6 +176,10 @@ struct GepaServiceRunRequest {
     stop_conditions: Vec<ServiceStopCondition>,
     #[serde(default)]
     advanced: ServiceAdvancedConfig,
+    #[serde(default)]
+    campaign_id: Option<String>,
+    #[serde(default)]
+    supersedes_request_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -356,12 +360,13 @@ struct WebSocketControlFrame {
     timeout_seconds: Option<u64>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 struct ProjectedRunEvent {
     seq: u64,
     ts: String,
     kind: &'static str,
     payload: Value,
+    lane: String,
 }
 
 enum WebSocketIncoming {
@@ -1391,11 +1396,14 @@ pub fn recover_service_state(db_path: impl AsRef<Path>) -> Result<GepaServiceRec
     let recovered_run_requests = store.recover_expired_run_requests()?;
     let mut recovered_run_workspaces = Vec::new();
     for request in store.status()?.run_requests {
-        let workspace_db_path = request
+        let mut workspace_db_path = request
             .run_workspace_db_path
             .as_ref()
             .map(PathBuf::from)
             .unwrap_or_else(|| Path::new(&request.run_dir).join("workspace.sqlite"));
+        if !workspace_db_path.exists() {
+            workspace_db_path = Path::new(&request.run_dir).join("workspace.sqlite");
+        }
         if !workspace_db_path.exists() {
             continue;
         }
@@ -1474,6 +1482,11 @@ fn route_request(request: HttpRequest, runtime: GepaServiceRuntime) -> HttpRespo
         ("GET", ["runs", run_id, "optimizer-events"]) => {
             optimizer_events_response(config, run_id, &query)
         }
+        ("GET", ["runs", run_id, "events"]) => run_events_response(config, run_id, &query),
+        ("GET", ["campaigns", campaign_id, "usage"]) => {
+            campaign_usage_response(config, campaign_id)
+        }
+        ("POST", ["service", "stop"]) => service_stop_response(config),
         ("GET", ["runs", run_id, "limits"]) => run_limits_response(config, run_id),
         ("GET", ["runs", run_id, "timings"]) => run_timings_response(config, run_id),
         ("GET", ["runs", run_id, "stats"]) => run_stats_response(config, run_id),
@@ -1768,6 +1781,8 @@ fn create_run(
             "container_url": run_request.container_url,
             "manual_step": run_request.manual_step,
             "idempotency_key": idempotency_key,
+            "campaign_id": run_request.campaign_id,
+            "supersedes_request_id": run_request.supersedes_request_id,
         })),
         idempotency_key.as_deref(),
         Some(&request_body_sha256),
@@ -3397,7 +3412,7 @@ fn apply_advanced_config(
     }
     if let Some(pipeline) = advanced.pipeline.as_ref() {
         if let Some(value) = pipeline.mode {
-            config.gepa.pipeline.mode = value;
+            config.gepa.pipeline.mode = Some(value);
         }
         if let Some(value) = pipeline.staleness_policy {
             config.gepa.pipeline.staleness_policy = value;
@@ -3420,9 +3435,13 @@ fn apply_advanced_config(
         if let Some(value) = pipeline.max_in_flight_candidates {
             require_positive_usize("advanced.pipeline.max_in_flight_candidates", value)?;
             if pipeline.mode.is_none()
-                && matches!(config.gepa.pipeline.mode, GepaPipelineMode::SyncSerial)
+                && !config.gepa.pipeline.mode_is_explicit()
+                && matches!(
+                    config.gepa.pipeline.resolved_mode(),
+                    GepaPipelineMode::SyncSerial
+                )
             {
-                config.gepa.pipeline.mode = GepaPipelineMode::AsyncPipelined;
+                config.gepa.pipeline.mode = Some(GepaPipelineMode::AsyncPipelined);
             }
             config.gepa.pipeline.max_in_flight_candidates = value;
         }
@@ -4297,6 +4316,12 @@ fn project_run_config(config: &SynthOptimizerConfig, manual_step: bool) -> Value
         "manual_step": manual_step,
         "stop_conditions": project_stop_conditions(config),
         "advanced": project_advanced_config(config),
+        "resolved_pipeline": crate::pipeline::resolved_pipeline_value(config),
+        "deployment_rule": config.gepa.deployment_rule,
+        "leakage": {
+            "policy": config.gepa.leakage.policy,
+            "min_span_chars": config.gepa.leakage.min_span_chars,
+        },
     })
 }
 
@@ -4356,7 +4381,8 @@ fn project_advanced_config(config: &SynthOptimizerConfig) -> Value {
         .then(|| config.gepa.heldout_rollout_limit());
     json!({
         "pipeline": {
-            "mode": config.gepa.pipeline.mode.as_str(),
+            "mode": config.gepa.pipeline.resolved_mode().as_str(),
+            "mode_specified": config.gepa.pipeline.mode_is_explicit(),
             "staleness_policy": config.gepa.pipeline.staleness_policy.as_str(),
             "delta_max": config.gepa.pipeline.delta_max,
             "max_generations": config.gepa.max_generations,
@@ -4846,6 +4872,11 @@ fn project_run_events(request: &WorkspaceRunRequestStatus) -> Result<Vec<Project
             ts,
             kind,
             payload,
+            lane: raw
+                .get("lane")
+                .and_then(Value::as_str)
+                .unwrap_or("run")
+                .to_string(),
         });
     }
     if events.len() > 50_000 {
@@ -4874,6 +4905,59 @@ fn optimizer_events_response(
         Err(OptimizerError::Config(message)) if message.starts_with("run_not_found:") => {
             run_not_found_response(run_id)
         }
+        Err(error) => optimizer_error_response(error),
+    }
+}
+
+fn run_events_response(
+    config: &GepaServiceConfig,
+    run_id: &str,
+    query: &BTreeMap<String, String>,
+) -> HttpResponse {
+    match WorkspaceStore::open_existing(&config.db_path)
+        .and_then(|store| store.run_request_by_run_id(run_id))
+    {
+        Ok(Some(request)) => match project_run_events(&request) {
+            Ok(mut events) => {
+                if let Some(lane) = query.get("lane") {
+                    events.retain(|event| event.lane == *lane);
+                }
+                json_response(200, &json!({ "run_id": run_id, "events": events }))
+            }
+            Err(error) => optimizer_error_response(error),
+        },
+        Ok(None) => run_not_found_response(run_id),
+        Err(error) => optimizer_error_response(error),
+    }
+}
+
+fn campaign_usage_response(config: &GepaServiceConfig, campaign_id: &str) -> HttpResponse {
+    match WorkspaceStore::open(&config.db_path).and_then(|store| store.campaign_usage(campaign_id))
+    {
+        Ok(value) => json_response(200, &value),
+        Err(error) => optimizer_error_response(error),
+    }
+}
+
+fn service_stop_response(config: &GepaServiceConfig) -> HttpResponse {
+    match WorkspaceStore::open(&config.db_path).and_then(|store| store.active_run_request_count()) {
+        Ok(0) => json_response(
+            200,
+            &json!({
+                "status": "ok",
+                "message": "no active runs; service may stop",
+                "instance_id": config.workshop_instance_id,
+            }),
+        ),
+        Ok(active) => error_response(
+            409,
+            "service_stop_refused_runs_active",
+            &format!("refuse-stop: {active} run(s) are still queued, leased, or running"),
+            Some(json!({
+                "active_run_count": active,
+                "instance_id": config.workshop_instance_id,
+            })),
+        ),
         Err(error) => optimizer_error_response(error),
     }
 }
@@ -5365,7 +5449,12 @@ fn result_response(result: Result<Value>, success_status: u16) -> HttpResponse {
 
 fn optimizer_error_response(error: OptimizerError) -> HttpResponse {
     if let OptimizerError::AlreadyRunning { peer, .. } = &error {
-        return error_response(409, "already_running", &error.to_string(), Some(peer.clone()));
+        return error_response(
+            409,
+            "already_running",
+            &error.to_string(),
+            Some(peer.clone()),
+        );
     }
     if let OptimizerError::Config(message) = &error {
         if message.starts_with("idempotency_conflict:") {
@@ -5856,6 +5945,10 @@ mod tests {
             usage: Value::Null,
             result: json!({"event_feed_path": event_feed_path}),
             error: Value::Null,
+            campaign_id: None,
+            supersedes_request_id: None,
+            runtime_version: None,
+            runtime_digest: None,
         }
     }
 

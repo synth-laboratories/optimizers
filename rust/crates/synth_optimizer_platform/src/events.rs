@@ -50,6 +50,7 @@ pub struct EventWriter {
     disk_budget: Option<DiskBudget>,
     run_id: String,
     algorithm: OptimizerAlgorithm,
+    lane: String,
 }
 
 impl EventWriter {
@@ -105,6 +106,7 @@ impl EventWriter {
             disk_budget: None,
             run_id: run_id.to_string(),
             algorithm,
+            lane: "run".to_string(),
         })
     }
 
@@ -127,6 +129,14 @@ impl EventWriter {
         self
     }
 
+    pub fn set_lane(&mut self, lane: impl Into<String>) {
+        self.lane = lane.into();
+    }
+
+    pub fn current_lane(&self) -> &str {
+        &self.lane
+    }
+
     pub fn emit(&mut self, event_type: &str, message: &str, fields: Value) -> Result<()> {
         // Hard-limit gate: refuse the write before we corrupt the jsonl
         // by partial-appending under ENOSPC. Soft-limit is enforced at
@@ -144,6 +154,7 @@ impl EventWriter {
             "message": message,
             "fields": fields.clone(),
             "sequence_number": sequence_number,
+            "lane": self.lane,
         });
         let line = serde_json::to_string(&event)?;
         let bytes_written = (line.len() + 1) as u64; // +1 for the newline
@@ -617,21 +628,27 @@ mod tests {
         writer
             .emit("gepa.run.started", "started", json!({}))
             .unwrap();
-        writer
-            .emit("internal.debug", "skip-me", json!({}))
-            .unwrap();
-        writer
-            .emit("gepa.run.finished", "done", json!({}))
-            .unwrap();
+        writer.emit("internal.debug", "skip-me", json!({})).unwrap();
+        writer.emit("gepa.run.finished", "done", json!({})).unwrap();
         let terminal_cursor = writer.last_sequence_number();
         assert_eq!(terminal_cursor, 3);
+        writer.set_lane("enrichment");
         writer
             .emit("workspace.persisted", "enrichment", json!({}))
             .unwrap();
         assert_eq!(terminal_cursor, 3);
         assert_eq!(writer.last_sequence_number(), 4);
-        let first: Value = serde_json::from_str(fs::read_to_string(&path).unwrap().lines().next().unwrap()).unwrap();
+        assert_eq!(writer.current_lane(), "enrichment");
+        let lines: Vec<String> = fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect();
+        let first: Value = serde_json::from_str(&lines[0]).unwrap();
+        let last: Value = serde_json::from_str(lines.last().unwrap()).unwrap();
         assert_eq!(first["sequence_number"], 1);
+        assert_eq!(first["lane"], "run");
+        assert_eq!(last["lane"], "enrichment");
         let _ = fs::remove_dir_all(&dir);
     }
 }

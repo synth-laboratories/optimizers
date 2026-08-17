@@ -212,6 +212,23 @@ impl FailurePayload {
                 false,
             )
             .with_detail("request_id", json!(request_id)),
+            OptimizerError::AlreadyRunning {
+                pid,
+                service_url,
+                db_path,
+                workshop_instance_id,
+                peer,
+            } => Self::new(
+                OptimizerFailureType::Conflict,
+                "already_running",
+                error.to_string(),
+                false,
+            )
+            .with_detail("pid", json!(pid))
+            .with_detail("service_url", json!(service_url))
+            .with_detail("db_path", json!(db_path))
+            .with_detail("workshop_instance_id", json!(workshop_instance_id))
+            .with_detail("peer", peer.clone()),
             OptimizerError::EventCompare(message) => Self::new(
                 OptimizerFailureType::Validation,
                 "event_compare_failed",

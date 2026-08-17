@@ -729,6 +729,7 @@ fn py_error(error: OptimizerError) -> PyErr {
         OptimizerError::CacheCorrupt { .. } => CacheCorruptError::new_err(message),
         OptimizerError::BudgetExceeded { .. } => BudgetExceededError::new_err(message),
         OptimizerError::Cancelled { .. } => CancelledError::new_err(message),
+        OptimizerError::AlreadyRunning { .. } => ConfigError::new_err(message),
         OptimizerError::EventCompare(_) => EventCompareError::new_err(message),
         OptimizerError::Failed(_) => RunFailedError::new_err(message),
         OptimizerError::Invariant(_) => InvariantError::new_err(message),

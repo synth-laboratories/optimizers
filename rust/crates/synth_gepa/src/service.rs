@@ -3,10 +3,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc, Condvar, Mutex,
-};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -35,6 +32,12 @@ use crate::{
     GepaAdvanceOutcome, GepaCancellationSource, GepaExecutionOptions, GepaRunResult,
 };
 
+#[path = "service_ownership.rs"]
+mod service_ownership;
+use service_ownership::{
+    acquire_service_ownership, owned_heartbeat_payload, refresh_owned_heartbeat, service_id_for,
+};
+
 const DEFAULT_SERVICE_WORKER_COUNT: usize = 10;
 const MIN_CONCURRENT_GEPA_WORKERS: usize = 2;
 const MAX_SERVICE_WORKER_COUNT: usize = 10;
@@ -48,6 +51,8 @@ pub struct GepaServiceConfig {
     pub worker_id: String,
     pub lease_seconds: u64,
     pub worker_count: usize,
+    #[serde(default)]
+    pub workshop_instance_id: Option<String>,
 }
 
 impl GepaServiceConfig {
@@ -58,8 +63,17 @@ impl GepaServiceConfig {
             worker_id: "synth-gepa-service".to_string(),
             lease_seconds: 3600,
             worker_count: DEFAULT_SERVICE_WORKER_COUNT,
+            workshop_instance_id: workshop_instance_id_from_env(),
         }
     }
+}
+
+fn workshop_instance_id_from_env() -> Option<String> {
+    ["SYNTH_WORKSHOP_INSTANCE_ID", "WORKSHOP_INSTANCE_ID"]
+        .into_iter()
+        .find_map(|key| std::env::var(key).ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 #[derive(Clone)]
@@ -358,6 +372,10 @@ enum WebSocketIncoming {
 
 pub fn run_gepa_service(mut config: GepaServiceConfig) -> Result<()> {
     config.worker_count = normalize_service_worker_count(config.worker_count);
+    if config.workshop_instance_id.is_none() {
+        config.workshop_instance_id = workshop_instance_id_from_env();
+    }
+    let ownership = acquire_service_ownership(&config)?;
     recover_service_state(&config.db_path)?;
     let scheduler = ServiceSchedulerSignal::new();
     let listener = TcpListener::bind(&config.bind_addr).map_err(|source| {
@@ -369,8 +387,9 @@ pub fn run_gepa_service(mut config: GepaServiceConfig) -> Result<()> {
         .unwrap_or_else(|_| config.bind_addr.clone());
     let service_url = service_url_from_bind(&config.bind_addr);
     let started_at = crate::rfc3339_now();
+    refresh_owned_heartbeat(&ownership, &config, &service_url, &started_at)?;
     start_service_workers(&config, scheduler.clone(), service_url.clone());
-    let _heartbeat = ServiceHeartbeatGuard::start(&config, &service_url, &started_at)?;
+    let _ownership = ownership;
     let runtime = GepaServiceRuntime {
         config,
         scheduler,
@@ -538,99 +557,18 @@ fn is_primary_service_worker(worker_id: &str) -> bool {
     !worker_id.contains("-slot-") || worker_id.ends_with("-slot-00")
 }
 
-struct ServiceHeartbeatGuard {
-    path: PathBuf,
-    stop: Arc<AtomicBool>,
-}
-
-impl ServiceHeartbeatGuard {
-    fn start(config: &GepaServiceConfig, service_url: &str, started_at: &str) -> Result<Self> {
-        let home = crate::gepa_home_dir();
-        let services = home.join("services");
-        fs::create_dir_all(&services).map_err(|source| OptimizerError::io(&services, source))?;
-        let path = services.join(format!("{}.json", service_id_for_db(&config.db_path)));
-        let stop = Arc::new(AtomicBool::new(false));
-        write_service_heartbeat(&path, config, service_url, started_at)?;
-        let thread_path = path.clone();
-        let thread_config = config.clone();
-        let thread_service_url = service_url.to_string();
-        let thread_started_at = started_at.to_string();
-        let thread_stop = stop.clone();
-        thread::spawn(move || {
-            while !thread_stop.load(Ordering::Relaxed) {
-                let _ = write_service_heartbeat(
-                    &thread_path,
-                    &thread_config,
-                    &thread_service_url,
-                    &thread_started_at,
-                );
-                thread::sleep(Duration::from_secs(2));
-            }
-        });
-        Ok(Self { path, stop })
-    }
-}
-
-impl Drop for ServiceHeartbeatGuard {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        let _ = fs::remove_file(&self.path);
-    }
-}
-
-fn write_service_heartbeat(
-    path: &Path,
-    config: &GepaServiceConfig,
-    service_url: &str,
-    started_at: &str,
-) -> Result<()> {
-    let payload =
-        service_identity_payload(config, service_url, started_at, Some(crate::rfc3339_now()));
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, serde_json::to_vec_pretty(&payload)?)
-        .map_err(|source| OptimizerError::io(&tmp, source))?;
-    fs::rename(&tmp, path).map_err(|source| OptimizerError::io(path, source))
-}
-
 fn service_identity_payload(
     config: &GepaServiceConfig,
     service_url: &str,
     started_at: &str,
     last_seen: Option<String>,
 ) -> Value {
-    let mut payload = json!({
-        "kind": "gepa-service",
-        "schema": "synth.gepa_service.whoami.v1",
-        "version": env!("CARGO_PKG_VERSION"),
-        "source_id": service_id_for_db(&config.db_path),
-        "service_url": service_url,
-        "bind": config.bind_addr.clone(),
-        "pid": std::process::id(),
-        "db_path": crate::absolute_path(&config.db_path).display().to_string(),
-        "worker_id": config.worker_id.clone(),
-        "workers": config.worker_count,
-        "lease_seconds": config.lease_seconds,
-        "started_at": started_at,
-        "run_roots": [],
-    });
-    if let Some(last_seen) = last_seen {
-        if let Some(object) = payload.as_object_mut() {
-            object.insert("last_seen".to_string(), json!(last_seen));
-        }
-    }
-    payload
+    owned_heartbeat_payload(config, service_url, started_at, last_seen)
 }
 
+#[allow(dead_code)]
 fn service_id_for_db(db_path: &Path) -> String {
-    let mut hasher = Sha256::new();
-    Sha2Digest::update(
-        &mut hasher,
-        crate::absolute_path(db_path)
-            .display()
-            .to_string()
-            .as_bytes(),
-    );
-    format!("{:x}", Sha2Digest::finalize(hasher))
+    service_id_for(&GepaServiceConfig::new(db_path, "127.0.0.1:0"))
 }
 
 fn service_url_from_bind(bind_addr: &str) -> String {
@@ -5413,6 +5351,9 @@ fn result_response(result: Result<Value>, success_status: u16) -> HttpResponse {
 }
 
 fn optimizer_error_response(error: OptimizerError) -> HttpResponse {
+    if let OptimizerError::AlreadyRunning { peer, .. } = &error {
+        return error_response(409, "already_running", &error.to_string(), Some(peer.clone()));
+    }
     if let OptimizerError::Config(message) = &error {
         if message.starts_with("idempotency_conflict:") {
             return error_response(409, "idempotency_conflict", message, None);

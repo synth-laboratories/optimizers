@@ -928,6 +928,44 @@ impl WorkspaceStore {
         Ok(recovered)
     }
 
+    pub fn fail_orphaned_run_requests(
+        &self,
+        crash: &Value,
+    ) -> Result<Vec<WorkspaceRunRequestStatus>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT request_id, run_id
+            FROM run_requests
+            WHERE status IN ('leased', 'running')
+            ORDER BY request_id
+            "#,
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut orphans = Vec::new();
+        while let Some(row) = rows.next()? {
+            orphans.push((row.get::<_, String>(0)?, row.get::<_, String>(1)?));
+        }
+        drop(rows);
+        drop(stmt);
+        if orphans.is_empty() {
+            return Ok(Vec::new());
+        }
+        let leased_run_ids = orphans
+            .iter()
+            .map(|(_, run_id)| run_id.clone())
+            .collect::<Vec<_>>();
+        let mut payload = crash.clone();
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("cause".to_string(), json!("service_crash"));
+            object.insert("leased_run_ids".to_string(), json!(leased_run_ids));
+        }
+        let mut failed = Vec::new();
+        for (request_id, _) in orphans {
+            failed.push(self.mark_run_request_failed(&request_id, &payload)?);
+        }
+        Ok(failed)
+    }
+
     pub fn run_request_status(&self, request_id: &str) -> Result<Option<String>> {
         self.conn
             .query_row(
@@ -9561,5 +9599,54 @@ mod write_once_terminal_tests {
         drop(store);
         cleanup(path);
         let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod orphan_crash_recovery_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn orphaned_runs_receive_service_crash_cause() {
+        let path = std::env::temp_dir().join(format!(
+            "synth-orphan-crash-{}-{}.sqlite",
+            std::process::id(),
+            OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        let store = WorkspaceStore::open(&path).unwrap();
+        store
+            .conn
+            .execute(
+                r#"
+                INSERT INTO run_requests(
+                    request_id, run_id, status, config_path, config_json,
+                    container_url, cache_mode, cache_namespace, output_dir, run_dir,
+                    priority, manual_step, submitted_at, updated_at, lease_id, worker_id
+                ) VALUES (
+                    'req_orphan', 'run_orphan', 'leased', 'config.toml', '{}',
+                    '', 'readwrite', 'ns', '/tmp/out', '/tmp/out/run_orphan',
+                    0, 0, datetime('now'), datetime('now'), 'lease_1', 'worker'
+                )
+                "#,
+                [],
+            )
+            .unwrap();
+        let failed = store
+            .fail_orphaned_run_requests(&json!({
+                "schema_version": "synth.gepa_service.crash.v1",
+                "reason": "stale_heartbeat",
+                "pid": 4242
+            }))
+            .unwrap();
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].status, "failed");
+        assert_eq!(failed[0].error["cause"], "service_crash");
+        assert_eq!(failed[0].error["reason"], "stale_heartbeat");
+        assert_eq!(failed[0].error["leased_run_ids"][0], "run_orphan");
+        drop(store);
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("sqlite-wal"));
+        let _ = fs::remove_file(path.with_extension("sqlite-shm"));
     }
 }

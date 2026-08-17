@@ -376,6 +376,10 @@ pub fn run_gepa_service(mut config: GepaServiceConfig) -> Result<()> {
         config.workshop_instance_id = workshop_instance_id_from_env();
     }
     let ownership = acquire_service_ownership(&config)?;
+    if let Some(crash) = ownership.adopted_crash.as_ref() {
+        let store = WorkspaceStore::open(&config.db_path)?;
+        store.fail_orphaned_run_requests(crash)?;
+    }
     recover_service_state(&config.db_path)?;
     let scheduler = ServiceSchedulerSignal::new();
     let listener = TcpListener::bind(&config.bind_addr).map_err(|source| {

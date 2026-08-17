@@ -1353,6 +1353,7 @@ impl WorkspaceStore {
                 cost_usd = ?5,
                 usage_json = ?6,
                 result_json = ?7,
+                optimizer_terminal_cursor = COALESCE(?8, optimizer_terminal_cursor),
                 updated_at = datetime('now')
             WHERE request_id = ?1
             "#,
@@ -1364,6 +1365,10 @@ impl WorkspaceStore {
                 result.get("cost_usd").and_then(Value::as_f64),
                 stable_json(usage),
                 stable_json(result),
+                result
+                    .get("optimizer_terminal_cursor")
+                    .and_then(Value::as_u64)
+                    .map(|value| value as i64),
             ],
         )?;
         Ok(())
@@ -1389,6 +1394,7 @@ impl WorkspaceStore {
                 cost_usd = ?6,
                 usage_json = ?7,
                 result_json = ?8,
+                optimizer_terminal_cursor = COALESCE(?9, optimizer_terminal_cursor),
                 updated_at = datetime('now')
             WHERE request_id = ?1
               AND lease_id = ?2
@@ -1403,6 +1409,10 @@ impl WorkspaceStore {
                 result.get("cost_usd").and_then(Value::as_f64),
                 stable_json(usage),
                 stable_json(result),
+                result
+                    .get("optimizer_terminal_cursor")
+                    .and_then(Value::as_u64)
+                    .map(|value| value as i64),
             ],
         )?;
         Ok(updated > 0)
@@ -3751,7 +3761,8 @@ impl WorkspaceStore {
                 cost_usd REAL,
                 usage_json TEXT,
                 result_json TEXT,
-                error_json TEXT
+                error_json TEXT,
+                optimizer_terminal_cursor INTEGER
             );
 
             CREATE TABLE IF NOT EXISTS operations (
@@ -4989,6 +5000,7 @@ impl WorkspaceStore {
         self.ensure_column("run_requests", "cost_usd", "REAL")?;
         self.ensure_column("run_requests", "usage_json", "TEXT")?;
         self.ensure_column("run_requests", "result_json", "TEXT")?;
+        self.ensure_column("run_requests", "optimizer_terminal_cursor", "INTEGER")?;
         Ok(())
     }
 
@@ -9817,5 +9829,60 @@ mod failed_attempt_spend_tests {
         assert_eq!(failed.usage["prompt_tokens"], 10);
         drop(store);
         let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod terminal_cursor_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn record_run_request_result_persists_optimizer_terminal_cursor() {
+        let path = std::env::temp_dir().join(format!(
+            "synth-terminal-cursor-{}-{}.sqlite",
+            std::process::id(),
+            OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        let store = WorkspaceStore::open(&path).unwrap();
+        store
+            .conn
+            .execute(
+                r#"
+                INSERT INTO run_requests(
+                    request_id, run_id, status, config_path, config_json,
+                    container_url, cache_mode, cache_namespace, output_dir, run_dir,
+                    priority, manual_step, submitted_at, updated_at
+                ) VALUES (
+                    'req_cursor', 'run_cursor', 'queued', 'config.toml', '{}',
+                    '', 'readwrite', 'ns', '/tmp', '/tmp', 0, 0, datetime('now'), datetime('now')
+                )
+                "#,
+                [],
+            )
+            .unwrap();
+        store
+            .record_run_request_result(
+                "req_cursor",
+                &json!({
+                    "optimizer_terminal_cursor": 12,
+                    "usage": {"total_tokens": 3},
+                    "cost_usd": 0.5
+                }),
+            )
+            .unwrap();
+        let cursor: i64 = store
+            .conn
+            .query_row(
+                "SELECT optimizer_terminal_cursor FROM run_requests WHERE request_id = ?1",
+                params!["req_cursor"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(cursor, 12);
+        drop(store);
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("sqlite-wal"));
+        let _ = fs::remove_file(path.with_extension("sqlite-shm"));
     }
 }

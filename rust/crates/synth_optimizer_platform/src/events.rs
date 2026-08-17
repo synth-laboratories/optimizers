@@ -137,11 +137,13 @@ impl EventWriter {
         let timestamp = OffsetDateTime::now_utc()
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string());
+        let sequence_number = self.records.len() as u64 + 1;
         let event = serde_json::json!({
             "ts": timestamp.clone(),
             "type": event_type,
             "message": message,
             "fields": fields.clone(),
+            "sequence_number": sequence_number,
         });
         let line = serde_json::to_string(&event)?;
         let bytes_written = (line.len() + 1) as u64; // +1 for the newline
@@ -154,7 +156,6 @@ impl EventWriter {
             .sync_data()
             .map_err(|source| OptimizerError::io(&self.path, source))?;
 
-        let sequence_number = self.records.len() as u64 + 1;
         let run_id = fields
             .get("run_id")
             .and_then(Value::as_str)
@@ -247,6 +248,13 @@ impl EventWriter {
         &self.records
     }
 
+    pub fn last_sequence_number(&self) -> u64 {
+        self.records
+            .last()
+            .map(|record| record.sequence_number)
+            .unwrap_or(0)
+    }
+
     pub fn optimizer_event_feed_path(&self) -> &Path {
         &self.optimizer_path
     }
@@ -277,8 +285,13 @@ fn read_existing_records(path: &Path) -> Result<Vec<EventStreamRecord>> {
             .and_then(Value::as_str)
             .unwrap_or("1970-01-01T00:00:00Z")
             .to_string();
+        let sequence_number = event
+            .get("sequence_number")
+            .or_else(|| event.get("seq"))
+            .and_then(Value::as_u64)
+            .unwrap_or(records.len() as u64 + 1);
         records.push(EventStreamRecord::new(
-            records.len() as u64 + 1,
+            sequence_number,
             &event_type,
             &message,
             timestamp,
@@ -594,5 +607,31 @@ mod tests {
             optimizer_event_feed_path_for(&path),
             PathBuf::from("/tmp/run/events.optimizer.jsonl")
         );
+    }
+
+    #[test]
+    fn emit_writes_durable_sequence_on_legacy_jsonl_and_freezes_terminal_cursor() {
+        let dir = scratch_dir();
+        let path = dir.join("events.jsonl");
+        let mut writer = EventWriter::new(&path).unwrap();
+        writer
+            .emit("gepa.run.started", "started", json!({}))
+            .unwrap();
+        writer
+            .emit("internal.debug", "skip-me", json!({}))
+            .unwrap();
+        writer
+            .emit("gepa.run.finished", "done", json!({}))
+            .unwrap();
+        let terminal_cursor = writer.last_sequence_number();
+        assert_eq!(terminal_cursor, 3);
+        writer
+            .emit("workspace.persisted", "enrichment", json!({}))
+            .unwrap();
+        assert_eq!(terminal_cursor, 3);
+        assert_eq!(writer.last_sequence_number(), 4);
+        let first: Value = serde_json::from_str(fs::read_to_string(&path).unwrap().lines().next().unwrap()).unwrap();
+        assert_eq!(first["sequence_number"], 1);
+        let _ = fs::remove_dir_all(&dir);
     }
 }

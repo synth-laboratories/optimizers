@@ -3650,6 +3650,11 @@ fn project_run(store: &WorkspaceStore, request: &WorkspaceRunRequestStatus) -> R
         "started_at": request.started_at,
         "finished_at": request.finished_at,
         "usage": project_usage(&usage_source, cost_usd),
+        "optimizer_terminal_cursor": request
+            .result
+            .get("optimizer_terminal_cursor")
+            .cloned()
+            .unwrap_or(Value::Null),
         "totals": {
             "rollouts": rollout_count,
             "generations": generation_count,
@@ -4833,7 +4838,11 @@ fn project_run_events(request: &WorkspaceRunRequestStatus) -> Result<Vec<Project
             });
         }
         events.push(ProjectedRunEvent {
-            seq: events.len() as u64 + 1,
+            seq: raw
+                .get("sequence_number")
+                .or_else(|| raw.get("seq"))
+                .and_then(Value::as_u64)
+                .unwrap_or(events.len() as u64 + 1),
             ts,
             kind,
             payload,
@@ -5815,6 +5824,63 @@ mod tests {
         )
         .unwrap();
         assert!(read_optimizer_event_page(&path, "gepa_luna", 0, 500).is_err());
+        let _ = fs::remove_file(path);
+    }
+
+    fn sample_request(event_feed_path: PathBuf) -> WorkspaceRunRequestStatus {
+        WorkspaceRunRequestStatus {
+            request_id: "req_1".to_string(),
+            run_id: "run_1".to_string(),
+            status: "completed".to_string(),
+            config_path: "config.toml".to_string(),
+            container_url: String::new(),
+            cache_mode: "readwrite".to_string(),
+            cache_namespace: "ns".to_string(),
+            output_dir: "/tmp".to_string(),
+            run_dir: "/tmp/run_1".to_string(),
+            priority: 0,
+            manual_step: false,
+            submitted_at: "2026-08-12T00:00:00Z".to_string(),
+            leased_at: None,
+            lease_expires_at: None,
+            pause_expires_at: None,
+            started_at: None,
+            finished_at: None,
+            updated_at: "2026-08-12T00:00:00Z".to_string(),
+            lease_id: None,
+            worker_id: None,
+            run_workspace_db_path: None,
+            result_manifest_path: None,
+            best_candidate_id: None,
+            cost_usd: None,
+            usage: Value::Null,
+            result: json!({"event_feed_path": event_feed_path}),
+            error: Value::Null,
+        }
+    }
+
+    #[test]
+    fn project_run_events_uses_durable_emit_sequence() {
+        let path = scratch_path("durable_seq");
+        fs::write(
+            &path,
+            concat!(
+                r#"{"ts":"2026-08-12T00:00:00Z","type":"internal.debug","message":"skip","fields":{},"sequence_number":1}"#,
+                "\n",
+                r#"{"ts":"2026-08-12T00:00:01Z","type":"gepa.run.started","message":"start","fields":{},"sequence_number":2}"#,
+                "\n",
+                r#"{"ts":"2026-08-12T00:00:02Z","type":"gepa.run.finished","message":"done","fields":{},"sequence_number":7}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        let events = project_run_events(&sample_request(path.clone())).unwrap();
+        assert_eq!(
+            events.iter().map(|event| event.seq).collect::<Vec<_>>(),
+            vec![2, 7]
+        );
+        assert_eq!(events[0].kind, "run.status_changed");
+        assert_eq!(events[1].kind, "run.terminal");
         let _ = fs::remove_file(path);
     }
 }

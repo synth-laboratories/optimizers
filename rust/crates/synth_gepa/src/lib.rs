@@ -10736,6 +10736,18 @@ fn terminalize_gepa_run_state(
         )?;
     }
     let state_history = serde_json::to_value(&context.state_machine.history)?;
+    context.events.emit(
+        terminal_event_type,
+        message,
+        json!({
+            "run_id": context.config.run.run_id,
+            "state": context.state_machine.state().as_str(),
+            "cost_usd": reported_cost,
+            "usage": usage_value,
+            "failure": error_summary,
+        }),
+    )?;
+    let optimizer_terminal_cursor = context.events.last_sequence_number();
     let failure_manifest = json!({
         "schema_version": "gepa_failure_manifest.v1",
         "run_id": context.config.run.run_id,
@@ -10745,6 +10757,7 @@ fn terminalize_gepa_run_state(
         "usage": usage_value,
         "failure": error_summary,
         "state_history": state_history,
+        "optimizer_terminal_cursor": optimizer_terminal_cursor,
         "event_feed_path": context.paths.event_feed_path.display().to_string(),
         "normalized_event_feed_path": context.paths.normalized_event_feed_path.display().to_string(),
         "cache_profile_path": context.paths.cache_profile_path.display().to_string(),
@@ -10760,17 +10773,6 @@ fn terminalize_gepa_run_state(
         reported_cost,
         &usage_value,
         &failure_manifest,
-    )?;
-    context.events.emit(
-        terminal_event_type,
-        message,
-        json!({
-            "run_id": context.config.run.run_id,
-            "state": context.state_machine.state().as_str(),
-            "cost_usd": reported_cost,
-            "usage": usage_value,
-            "failure": failure_manifest["failure"],
-        }),
     )?;
     context.events.flush()?;
     normalize_event_feed(
@@ -13875,6 +13877,7 @@ fn finalize_completed_gepa_run(
             "state": context.state_machine.state().as_str(),
         }),
     )?;
+    let optimizer_terminal_cursor = context.events.last_sequence_number();
     context.events.flush()?;
     normalize_event_feed(
         &context.paths.event_feed_path,
@@ -13968,6 +13971,10 @@ fn finalize_completed_gepa_run(
     };
     let mut result_value = serde_json::to_value(&result)?;
     if let Some(result_object) = result_value.as_object_mut() {
+        result_object.insert(
+            "optimizer_terminal_cursor".to_string(),
+            json!(optimizer_terminal_cursor),
+        );
         result_object.insert(
             "stopped_by".to_string(),
             stopped_by_value(&context.config, state),
@@ -21648,6 +21655,24 @@ fn fail_gepa_run_and_return<T>(input: FailedGepaRunInput<'_>, error: OptimizerEr
             "error_code": error.error_code(),
             "failure": serde_json::to_value(&failure)?,
         }),
+    )?;
+    let optimizer_terminal_cursor = input.events.last_sequence_number();
+    if let Some(object) = failure_manifest.as_object_mut() {
+        object.insert(
+            "optimizer_terminal_cursor".to_string(),
+            json!(optimizer_terminal_cursor),
+        );
+    }
+    input
+        .paths
+        .write_json(&input.paths.manifest_path, &failure_manifest)?;
+    input.workspace.record_manifest(
+        &input.config.run.run_id,
+        &input.paths.manifest_path,
+        manifest_best_candidate_id,
+        reported_cost,
+        &usage_value,
+        &failure_manifest,
     )?;
     input.events.flush()?;
     normalize_event_feed(

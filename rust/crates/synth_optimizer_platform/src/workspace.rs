@@ -966,6 +966,95 @@ impl WorkspaceStore {
         Ok(failed)
     }
 
+    fn persist_failed_attempt_spend(
+        &self,
+        request: &WorkspaceRunRequestStatus,
+    ) -> Result<()> {
+        let (cost_usd, usage) = self.failed_attempt_usage(request)?;
+        self.conn.execute(
+            r#"
+            UPDATE run_requests
+            SET cost_usd = ?2,
+                usage_json = ?3,
+                updated_at = datetime('now')
+            WHERE request_id = ?1
+            "#,
+            params![request.request_id, cost_usd, stable_json(&usage)],
+        )?;
+        Ok(())
+    }
+
+    fn failed_attempt_usage(
+        &self,
+        request: &WorkspaceRunRequestStatus,
+    ) -> Result<(Option<f64>, Value)> {
+        if let Some(path) = request.run_workspace_db_path.as_ref() {
+            let path = Path::new(path);
+            if path.exists() {
+                let run_store = WorkspaceStore::open_existing(path)?;
+                return run_store.usage_totals_for_run(&request.run_id);
+            }
+        }
+        self.usage_totals_for_run(&request.run_id)
+    }
+
+    pub fn usage_totals_for_run(&self, run_id: &str) -> Result<(Option<f64>, Value)> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT cost_usd, usage_json FROM optimization_runs WHERE run_id = ?1",
+                params![run_id],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<f64>>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                    ))
+                },
+            )
+            .optional()?;
+        if let Some((cost, usage_json)) = row {
+            let usage = parse_json_or_null(usage_json.as_deref());
+            if cost.is_some() || !usage.is_null() {
+                return Ok((cost, usage));
+            }
+        }
+        self.usage_ledger_totals(run_id)
+    }
+
+    fn usage_ledger_totals(&self, run_id: &str) -> Result<(Option<f64>, Value)> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT cost_usd, prompt_tokens, completion_tokens, total_tokens, usage_json
+            FROM usage_ledger
+            WHERE run_id = ?1
+            "#,
+        )?;
+        let mut rows = stmt.query(params![run_id])?;
+        let mut costs = Vec::new();
+        let mut prompt_tokens = 0u64;
+        let mut completion_tokens = 0u64;
+        let mut total_tokens = 0u64;
+        let mut saw_row = false;
+        while let Some(row) = rows.next()? {
+            saw_row = true;
+            costs.push(row.get::<_, Option<f64>>(0)?);
+            prompt_tokens += nonnegative_u64(row.get::<_, i64>(1)?);
+            completion_tokens += nonnegative_u64(row.get::<_, i64>(2)?);
+            total_tokens += nonnegative_u64(row.get::<_, i64>(3)?);
+        }
+        if !saw_row {
+            return Ok((None, Value::Null));
+        }
+        Ok((
+            crate::fold_reported_cost(costs),
+            json!({
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total_tokens,
+            }),
+        ))
+    }
+
     pub fn run_request_status(&self, request_id: &str) -> Result<Option<String>> {
         self.conn
             .query_row(
@@ -1351,7 +1440,8 @@ impl WorkspaceStore {
             None,
             metadata,
         )?;
-        Ok(request)
+        self.persist_failed_attempt_spend(&request)?;
+        self.run_request(request_id)
     }
 
     pub fn mark_run_request_failed_for_lease(
@@ -1391,7 +1481,8 @@ impl WorkspaceStore {
             Some(lease_id.to_string()),
             metadata,
         )?;
-        Ok(Some(request))
+        self.persist_failed_attempt_spend(&request)?;
+        Ok(Some(self.run_request(request_id)?))
     }
 
     pub fn mark_run_request_cancelled(
@@ -9648,5 +9739,83 @@ mod orphan_crash_recovery_tests {
         let _ = fs::remove_file(&path);
         let _ = fs::remove_file(path.with_extension("sqlite-wal"));
         let _ = fs::remove_file(path.with_extension("sqlite-shm"));
+    }
+}
+
+#[cfg(test)]
+mod failed_attempt_spend_tests {
+    use super::*;
+    use crate::{UsageLedgerInput, UsageLedgerRecord};
+    use serde_json::json;
+
+    #[test]
+    fn mark_run_request_failed_persists_workspace_spend() {
+        let dir = std::env::temp_dir().join(format!(
+            "synth-failed-spend-{}-{}",
+            std::process::id(),
+            OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("workspace.sqlite");
+        let mut store = WorkspaceStore::open(&path).unwrap();
+        store
+            .record_optimization_run_started(OptimizationRunStartedInput {
+                run_id: "run_spend",
+                state: "running",
+                config: &json!({}),
+                cache_mode: "readwrite",
+                cache_namespace: "ns",
+                output_dir: &dir,
+                run_dir: &dir,
+                manifest_path: &dir.join("manifest.json"),
+            })
+            .unwrap();
+        store
+            .record_usage_ledger(
+                "run_spend",
+                &[UsageLedgerRecord::from_input(UsageLedgerInput {
+                    boundary: "rollout",
+                    source_type: "container",
+                    source_id: "call_1",
+                    candidate_id: None,
+                    evaluation_stage: Some("train"),
+                    model: None,
+                    provider: None,
+                    call_count: 1,
+                    usage: json!({
+                        "prompt_tokens": 10,
+                        "completion_tokens": 20,
+                        "total_tokens": 30
+                    }),
+                    cost_usd: Some(1.25),
+                    metadata: Map::new(),
+                })],
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                r#"
+                INSERT INTO run_requests(
+                    request_id, run_id, status, config_path, config_json,
+                    container_url, cache_mode, cache_namespace, output_dir, run_dir,
+                    priority, manual_step, submitted_at, updated_at
+                ) VALUES (
+                    'req_spend', 'run_spend', 'queued', 'config.toml', '{}',
+                    '', 'readwrite', 'ns', ?1, ?1, 0, 0, datetime('now'), datetime('now')
+                )
+                "#,
+                params![dir.display().to_string()],
+            )
+            .unwrap();
+        let failed = store
+            .mark_run_request_failed("req_spend", &json!({"message": "boom"}))
+            .unwrap();
+        assert_eq!(failed.status, "failed");
+        assert_eq!(failed.cost_usd, Some(1.25));
+        assert_eq!(failed.usage["total_tokens"], 30);
+        assert_eq!(failed.usage["prompt_tokens"], 10);
+        drop(store);
+        let _ = fs::remove_dir_all(&dir);
     }
 }

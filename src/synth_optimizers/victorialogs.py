@@ -200,7 +200,7 @@ def _safe_slot(value: str) -> str:
 def _warn_or_raise(message: str) -> None:
     if os.environ.get("SYNTH_OPTIMIZERS_REQUIRE_VL", "").lower() in {"1", "true", "yes", "on"}:
         raise RuntimeError(message)
-    print(f"[synth-optimizers] warning: {message}; VL event skipped", file=sys.stderr)
+    print(f"[telemetry-warning] [synth-optimizers] warning: {message}; VL event skipped", file=sys.stderr)
 
 
 def _json_object(line: str) -> dict[str, Any] | None:

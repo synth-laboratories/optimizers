@@ -89,4 +89,5 @@ def gepa_serve(
     worker_id: str | None = None,
     lease_seconds: int = 3600,
     workers: int = 10,
+    instance_id: str | None = None,
 ) -> None: ...

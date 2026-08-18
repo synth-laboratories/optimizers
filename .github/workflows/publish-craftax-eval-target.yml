@@ -62,6 +62,14 @@ jobs:
             'architectures=linux/amd64,linux/arm64' \
             'digest=${{ steps.publish.outputs.digest }}' | tee craftax-eval-target-receipt.txt
 
+      - name: Keep the eval target anonymously pullable
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api --method PATCH \
+            /orgs/synth-laboratories/packages/container/craftax-eval-target \
+            -f visibility=public
+
       - uses: actions/upload-artifact@v4
         with:
           name: craftax-eval-target-receipt

@@ -168,35 +168,9 @@ impl GepaRunResult {
     }
 
     pub fn to_dict(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let dict = PyDict::new_bound(py);
-        dict.set_item(
-            "best_candidate",
-            value_to_py(py, &self.inner.best_candidate)?,
-        )?;
-        dict.set_item("manifest_path", self.inner.manifest_path.clone())?;
-        dict.set_item("event_feed_path", self.inner.event_feed_path.clone())?;
-        dict.set_item(
-            "normalized_event_feed_path",
-            self.inner.normalized_event_feed_path.clone(),
-        )?;
-        dict.set_item("cache_profile_path", self.inner.cache_profile_path.clone())?;
-        dict.set_item(
-            "candidate_registry_path",
-            self.inner.candidate_registry_path.clone(),
-        )?;
-        dict.set_item("frontier_path", self.inner.frontier_path.clone())?;
-        dict.set_item("score_chart_path", self.inner.score_chart_path.clone())?;
-        dict.set_item(
-            "storage_report_path",
-            self.inner.storage_report_path.clone(),
-        )?;
-        dict.set_item("run_registry_path", self.inner.run_registry_path.clone())?;
-        dict.set_item("workspace_db_path", self.inner.workspace_db_path.clone())?;
-        dict.set_item("artifact_refs", self.artifact_refs(py)?)?;
-        dict.set_item("cost_usd", self.inner.cost_usd)?;
-        dict.set_item("usage", value_to_py(py, &self.inner.usage)?)?;
-        dict.set_item("state_history", value_to_py(py, &self.inner.state_history)?)?;
-        Ok(dict.into())
+        let value = serde_json::to_value(&self.inner)
+            .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
+        value_to_py(py, &value)
     }
 }
 
@@ -435,17 +409,21 @@ pub fn workspace_recover_expired_optimizer_jobs(
     value_to_py(py, &value)
 }
 
-#[pyfunction(signature = (db_path, bind_addr="127.0.0.1:8879", worker_id=None, lease_seconds=3600, workers=10))]
+#[pyfunction(signature = (db_path, bind_addr="127.0.0.1:8879", worker_id=None, lease_seconds=3600, workers=10, instance_id=None))]
 pub fn gepa_serve(
     db_path: &str,
     bind_addr: &str,
     worker_id: Option<&str>,
     lease_seconds: u64,
     workers: usize,
+    instance_id: Option<&str>,
 ) -> PyResult<()> {
     let mut config = synth_gepa::service::GepaServiceConfig::new(db_path, bind_addr);
     if let Some(worker_id) = worker_id {
         config.worker_id = worker_id.to_string();
+    }
+    if let Some(instance_id) = instance_id {
+        config.workshop_instance_id = Some(instance_id.to_string());
     }
     config.lease_seconds = lease_seconds;
     config.worker_count = workers;
@@ -729,6 +707,7 @@ fn py_error(error: OptimizerError) -> PyErr {
         OptimizerError::CacheCorrupt { .. } => CacheCorruptError::new_err(message),
         OptimizerError::BudgetExceeded { .. } => BudgetExceededError::new_err(message),
         OptimizerError::Cancelled { .. } => CancelledError::new_err(message),
+        OptimizerError::AlreadyRunning { .. } => ConfigError::new_err(message),
         OptimizerError::EventCompare(_) => EventCompareError::new_err(message),
         OptimizerError::Failed(_) => RunFailedError::new_err(message),
         OptimizerError::Invariant(_) => InvariantError::new_err(message),

@@ -46,7 +46,9 @@ use synth_optimizer_platform::{
 };
 
 mod codex_app_server;
+mod identities;
 mod jesterky_workflow;
+mod leakage;
 mod machines;
 pub mod pipeline;
 pub mod planner;
@@ -1214,6 +1216,7 @@ struct GepaCursorState<'a> {
     active_evaluation: Option<Value>,
     candidates: &'a [CandidateRecord],
     best_idx: Option<usize>,
+    identities: Option<&'a identities::CandidateIdentitySet>,
     train_rows: &'a [Value],
     minibatch_rows: &'a [Value],
     reflection_rows: &'a [Value],
@@ -1477,6 +1480,7 @@ struct GepaRunState {
     cursor: GepaCursor,
     candidates: Vec<CandidateRecord>,
     best_idx: Option<usize>,
+    identities: identities::CandidateIdentitySet,
     proposal_queue: Vec<ProposedCandidate>,
     active_evaluation: Option<GepaActiveEvaluation>,
     heldout_candidate_index: usize,
@@ -1487,6 +1491,74 @@ struct GepaRunState {
     stopper_states: Vec<StopperStateRecord>,
     stopper_sequence: u64,
     checkpoint_sequence: u64,
+}
+
+fn settle_run_identities(state: &mut GepaRunState, config: &SynthOptimizerConfig) {
+    state
+        .identities
+        .freeze_optimization_selected(state.best_idx);
+    state
+        .identities
+        .apply_deployment_rule(&config.gepa.deployment_rule);
+    state.best_idx = state.identities.best_idx_alias().or(state.best_idx);
+}
+
+fn ledger_rollout_and_cost(ledger: &[UsageLedgerRecord]) -> (Option<u64>, Option<f64>) {
+    if ledger.is_empty() {
+        return (None, None);
+    }
+    (
+        Some(ledger.len() as u64),
+        reported_cost_from_usage_ledger(ledger),
+    )
+}
+
+fn apply_identities_to_run_result(
+    result: &mut GepaRunResult,
+    candidates: &[CandidateRecord],
+    identities: &identities::CandidateIdentitySet,
+    rollout_count: usize,
+    usage_ledger: &[UsageLedgerRecord],
+    reported_cost: Option<f64>,
+    config: &SynthOptimizerConfig,
+) {
+    let (ledger_rollouts, ledger_cost) = ledger_rollout_and_cost(usage_ledger);
+    identities::apply_selection_to_result(
+        result,
+        candidates,
+        identities,
+        rollout_count,
+        ledger_rollouts,
+        reported_cost,
+        ledger_cost,
+        crate::pipeline::resolved_pipeline_value(config),
+    );
+}
+
+fn selection_authority_overlay(
+    candidates: &[CandidateRecord],
+    identities: &identities::CandidateIdentitySet,
+    rollout_count: usize,
+    usage_ledger: &[UsageLedgerRecord],
+    reported_cost: Option<f64>,
+    config: &SynthOptimizerConfig,
+) -> Value {
+    let (ledger_rollouts, ledger_cost) = ledger_rollout_and_cost(usage_ledger);
+    let mut value = identities::selection_authority_value(
+        candidates,
+        identities,
+        rollout_count,
+        ledger_rollouts,
+        reported_cost,
+        ledger_cost,
+    );
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "resolved_pipeline".to_string(),
+            crate::pipeline::resolved_pipeline_value(config),
+        );
+    }
+    value
 }
 
 struct GepaStepResources {
@@ -2718,6 +2790,35 @@ fn restore_gepa_run_state(context: &mut GepaRunContext) -> Result<GepaRunState> 
             .iter()
             .position(|candidate| &candidate.candidate_id == candidate_id)
     });
+    let mut identities = identities::CandidateIdentitySet {
+        optimization_selected_idx: identities::idx_for_candidate_id(
+            &candidates,
+            cursor.optimization_selected_candidate_id.as_deref(),
+        ),
+        heldout_best_idx: identities::idx_for_candidate_id(
+            &candidates,
+            cursor.heldout_best_candidate_id.as_deref(),
+        ),
+        deployment_idx: identities::idx_for_candidate_id(
+            &candidates,
+            cursor.deployment_candidate_id.as_deref(),
+        ),
+        deployment_rule: cursor
+            .deployment_rule
+            .clone()
+            .unwrap_or_else(|| identities::DEPLOYMENT_RULE_OPTIMIZATION_SELECTED.to_string()),
+    };
+    if identities.optimization_selected_idx.is_none()
+        && matches!(
+            cursor.phase,
+            GepaCursorPhase::Heldout
+                | GepaCursorPhase::Finalizing
+                | GepaCursorPhase::Completed
+                | GepaCursorPhase::Failed
+        )
+    {
+        identities.optimization_selected_idx = best_idx;
+    }
     let proposal_queue = cursor
         .proposal_queue
         .as_array()
@@ -2767,6 +2868,7 @@ fn restore_gepa_run_state(context: &mut GepaRunContext) -> Result<GepaRunState> 
         cursor,
         candidates,
         best_idx,
+        identities,
         proposal_queue,
         active_evaluation,
         total_usage,
@@ -2906,6 +3008,22 @@ fn persist_gepa_run_state(
         .best_idx
         .and_then(|idx| state.candidates.get(idx))
         .map(|candidate| candidate.candidate_id.clone());
+    state.cursor.optimization_selected_candidate_id = state
+        .identities
+        .optimization_selected_idx
+        .and_then(|idx| state.candidates.get(idx))
+        .map(|candidate| candidate.candidate_id.clone());
+    state.cursor.heldout_best_candidate_id = state
+        .identities
+        .heldout_best_idx
+        .and_then(|idx| state.candidates.get(idx))
+        .map(|candidate| candidate.candidate_id.clone());
+    state.cursor.deployment_candidate_id = state
+        .identities
+        .deployment_idx
+        .and_then(|idx| state.candidates.get(idx))
+        .map(|candidate| candidate.candidate_id.clone());
+    state.cursor.deployment_rule = Some(state.identities.deployment_rule.clone());
     state.cursor.rollout_task_id = Some(resources.rollout_task_id.clone());
     state.cursor.rollout_count = state.rollout_count;
     state.cursor.cost_usd = state.total_cost;
@@ -3187,6 +3305,9 @@ fn refresh_terminal_run_projection(
     context: &mut GepaRunContext,
     state: &GepaRunState,
 ) -> Result<()> {
+    if context.workspace.has_manifest(&context.config.run.run_id)? {
+        return Ok(());
+    }
     let usage_value = serde_json::to_value(&state.total_usage)?;
     let reported_cost = reported_cost_from_usage_ledger(&state.usage_ledger);
     match state.cursor.phase {
@@ -4635,7 +4756,7 @@ fn discard_stale_evaluate_item(
             "stale_gap": decision.stale_gap,
             "reason": decision.reason.as_str(),
             "policy": context.config.gepa.pipeline.staleness_policy.as_str(),
-            "mode": context.config.gepa.pipeline.mode.as_str(),
+            "mode": context.config.gepa.pipeline.resolved_mode().as_str(),
         }),
     )?;
     Ok(())
@@ -10690,6 +10811,7 @@ fn terminalize_gepa_run_state(
         };
     let usage_value = serde_json::to_value(&state.total_usage)?;
     let reported_cost = reported_cost_from_usage_ledger(&state.usage_ledger);
+    settle_run_identities(state, &context.config);
     context
         .workspace
         .record_usage_ledger(&context.config.run.run_id, &state.usage_ledger)?;
@@ -10730,7 +10852,27 @@ fn terminalize_gepa_run_state(
         )?;
     }
     let state_history = serde_json::to_value(&context.state_machine.history)?;
-    let failure_manifest = json!({
+    context.events.emit(
+        terminal_event_type,
+        message,
+        json!({
+            "run_id": context.config.run.run_id,
+            "state": context.state_machine.state().as_str(),
+            "cost_usd": reported_cost,
+            "usage": usage_value,
+            "failure": error_summary,
+        }),
+    )?;
+    let optimizer_terminal_cursor = context.events.last_sequence_number();
+    let selection = selection_authority_overlay(
+        &state.candidates,
+        &state.identities,
+        state.rollout_count,
+        &state.usage_ledger,
+        reported_cost,
+        &context.config,
+    );
+    let mut failure_manifest = json!({
         "schema_version": "gepa_failure_manifest.v1",
         "run_id": context.config.run.run_id,
         "status": terminal_state.as_str(),
@@ -10739,11 +10881,38 @@ fn terminalize_gepa_run_state(
         "usage": usage_value,
         "failure": error_summary,
         "state_history": state_history,
+        "optimizer_terminal_cursor": optimizer_terminal_cursor,
         "event_feed_path": context.paths.event_feed_path.display().to_string(),
         "normalized_event_feed_path": context.paths.normalized_event_feed_path.display().to_string(),
         "cache_profile_path": context.paths.cache_profile_path.display().to_string(),
         "workspace_db_path": context.paths.workspace_db_path.display().to_string(),
     });
+    if let (Some(manifest), Some(selection)) =
+        (failure_manifest.as_object_mut(), selection.as_object())
+    {
+        for (key, value) in selection {
+            manifest.insert(key.clone(), value.clone());
+        }
+    }
+    context.events.flush()?;
+    normalize_event_feed(
+        &context.paths.event_feed_path,
+        &context.paths.normalized_event_feed_path,
+        &context.paths.run_dir,
+    )?;
+    context.events.set_lane("enrichment");
+    let storage_summary = record_terminal_storage_snapshot(
+        &context.paths,
+        &context.config.run.run_id,
+        &mut context.events,
+    )?;
+    let optimizer_enrichment_cursor = context.events.last_sequence_number();
+    if let Some(manifest) = failure_manifest.as_object_mut() {
+        manifest.insert(
+            "optimizer_enrichment_cursor".to_string(),
+            json!(optimizer_enrichment_cursor),
+        );
+    }
     context
         .paths
         .write_json(&context.paths.manifest_path, &failure_manifest)?;
@@ -10754,28 +10923,6 @@ fn terminalize_gepa_run_state(
         reported_cost,
         &usage_value,
         &failure_manifest,
-    )?;
-    context.events.emit(
-        terminal_event_type,
-        message,
-        json!({
-            "run_id": context.config.run.run_id,
-            "state": context.state_machine.state().as_str(),
-            "cost_usd": reported_cost,
-            "usage": usage_value,
-            "failure": failure_manifest["failure"],
-        }),
-    )?;
-    context.events.flush()?;
-    normalize_event_feed(
-        &context.paths.event_feed_path,
-        &context.paths.normalized_event_feed_path,
-        &context.paths.run_dir,
-    )?;
-    let storage_summary = record_terminal_storage_snapshot(
-        &context.paths,
-        &context.config.run.run_id,
-        &mut context.events,
     )?;
     context.events.flush()?;
     context
@@ -11542,9 +11689,9 @@ fn finalize_candidate_minibatch(
         challenger: &candidate_minibatch_vector,
         incumbent: &parent_minibatch_vector,
         accept_equal: false,
-        acceptance_criterion: Some("primary_improvement"),
-        objective_acceptance: None,
-        margin: 0.0,
+        acceptance_criterion: Some(&context.config.gepa.minibatch_acceptance_criterion),
+        objective_acceptance: Some(&context.config.gepa.objective_acceptance),
+        margin: context.config.gepa.minibatch_accept_margin,
     })?;
     let best_idx = state.best_idx.unwrap_or(parent_idx);
     let mut decision = AcceptanceDecision {
@@ -11852,9 +11999,9 @@ fn finalize_candidate_minibatch_group(
             challenger: &candidate_minibatch_vector,
             incumbent: &parent_minibatch_vector,
             accept_equal: false,
-            acceptance_criterion: Some("primary_improvement"),
-            objective_acceptance: None,
-            margin: 0.0,
+            acceptance_criterion: Some(&context.config.gepa.minibatch_acceptance_criterion),
+            objective_acceptance: Some(&context.config.gepa.objective_acceptance),
+            margin: context.config.gepa.minibatch_accept_margin,
         })?;
         let best_idx = state.best_idx.unwrap_or(parent_idx);
         let mut decision = AcceptanceDecision {
@@ -12139,8 +12286,8 @@ fn finalize_candidate_full_train(
         challenger: &candidate_train_vector,
         incumbent: &best_train_vector,
         accept_equal: false,
-        acceptance_criterion: Some("primary_improvement"),
-        objective_acceptance: None,
+        acceptance_criterion: Some(&context.config.gepa.acceptance_criterion),
+        objective_acceptance: Some(&context.config.gepa.objective_acceptance),
         margin: 0.0,
     })?;
     let accepted = train_preference.preferred;
@@ -12336,8 +12483,8 @@ fn finalize_candidate_full_train_group(
             challenger: &candidate_train_vector,
             incumbent: &best_train_vector,
             accept_equal: false,
-            acceptance_criterion: Some("primary_improvement"),
-            objective_acceptance: None,
+            acceptance_criterion: Some(&context.config.gepa.acceptance_criterion),
+            objective_acceptance: Some(&context.config.gepa.objective_acceptance),
             margin: 0.0,
         })?;
         let accepted = train_preference.preferred;
@@ -12824,7 +12971,7 @@ fn advance_proposer_waiting(
                     &payload,
                 )
             });
-            let candidate = CandidateRecord {
+            let mut candidate = CandidateRecord {
                 lever_bundle,
                 candidate_id,
                 payload,
@@ -12840,6 +12987,48 @@ fn advance_proposer_waiting(
                 acceptance_score: Value::Null,
                 acceptance_metadata,
             };
+            if let Some((hit, policy)) = leakage_match_for_payload(
+                &context.config,
+                &candidate.payload,
+                &resources.train_rows,
+                producer_leakage_hint(&proposal),
+            ) {
+                apply_leakage_evidence(&mut candidate.acceptance_metadata, &hit);
+                context.events.emit(
+                    "candidate.leakage_detected",
+                    "Candidate leaked labeled training text",
+                    json!({
+                        "candidate_id": &candidate.candidate_id,
+                        "example_id": hit.example_id,
+                        "span": hit.span,
+                        "chars": hit.chars,
+                        "policy": policy.as_str(),
+                    }),
+                )?;
+                if matches!(policy, leakage::LeakagePolicy::Forbid) {
+                    candidate.status = "rejected_leakage".to_string();
+                    persist_candidate_snapshot(
+                        &mut context.workspace,
+                        &context.config.run.run_id,
+                        &candidate,
+                    )?;
+                    record_candidate_registered(
+                        context,
+                        &candidate,
+                        Some(state.cursor.generation),
+                        json!({
+                            "source": &candidate.source,
+                            "parent_id": &candidate.parent_id,
+                            "generation": state.cursor.generation,
+                            "proposal_index": proposal_index,
+                            "status": "rejected_leakage",
+                        }),
+                    )?;
+                    state.candidates.push(candidate);
+                    proposal_index += 1;
+                    continue;
+                }
+            }
             persist_candidate_snapshot(
                 &mut context.workspace,
                 &context.config.run.run_id,
@@ -13133,6 +13322,9 @@ fn move_to_pre_heldout(
     resources: &GepaStepResources,
 ) -> Result<GepaAdvanceOutcome> {
     let best_idx = state.best_idx.unwrap_or(0);
+    state
+        .identities
+        .freeze_optimization_selected(state.best_idx);
     let frontier = frontier_members(&state.candidates);
     let snapshot = checkpoint_snapshot_value(CheckpointSnapshotState {
         config: &context.config,
@@ -13335,7 +13527,7 @@ fn advance_heldout(
         )?;
     }
     if state.heldout_candidate_index >= heldout_indices.len() {
-        if let Some(best_heldout_idx) = select_best_heldout_candidate(HeldoutSelectionInput {
+        let heldout_best_idx = select_best_heldout_candidate(HeldoutSelectionInput {
             candidates: &state.candidates,
             evaluated_indices: &heldout_indices,
             objective_set: &resources.objective_set,
@@ -13343,10 +13535,12 @@ fn advance_heldout(
             heldout_rows: &resources.heldout_rows,
             train_split: &context.config.taskset.train_split,
             train_rows: &resources.train_rows,
-            incumbent_idx: state.best_idx,
-        })? {
-            state.best_idx = Some(best_heldout_idx);
-        }
+            incumbent_idx: state
+                .identities
+                .optimization_selected_idx
+                .or(state.best_idx),
+        })?;
+        state.identities.record_heldout_best(heldout_best_idx);
         return move_to_finalizing(context, state, resources, "heldout evaluation completed");
     }
     let mut active_candidates = Vec::new();
@@ -13678,6 +13872,7 @@ fn finalize_completed_gepa_run(
     state: &mut GepaRunState,
     resources: &GepaStepResources,
 ) -> Result<GepaAdvanceOutcome> {
+    settle_run_identities(state, &context.config);
     let best_idx = state.best_idx.unwrap_or(0);
     let Some(heldout_best_reward) = state.candidates[best_idx].heldout_reward else {
         terminalize_gepa_run_state(
@@ -13869,12 +14064,14 @@ fn finalize_completed_gepa_run(
             "state": context.state_machine.state().as_str(),
         }),
     )?;
+    let optimizer_terminal_cursor = context.events.last_sequence_number();
     context.events.flush()?;
     normalize_event_feed(
         &context.paths.event_feed_path,
         &context.paths.normalized_event_feed_path,
         &context.paths.run_dir,
     )?;
+    context.events.set_lane("enrichment");
     let storage_summary = record_terminal_storage_snapshot(
         &context.paths,
         &context.config.run.run_id,
@@ -13939,7 +14136,7 @@ fn finalize_completed_gepa_run(
             "release_evidence",
         )?,
     ];
-    let result = GepaRunResult {
+    let mut result = GepaRunResult {
         best_candidate,
         manifest_path: context.paths.manifest_path.display().to_string(),
         event_feed_path: context.paths.event_feed_path.display().to_string(),
@@ -13959,9 +14156,27 @@ fn finalize_completed_gepa_run(
         cost_usd: reported_cost,
         usage: usage_value,
         state_history,
+        ..Default::default()
     };
+    apply_identities_to_run_result(
+        &mut result,
+        &state.candidates,
+        &state.identities,
+        state.rollout_count,
+        &state.usage_ledger,
+        reported_cost,
+        &context.config,
+    );
     let mut result_value = serde_json::to_value(&result)?;
     if let Some(result_object) = result_value.as_object_mut() {
+        result_object.insert(
+            "optimizer_terminal_cursor".to_string(),
+            json!(optimizer_terminal_cursor),
+        );
+        result_object.insert(
+            "optimizer_enrichment_cursor".to_string(),
+            json!(context.events.last_sequence_number()),
+        );
         result_object.insert(
             "stopped_by".to_string(),
             stopped_by_value(&context.config, state),
@@ -14445,6 +14660,7 @@ fn execute_gepa_monolithic_with_options(
             active_evaluation: None,
             candidates: &candidates,
             best_idx: None,
+            identities: None,
             train_rows: &train_rows,
             minibatch_rows: &minibatch_pool_rows,
             reflection_rows: &reflection_rows,
@@ -14474,6 +14690,26 @@ fn execute_gepa_monolithic_with_options(
                 .position(|candidate| &candidate.candidate_id == candidate_id)
         })
         .unwrap_or(0);
+    let mut identities = identities::CandidateIdentitySet {
+        optimization_selected_idx: identities::idx_for_candidate_id(
+            &candidates,
+            restored_cursor
+                .optimization_selected_candidate_id
+                .as_deref(),
+        ),
+        heldout_best_idx: identities::idx_for_candidate_id(
+            &candidates,
+            restored_cursor.heldout_best_candidate_id.as_deref(),
+        ),
+        deployment_idx: identities::idx_for_candidate_id(
+            &candidates,
+            restored_cursor.deployment_candidate_id.as_deref(),
+        ),
+        deployment_rule: restored_cursor
+            .deployment_rule
+            .clone()
+            .unwrap_or_else(|| identities::DEPLOYMENT_RULE_OPTIMIZATION_SELECTED.to_string()),
+    };
     if candidates[0].train_reward.is_none() {
         let seed_rollout_capacity =
             remaining_train_rollout_capacity(&workspace, &config, rollout_count)?;
@@ -14737,6 +14973,7 @@ fn execute_gepa_monolithic_with_options(
             active_evaluation: None,
             candidates: &candidates,
             best_idx: Some(best_idx),
+            identities: Some(&identities),
             train_rows: &train_rows,
             minibatch_rows: &minibatch_pool_rows,
             reflection_rows: &reflection_rows,
@@ -15268,6 +15505,31 @@ fn execute_gepa_monolithic_with_options(
                 acceptance_score: Value::Null,
                 acceptance_metadata,
             };
+            if let Some((hit, policy)) = leakage_match_for_payload(
+                &config,
+                &candidate.payload,
+                &train_rows,
+                producer_leakage_hint(&proposal),
+            ) {
+                apply_leakage_evidence(&mut candidate.acceptance_metadata, &hit);
+                events.emit(
+                    "candidate.leakage_detected",
+                    "Candidate leaked labeled training text",
+                    json!({
+                        "candidate_id": &candidate.candidate_id,
+                        "example_id": hit.example_id,
+                        "span": hit.span,
+                        "chars": hit.chars,
+                        "policy": policy.as_str(),
+                    }),
+                )?;
+                if matches!(policy, leakage::LeakagePolicy::Forbid) {
+                    candidate.status = "rejected_leakage".to_string();
+                    persist_candidate_snapshot(&mut workspace, &config.run.run_id, &candidate)?;
+                    candidates.push(candidate);
+                    continue;
+                }
+            }
             persist_candidate_snapshot(&mut workspace, &config.run.run_id, &candidate)?;
             let minibatch_rollout_capacity =
                 remaining_train_rollout_capacity(&workspace, &config, rollout_count)?;
@@ -15493,9 +15755,9 @@ fn execute_gepa_monolithic_with_options(
                 challenger: &candidate_minibatch_vector,
                 incumbent: &parent_minibatch_vector,
                 accept_equal: false,
-                acceptance_criterion: Some("primary_improvement"),
-                objective_acceptance: None,
-                margin: 0.0,
+                acceptance_criterion: Some(&config.gepa.minibatch_acceptance_criterion),
+                objective_acceptance: Some(&config.gepa.objective_acceptance),
+                margin: config.gepa.minibatch_accept_margin,
             })?;
             candidate.acceptance_score = minibatch_preference.score.clone();
             candidate.acceptance_metadata = minibatch_preference.metadata.clone();
@@ -15799,8 +16061,8 @@ fn execute_gepa_monolithic_with_options(
                 challenger: &candidate_train_vector,
                 incumbent: &best_train_vector,
                 accept_equal: false,
-                acceptance_criterion: Some("primary_improvement"),
-                objective_acceptance: None,
+                acceptance_criterion: Some(&config.gepa.acceptance_criterion),
+                objective_acceptance: Some(&config.gepa.objective_acceptance),
                 margin: 0.0,
             })?;
             candidate.acceptance_score = train_preference.score.clone();
@@ -15949,6 +16211,7 @@ fn execute_gepa_monolithic_with_options(
                 active_evaluation: None,
                 candidates: &candidates,
                 best_idx: Some(best_idx),
+                identities: None,
                 train_rows: &train_rows,
                 minibatch_rows: &minibatch_pool_rows,
                 reflection_rows: &reflection_rows,
@@ -15988,6 +16251,7 @@ fn execute_gepa_monolithic_with_options(
         Value::String("pre_heldout".to_string()),
     );
     metadata.insert("heldout_rows".to_string(), json!(heldout_rows.len()));
+    identities.freeze_optimization_selected(Some(best_idx));
     record_checkpoint_snapshot(
         &mut workspace,
         &config.run.run_id,
@@ -16024,6 +16288,7 @@ fn execute_gepa_monolithic_with_options(
             active_evaluation: None,
             candidates: &candidates,
             best_idx: Some(best_idx),
+            identities: Some(&identities),
             train_rows: &train_rows,
             minibatch_rows: &minibatch_pool_rows,
             reflection_rows: &reflection_rows,
@@ -16279,7 +16544,7 @@ fn execute_gepa_monolithic_with_options(
                 }),
             )?;
         }
-        best_idx = select_best_heldout_candidate(HeldoutSelectionInput {
+        let heldout_best_idx = select_best_heldout_candidate(HeldoutSelectionInput {
             candidates: &candidates,
             evaluated_indices: &heldout_indices,
             objective_set: &objective_set,
@@ -16287,9 +16552,9 @@ fn execute_gepa_monolithic_with_options(
             heldout_rows: &heldout_rows,
             train_split: &config.taskset.train_split,
             train_rows: &train_rows,
-            incumbent_idx: Some(best_idx),
-        })?
-        .unwrap_or(best_idx);
+            incumbent_idx: identities.optimization_selected_idx.or(Some(best_idx)),
+        })?;
+        identities.record_heldout_best(heldout_best_idx);
         transition_run(
             &workspace,
             &mut events,
@@ -16305,6 +16570,9 @@ fn execute_gepa_monolithic_with_options(
             }),
         )?;
     }
+    identities.freeze_optimization_selected(Some(best_idx));
+    identities.apply_deployment_rule(&config.gepa.deployment_rule);
+    best_idx = identities.best_idx_alias().unwrap_or(best_idx);
     let heldout_best_reward = candidates[best_idx]
         .heldout_reward
         .or(candidates[best_idx].train_reward)
@@ -16453,6 +16721,7 @@ fn execute_gepa_monolithic_with_options(
         &paths.normalized_event_feed_path,
         &paths.run_dir,
     )?;
+    events.set_lane("enrichment");
     let storage_summary =
         record_terminal_storage_snapshot(&paths, &config.run.run_id, &mut events)?;
     events.flush()?;
@@ -16503,7 +16772,7 @@ fn execute_gepa_monolithic_with_options(
         )?,
     ];
 
-    let result = GepaRunResult {
+    let mut result = GepaRunResult {
         best_candidate,
         manifest_path: paths.manifest_path.display().to_string(),
         event_feed_path: paths.event_feed_path.display().to_string(),
@@ -16519,7 +16788,17 @@ fn execute_gepa_monolithic_with_options(
         cost_usd: reported_cost,
         usage: usage_value,
         state_history,
+        ..Default::default()
     };
+    apply_identities_to_run_result(
+        &mut result,
+        &candidates,
+        &identities,
+        rollout_count,
+        &usage_ledger,
+        reported_cost,
+        &config,
+    );
     let mut result_value = serde_json::to_value(&result)?;
     if let Some(result_object) = result_value.as_object_mut() {
         result_object.insert(
@@ -16564,6 +16843,7 @@ fn execute_gepa_monolithic_with_options(
             active_evaluation: None,
             candidates: &candidates,
             best_idx: Some(best_idx),
+            identities: Some(&identities),
             train_rows: &train_rows,
             minibatch_rows: &minibatch_pool_rows,
             reflection_rows: &reflection_rows,
@@ -16860,6 +17140,47 @@ fn normalize_candidate_payload(
         }
     }
     Ok(payload)
+}
+
+fn producer_leakage_hint(proposal: &ProposedCandidate) -> Option<&str> {
+    proposal
+        .metadata
+        .get("leakage_policy")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            proposal
+                .metadata
+                .get("leakage")
+                .and_then(|value| value.get("policy"))
+                .and_then(Value::as_str)
+        })
+}
+
+fn leakage_match_for_payload(
+    config: &SynthOptimizerConfig,
+    payload: &BTreeMap<String, String>,
+    train_rows: &[Value],
+    producer_hint: Option<&str>,
+) -> Option<(leakage::LeakageMatch, leakage::LeakagePolicy)> {
+    let policy =
+        leakage::LeakagePolicy::parse(&config.gepa.leakage.policy).effective(producer_hint);
+    let hit = leakage::scan_payload_for_leakage(
+        payload,
+        train_rows,
+        config.gepa.leakage.min_span_chars.max(1),
+    )?;
+    Some((hit, policy))
+}
+
+fn apply_leakage_evidence(metadata: &mut Map<String, Value>, hit: &leakage::LeakageMatch) {
+    metadata.insert(
+        "leakage".to_string(),
+        json!({
+            "example_id": hit.example_id,
+            "span": hit.span,
+            "chars": hit.chars,
+        }),
+    );
 }
 
 fn normalize_single_module_proposal_shape(
@@ -19503,6 +19824,27 @@ fn persist_gepa_cursor(
         active_evaluation: state.active_evaluation,
         candidates: serde_json::to_value(checkpoint_candidate_records(state.candidates))?,
         best_candidate_id: best_candidate_id.clone(),
+        optimization_selected_candidate_id: state.identities.and_then(|identities| {
+            identities
+                .optimization_selected_idx
+                .and_then(|idx| state.candidates.get(idx))
+                .map(|candidate| candidate.candidate_id.clone())
+        }),
+        heldout_best_candidate_id: state.identities.and_then(|identities| {
+            identities
+                .heldout_best_idx
+                .and_then(|idx| state.candidates.get(idx))
+                .map(|candidate| candidate.candidate_id.clone())
+        }),
+        deployment_candidate_id: state.identities.and_then(|identities| {
+            identities
+                .deployment_idx
+                .and_then(|idx| state.candidates.get(idx))
+                .map(|candidate| candidate.candidate_id.clone())
+        }),
+        deployment_rule: state
+            .identities
+            .map(|identities| identities.deployment_rule.clone()),
         rollout_task_id: Some(state.rollout_task_id.to_string()),
         rollout_count: state.rollout_count,
         cost_usd: state.total_cost,
@@ -19702,6 +20044,14 @@ pub(crate) fn record_initial_platform_snapshots(
     let config_value = serde_json::to_value(config)?;
     let mut config_metadata = Map::new();
     config_metadata.insert("source".to_string(), json!("gepa_toml_resolved"));
+    config_metadata.insert(
+        "resolved_pipeline".to_string(),
+        crate::pipeline::resolved_pipeline_value(config),
+    );
+    config_metadata.insert(
+        "deployment_rule".to_string(),
+        json!(config.gepa.deployment_rule),
+    );
     workspace.record_resolved_run_config(&ResolvedRunConfigRecord::from_input(
         ResolvedRunConfigInput {
             run_id: &config.run.run_id,
@@ -21643,12 +21993,31 @@ fn fail_gepa_run_and_return<T>(input: FailedGepaRunInput<'_>, error: OptimizerEr
             "failure": serde_json::to_value(&failure)?,
         }),
     )?;
+    let optimizer_terminal_cursor = input.events.last_sequence_number();
+    if let Some(object) = failure_manifest.as_object_mut() {
+        object.insert(
+            "optimizer_terminal_cursor".to_string(),
+            json!(optimizer_terminal_cursor),
+        );
+    }
+    input
+        .paths
+        .write_json(&input.paths.manifest_path, &failure_manifest)?;
+    input.workspace.record_manifest(
+        &input.config.run.run_id,
+        &input.paths.manifest_path,
+        manifest_best_candidate_id,
+        reported_cost,
+        &usage_value,
+        &failure_manifest,
+    )?;
     input.events.flush()?;
     normalize_event_feed(
         &input.paths.event_feed_path,
         &input.paths.normalized_event_feed_path,
         &input.paths.run_dir,
     )?;
+    input.events.set_lane("enrichment");
     let storage_summary =
         record_terminal_storage_snapshot(input.paths, &input.config.run.run_id, input.events)?;
     input.events.flush()?;

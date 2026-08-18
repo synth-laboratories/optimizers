@@ -1992,6 +1992,10 @@ def build_parser() -> argparse.ArgumentParser:
     gepa_service.add_argument("--worker-id")
     gepa_service.add_argument("--lease-seconds", type=int, default=3600)
     gepa_service.add_argument("--workers", type=int, default=10)
+    gepa_service.add_argument(
+        "--instance-id",
+        help="Workshop instance id this Optimizers service owns (also SYNTH_WORKSHOP_INSTANCE_ID).",
+    )
 
     # The board is a local, read-only HTML projection of GEPA_HOME discovery,
     # explicit registry roots, and any live services it finds.
@@ -2377,7 +2381,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "reflexion" and args.reflexion_command == "validate-evidence-notes":
         return _online_reflexion_validate_evidence_notes(args)
     if args.command == "gepa" and args.gepa_command == "service":
-        gepa_serve(args.db, args.bind, args.worker_id, args.lease_seconds, args.workers)
+        gepa_serve(
+            args.db,
+            args.bind,
+            args.worker_id,
+            args.lease_seconds,
+            args.workers,
+            args.instance_id,
+        )
         return 0
     if args.command == "gepa" and args.gepa_command == "board":
         roots = [*args.roots, *args.extra_roots]

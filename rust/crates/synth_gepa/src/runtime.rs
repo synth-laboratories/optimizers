@@ -1017,20 +1017,7 @@ fn env_u64(name: &str) -> Option<u64> {
 }
 
 fn rollout_concurrency(config: &SynthOptimizerConfig) -> usize {
-    let override_value = env::var("GEPA_ROLLOUT_CONCURRENCY")
-        .or_else(|_| env::var("SYNTH_OPTIMIZERS_MAX_CONCURRENT_ROLLOUTS"))
-        .ok();
-    resolve_rollout_concurrency(
-        config.gepa.pipeline.workers.rollout,
-        override_value.as_deref(),
-    )
-}
-
-fn resolve_rollout_concurrency(configured: usize, override_value: Option<&str>) -> usize {
-    override_value
-        .and_then(|value| value.trim().parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(configured.max(1))
+    config.gepa.pipeline.workers.rollout.max(1)
 }
 
 fn rollout_cache_request(request: &Value) -> Value {
@@ -1665,10 +1652,11 @@ mod partial_batch_tests {
 
     #[test]
     fn serial_pipeline_uses_its_configured_rollout_worker_bound() {
-        assert_eq!(resolve_rollout_concurrency(3, None), 3);
-        assert_eq!(resolve_rollout_concurrency(0, None), 1);
-        assert_eq!(resolve_rollout_concurrency(3, Some("5")), 5);
-        assert_eq!(resolve_rollout_concurrency(3, Some("invalid")), 3);
+        let mut config = SynthOptimizerConfig::default();
+        config.gepa.pipeline.workers.rollout = 10;
+        assert_eq!(rollout_concurrency(&config), 10);
+        config.gepa.pipeline.workers.rollout = 0;
+        assert_eq!(rollout_concurrency(&config), 1);
     }
 }
 

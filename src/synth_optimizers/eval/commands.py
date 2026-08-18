@@ -13,7 +13,9 @@ import json
 import shutil
 import sys
 from pathlib import Path
+from typing import Any
 
+from .executor import ContainerRuntimeError, OciTrialExecutor
 from .home import EvalHome
 from .models import EvalContractError
 from .runner import request_cancel, run_worker
@@ -117,6 +119,8 @@ def _doctor(args: argparse.Namespace) -> int:
         ttl_seconds=home.config.lease_ttl_seconds,
     )
     recipes = home.catalog()
+    executor = OciTrialExecutor(home.config.container_runtime) if runtime_path else None
+    recipe_readiness = _runtime_recipe_readiness(recipes, executor)
     payload = {
         "home": str(home.root),
         "containerRuntime": home.config.container_runtime,
@@ -124,15 +128,8 @@ def _doctor(args: argparse.Namespace) -> int:
         "containerRuntimeAvailable": runtime_path is not None,
         "maxConcurrentTrials": home.config.max_concurrent_trials,
         "semaphore": semaphore.snapshot(),
-        "recipes": [
-            {
-                "id": recipe.id,
-                "available": recipe.available,
-                "reason": recipe.unavailable_reason,
-            }
-            for recipe in recipes
-        ],
-        "ready": runtime_path is not None and any(recipe.available for recipe in recipes),
+        "recipes": recipe_readiness,
+        "ready": runtime_path is not None and any(item["available"] for item in recipe_readiness),
     }
     if args.json:
         print(json.dumps(payload, indent=2))
@@ -141,10 +138,42 @@ def _doctor(args: argparse.Namespace) -> int:
         print(f"eval home {home.root} is {state}")
         print(f"  runtime: {home.config.container_runtime} -> {runtime_path or 'MISSING'}")
         print(f"  semaphore: {payload['semaphore']}")
-        for recipe in recipes:
-            mark = "ok" if recipe.available else recipe.unavailable_reason
-            print(f"  {recipe.id}: {mark}")
+        for item in recipe_readiness:
+            mark = "ok" if item["available"] else item["reason"]
+            print(f"  {item['id']}: {mark}")
     return 0 if payload["ready"] else 1
+
+
+def _runtime_recipe_readiness(recipes: Any, executor: Any | None) -> list[dict[str, Any]]:
+    """Prove that each advertised target can run before a run is created.
+
+    A syntactically valid digest is not execution readiness. The worker refuses
+    missing and mismatched local images, so admission must apply that same
+    authority and return the error while no run/trial records exist.
+    """
+
+    readiness: list[dict[str, Any]] = []
+    for recipe in recipes:
+        reason = recipe.unavailable_reason
+        resolved_reference = None
+        if reason is None and executor is None:
+            reason = "container runtime is unavailable"
+        if reason is None:
+            try:
+                resolved_reference = executor.resolve_reference(recipe.image, recipe.image_digest)
+            except (ContainerRuntimeError, EvalContractError) as error:
+                reason = str(error)
+        readiness.append(
+            {
+                "id": recipe.id,
+                "available": reason is None,
+                "reason": reason,
+                "image": recipe.image,
+                "imageDigest": recipe.image_digest,
+                "resolvedReference": resolved_reference,
+            }
+        )
+    return readiness
 
 
 def _pin(args: argparse.Namespace) -> int:

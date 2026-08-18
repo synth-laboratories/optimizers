@@ -115,7 +115,34 @@ pub struct ArtifactRef {
     pub retention: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct GepaCandidateIdentity {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score: Option<f64>,
+    pub split: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GepaDeploymentCandidate {
+    pub id: String,
+    pub rule: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct GepaHeldoutMeasurement {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score: Option<f64>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct GepaReconciliationStatus {
+    pub status: String,
+    pub authorities: Value,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct GepaRunResult {
     pub best_candidate: Value,
     pub manifest_path: String,
@@ -134,6 +161,24 @@ pub struct GepaRunResult {
     pub cost_usd: Option<f64>,
     pub usage: Value,
     pub state_history: Value,
+    #[serde(default)]
+    pub optimization_selected_candidate: Option<GepaCandidateIdentity>,
+    #[serde(default)]
+    pub heldout_measurements_by_candidate: Vec<GepaHeldoutMeasurement>,
+    #[serde(default)]
+    pub heldout_best_candidate: Option<GepaCandidateIdentity>,
+    #[serde(default)]
+    pub deployment_candidate: Option<GepaDeploymentCandidate>,
+    #[serde(default)]
+    pub improvement_verdict: Option<String>,
+    #[serde(default)]
+    pub rollout_count_authority: Value,
+    #[serde(default)]
+    pub cost_authority: Value,
+    #[serde(default)]
+    pub reconciliation_status: Option<GepaReconciliationStatus>,
+    #[serde(default)]
+    pub resolved_pipeline: Value,
 }
 
 pub fn artifact_ref(path: &Path, kind: &str, retention: &str) -> Result<ArtifactRef> {

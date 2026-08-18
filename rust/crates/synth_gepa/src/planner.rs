@@ -77,6 +77,14 @@ pub struct GepaCursor {
     #[serde(default)]
     pub best_candidate_id: Option<String>,
     #[serde(default)]
+    pub optimization_selected_candidate_id: Option<String>,
+    #[serde(default)]
+    pub heldout_best_candidate_id: Option<String>,
+    #[serde(default)]
+    pub deployment_candidate_id: Option<String>,
+    #[serde(default)]
+    pub deployment_rule: Option<String>,
+    #[serde(default)]
     pub rollout_task_id: Option<String>,
     #[serde(default)]
     pub rollout_count: usize,
@@ -132,6 +140,10 @@ impl GepaCursor {
             active_evaluation: None,
             candidates: Value::Array(Vec::new()),
             best_candidate_id: None,
+            optimization_selected_candidate_id: None,
+            heldout_best_candidate_id: None,
+            deployment_candidate_id: None,
+            deployment_rule: None,
             rollout_task_id: None,
             rollout_count: 0,
             cost_usd: 0.0,

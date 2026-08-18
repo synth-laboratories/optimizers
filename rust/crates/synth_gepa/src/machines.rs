@@ -11,6 +11,7 @@ pub enum CandidateState {
     FullTrainEvaluated,
     Accepted,
     RejectedFullTrain,
+    RejectedLeakage,
     DeferredBudget,
     HeldoutEvaluating,
     HeldoutScored,
@@ -27,6 +28,7 @@ pub enum CandidateTrigger {
     MinibatchRejected,
     FullTrainAccepted,
     FullTrainRejected,
+    LeakageDetected,
     DeferredBudget,
     HeldoutStarted,
     HeldoutFinished,
@@ -56,6 +58,7 @@ impl StateMachineEntity for CandidateEntity {
             CandidateState::FullTrainEvaluated => "full_train_evaluated",
             CandidateState::Accepted => "accepted",
             CandidateState::RejectedFullTrain => "rejected_full_train",
+            CandidateState::RejectedLeakage => "rejected_leakage",
             CandidateState::DeferredBudget => "deferred_budget",
             CandidateState::HeldoutEvaluating => "heldout_evaluating",
             CandidateState::HeldoutScored => "heldout_scored",
@@ -74,6 +77,7 @@ impl StateMachineEntity for CandidateEntity {
             "full_train_evaluated" => CandidateState::FullTrainEvaluated,
             "accepted" => CandidateState::Accepted,
             "rejected_full_train" => CandidateState::RejectedFullTrain,
+            "rejected_leakage" => CandidateState::RejectedLeakage,
             "deferred_budget" => CandidateState::DeferredBudget,
             "heldout_evaluating" => CandidateState::HeldoutEvaluating,
             "heldout_scored" => CandidateState::HeldoutScored,
@@ -91,6 +95,7 @@ impl StateMachineEntity for CandidateEntity {
             CandidateTrigger::MinibatchRejected => "minibatch_rejected",
             CandidateTrigger::FullTrainAccepted => "full_train_accepted",
             CandidateTrigger::FullTrainRejected => "full_train_rejected",
+            CandidateTrigger::LeakageDetected => "leakage_detected",
             CandidateTrigger::DeferredBudget => "deferred_budget",
             CandidateTrigger::HeldoutStarted => "heldout_started",
             CandidateTrigger::HeldoutFinished => "heldout_finished",
@@ -123,6 +128,11 @@ impl StateMachineEntity for CandidateEntity {
                 State::DeferredBudget,
                 Trigger::DeferredBudget,
             ) | (State::Registered, State::Archived, Trigger::Archived)
+                | (
+                    State::Registered,
+                    State::RejectedLeakage,
+                    Trigger::LeakageDetected,
+                )
                 | (
                     State::MinibatchEvaluating,
                     State::MinibatchEvaluated,
@@ -191,6 +201,7 @@ impl StateMachineEntity for CandidateEntity {
                 | (State::DeferredBudget, State::Archived, Trigger::Archived,)
                 | (State::RejectedMinibatch, State::Archived, Trigger::Archived,)
                 | (State::RejectedFullTrain, State::Archived, Trigger::Archived,)
+                | (State::RejectedLeakage, State::Archived, Trigger::Archived,)
                 | (State::Accepted, State::Archived, Trigger::Archived)
         )
     }

@@ -43,6 +43,12 @@ file is ~570 lines and carries both. So:
     pin is bumped past the responses lane. Bumping it is a prerequisite for the first
     live GSM8K rollout, not a cleanup task.
 
+**Bumped 2026-08-18** to `a2a316b` / `0.4.1.dev20260817` (containers `main`). No API
+drift: the suite stayed at 88 passed, and `banking77.py` in the venv went 346 -> 530
+lines with `_sample_responses` and `_validate_responses_endpoint` present. This pin
+still has to move once more, to whatever commit the containers GSM8K + provider-admission
+branch lands on — it is not on `origin` yet.
+
 ## Ordered work
 
 Each item names the file, the change, and the test that proves it. Nothing here needs a

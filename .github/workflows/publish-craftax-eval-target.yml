@@ -48,7 +48,11 @@ jobs:
           context: ${{ runner.temp }}/craftax-eval-target
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ghcr.io/synth-laboratories/craftax-eval-target:v0.5-gamebench-1b273629
+          tags: ghcr.io/synth-laboratories/workshop-craftax-eval-target:v0.5-gamebench-1b273629
+          labels: |
+            org.opencontainers.image.source=https://github.com/synth-laboratories/optimizers
+            org.opencontainers.image.revision=1b27362954cc903db76a3d2c3ed5c9bb80301de1
+            org.opencontainers.image.title=Workshop Craftax eval target
           build-args: |
             GAMEBENCH_SOURCE_COMMIT=1b27362954cc903db76a3d2c3ed5c9bb80301de1
           provenance: mode=max
@@ -57,18 +61,10 @@ jobs:
       - name: Record immutable publication receipt
         run: |
           printf '%s\n' \
-            'image=ghcr.io/synth-laboratories/craftax-eval-target' \
+            'image=ghcr.io/synth-laboratories/workshop-craftax-eval-target' \
             'source_revision=1b27362954cc903db76a3d2c3ed5c9bb80301de1' \
             'architectures=linux/amd64,linux/arm64' \
             'digest=${{ steps.publish.outputs.digest }}' | tee craftax-eval-target-receipt.txt
-
-      - name: Keep the eval target anonymously pullable
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh api --method PATCH \
-            /orgs/synth-laboratories/packages/container/craftax-eval-target \
-            -f visibility=public
 
       - uses: actions/upload-artifact@v4
         with:

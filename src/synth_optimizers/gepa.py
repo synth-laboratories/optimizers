@@ -407,6 +407,7 @@ class GepaTomlSection(BaseModel):
     objective_directions: dict[str, str] = Field(default_factory=dict)
     selection_objective: str | None = None
     frontier_type: str = "per_example"
+    minibatch_acceptance_criterion: str = "primary_improvement"
     acceptance_criterion: str = "primary_improvement"
     objective_acceptance: ObjectiveAcceptanceTomlSection = Field(
         default_factory=ObjectiveAcceptanceTomlSection
@@ -477,6 +478,7 @@ class GepaTomlSection(BaseModel):
             selection_objective=self.selection_objective,
             protected_objectives=list(self.objective_acceptance.protected_objectives),
             frontier_type=self.frontier_type,
+            minibatch_acceptance_criterion=self.minibatch_acceptance_criterion,
             acceptance_criterion=self.acceptance_criterion,
             min_objective_delta=self.objective_acceptance.min_objective_delta,
             objective_regression_tolerance=(
@@ -981,6 +983,7 @@ class ObjectiveConfig:
     selection_objective: str | None = None
     protected_objectives: list[str] = field(default_factory=list)
     frontier_type: str = "per_example"
+    minibatch_acceptance_criterion: str = "primary_improvement"
     acceptance_criterion: str = "primary_improvement"
     min_objective_delta: float | None = None
     objective_regression_tolerance: float | None = None
@@ -993,6 +996,7 @@ class ObjectiveConfig:
         if self.selection_objective is not None:
             gepa["selection_objective"] = self.selection_objective
         gepa["frontier_type"] = self.frontier_type
+        gepa["minibatch_acceptance_criterion"] = self.minibatch_acceptance_criterion
         gepa["acceptance_criterion"] = self.acceptance_criterion
         objective_acceptance: dict[str, Any] = {}
         if self.protected_objectives:

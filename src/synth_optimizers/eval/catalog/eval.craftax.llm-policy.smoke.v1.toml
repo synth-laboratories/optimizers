@@ -12,13 +12,14 @@ title = "Craftax LLM policy smoke"
 description = "Score allowlisted LLM policies on one pinned Craftax world, report only."
 task = "craftax"
 policy_kind = "llm-policy.v1"
-image = "craftax-eval-target"
+image = "ghcr.io/synth-laboratories/workshop-craftax-eval-target"
+image_digest = "sha256:02b076f89f858e9041beea1400cd870fcf40c79792cc088e26faab85714fb04e"
 prerequisites = [
     "Published craftax-eval-target image pinned by digest",
     "OPENAI_API_KEY in the eval home's secrets.toml",
 ]
 scenarios = ["craftax-default-48x48"]
-screening_seeds = [101, 102]
+screening_seeds = [101, 102, 103, 104, 105, 106, 107, 108, 109, 110]
 confirmation_seeds = []
 secrets = ["OPENAI_API_KEY"]
 
@@ -57,14 +58,14 @@ direction = "maximize"
 [recipe.selection]
 primary_metric = "reward"
 min_lift = 0.0
-min_valid_trials = 2
+min_valid_trials = 10
 decision_mode = "report_only"
 
 [recipe.selection.elimination]
 kind = "none"
 
 [recipe.limits]
-max_parallel_trials = 4
+max_parallel_trials = 10
 timeout_seconds = 1800
 cpus = 2.0
 memory_mb = 4096

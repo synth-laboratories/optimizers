@@ -8,6 +8,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 
 use crate::artifacts::{ArtifactPaths, ArtifactRef};
@@ -102,6 +103,14 @@ pub struct WorkspaceRunRequestStatus {
     pub usage: Value,
     pub result: Value,
     pub error: Value,
+    #[serde(default)]
+    pub campaign_id: Option<String>,
+    #[serde(default)]
+    pub supersedes_request_id: Option<String>,
+    #[serde(default)]
+    pub runtime_version: Option<String>,
+    #[serde(default)]
+    pub runtime_digest: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -626,16 +635,27 @@ impl WorkspaceStore {
             .unwrap_or_else(|| format!("gepa:{}", config.run.run_id));
         let request_id = format!("runreq_{}", uuid::Uuid::new_v4().simple());
         let config_json = stable_json(&serde_json::to_value(&config)?);
+        let campaign_id = metadata
+            .as_ref()
+            .and_then(|value| value.get("campaign_id"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let supersedes_request_id = metadata
+            .as_ref()
+            .and_then(|value| value.get("supersedes_request_id"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
         self.conn.execute(
             r#"
             INSERT INTO run_requests(
                 request_id, run_id, status, config_path, config_json,
                 container_url, cache_mode, cache_namespace, output_dir,
                 run_dir, priority, manual_step, idempotency_key,
-                request_body_sha256, submitted_at, updated_at
+                request_body_sha256, submitted_at, updated_at,
+                campaign_id, supersedes_request_id
             ) VALUES (
                 ?1, ?2, 'queued', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                datetime('now'), datetime('now')
+                datetime('now'), datetime('now'), ?14, ?15
             )
             "#,
             params![
@@ -652,6 +672,8 @@ impl WorkspaceStore {
                 if manual_step { 1 } else { 0 },
                 idempotency_key,
                 request_body_sha256,
+                campaign_id,
+                supersedes_request_id,
             ],
         )?;
         let request = self.run_request(&request_id)?;
@@ -731,6 +753,7 @@ impl WorkspaceStore {
             return Ok(None);
         };
         let lease_modifier = format!("+{lease_seconds} seconds");
+        let (runtime_version, runtime_digest) = optimizer_runtime_pin();
         let updated = self.conn.execute(
             r#"
             UPDATE run_requests
@@ -740,10 +763,19 @@ impl WorkspaceStore {
                 leased_at = datetime('now'),
                 lease_expires_at = datetime('now', ?3),
                 pause_expires_at = NULL,
-                updated_at = datetime('now')
-            WHERE request_id = ?4 AND status = 'queued'
+                updated_at = datetime('now'),
+                runtime_version = COALESCE(runtime_version, ?4),
+                runtime_digest = COALESCE(runtime_digest, ?5)
+            WHERE request_id = ?6 AND status = 'queued'
             "#,
-            params![lease_id, worker_id, lease_modifier, request_id],
+            params![
+                lease_id,
+                worker_id,
+                lease_modifier,
+                runtime_version,
+                runtime_digest,
+                request_id
+            ],
         )?;
         if updated == 0 {
             return Ok(None);
@@ -928,6 +960,130 @@ impl WorkspaceStore {
         Ok(recovered)
     }
 
+    pub fn fail_orphaned_run_requests(
+        &self,
+        crash: &Value,
+    ) -> Result<Vec<WorkspaceRunRequestStatus>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT request_id, run_id
+            FROM run_requests
+            WHERE status IN ('leased', 'running')
+            ORDER BY request_id
+            "#,
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut orphans = Vec::new();
+        while let Some(row) = rows.next()? {
+            orphans.push((row.get::<_, String>(0)?, row.get::<_, String>(1)?));
+        }
+        drop(rows);
+        drop(stmt);
+        if orphans.is_empty() {
+            return Ok(Vec::new());
+        }
+        let leased_run_ids = orphans
+            .iter()
+            .map(|(_, run_id)| run_id.clone())
+            .collect::<Vec<_>>();
+        let mut payload = crash.clone();
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("cause".to_string(), json!("service_crash"));
+            object.insert("leased_run_ids".to_string(), json!(leased_run_ids));
+        }
+        let mut failed = Vec::new();
+        for (request_id, _) in orphans {
+            failed.push(self.mark_run_request_failed(&request_id, &payload)?);
+        }
+        Ok(failed)
+    }
+
+    fn persist_failed_attempt_spend(&self, request: &WorkspaceRunRequestStatus) -> Result<()> {
+        let (cost_usd, usage) = self.failed_attempt_usage(request)?;
+        self.conn.execute(
+            r#"
+            UPDATE run_requests
+            SET cost_usd = ?2,
+                usage_json = ?3,
+                updated_at = datetime('now')
+            WHERE request_id = ?1
+            "#,
+            params![request.request_id, cost_usd, stable_json(&usage)],
+        )?;
+        Ok(())
+    }
+
+    fn failed_attempt_usage(
+        &self,
+        request: &WorkspaceRunRequestStatus,
+    ) -> Result<(Option<f64>, Value)> {
+        if let Some(path) = request.run_workspace_db_path.as_ref() {
+            let path = Path::new(path);
+            if path.exists() {
+                let run_store = WorkspaceStore::open_existing(path)?;
+                return run_store.usage_totals_for_run(&request.run_id);
+            }
+        }
+        self.usage_totals_for_run(&request.run_id)
+    }
+
+    pub fn usage_totals_for_run(&self, run_id: &str) -> Result<(Option<f64>, Value)> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT cost_usd, usage_json FROM optimization_runs WHERE run_id = ?1",
+                params![run_id],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<f64>>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                    ))
+                },
+            )
+            .optional()?;
+        if let Some((cost, usage_json)) = row {
+            let usage = parse_json_or_null(usage_json.as_deref());
+            if cost.is_some() || !usage.is_null() {
+                return Ok((cost, usage));
+            }
+        }
+        self.usage_ledger_totals(run_id)
+    }
+
+    fn usage_ledger_totals(&self, run_id: &str) -> Result<(Option<f64>, Value)> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT cost_usd, prompt_tokens, completion_tokens, total_tokens, usage_json
+            FROM usage_ledger
+            WHERE run_id = ?1
+            "#,
+        )?;
+        let mut rows = stmt.query(params![run_id])?;
+        let mut costs = Vec::new();
+        let mut prompt_tokens = 0u64;
+        let mut completion_tokens = 0u64;
+        let mut total_tokens = 0u64;
+        let mut saw_row = false;
+        while let Some(row) = rows.next()? {
+            saw_row = true;
+            costs.push(row.get::<_, Option<f64>>(0)?);
+            prompt_tokens += nonnegative_u64(row.get::<_, i64>(1)?);
+            completion_tokens += nonnegative_u64(row.get::<_, i64>(2)?);
+            total_tokens += nonnegative_u64(row.get::<_, i64>(3)?);
+        }
+        if !saw_row {
+            return Ok((None, Value::Null));
+        }
+        Ok((
+            crate::fold_reported_cost(costs),
+            json!({
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total_tokens,
+            }),
+        ))
+    }
+
     pub fn run_request_status(&self, request_id: &str) -> Result<Option<String>> {
         self.conn
             .query_row(
@@ -954,7 +1110,8 @@ impl WorkspaceStore {
                        pause_expires_at, started_at, finished_at, updated_at, lease_id,
                        worker_id, run_workspace_db_path, result_manifest_path,
                        best_candidate_id, cost_usd, usage_json, result_json,
-                       error_json
+                       error_json, campaign_id, supersedes_request_id,
+                       runtime_version, runtime_digest
                 FROM run_requests
                 WHERE run_id = ?1
                 ORDER BY submitted_at DESC, request_id DESC
@@ -981,7 +1138,8 @@ impl WorkspaceStore {
                        pause_expires_at, started_at, finished_at, updated_at, lease_id,
                        worker_id, run_workspace_db_path, result_manifest_path,
                        best_candidate_id, cost_usd, usage_json, result_json,
-                       error_json, request_body_sha256
+                       error_json, campaign_id, supersedes_request_id,
+                       runtime_version, runtime_digest, request_body_sha256
                 FROM run_requests
                 WHERE idempotency_key = ?1
                 ORDER BY submitted_at DESC, request_id DESC
@@ -990,12 +1148,71 @@ impl WorkspaceStore {
                 params![idempotency_key],
                 |row| {
                     let request = run_request_from_row(row)?;
-                    let request_body_sha256 = row.get::<_, Option<String>>(27)?;
+                    let request_body_sha256 = row.get::<_, Option<String>>(31)?;
                     Ok((request, request_body_sha256))
                 },
             )
             .optional()
             .map_err(OptimizerError::from)
+    }
+
+    pub fn campaign_usage(&self, campaign_id: &str) -> Result<Value> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT request_id, run_id, status, cost_usd, usage_json, result_json
+            FROM run_requests
+            WHERE campaign_id = ?1
+              AND status IN ('completed', 'failed', 'cancelled')
+            ORDER BY submitted_at ASC, request_id ASC
+            "#,
+        )?;
+        let mut rows = stmt.query(params![campaign_id])?;
+        let mut run_count = 0u64;
+        let mut failed_count = 0u64;
+        let mut cancelled_count = 0u64;
+        let mut costs = Vec::new();
+        let mut items = Vec::new();
+        while let Some(row) = rows.next()? {
+            run_count += 1;
+            let status: String = row.get(2)?;
+            if status == "failed" {
+                failed_count += 1;
+            }
+            if status == "cancelled" {
+                cancelled_count += 1;
+            }
+            let cost_usd: Option<f64> = row.get(3)?;
+            costs.push(cost_usd);
+            items.push(json!({
+                "request_id": row.get::<_, String>(0)?,
+                "run_id": row.get::<_, String>(1)?,
+                "status": status,
+                "cost_usd": cost_usd,
+                "usage": parse_json_or_null(row.get::<_, Option<String>>(4)?.as_deref()),
+                "result": parse_json_or_null(row.get::<_, Option<String>>(5)?.as_deref()),
+            }));
+        }
+        Ok(json!({
+            "campaign_id": campaign_id,
+            "terminal_run_count": run_count,
+            "failed_run_count": failed_count,
+            "cancelled_run_count": cancelled_count,
+            "cost_usd": crate::fold_reported_cost(costs.into_iter()),
+            "runs": items,
+        }))
+    }
+
+    pub fn active_run_request_count(&self) -> Result<u64> {
+        let count: i64 = self.conn.query_row(
+            r#"
+            SELECT COUNT(*)
+            FROM run_requests
+            WHERE status IN ('queued', 'leased', 'running')
+            "#,
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count as u64)
     }
 
     pub fn delete_run_request_by_run_id(&self, run_id: &str) -> Result<bool> {
@@ -1226,6 +1443,7 @@ impl WorkspaceStore {
                 cost_usd = ?5,
                 usage_json = ?6,
                 result_json = ?7,
+                optimizer_terminal_cursor = COALESCE(?8, optimizer_terminal_cursor),
                 updated_at = datetime('now')
             WHERE request_id = ?1
             "#,
@@ -1237,6 +1455,10 @@ impl WorkspaceStore {
                 result.get("cost_usd").and_then(Value::as_f64),
                 stable_json(usage),
                 stable_json(result),
+                result
+                    .get("optimizer_terminal_cursor")
+                    .and_then(Value::as_u64)
+                    .map(|value| value as i64),
             ],
         )?;
         Ok(())
@@ -1262,6 +1484,7 @@ impl WorkspaceStore {
                 cost_usd = ?6,
                 usage_json = ?7,
                 result_json = ?8,
+                optimizer_terminal_cursor = COALESCE(?9, optimizer_terminal_cursor),
                 updated_at = datetime('now')
             WHERE request_id = ?1
               AND lease_id = ?2
@@ -1276,6 +1499,10 @@ impl WorkspaceStore {
                 result.get("cost_usd").and_then(Value::as_f64),
                 stable_json(usage),
                 stable_json(result),
+                result
+                    .get("optimizer_terminal_cursor")
+                    .and_then(Value::as_u64)
+                    .map(|value| value as i64),
             ],
         )?;
         Ok(updated > 0)
@@ -1313,7 +1540,8 @@ impl WorkspaceStore {
             None,
             metadata,
         )?;
-        Ok(request)
+        self.persist_failed_attempt_spend(&request)?;
+        self.run_request(request_id)
     }
 
     pub fn mark_run_request_failed_for_lease(
@@ -1353,7 +1581,8 @@ impl WorkspaceStore {
             Some(lease_id.to_string()),
             metadata,
         )?;
-        Ok(Some(request))
+        self.persist_failed_attempt_spend(&request)?;
+        Ok(Some(self.run_request(request_id)?))
     }
 
     pub fn mark_run_request_cancelled(
@@ -2934,6 +3163,15 @@ impl WorkspaceStore {
         Ok(())
     }
 
+    pub fn has_manifest(&self, run_id: &str) -> Result<bool> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM manifests WHERE run_id = ?1",
+            params![run_id],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
     pub fn record_cache_profile(
         &mut self,
         run_id: &str,
@@ -3442,6 +3680,7 @@ impl WorkspaceStore {
                 completed_at = datetime('now'),
                 updated_at = datetime('now')
             WHERE run_id = ?4
+              AND completed_at IS NULL
             "#,
             params![best_candidate_id, cost_usd, stable_json(usage), run_id],
         )?;
@@ -3462,9 +3701,10 @@ impl WorkspaceStore {
                 best_candidate_id = COALESCE(?1, best_candidate_id),
                 cost_usd = ?2,
                 usage_json = ?3,
-                completed_at = COALESCE(completed_at, datetime('now')),
+                completed_at = datetime('now'),
                 updated_at = datetime('now')
             WHERE run_id = ?4
+              AND completed_at IS NULL
             "#,
             params![best_candidate_id, cost_usd, stable_json(usage), run_id],
         )?;
@@ -3485,9 +3725,10 @@ impl WorkspaceStore {
                 best_candidate_id = COALESCE(?1, best_candidate_id),
                 cost_usd = ?2,
                 usage_json = ?3,
-                completed_at = COALESCE(completed_at, datetime('now')),
+                completed_at = datetime('now'),
                 updated_at = datetime('now')
             WHERE run_id = ?4
+              AND completed_at IS NULL
             "#,
             params![best_candidate_id, cost_usd, stable_json(usage), run_id],
         )?;
@@ -3610,7 +3851,12 @@ impl WorkspaceStore {
                 cost_usd REAL,
                 usage_json TEXT,
                 result_json TEXT,
-                error_json TEXT
+                error_json TEXT,
+                optimizer_terminal_cursor INTEGER,
+                campaign_id TEXT,
+                supersedes_request_id TEXT,
+                runtime_version TEXT,
+                runtime_digest TEXT
             );
 
             CREATE TABLE IF NOT EXISTS operations (
@@ -4848,6 +5094,11 @@ impl WorkspaceStore {
         self.ensure_column("run_requests", "cost_usd", "REAL")?;
         self.ensure_column("run_requests", "usage_json", "TEXT")?;
         self.ensure_column("run_requests", "result_json", "TEXT")?;
+        self.ensure_column("run_requests", "optimizer_terminal_cursor", "INTEGER")?;
+        self.ensure_column("run_requests", "campaign_id", "TEXT")?;
+        self.ensure_column("run_requests", "supersedes_request_id", "TEXT")?;
+        self.ensure_column("run_requests", "runtime_version", "TEXT")?;
+        self.ensure_column("run_requests", "runtime_digest", "TEXT")?;
         Ok(())
     }
 
@@ -5033,7 +5284,8 @@ impl WorkspaceStore {
                    pause_expires_at, started_at, finished_at, updated_at, lease_id, worker_id,
                    run_workspace_db_path, result_manifest_path,
                    best_candidate_id, cost_usd, usage_json, result_json,
-                   error_json
+                   error_json, campaign_id, supersedes_request_id,
+                   runtime_version, runtime_digest
             FROM run_requests
             ORDER BY submitted_at, request_id
             "#,
@@ -5056,7 +5308,8 @@ impl WorkspaceStore {
                        lease_expires_at, pause_expires_at, started_at, finished_at, updated_at, lease_id,
                        worker_id, run_workspace_db_path, result_manifest_path,
                        best_candidate_id, cost_usd, usage_json, result_json,
-                       error_json
+                       error_json, campaign_id, supersedes_request_id,
+                       runtime_version, runtime_digest
                 FROM run_requests
                 WHERE request_id = ?1
                 "#,
@@ -6751,7 +7004,19 @@ fn run_request_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkspaceRu
         usage: parse_json_or_null(usage_json.as_deref()),
         result: parse_json_or_null(result_json.as_deref()),
         error: parse_json_or_null(error_json.as_deref()),
+        campaign_id: row.get(27)?,
+        supersedes_request_id: row.get(28)?,
+        runtime_version: row.get(29)?,
+        runtime_digest: row.get(30)?,
     })
+}
+
+pub fn optimizer_runtime_pin() -> (String, String) {
+    let version = env!("CARGO_PKG_VERSION").to_string();
+    let mut hasher = Sha256::new();
+    hasher.update(b"gepa-service-v1\n");
+    hasher.update(version.as_bytes());
+    (version, format!("{:x}", hasher.finalize()))
 }
 
 fn optimizer_job_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OptimizerJob> {
@@ -9392,6 +9657,338 @@ mod nullable_cost_migration_tests {
             .any(|name| name.unwrap() == "task_id");
         assert!(task_id);
         drop(columns);
+        drop(store);
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("sqlite-wal"));
+        let _ = fs::remove_file(path.with_extension("sqlite-shm"));
+    }
+}
+
+#[cfg(test)]
+mod write_once_terminal_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn scratch_store(label: &str) -> (PathBuf, WorkspaceStore) {
+        let path = std::env::temp_dir().join(format!(
+            "synth-write-once-{label}-{}-{}.sqlite",
+            std::process::id(),
+            OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        let store = WorkspaceStore::open(&path).unwrap();
+        (path, store)
+    }
+
+    fn cleanup(path: PathBuf) {
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("sqlite-wal"));
+        let _ = fs::remove_file(path.with_extension("sqlite-shm"));
+    }
+
+    fn start_run(store: &WorkspaceStore, run_id: &str, dir: &Path) {
+        store
+            .record_optimization_run_started(OptimizationRunStartedInput {
+                run_id,
+                state: "running",
+                config: &json!({}),
+                cache_mode: "readwrite",
+                cache_namespace: "test",
+                output_dir: dir,
+                run_dir: dir,
+                manifest_path: &dir.join("manifest.json"),
+            })
+            .unwrap();
+    }
+
+    fn run_row(
+        store: &WorkspaceStore,
+        run_id: &str,
+    ) -> (String, Option<String>, Option<f64>, Value, Option<String>) {
+        store
+            .conn
+            .query_row(
+                r#"
+                SELECT state, best_candidate_id, cost_usd, usage_json, completed_at
+                FROM optimization_runs
+                WHERE run_id = ?1
+                "#,
+                params![run_id],
+                |row| {
+                    let usage = parse_json_or_null(row.get::<_, Option<String>>(3)?.as_deref());
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, usage, row.get(4)?))
+                },
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn record_run_finished_is_write_once() {
+        let dir = std::env::temp_dir().join(format!(
+            "synth-write-once-dir-{}-{}",
+            std::process::id(),
+            OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let (path, store) = scratch_store("finished");
+        start_run(&store, "run_write_once", &dir);
+        store
+            .record_run_finished(
+                "run_write_once",
+                "cand_a",
+                Some(2.40),
+                &json!({"total_tokens": 240}),
+            )
+            .unwrap();
+        store
+            .record_run_finished(
+                "run_write_once",
+                "cand_b",
+                Some(2.24),
+                &json!({"total_tokens": 224}),
+            )
+            .unwrap();
+        store
+            .record_run_failed(
+                "run_write_once",
+                Some("cand_c"),
+                Some(0.01),
+                &json!({"total_tokens": 1}),
+            )
+            .unwrap();
+        let (state, best, cost, usage, completed_at) = run_row(&store, "run_write_once");
+        assert_eq!(state, "completed");
+        assert_eq!(best.as_deref(), Some("cand_a"));
+        assert_eq!(cost, Some(2.40));
+        assert_eq!(usage["total_tokens"], 240);
+        assert!(completed_at.is_some());
+        drop(store);
+        cleanup(path);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn refresh_projection_is_noop_when_manifest_exists() {
+        let dir = std::env::temp_dir().join(format!(
+            "synth-manifest-noop-{}-{}",
+            std::process::id(),
+            OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let (path, store) = scratch_store("manifest");
+        start_run(&store, "run_manifest", &dir);
+        store
+            .record_run_finished(
+                "run_manifest",
+                "cand_final",
+                Some(9.0),
+                &json!({"total_tokens": 900}),
+            )
+            .unwrap();
+        store
+            .record_manifest(
+                "run_manifest",
+                &dir.join("manifest.json"),
+                "cand_final",
+                Some(9.0),
+                &json!({"total_tokens": 900}),
+                &json!({"run_id": "run_manifest"}),
+            )
+            .unwrap();
+        assert!(store.has_manifest("run_manifest").unwrap());
+        store
+            .record_run_finished(
+                "run_manifest",
+                "cand_stale",
+                Some(1.0),
+                &json!({"total_tokens": 10}),
+            )
+            .unwrap();
+        let (state, best, cost, usage, _) = run_row(&store, "run_manifest");
+        assert_eq!(state, "completed");
+        assert_eq!(best.as_deref(), Some("cand_final"));
+        assert_eq!(cost, Some(9.0));
+        assert_eq!(usage["total_tokens"], 900);
+        drop(store);
+        cleanup(path);
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod orphan_crash_recovery_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn orphaned_runs_receive_service_crash_cause() {
+        let path = std::env::temp_dir().join(format!(
+            "synth-orphan-crash-{}-{}.sqlite",
+            std::process::id(),
+            OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        let store = WorkspaceStore::open(&path).unwrap();
+        store
+            .conn
+            .execute(
+                r#"
+                INSERT INTO run_requests(
+                    request_id, run_id, status, config_path, config_json,
+                    container_url, cache_mode, cache_namespace, output_dir, run_dir,
+                    priority, manual_step, submitted_at, updated_at, lease_id, worker_id
+                ) VALUES (
+                    'req_orphan', 'run_orphan', 'leased', 'config.toml', '{}',
+                    '', 'readwrite', 'ns', '/tmp/out', '/tmp/out/run_orphan',
+                    0, 0, datetime('now'), datetime('now'), 'lease_1', 'worker'
+                )
+                "#,
+                [],
+            )
+            .unwrap();
+        let failed = store
+            .fail_orphaned_run_requests(&json!({
+                "schema_version": "synth.gepa_service.crash.v1",
+                "reason": "stale_heartbeat",
+                "pid": 4242
+            }))
+            .unwrap();
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].status, "failed");
+        assert_eq!(failed[0].error["cause"], "service_crash");
+        assert_eq!(failed[0].error["reason"], "stale_heartbeat");
+        assert_eq!(failed[0].error["leased_run_ids"][0], "run_orphan");
+        drop(store);
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("sqlite-wal"));
+        let _ = fs::remove_file(path.with_extension("sqlite-shm"));
+    }
+}
+
+#[cfg(test)]
+mod failed_attempt_spend_tests {
+    use super::*;
+    use crate::{UsageLedgerInput, UsageLedgerRecord};
+    use serde_json::json;
+
+    #[test]
+    fn mark_run_request_failed_persists_workspace_spend() {
+        let dir = std::env::temp_dir().join(format!(
+            "synth-failed-spend-{}-{}",
+            std::process::id(),
+            OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("workspace.sqlite");
+        let mut store = WorkspaceStore::open(&path).unwrap();
+        store
+            .record_optimization_run_started(OptimizationRunStartedInput {
+                run_id: "run_spend",
+                state: "running",
+                config: &json!({}),
+                cache_mode: "readwrite",
+                cache_namespace: "ns",
+                output_dir: &dir,
+                run_dir: &dir,
+                manifest_path: &dir.join("manifest.json"),
+            })
+            .unwrap();
+        store
+            .record_usage_ledger(
+                "run_spend",
+                &[UsageLedgerRecord::from_input(UsageLedgerInput {
+                    boundary: "rollout",
+                    source_type: "container",
+                    source_id: "call_1",
+                    candidate_id: None,
+                    evaluation_stage: Some("train"),
+                    model: None,
+                    provider: None,
+                    call_count: 1,
+                    usage: json!({
+                        "prompt_tokens": 10,
+                        "completion_tokens": 20,
+                        "total_tokens": 30
+                    }),
+                    cost_usd: Some(1.25),
+                    metadata: Map::new(),
+                })],
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                r#"
+                INSERT INTO run_requests(
+                    request_id, run_id, status, config_path, config_json,
+                    container_url, cache_mode, cache_namespace, output_dir, run_dir,
+                    priority, manual_step, submitted_at, updated_at
+                ) VALUES (
+                    'req_spend', 'run_spend', 'queued', 'config.toml', '{}',
+                    '', 'readwrite', 'ns', ?1, ?1, 0, 0, datetime('now'), datetime('now')
+                )
+                "#,
+                params![dir.display().to_string()],
+            )
+            .unwrap();
+        let failed = store
+            .mark_run_request_failed("req_spend", &json!({"message": "boom"}))
+            .unwrap();
+        assert_eq!(failed.status, "failed");
+        assert_eq!(failed.cost_usd, Some(1.25));
+        assert_eq!(failed.usage["total_tokens"], 30);
+        assert_eq!(failed.usage["prompt_tokens"], 10);
+        drop(store);
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod terminal_cursor_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn record_run_request_result_persists_optimizer_terminal_cursor() {
+        let path = std::env::temp_dir().join(format!(
+            "synth-terminal-cursor-{}-{}.sqlite",
+            std::process::id(),
+            OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        let store = WorkspaceStore::open(&path).unwrap();
+        store
+            .conn
+            .execute(
+                r#"
+                INSERT INTO run_requests(
+                    request_id, run_id, status, config_path, config_json,
+                    container_url, cache_mode, cache_namespace, output_dir, run_dir,
+                    priority, manual_step, submitted_at, updated_at
+                ) VALUES (
+                    'req_cursor', 'run_cursor', 'queued', 'config.toml', '{}',
+                    '', 'readwrite', 'ns', '/tmp', '/tmp', 0, 0, datetime('now'), datetime('now')
+                )
+                "#,
+                [],
+            )
+            .unwrap();
+        store
+            .record_run_request_result(
+                "req_cursor",
+                &json!({
+                    "optimizer_terminal_cursor": 12,
+                    "usage": {"total_tokens": 3},
+                    "cost_usd": 0.5
+                }),
+            )
+            .unwrap();
+        let cursor: i64 = store
+            .conn
+            .query_row(
+                "SELECT optimizer_terminal_cursor FROM run_requests WHERE request_id = ?1",
+                params!["req_cursor"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(cursor, 12);
         drop(store);
         let _ = fs::remove_file(&path);
         let _ = fs::remove_file(path.with_extension("sqlite-wal"));

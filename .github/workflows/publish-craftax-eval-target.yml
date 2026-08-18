@@ -1,0 +1,80 @@
+name: Publish Craftax eval target
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out Optimizers producer
+        uses: actions/checkout@v4
+
+      - name: Check out pinned GameBench source
+        uses: actions/checkout@v4
+        with:
+          repository: synth-laboratories/gamebench-ship1-source
+          ref: 1b27362954cc903db76a3d2c3ed5c9bb80301de1
+          path: gamebench-source
+
+      - name: Assemble immutable build context
+        run: |
+          set -euo pipefail
+          stage="${RUNNER_TEMP}/craftax-eval-target"
+          mkdir -p "$stage/gamebench/tasks/craftax-singleplayer" "$stage/gamebench/tasks/shared"
+          cp docker/craftax-eval-target/Dockerfile docker/craftax-eval-target/target.py "$stage/"
+          cp -R docker/shared "$stage/shared"
+          rsync -a --exclude '__pycache__' --exclude '.pytest_cache' --exclude 'target/' \
+            gamebench-source/tasks/craftax-singleplayer/ "$stage/gamebench/tasks/craftax-singleplayer/"
+          rsync -a --exclude '__pycache__' \
+            gamebench-source/tasks/shared/ "$stage/gamebench/tasks/shared/"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish immutable multi-architecture target
+        id: publish
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ runner.temp }}/craftax-eval-target
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ghcr.io/synth-laboratories/workshop-craftax-eval-target:v0.5-gamebench-1b273629
+          labels: |
+            org.opencontainers.image.source=https://github.com/synth-laboratories/optimizers
+            org.opencontainers.image.revision=1b27362954cc903db76a3d2c3ed5c9bb80301de1
+            org.opencontainers.image.title=Workshop Craftax eval target
+          build-args: |
+            GAMEBENCH_SOURCE_COMMIT=1b27362954cc903db76a3d2c3ed5c9bb80301de1
+          provenance: mode=max
+          sbom: true
+
+      - name: Record immutable publication receipt
+        run: |
+          printf '%s\n' \
+            'image=ghcr.io/synth-laboratories/workshop-craftax-eval-target' \
+            'source_revision=1b27362954cc903db76a3d2c3ed5c9bb80301de1' \
+            'architectures=linux/amd64,linux/arm64' \
+            'digest=${{ steps.publish.outputs.digest }}' | tee craftax-eval-target-receipt.txt
+
+      - name: Make the repository-linked target public
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api --method PATCH \
+            /orgs/synth-laboratories/packages/container/workshop-craftax-eval-target \
+            -f visibility=public
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: craftax-eval-target-receipt
+          path: craftax-eval-target-receipt.txt

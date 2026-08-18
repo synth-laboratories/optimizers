@@ -150,8 +150,16 @@ fn default_max_generations() -> usize {
     2
 }
 
+fn default_deployment_rule() -> String {
+    "optimization_selected".to_string()
+}
+
+fn default_gepa_leakage_config() -> GepaLeakageConfig {
+    GepaLeakageConfig::default()
+}
+
 fn default_proposals_per_generation() -> usize {
-    2
+    1
 }
 
 fn default_minibatch_size() -> usize {
@@ -215,7 +223,7 @@ fn default_gepa_pipeline_config() -> GepaPipelineConfig {
 }
 
 fn default_pipeline_max_in_flight_candidates() -> usize {
-    8
+    10
 }
 
 fn default_pipeline_proposal_workers() -> usize {
@@ -223,7 +231,7 @@ fn default_pipeline_proposal_workers() -> usize {
 }
 
 fn default_pipeline_rollout_workers() -> usize {
-    8
+    10
 }
 
 fn default_pipeline_evaluate_workers() -> usize {
@@ -488,37 +496,13 @@ impl SynthOptimizerConfig {
             )?;
         }
         if let Some(pipeline_mode) = read_env_override(&["SYNTH_OPTIMIZERS_GEPA_PIPELINE_MODE"]) {
-            self.gepa.pipeline.mode = parse_gepa_pipeline_mode_override(&pipeline_mode)?;
+            self.gepa.pipeline.mode = Some(parse_gepa_pipeline_mode_override(&pipeline_mode)?);
         }
         if let Some(staleness_policy) =
             read_env_override(&["SYNTH_OPTIMIZERS_GEPA_STALENESS_POLICY"])
         {
             self.gepa.pipeline.staleness_policy =
                 parse_gepa_staleness_policy_override(&staleness_policy)?;
-        }
-        if let Some(max_in_flight) =
-            read_env_override(&["SYNTH_OPTIMIZERS_GEPA_MAX_IN_FLIGHT_CANDIDATES"])
-        {
-            self.gepa.pipeline.max_in_flight_candidates = parse_usize_override(
-                "SYNTH_OPTIMIZERS_GEPA_MAX_IN_FLIGHT_CANDIDATES",
-                &max_in_flight,
-            )?;
-        }
-        if let Some(propose_workers) = read_env_override(&["SYNTH_OPTIMIZERS_GEPA_WORKERS_PROPOSE"])
-        {
-            self.gepa.pipeline.workers.propose =
-                parse_usize_override("SYNTH_OPTIMIZERS_GEPA_WORKERS_PROPOSE", &propose_workers)?;
-        }
-        if let Some(rollout_workers) = read_env_override(&["SYNTH_OPTIMIZERS_GEPA_WORKERS_ROLLOUT"])
-        {
-            self.gepa.pipeline.workers.rollout =
-                parse_usize_override("SYNTH_OPTIMIZERS_GEPA_WORKERS_ROLLOUT", &rollout_workers)?;
-        }
-        if let Some(evaluate_workers) =
-            read_env_override(&["SYNTH_OPTIMIZERS_GEPA_WORKERS_EVALUATE"])
-        {
-            self.gepa.pipeline.workers.evaluate =
-                parse_usize_override("SYNTH_OPTIMIZERS_GEPA_WORKERS_EVALUATE", &evaluate_workers)?;
         }
         if let Some(rollout_chunk_size) =
             read_env_override(&["SYNTH_OPTIMIZERS_GEPA_ROLLOUT_CHUNK_SIZE"])
@@ -707,6 +691,7 @@ impl SynthOptimizerConfig {
             ));
         }
         validate_gepa_acceptance_criterion(&self.gepa.acceptance_criterion)?;
+        validate_gepa_acceptance_criterion(&self.gepa.minibatch_acceptance_criterion)?;
         validate_policy_config(&self.policy)?;
         if self.policy.enabled {
             if self.candidate.target_modules.is_empty() {
@@ -730,6 +715,12 @@ impl SynthOptimizerConfig {
             &self.taskset.heldout_ids,
         )?;
         validate_gepa_pipeline_config(&self.gepa.pipeline)?;
+        validate_gepa_search_pipeline_contract(
+            self.gepa.proposals_per_generation,
+            &self.gepa.pipeline,
+        )?;
+        validate_gepa_deployment_rule(&self.gepa.deployment_rule)?;
+        validate_gepa_leakage_config(&self.gepa.leakage)?;
         if !self.gepa.max_cost_usd.is_finite() || self.gepa.max_cost_usd < 0.0 {
             return Err(OptimizerError::Config(
                 "gepa.max_cost_usd must be finite and non-negative".to_string(),
@@ -1785,6 +1776,32 @@ pub struct GepaObjectiveAcceptanceConfig {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct GepaLeakageConfig {
+    #[serde(default = "default_leakage_policy")]
+    pub policy: String,
+    #[serde(default = "default_leakage_min_span_chars")]
+    pub min_span_chars: usize,
+}
+
+impl Default for GepaLeakageConfig {
+    fn default() -> Self {
+        Self {
+            policy: default_leakage_policy(),
+            min_span_chars: default_leakage_min_span_chars(),
+        }
+    }
+}
+
+fn default_leakage_policy() -> String {
+    "forbid".to_string()
+}
+
+fn default_leakage_min_span_chars() -> usize {
+    32
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GepaConfig {
     #[serde(default = "default_max_generations")]
     pub max_generations: usize,
@@ -1794,6 +1811,12 @@ pub struct GepaConfig {
     pub minibatch_size: usize,
     #[serde(default)]
     pub minibatch_accept_margin: f64,
+    /// Screening criterion used before a candidate spends a full-train budget.
+    /// This is intentionally separate from `acceptance_criterion`: allowing a
+    /// statistically unresolved minibatch tie to advance must not promote a
+    /// full-train tie as measured improvement.
+    #[serde(default = "default_acceptance_criterion")]
+    pub minibatch_acceptance_criterion: String,
     #[serde(default = "default_max_total_rollouts")]
     pub max_total_rollouts: usize,
     #[serde(default)]
@@ -1830,6 +1853,10 @@ pub struct GepaConfig {
     pub task_pools: GepaTaskPoolsConfig,
     #[serde(default = "default_gepa_pipeline_config")]
     pub pipeline: GepaPipelineConfig,
+    #[serde(default = "default_deployment_rule")]
+    pub deployment_rule: String,
+    #[serde(default = "default_gepa_leakage_config")]
+    pub leakage: GepaLeakageConfig,
     #[serde(default)]
     pub max_cost_usd: f64,
     #[serde(default)]
@@ -1875,6 +1902,7 @@ impl Default for GepaConfig {
             proposals_per_generation: default_proposals_per_generation(),
             minibatch_size: default_minibatch_size(),
             minibatch_accept_margin: 0.0,
+            minibatch_acceptance_criterion: default_acceptance_criterion(),
             max_total_rollouts: default_max_total_rollouts(),
             max_train_rollouts: None,
             max_heldout_rollouts: None,
@@ -1893,6 +1921,8 @@ impl Default for GepaConfig {
             batch_sampler: default_batch_sampler_config(),
             task_pools: default_task_pools_config(),
             pipeline: default_gepa_pipeline_config(),
+            deployment_rule: default_deployment_rule(),
+            leakage: default_gepa_leakage_config(),
             max_cost_usd: 0.0,
             max_time_seconds: None,
             no_improvement_generations: None,
@@ -1994,7 +2024,7 @@ impl GepaStalenessPolicy {
 #[serde(deny_unknown_fields)]
 pub struct GepaPipelineConfig {
     #[serde(default)]
-    pub mode: GepaPipelineMode,
+    pub mode: Option<GepaPipelineMode>,
     #[serde(default)]
     pub staleness_policy: GepaStalenessPolicy,
     #[serde(default = "default_pipeline_max_in_flight_candidates")]
@@ -2011,10 +2041,20 @@ pub struct GepaPipelineConfig {
     pub adaptive_rollout_concurrency: GepaAdaptiveRolloutConcurrencyConfig,
 }
 
+impl GepaPipelineConfig {
+    pub fn resolved_mode(&self) -> GepaPipelineMode {
+        self.mode.unwrap_or(GepaPipelineMode::SyncSerial)
+    }
+
+    pub fn mode_is_explicit(&self) -> bool {
+        self.mode.is_some()
+    }
+}
+
 impl Default for GepaPipelineConfig {
     fn default() -> Self {
         Self {
-            mode: GepaPipelineMode::SyncSerial,
+            mode: None,
             staleness_policy: GepaStalenessPolicy::Full,
             max_in_flight_candidates: default_pipeline_max_in_flight_candidates(),
             workers: GepaPipelineWorkers::default(),
@@ -2785,7 +2825,7 @@ fn parse_gepa_staleness_policy_override(raw_policy: &str) -> Result<GepaStalenes
 }
 
 fn validate_gepa_pipeline_config(config: &GepaPipelineConfig) -> Result<()> {
-    match (config.mode, config.staleness_policy) {
+    match (config.resolved_mode(), config.staleness_policy) {
         (GepaPipelineMode::SyncSerial, GepaStalenessPolicy::Full) => {}
         (GepaPipelineMode::SyncSerial, policy) => {
             return Err(OptimizerError::Config(format!(
@@ -2826,7 +2866,7 @@ fn validate_gepa_pipeline_config(config: &GepaPipelineConfig) -> Result<()> {
         ));
     }
     if config.speculative_completion.enabled {
-        if !matches!(config.mode, GepaPipelineMode::FlashEvolve) {
+        if !matches!(config.resolved_mode(), GepaPipelineMode::FlashEvolve) {
             return Err(OptimizerError::Config(
                 "gepa.pipeline.speculative_completion requires mode = \"flash_evolve\"".to_string(),
             ));
@@ -2891,6 +2931,48 @@ fn validate_gepa_pipeline_config(config: &GepaPipelineConfig) -> Result<()> {
     Ok(())
 }
 
+pub fn validate_gepa_search_pipeline_contract(
+    proposals_per_generation: usize,
+    pipeline: &GepaPipelineConfig,
+) -> Result<()> {
+    if proposals_per_generation > 1
+        && !pipeline.mode_is_explicit()
+        && matches!(pipeline.resolved_mode(), GepaPipelineMode::SyncSerial)
+    {
+        return Err(OptimizerError::Config(
+            "gepa.proposals_per_generation > 1 with implicit SyncSerial is invalid; set [gepa.pipeline] mode = \"async_pipelined\" (recommended) or mode = \"sync_serial\" explicitly"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_gepa_deployment_rule(rule: &str) -> Result<()> {
+    match rule.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+        "optimization_selected" | "heldout_best" => Ok(()),
+        other => Err(OptimizerError::Config(format!(
+            "gepa.deployment_rule must be optimization_selected or heldout_best; got {other:?}"
+        ))),
+    }
+}
+
+fn validate_gepa_leakage_config(config: &GepaLeakageConfig) -> Result<()> {
+    match config.policy.trim().to_ascii_lowercase().as_str() {
+        "forbid" | "warn" | "allow" => {}
+        other => {
+            return Err(OptimizerError::Config(format!(
+                "gepa.leakage.policy must be forbid, warn, or allow; got {other:?}"
+            )));
+        }
+    }
+    if config.min_span_chars == 0 {
+        return Err(OptimizerError::Config(
+            "gepa.leakage.min_span_chars must be positive".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2918,7 +3000,7 @@ mod tests {
     #[test]
     fn flash_evolve_accepts_reflective_speculative_and_adaptive_stage_workers() {
         let mut config = GepaPipelineConfig::default();
-        config.mode = GepaPipelineMode::FlashEvolve;
+        config.mode = Some(GepaPipelineMode::FlashEvolve);
         config.staleness_policy = GepaStalenessPolicy::Reflective;
         config.speculative_completion.enabled = true;
         config.speculative_completion.alpha = 0.25;
@@ -2930,7 +3012,7 @@ mod tests {
     #[test]
     fn speculative_completion_requires_flash_evolve_mode() {
         let mut config = GepaPipelineConfig::default();
-        config.mode = GepaPipelineMode::AsyncPipelined;
+        config.mode = Some(GepaPipelineMode::AsyncPipelined);
         config.speculative_completion.enabled = true;
 
         let error = validate_gepa_pipeline_config(&config)
@@ -2944,7 +3026,7 @@ mod tests {
     #[test]
     fn sync_serial_rejects_staleness_policy() {
         let mut config = GepaPipelineConfig::default();
-        config.mode = GepaPipelineMode::SyncSerial;
+        config.mode = Some(GepaPipelineMode::SyncSerial);
         config.staleness_policy = GepaStalenessPolicy::Guarded;
 
         let error = validate_gepa_pipeline_config(&config)
@@ -2965,5 +3047,31 @@ mod tests {
         assert!(error
             .to_string()
             .contains("adaptive_stage_workers.max must be >= min"));
+    }
+
+    #[test]
+    fn implicit_sync_serial_rejects_multiple_proposals() {
+        let pipeline = GepaPipelineConfig::default();
+        let error = validate_gepa_search_pipeline_contract(10, &pipeline)
+            .expect_err("implicit serial plus 10 proposals must fail");
+        assert!(error.to_string().contains("implicit SyncSerial"));
+        assert!(error.to_string().contains("async_pipelined"));
+    }
+
+    #[test]
+    fn explicit_sync_serial_allows_multiple_proposals() {
+        let mut pipeline = GepaPipelineConfig::default();
+        pipeline.mode = Some(GepaPipelineMode::SyncSerial);
+        validate_gepa_search_pipeline_contract(10, &pipeline).expect("explicit serial is allowed");
+    }
+
+    #[test]
+    fn async_pipelined_ten_proposals_resolve() {
+        let mut pipeline = GepaPipelineConfig::default();
+        pipeline.mode = Some(GepaPipelineMode::AsyncPipelined);
+        pipeline.max_in_flight_candidates = 10;
+        pipeline.workers.rollout = 10;
+        validate_gepa_search_pipeline_contract(10, &pipeline).expect("async 10 is valid");
+        assert_eq!(pipeline.max_in_flight_candidates, 10);
     }
 }

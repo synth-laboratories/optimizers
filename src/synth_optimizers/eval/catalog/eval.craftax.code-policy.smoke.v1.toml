@@ -2,8 +2,8 @@
 # run means "the rig and the three policies produced valid evidence", not "a
 # winner was found".
 #
-# `image_digest` is intentionally absent until craftax-eval-target is published
-# and pinned; the recipe reports `unavailable` rather than pretending to a tag.
+# Published from GameBench 1b27362954cc903db76a3d2c3ed5c9bb80301de1 for
+# linux/amd64 and linux/arm64. The worker always executes the immutable digest.
 
 [recipe]
 id = "eval.craftax.code-policy.smoke.v1"
@@ -11,13 +11,14 @@ title = "Craftax code-policy smoke"
 description = "Score staged Craftax code policies on one pinned world, report only."
 task = "craftax"
 policy_kind = "python-code.craftax-choose-actions.v1"
-image = "craftax-eval-target"
+image = "ghcr.io/synth-laboratories/workshop-craftax-eval-target"
+image_digest = "sha256:02b076f89f858e9041beea1400cd870fcf40c79792cc088e26faab85714fb04e"
 prerequisites = [
     "Published craftax-eval-target image pinned by digest",
     "OCI runtime available to the Desktop app",
 ]
 scenarios = ["craftax-default-48x48"]
-screening_seeds = [101, 102]
+screening_seeds = [101, 102, 103, 104, 105, 106, 107, 108, 109, 110]
 confirmation_seeds = []
 secrets = []
 
@@ -41,14 +42,14 @@ direction = "maximize"
 [recipe.selection]
 primary_metric = "reward"
 min_lift = 0.0
-min_valid_trials = 2
+min_valid_trials = 10
 decision_mode = "report_only"
 
 [recipe.selection.elimination]
 kind = "none"
 
 [recipe.limits]
-max_parallel_trials = 2
+max_parallel_trials = 10
 timeout_seconds = 300
 cpus = 2.0
 memory_mb = 4096

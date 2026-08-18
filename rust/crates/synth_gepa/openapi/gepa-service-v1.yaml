@@ -11,7 +11,7 @@ openapi: 3.1.0
 
 info:
   title: GEPA Service
-  version: 1.0.0
+  version: 1.1.0
   description: |
     HTTP service that runs GEPA prompt-optimization. The service owns the worker
     loop in-process; `/workspace.run_status` exposes worker-slot, lease, and
@@ -220,6 +220,33 @@ paths:
       responses:
         '200':
           description: A cursor page from the per-Run durable optimizer log.
+          content:
+            application/json:
+              schema: { type: object }
+        '404': { $ref: '#/components/responses/RunNotFound' }
+
+  /runs/{run_id}/events:
+    parameters: [ { $ref: '#/components/parameters/RunId' } ]
+    get:
+      operationId: listRunEvents
+      summary: Read projected run events with an optional lane filter
+      description: |
+        Returns projected events from the durable jsonl feed. `lane=run` is the
+        live/terminal lane. `lane=enrichment` is post-terminal storage/projection
+        work and does not move `optimizer_terminal_cursor`.
+      parameters:
+        - name: lane
+          in: query
+          schema: { type: string, enum: [run, enrichment] }
+        - name: after_sequence
+          in: query
+          schema: { type: integer, minimum: 0, default: 0 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 2000, default: 500 }
+      responses:
+        '200':
+          description: Projected events, optionally filtered by lane.
           content:
             application/json:
               schema: { type: object }
@@ -540,6 +567,43 @@ paths:
   # ---------------------------------------------------------------------------
   # Workspace / operator
   # ---------------------------------------------------------------------------
+  /campaigns/{campaign_id}/usage:
+    get:
+      operationId: getCampaignUsage
+      summary: Sum terminal and failed campaign rows
+      parameters:
+        - name: campaign_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Campaign usage rollup from completed, failed, and cancelled requests.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CampaignUsage' }
+
+  /service/stop:
+    post:
+      operationId: stopService
+      summary: Refuse to stop while runs are active
+      description: |
+        Returns 200 when no queued/leased/running requests exist. Returns 409
+        `service_stop_refused_runs_active` while any run is still active.
+        Workshop must pass `--instance-id` so each Workshop instance owns one
+        Optimizers service instance.
+      responses:
+        '200':
+          description: Idle; the process may stop.
+          content:
+            application/json:
+              schema: { type: object }
+        '409':
+          description: Runs are still active.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
   /health:
     get:
       operationId: health
@@ -1278,6 +1342,26 @@ components:
           properties:
             candidate_id: { type: string }
             heldout_score: { type: number }
+        optimization_selected_candidate:
+          $ref: '#/components/schemas/GepaCandidateIdentity'
+        heldout_measurements_by_candidate:
+          type: array
+          items: { $ref: '#/components/schemas/GepaHeldoutMeasurement' }
+        heldout_best_candidate:
+          $ref: '#/components/schemas/GepaCandidateIdentity'
+        deployment_candidate:
+          $ref: '#/components/schemas/GepaDeploymentCandidate'
+        improvement_verdict:
+          type: [string, 'null']
+          enum: [improvement_demonstrated, no_measured_improvement, inconclusive, null]
+        rollout_count_authority: { type: object }
+        cost_authority: { type: object }
+        reconciliation_status:
+          $ref: '#/components/schemas/GepaReconciliationStatus'
+        resolved_pipeline:
+          $ref: '#/components/schemas/ResolvedPipeline'
+        optimizer_terminal_cursor: { type: [integer, 'null'] }
+        optimizer_enrichment_cursor: { type: [integer, 'null'] }
 
     OutcomeFailed:
       type: object
@@ -1354,6 +1438,8 @@ components:
           description: "OR-ed. Default if omitted: [{kind: max_rollouts, n: <server default>}]."
           items: { $ref: '#/components/schemas/StopCondition' }
         advanced: { $ref: '#/components/schemas/Advanced' }
+        campaign_id: { type: [string, 'null'] }
+        supersedes_request_id: { type: [string, 'null'] }
 
     PolicySpec:
       type: object
@@ -1562,11 +1648,22 @@ components:
     PipelineConfig:
       type: object
       properties:
+        mode:
+          type: [string, 'null']
+          enum: [sync_serial, async_pipelined, flash_evolve, null]
+          description: |
+            Absent/null is implicit SyncSerial and is rejected when
+            proposals_per_generation > 1. Explicit `sync_serial` is allowed.
+            Recommend `async_pipelined` for ≥10 candidates.
+        staleness_policy: { type: string }
         max_generations: { type: integer, default: 5, minimum: 1 }
-        proposals_per_generation: { type: integer, default: 4, minimum: 1 }
+        proposals_per_generation: { type: integer, default: 1, minimum: 1, maximum: 10 }
         minibatch_size: { type: [integer, 'null'], minimum: 1 }
-        max_in_flight_candidates: { type: integer, default: 4, minimum: 1 }
-        rollout_workers: { type: integer, default: 20, minimum: 1 }
+        max_in_flight_candidates: { type: integer, default: 10, minimum: 1 }
+        proposer_workers: { type: integer, minimum: 1 }
+        rollout_workers: { type: integer, default: 10, minimum: 1 }
+        evaluator_workers: { type: integer, minimum: 1 }
+        adaptive_rollout_concurrency: { type: object }
         rollout_chunk_size:
           type: [integer, 'null']
           minimum: 1
@@ -1577,6 +1674,62 @@ components:
             (server derives from rollout concurrency, clamped 1..128); an explicit
             integer must be >= 1. NOTE: 0 is invalid, not a sentinel. The TOML/CLI
             "auto" string maps to null here — the wire contract never carries "auto".
+
+    ResolvedPipeline:
+      type: object
+      required: [mode, max_in_flight_candidates, workers]
+      properties:
+        mode: { type: string, enum: [sync_serial, async_pipelined, flash_evolve] }
+        mode_specified: { type: boolean }
+        proposals_per_generation: { type: integer }
+        max_in_flight_candidates: { type: integer }
+        workers:
+          type: object
+          properties:
+            propose: { type: integer }
+            rollout: { type: integer }
+            evaluate: { type: integer }
+        adaptive_rollout_concurrency: { type: object }
+
+    GepaCandidateIdentity:
+      type: object
+      required: [id, split]
+      properties:
+        id: { type: string }
+        score: { type: [number, 'null'] }
+        split: { type: string, enum: [train, heldout, deployment] }
+
+    GepaHeldoutMeasurement:
+      type: object
+      required: [id]
+      properties:
+        id: { type: string }
+        score: { type: [number, 'null'] }
+
+    GepaDeploymentCandidate:
+      type: object
+      required: [id, rule]
+      properties:
+        id: { type: string }
+        rule: { type: string, enum: [optimization_selected, heldout_best] }
+
+    GepaReconciliationStatus:
+      type: object
+      required: [status, authorities]
+      properties:
+        status: { type: string, enum: [aligned, divergent, incomplete] }
+        authorities: { type: object }
+
+    CampaignUsage:
+      type: object
+      required: [campaign_id, terminal_run_count]
+      properties:
+        campaign_id: { type: string }
+        terminal_run_count: { type: integer }
+        failed_run_count: { type: integer }
+        cancelled_run_count: { type: integer }
+        cost_usd: { type: [number, 'null'] }
+        runs: { type: array, items: { type: object } }
 
     Timeouts:
       type: object

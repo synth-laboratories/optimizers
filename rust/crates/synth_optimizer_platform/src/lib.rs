@@ -51,7 +51,10 @@ pub use agent_runtime::{
     RoleAgentTurnRequestInput, SupervisorReceipt,
 };
 pub use artifact_store::{LocalDevStore, RunArtifactStore, StoredRunArtifact};
-pub use artifacts::{ArtifactPaths, ArtifactRef, GepaRunResult};
+pub use artifacts::{
+    ArtifactPaths, ArtifactRef, GepaCandidateIdentity, GepaDeploymentCandidate,
+    GepaHeldoutMeasurement, GepaReconciliationStatus, GepaRunResult,
+};
 pub use cache::{
     normalize_for_cache_profile, stable_json_hash, CacheAccessRecord, CacheEntry, CacheMode,
     CacheProfile, CacheProfileRecord, RequestCache,
@@ -68,11 +71,11 @@ pub use config::{
     validate_chatgpt_proposer_model, CacheConfig, CandidateConfig, ContainerConfig,
     ContainerPoolTargetConfig, GepaAdaptiveRolloutConcurrencyConfig,
     GepaAdaptiveStageWorkersConfig, GepaBatchSamplerConfig, GepaCandidateSelectorConfig,
-    GepaConfig, GepaObjectiveAcceptanceConfig, GepaPipelineConfig, GepaPipelineMode,
-    GepaPipelineWorkers, GepaSpeculativeCompletionConfig, GepaStalenessPolicy, GepaTaskPoolsConfig,
-    JesterkyWorkflowConfig, NanoCodexConfig, PolicyConfig, ProposerAuthLaunchMode, ProposerConfig,
-    ProposerDaytonaConfig, ProposerDockerConfig, ProposerPromptConfig, RunConfig,
-    SynthOptimizerConfig, TasksetConfig, CHATGPT_PROPOSER_MODELS,
+    GepaConfig, GepaLeakageConfig, GepaObjectiveAcceptanceConfig, GepaPipelineConfig,
+    GepaPipelineMode, GepaPipelineWorkers, GepaSpeculativeCompletionConfig, GepaStalenessPolicy,
+    GepaTaskPoolsConfig, JesterkyWorkflowConfig, NanoCodexConfig, PolicyConfig,
+    ProposerAuthLaunchMode, ProposerConfig, ProposerDaytonaConfig, ProposerDockerConfig,
+    ProposerPromptConfig, RunConfig, SynthOptimizerConfig, TasksetConfig, CHATGPT_PROPOSER_MODELS,
 };
 pub use configured_limits::{
     ConfiguredGepaRunLimits, GepaRuntimeEffectBudgetEstimates, GEPA_LIMIT_STOP_POLICY,
@@ -175,7 +178,7 @@ pub use storage_maintenance::{
 };
 pub use usage::{fold_reported_cost, UsageLedgerInput, UsageLedgerRecord};
 pub use workspace::{
-    workspace_status, OptimizationRunStartedInput, WorkspaceEntityCounts,
+    optimizer_runtime_pin, workspace_status, OptimizationRunStartedInput, WorkspaceEntityCounts,
     WorkspaceRunRequestStatus, WorkspaceRunStatus, WorkspaceStateTransitionStatus, WorkspaceStatus,
     WorkspaceStore, WorkspaceView,
 };

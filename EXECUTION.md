@@ -28,6 +28,21 @@ change in this campaign (provider admission, `/compatibility` on the platform ap
 `TokenCaptureV5` extension) requires bumping that rev here. The containers work is a
 separate lane; this lane must not vendor around the pin.
 
+**The pin is materially behind main, verified 2026-08-18.** In the pinned rev,
+`runtimes/banking77.py` is 346 lines and has **no responses path whatsoever** — no
+`_sample_responses`, no `_validate_responses_endpoint`; only
+`_validate_remote_checkpoint_endpoint` exists. On containers `main` (a2a316b) that same
+file is ~570 lines and carries both. So:
+
+  - The endpoint-validator precedent this lane copies is `_validate_responses_endpoint`
+    (banking77.py:349 on main) **and** `_validate_remote_checkpoint_endpoint`
+    (banking77.py:487 on main). Only the second is visible from the pinned rev. If you
+    are reading site-packages and cannot find the first, that is the pin, not an error
+    in the plan.
+  - D9 (`responses` first-class) does not hold on the optimizers side at all until the
+    pin is bumped past the responses lane. Bumping it is a prerequisite for the first
+    live GSM8K rollout, not a cleanup task.
+
 ## Ordered work
 
 Each item names the file, the change, and the test that proves it. Nothing here needs a

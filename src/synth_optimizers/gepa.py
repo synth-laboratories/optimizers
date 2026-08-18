@@ -228,6 +228,7 @@ class ProposerTomlSection(BaseModel):
     copy_host_auth: bool = False
     codex_home: str | Path | None = None
     timeout_seconds: int = 900
+    message_stall_timeout_seconds: int = 120
     sandbox_mode: str | None = "workspace-write"
     approval_policy: str | None = "never"
     command: list[str] = Field(default_factory=list)
@@ -261,6 +262,7 @@ class ProposerTomlSection(BaseModel):
             copy_host_auth=self.copy_host_auth,
             codex_home=codex_home,
             timeout_seconds=self.timeout_seconds,
+            message_stall_timeout_seconds=self.message_stall_timeout_seconds,
             sandbox_mode=self.sandbox_mode,
             approval_policy=self.approval_policy,
             command=list(self.command),
@@ -873,6 +875,7 @@ class ProposerConfig:
     copy_host_auth: bool = False
     codex_home: str | Path | None = None
     timeout_seconds: int = 900
+    message_stall_timeout_seconds: int = 120
     sandbox_mode: str | None = "workspace-write"
     approval_policy: str | None = "never"
     command: list[str] = field(default_factory=list)
@@ -924,6 +927,7 @@ class ProposerConfig:
                 "copy_host_auth": bool(self.copy_host_auth),
                 "codex_home": str(self.codex_home) if self.codex_home is not None else None,
                 "timeout_seconds": int(self.timeout_seconds),
+                "message_stall_timeout_seconds": int(self.message_stall_timeout_seconds),
                 "sandbox_mode": self.sandbox_mode,
                 "approval_policy": self.approval_policy,
                 "command": list(self.command),

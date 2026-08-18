@@ -32,6 +32,10 @@ provider = "openai"
 model = "gpt-4.1-nano"
 proxy_mode = "proxy_only"
 
+[proposer]
+timeout_seconds = 600
+message_stall_timeout_seconds = 300
+
 [gepa]
 minibatch_acceptance_criterion = "improvement_or_equal"
 acceptance_criterion = "primary_improvement"
@@ -49,3 +53,4 @@ heldout = ["test:0"]
 
     assert translated["minibatch_acceptance_criterion"] == "improvement_or_equal"
     assert translated["acceptance_criterion"] == "primary_improvement"
+    assert config.to_toml_dict()["proposer"]["message_stall_timeout_seconds"] == 300

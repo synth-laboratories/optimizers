@@ -691,6 +691,7 @@ impl SynthOptimizerConfig {
             ));
         }
         validate_gepa_acceptance_criterion(&self.gepa.acceptance_criterion)?;
+        validate_gepa_acceptance_criterion(&self.gepa.minibatch_acceptance_criterion)?;
         validate_policy_config(&self.policy)?;
         if self.policy.enabled {
             if self.candidate.target_modules.is_empty() {
@@ -1810,6 +1811,12 @@ pub struct GepaConfig {
     pub minibatch_size: usize,
     #[serde(default)]
     pub minibatch_accept_margin: f64,
+    /// Screening criterion used before a candidate spends a full-train budget.
+    /// This is intentionally separate from `acceptance_criterion`: allowing a
+    /// statistically unresolved minibatch tie to advance must not promote a
+    /// full-train tie as measured improvement.
+    #[serde(default = "default_acceptance_criterion")]
+    pub minibatch_acceptance_criterion: String,
     #[serde(default = "default_max_total_rollouts")]
     pub max_total_rollouts: usize,
     #[serde(default)]
@@ -1895,6 +1902,7 @@ impl Default for GepaConfig {
             proposals_per_generation: default_proposals_per_generation(),
             minibatch_size: default_minibatch_size(),
             minibatch_accept_margin: 0.0,
+            minibatch_acceptance_criterion: default_acceptance_criterion(),
             max_total_rollouts: default_max_total_rollouts(),
             max_train_rollouts: None,
             max_heldout_rollouts: None,

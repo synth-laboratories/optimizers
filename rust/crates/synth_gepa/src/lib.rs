@@ -11689,9 +11689,9 @@ fn finalize_candidate_minibatch(
         challenger: &candidate_minibatch_vector,
         incumbent: &parent_minibatch_vector,
         accept_equal: false,
-        acceptance_criterion: Some("primary_improvement"),
-        objective_acceptance: None,
-        margin: 0.0,
+        acceptance_criterion: Some(&context.config.gepa.minibatch_acceptance_criterion),
+        objective_acceptance: Some(&context.config.gepa.objective_acceptance),
+        margin: context.config.gepa.minibatch_accept_margin,
     })?;
     let best_idx = state.best_idx.unwrap_or(parent_idx);
     let mut decision = AcceptanceDecision {
@@ -11999,9 +11999,9 @@ fn finalize_candidate_minibatch_group(
             challenger: &candidate_minibatch_vector,
             incumbent: &parent_minibatch_vector,
             accept_equal: false,
-            acceptance_criterion: Some("primary_improvement"),
-            objective_acceptance: None,
-            margin: 0.0,
+            acceptance_criterion: Some(&context.config.gepa.minibatch_acceptance_criterion),
+            objective_acceptance: Some(&context.config.gepa.objective_acceptance),
+            margin: context.config.gepa.minibatch_accept_margin,
         })?;
         let best_idx = state.best_idx.unwrap_or(parent_idx);
         let mut decision = AcceptanceDecision {
@@ -12286,8 +12286,8 @@ fn finalize_candidate_full_train(
         challenger: &candidate_train_vector,
         incumbent: &best_train_vector,
         accept_equal: false,
-        acceptance_criterion: Some("primary_improvement"),
-        objective_acceptance: None,
+        acceptance_criterion: Some(&context.config.gepa.acceptance_criterion),
+        objective_acceptance: Some(&context.config.gepa.objective_acceptance),
         margin: 0.0,
     })?;
     let accepted = train_preference.preferred;
@@ -12483,8 +12483,8 @@ fn finalize_candidate_full_train_group(
             challenger: &candidate_train_vector,
             incumbent: &best_train_vector,
             accept_equal: false,
-            acceptance_criterion: Some("primary_improvement"),
-            objective_acceptance: None,
+            acceptance_criterion: Some(&context.config.gepa.acceptance_criterion),
+            objective_acceptance: Some(&context.config.gepa.objective_acceptance),
             margin: 0.0,
         })?;
         let accepted = train_preference.preferred;
@@ -15755,9 +15755,9 @@ fn execute_gepa_monolithic_with_options(
                 challenger: &candidate_minibatch_vector,
                 incumbent: &parent_minibatch_vector,
                 accept_equal: false,
-                acceptance_criterion: Some("primary_improvement"),
-                objective_acceptance: None,
-                margin: 0.0,
+                acceptance_criterion: Some(&config.gepa.minibatch_acceptance_criterion),
+                objective_acceptance: Some(&config.gepa.objective_acceptance),
+                margin: config.gepa.minibatch_accept_margin,
             })?;
             candidate.acceptance_score = minibatch_preference.score.clone();
             candidate.acceptance_metadata = minibatch_preference.metadata.clone();
@@ -16061,8 +16061,8 @@ fn execute_gepa_monolithic_with_options(
                 challenger: &candidate_train_vector,
                 incumbent: &best_train_vector,
                 accept_equal: false,
-                acceptance_criterion: Some("primary_improvement"),
-                objective_acceptance: None,
+                acceptance_criterion: Some(&config.gepa.acceptance_criterion),
+                objective_acceptance: Some(&config.gepa.objective_acceptance),
                 margin: 0.0,
             })?;
             candidate.acceptance_score = train_preference.score.clone();

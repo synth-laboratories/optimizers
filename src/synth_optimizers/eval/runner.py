@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from .executor import (
     ContainerRuntimeError,
@@ -34,6 +34,7 @@ from .models import (
     CANDIDATE_SET_SCHEMA,
     EVAL_ALGORITHM_ID,
     EVAL_ALGORITHM_VERSION,
+    MLX_LORA_POLICY_KIND,
     RUN_MANIFEST_SCHEMA,
     TRIAL_MANIFEST_SCHEMA,
     WORKER_EVENT_SCHEMA,
@@ -50,6 +51,7 @@ from .models import (
     canonical_json,
     digest_of,
     digest_of_tree,
+    read_mlx_lora_policy,
     write_json,
 )
 from .recipes import EvalRecipe
@@ -207,12 +209,37 @@ class PauseGate:
             self._events.emit("eval.run.resumed")
 
 
+class PolicySnapshotRegistrar(Protocol):
+    """Turns a staged candidate directory into an immutable snapshot id.
+
+    The container cannot load an adapter: the inference service runs on the
+    host and the trial runs in Docker.  So the host registers the candidate
+    before the trial and the container is told only the snapshot id and the
+    recipe-owned route — never adapter bytes, and never a mutable run-local
+    name that could be re-pointed at different weights between two trials that
+    are supposed to be the same arm.
+
+    Implementations are injected.  There is no default: a run that needs
+    snapshots and was given no registrar fails before it starts a container
+    rather than silently scoring an unpinned policy.
+    """
+
+    def register(
+        self,
+        *,
+        candidate_id: str,
+        artifact_digest: str,
+        policy_dir: Path,
+    ) -> str: ...
+
+
 class EvalRunner:
     def __init__(
         self,
         manifest: WorkerManifest,
         *,
         executor: TrialExecutor | None = None,
+        policy_registrar: "PolicySnapshotRegistrar | None" = None,
         stream: Any = None,
     ) -> None:
         self.manifest = manifest
@@ -232,6 +259,9 @@ class EvalRunner:
             ttl_seconds=self.home.config.lease_ttl_seconds,
         )
         self._executor = executor
+        self._policy_registrar = policy_registrar
+        self._snapshot_ids: dict[str, str] = {}
+        self._snapshot_lock = threading.Lock()
         self._image_reference = ""
         self._resolved_secrets: dict[str, str] | None = None
         self._parallelism = min(
@@ -259,6 +289,13 @@ class EvalRunner:
                     f"{self.recipe.image} does not accept"
                 )
             path = self.candidate_set.artifact_path(candidate)
+            if candidate.kind == MLX_LORA_POLICY_KIND:
+                read_mlx_lora_policy(path)
+                if self._policy_registrar is None:
+                    raise EvalContractError(
+                        f"candidate {candidate.label} is {MLX_LORA_POLICY_KIND}, which the "
+                        f"container cannot load; this run needs a policy snapshot registrar"
+                    )
             actual = digest_of_tree(path)
             if actual != candidate.artifact_digest:
                 raise EvalContractError(
@@ -361,10 +398,43 @@ class EvalRunner:
         except (EvalContractError, json.JSONDecodeError, OSError):
             return None
 
+    def _register_snapshot(self, candidate: PolicyCandidate) -> str | None:
+        """Pin the candidate with the inference service before the trial runs.
+
+        Called per trial, because that is when the container is about to be
+        told which policy to sample.  The id is derived from the candidate's
+        `artifact_digest`, so re-registering the same bytes must return the
+        same id; an id that drifts inside one run means the service handed out
+        a mutable name and every trial before it was scoring something else.
+        """
+
+        if self._policy_registrar is None:
+            return None
+        snapshot_id = self._policy_registrar.register(
+            candidate_id=candidate.id,
+            artifact_digest=candidate.artifact_digest,
+            policy_dir=self.candidate_set.artifact_path(candidate),
+        )
+        if not isinstance(snapshot_id, str) or not snapshot_id.strip():
+            raise EvalContractError(
+                f"policy snapshot registration for candidate {candidate.label} "
+                f"returned no snapshot id"
+            )
+        snapshot_id = snapshot_id.strip()
+        with self._snapshot_lock:
+            previous = self._snapshot_ids.setdefault(candidate.artifact_digest, snapshot_id)
+        if previous != snapshot_id:
+            raise EvalContractError(
+                f"policy snapshot id for candidate {candidate.label} changed from "
+                f"{previous} to {snapshot_id} inside one run; a snapshot must be immutable"
+            )
+        return snapshot_id
+
     def _write_trial_manifest(self, key: TrialKey, candidate: PolicyCandidate) -> Path:
         input_dir = self._trial_dir(key) / "input"
         input_dir.mkdir(parents=True, exist_ok=True)
         (input_dir / "policy").mkdir(exist_ok=True)  # bind-mount target
+        snapshot_id = self._register_snapshot(candidate)
         write_json(
             input_dir / "trial.json",
             {
@@ -381,6 +451,7 @@ class EvalRunner:
                     "digest": candidate.artifact_digest,
                     "entrypoint": candidate.entrypoint,
                 },
+                "policy_snapshot_id": snapshot_id,
                 "metrics": [metric.to_json() for metric in self.recipe.target.metrics],
                 "required_gates": list(self.recipe.target.required_gates),
                 "limits": {
@@ -866,12 +937,16 @@ def run_worker(
     manifest_path: Path,
     *,
     executor: TrialExecutor | None = None,
+    policy_registrar: PolicySnapshotRegistrar | None = None,
     stream: Any = None,
 ) -> int:
     """Entry point behind `synth-optimizers eval worker`."""
 
     return EvalRunner(
-        WorkerManifest.load(manifest_path), executor=executor, stream=stream
+        WorkerManifest.load(manifest_path),
+        executor=executor,
+        policy_registrar=policy_registrar,
+        stream=stream,
     ).execute()
 
 
@@ -889,6 +964,7 @@ __all__ = [
     "CancellationToken",
     "EvalRunner",
     "EventEmitter",
+    "PolicySnapshotRegistrar",
     "WorkerManifest",
     "request_cancel",
     "run_worker",

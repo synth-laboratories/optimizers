@@ -18,6 +18,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 EVAL_ALGORITHM_ID = "eval"
 EVAL_ALGORITHM_VERSION = "1"
@@ -44,7 +45,28 @@ BENCHMARK_STATUSES = ("passed", "failed", "invalid")
 #: Runner-side terminal states for one trial.
 TRIAL_STATUSES = ("evaluated", "failed", "timeout", "cancelled")
 
+#: A trained MLX LoRA adapter, or the adapter-free base it is measured against.
+#: The adapter bytes live *in* the candidate, so `artifact_digest` is the
+#: digest of the adapter itself and "base vs checkpoint-20 vs final" is one
+#: content-addressed `CandidateSet` with a declared baseline scored on shared
+#: seeds — a paired difference, not two runs compared by hand.
+MLX_LORA_POLICY_KIND = "mlx-lora.v1"
+MLX_LORA_POLICY_SCHEMA = "eval.mlx-lora-policy.v1"
+
 _ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+
+#: The only hosts a cleartext `http://` route may name.  Every one of them
+#: resolves to this machine — the loopback spellings, plus the name Docker
+#: gives the host from inside a bridge network — so a plaintext bearer token
+#: never crosses a wire.  Any other `http://` origin is refused, including
+#: private ranges: "it is on my LAN" is not the same claim as "it cannot
+#: leave this machine", and widening this set is how a candidate reaches an
+#: endpoint the product never named.
+LOCAL_HTTP_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "host.docker.internal"})
+
+#: Both OpenAI API families are first-class.  A route that names neither is
+#: not a route this product knows how to bill, meter, or proxy.
+ROUTE_PATH_SUFFIXES = ("/v1/chat/completions", "/v1/responses")
 
 
 class EvalContractError(ValueError):
@@ -128,6 +150,101 @@ def digest_of_tree(root: Path) -> str:
         hasher.update(b"\0")
         hasher.update(hashlib.sha256(path.read_bytes()).digest())
     return "sha256:" + hasher.hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class MlxLoraPolicy:
+    """What `policy.json` in an `mlx-lora.v1` candidate directory declares.
+
+    `adapter = false` is the base model entering the same candidate set as an
+    adapter-free member, which is what makes the base-vs-LoRA question a paired
+    difference rather than two runs compared by hand.  It is declared rather
+    than inferred from which files happen to be present: a checkpoint whose
+    adapter failed to copy would otherwise be silently scored as its own
+    baseline, and the whole comparison would report a lift of zero.
+    """
+
+    base_model: str
+    adapter: bool
+    chat_template_digest: str
+    thinking_mode: str
+    rank: int | None
+
+    @classmethod
+    def from_mapping(cls, value: Any) -> MlxLoraPolicy:
+        data = _object(value, context="policy.json")
+        schema = data.get("schema_version", MLX_LORA_POLICY_SCHEMA)
+        if schema != MLX_LORA_POLICY_SCHEMA:
+            raise EvalContractError(f"unsupported mlx-lora policy schema {schema!r}")
+        adapter = data.get("adapter")
+        if not isinstance(adapter, bool):
+            raise EvalContractError("policy.json must declare adapter as true or false")
+        thinking_mode = _text(data.get("thinking_mode"), field_name="policy.thinking_mode")
+        if thinking_mode not in {"off", "on"}:
+            raise EvalContractError("policy.thinking_mode must be off or on")
+        rank = data.get("rank")
+        if adapter:
+            rank = _positive_int(rank, field_name="policy.rank")
+        elif rank is not None:
+            raise EvalContractError("an adapter-free policy must not declare a rank")
+        return cls(
+            base_model=_text(data.get("base_model"), field_name="policy.base_model"),
+            adapter=adapter,
+            chat_template_digest=_digest(
+                data.get("chat_template_digest"), field_name="policy.chat_template_digest"
+            ),
+            thinking_mode=thinking_mode,
+            rank=rank,
+        )
+
+    def to_json(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "schema_version": MLX_LORA_POLICY_SCHEMA,
+            "base_model": self.base_model,
+            "adapter": self.adapter,
+            "chat_template_digest": self.chat_template_digest,
+            "thinking_mode": self.thinking_mode,
+        }
+        if self.rank is not None:
+            payload["rank"] = self.rank
+        return payload
+
+
+#: Files an adapter-carrying `mlx-lora.v1` candidate must contain.
+MLX_LORA_ADAPTER_FILES = ("adapter_config.json", "adapters.safetensors")
+
+
+def read_mlx_lora_policy(root: Path) -> MlxLoraPolicy:
+    """Refuse an `mlx-lora.v1` candidate directory that is not what it claims.
+
+    Checked wherever a candidate is staged *and* again before a run starts, so
+    a candidate set assembled by Workshop is held to the same shape as one the
+    reference staging path produced.
+    """
+
+    if not root.is_dir():
+        raise EvalContractError(f"{MLX_LORA_POLICY_KIND} candidate must be a directory: {root}")
+    manifest = root / "policy.json"
+    if not manifest.is_file():
+        raise EvalContractError(f"{MLX_LORA_POLICY_KIND} candidate is missing policy.json")
+    try:
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise EvalContractError(f"{manifest} is not readable JSON") from exc
+    policy = MlxLoraPolicy.from_mapping(payload)
+    present = [name for name in MLX_LORA_ADAPTER_FILES if (root / name).is_file()]
+    if policy.adapter:
+        missing = [name for name in MLX_LORA_ADAPTER_FILES if name not in present]
+        if missing:
+            raise EvalContractError(
+                f"{MLX_LORA_POLICY_KIND} candidate is missing {', '.join(missing)}"
+            )
+    elif present:
+        raise EvalContractError(
+            f"{MLX_LORA_POLICY_KIND} candidate declares adapter=false but ships "
+            f"{', '.join(present)}"
+        )
+    return policy
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,6 +334,52 @@ class TargetManifest:
         }
 
 
+def _model_route(value: Any) -> str:
+    """A route a recipe is allowed to name, normalized and re-rendered.
+
+    `https://` is unrestricted.  `http://` is permitted only for a host that
+    cannot be anywhere but this machine (`LOCAL_HTTP_HOSTS`), which is what a
+    local inference proxy needs and what nothing else has any business being.
+    Userinfo, query strings, and fragments are refused outright: a route is an
+    endpoint, and credentials or per-request parameters smuggled into one are
+    how a "route" quietly becomes a request the recipe never described.
+
+    Mirrors `_validate_remote_checkpoint_endpoint` in the containers Banking77
+    runtime, minus its environment-variable allowlist — the recipe catalog is
+    already the allowlist here, and a second one read from the environment
+    would be an escape hatch around it.
+    """
+
+    text = _text(value, field_name="model.route")
+    try:
+        parsed = urlsplit(text)
+        port = parsed.port
+    except ValueError as exc:
+        raise EvalContractError(f"model.route is not a valid URL: {text!r}") from exc
+    if parsed.scheme not in {"http", "https"}:
+        raise EvalContractError("model.route must be an https endpoint, or a local http one")
+    if not parsed.hostname:
+        raise EvalContractError("model.route must name a host")
+    if parsed.username is not None or parsed.password is not None:
+        raise EvalContractError("model.route must not carry credentials in its userinfo")
+    if parsed.query or parsed.fragment:
+        raise EvalContractError("model.route must not carry a query string or fragment")
+    if not parsed.path.startswith("/") or ".." in parsed.path.split("/"):
+        raise EvalContractError(f"model.route path is not absolute: {text!r}")
+    if not parsed.path.endswith(ROUTE_PATH_SUFFIXES):
+        raise EvalContractError("model.route must end in " + " or ".join(ROUTE_PATH_SUFFIXES))
+    host = parsed.hostname.lower()
+    if parsed.scheme == "http" and host not in LOCAL_HTTP_HOSTS:
+        raise EvalContractError(
+            f"model.route may only use http:// for a local host "
+            f"({', '.join(sorted(LOCAL_HTTP_HOSTS))}), got {host!r}"
+        )
+    netloc = f"[{host}]" if ":" in host else host
+    if port is not None:
+        netloc += f":{port}"
+    return f"{parsed.scheme}://{netloc}{parsed.path}"
+
+
 @dataclass(frozen=True, slots=True)
 class ModelRoute:
     """One model a recipe permits, with the route and the price of using it.
@@ -240,9 +403,7 @@ class ModelRoute:
     @classmethod
     def from_mapping(cls, value: Any) -> ModelRoute:
         data = _object(value, context="model route")
-        route = _text(data.get("route"), field_name="model.route")
-        if not route.startswith("https://"):
-            raise EvalContractError("model.route must be an https endpoint")
+        route = _model_route(data.get("route"))
 
         def rate(field_name: str) -> float:
             raw = data.get(field_name)

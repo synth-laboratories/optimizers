@@ -25,7 +25,7 @@ pub enum GepaPipelineRuntimePlan {
 
 impl GepaPipelineRuntimePlan {
     pub fn from_config(config: &SynthOptimizerConfig) -> Result<Self> {
-        match config.gepa.pipeline.mode {
+        match config.gepa.pipeline.resolved_mode() {
             GepaPipelineMode::SyncSerial => Ok(Self::SyncSerial(GepaSyncSerialPlan {
                 rollout_transport: config.gepa.rollout_submission_mode.clone(),
             })),
@@ -60,6 +60,15 @@ impl GepaPipelineRuntimePlan {
             Self::SyncSerial(plan) => json!({
                 "mode": GepaPipelineMode::SyncSerial.as_str(),
                 "rollout_transport": plan.rollout_transport,
+                "max_in_flight_candidates": 1,
+                "workers": {
+                    "propose": 1,
+                    "rollout": 1,
+                    "evaluate": 1,
+                },
+                "adaptive_rollout_concurrency": {
+                    "enabled": false,
+                },
             }),
             Self::AsyncPipelined(plan) | Self::FlashEvolve(plan) => json!({
                 "mode": plan.mode.as_str(),
@@ -80,6 +89,43 @@ impl GepaPipelineRuntimePlan {
             }),
         }
     }
+}
+
+pub fn resolved_pipeline_value(config: &SynthOptimizerConfig) -> Value {
+    let mut value = GepaPipelineRuntimePlan::from_config(config)
+        .map(|plan| plan.metadata())
+        .unwrap_or_else(|_| {
+            json!({
+                "mode": config.gepa.pipeline.resolved_mode().as_str(),
+                "max_in_flight_candidates": config.gepa.pipeline.max_in_flight_candidates,
+                "workers": {
+                    "propose": config.gepa.pipeline.workers.propose,
+                    "rollout": config.gepa.pipeline.workers.rollout,
+                    "evaluate": config.gepa.pipeline.workers.evaluate,
+                },
+                "adaptive_rollout_concurrency": config.gepa.pipeline.adaptive_rollout_concurrency,
+            })
+        });
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "proposals_per_generation".to_string(),
+            json!(config.gepa.proposals_per_generation),
+        );
+        object.insert(
+            "mode_specified".to_string(),
+            json!(config.gepa.pipeline.mode_is_explicit()),
+        );
+        object
+            .entry("max_in_flight_candidates")
+            .or_insert_with(|| json!(config.gepa.pipeline.max_in_flight_candidates));
+        object
+            .entry("workers")
+            .or_insert_with(|| json!(config.gepa.pipeline.workers));
+        object
+            .entry("adaptive_rollout_concurrency")
+            .or_insert_with(|| json!(config.gepa.pipeline.adaptive_rollout_concurrency));
+    }
+    value
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -283,7 +329,7 @@ mod tests {
 
     fn pipeline_config(mode: GepaPipelineMode, policy: GepaStalenessPolicy) -> GepaPipelineConfig {
         let mut config = GepaPipelineConfig::default();
-        config.mode = mode;
+        config.mode = Some(mode);
         config.staleness_policy = policy;
         config
     }
@@ -368,5 +414,20 @@ mod tests {
         let stale = plan.stale_item_disposition(4, 5);
         assert_eq!(stale.disposition, GepaStaleItemDisposition::ReflectivePatch);
         assert_eq!(stale.stale_gap, 1);
+    }
+
+    #[test]
+    fn resolved_pipeline_echoes_ten_proposals_and_declared_capacity() {
+        let mut config = SynthOptimizerConfig::default();
+        config.gepa.proposals_per_generation = 10;
+        config.gepa.pipeline.mode = Some(GepaPipelineMode::AsyncPipelined);
+        config.gepa.pipeline.max_in_flight_candidates = 10;
+        config.gepa.pipeline.workers.rollout = 10;
+        let resolved = resolved_pipeline_value(&config);
+        assert_eq!(resolved["proposals_per_generation"], 10);
+        assert_eq!(resolved["mode"], "async_pipelined");
+        assert_eq!(resolved["max_in_flight_candidates"], 10);
+        assert_eq!(resolved["workers"]["rollout"], 10);
+        assert_eq!(resolved["mode_specified"], true);
     }
 }

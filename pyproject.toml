@@ -54,7 +54,7 @@ include = ["src/synth_optimizers/docs/**/*", "src/synth_optimizers/eval/catalog/
 package = true
 
 [tool.uv.sources]
-synth-containers = { git = "https://github.com/synth-laboratories/containers.git", rev = "a2a316b2e113883349b096ae07e17898f14bc7e5" }
+synth-containers = { git = "https://github.com/synth-laboratories/containers.git", rev = "5453731dabc078fc4aae700015f7ecd2ae95a969" }
 
 [tool.ruff]
 line-length = 100

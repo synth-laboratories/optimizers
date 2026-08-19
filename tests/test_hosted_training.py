@@ -260,6 +260,25 @@ def test_launch_training_owns_lease_through_wait_and_closes_once(monkeypatch) ->
     assert lease.closed == 1
 
 
+def test_open_synth_tunnel_forwards_wait_ready(monkeypatch) -> None:
+    client = HostedOptimizerClient(api_key="test", register_usage=False)
+    lease = SimpleNamespace()
+    observed: dict[str, object] = {}
+
+    def open_tunnel(_self: HostedOptimizerClient, local_url: str, **kwargs: object) -> object:
+        observed.update({"local_url": local_url, **kwargs})
+        return lease
+
+    monkeypatch.setattr(HostedOptimizerClient, "open_tunnel", open_tunnel)
+    monkeypatch.setattr("synth_optimizers.hosted.SynthTunnelLease", object)
+
+    assert (
+        client.open_synth_tunnel("http://127.0.0.1:8000", wait_ready=False)
+        is lease
+    )
+    assert observed["wait_ready"] is False
+
+
 def test_launch_training_closes_lease_when_submit_fails(monkeypatch) -> None:
     client = HostedOptimizerClient(api_key="test", register_usage=False)
     provider = validate_provider_training_capabilities(

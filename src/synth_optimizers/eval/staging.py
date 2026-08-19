@@ -18,13 +18,16 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from .home import EvalHome
 from .models import (
+    MLX_LORA_POLICY_KIND,
     CandidateSet,
     EvalContractError,
     PolicyCandidate,
     digest_of_tree,
+    read_mlx_lora_policy,
     write_json,
 )
 
@@ -66,6 +69,12 @@ def stage_candidate_set(
         origin = source.path.expanduser()
         if not origin.exists():
             raise EvalContractError(f"policy source does not exist: {origin}")
+        metadata: dict[str, Any] = {"source": {"kind": "workspace", "name": origin.name}}
+        if source.kind == MLX_LORA_POLICY_KIND:
+            # Refused here rather than at run time: an adapter set whose bytes
+            # are wrong is not evidence that arrived late, it is a candidate
+            # set that should never have been sealed.
+            metadata["mlx_lora"] = read_mlx_lora_policy(origin).to_json()
         staged = artifacts / f"pending_{uuid.uuid4().hex[:12]}"
         if origin.is_dir():
             shutil.copytree(origin, staged)
@@ -86,7 +95,7 @@ def stage_candidate_set(
             artifact_uri=f"local-artifact://sha256/{digest.split(':', 1)[1]}",
             artifact_digest=digest,
             entrypoint=source.entrypoint,
-            metadata={"source": {"kind": "workspace", "name": origin.name}},
+            metadata=metadata,
         )
         candidates.append(candidate)
         if source.is_baseline:

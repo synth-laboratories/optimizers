@@ -1,0 +1,130 @@
+{
+  "boundaries": [
+    [
+      "Policy-visible",
+      "Observation fields explicitly classified as policy-visible, and nothing else."
+    ],
+    [
+      "Operator-only",
+      "Reward weighting, evaluator internals, workspace and artifact paths."
+    ],
+    [
+      "Sealed evaluation",
+      "Heldout data, hidden rubric state and generalization reward."
+    ],
+    [
+      "Secret",
+      "Provider credentials and prohibited trace content. Never reachable from an observation."
+    ]
+  ],
+  "confidence": "Moderate for the contract, none for cross-optimizer portability.",
+  "hypothesis": "GEPA, GELO, OHCO, VZPO and MAPO can share one resumable environment contract without pushing algorithm names into generic state-machine code.",
+  "legend": [
+    [
+      "\u250c\u2500\u2500 \u2500\u2500\u2510",
+      "runtime / process boundary \u2014 one thing that can crash on its own"
+    ],
+    [
+      "\u2554\u2550\u2550 \u2550\u2550\u2557",
+      "trust boundary \u2014 crossing it changes who may read the data"
+    ],
+    [
+      "\u250f\u2501\u2501 \u2501\u2501\u2513",
+      "sealed or secret region \u2014 never reaches a policy-visible observation"
+    ],
+    [
+      "\u2500\u2500\u2500\u2500\u2500\u2500\u25b6",
+      "control or data flow in the direction of the arrow"
+    ],
+    [
+      "\u254c\u254c\u254c\u254c\u254c\u254c\u25b6",
+      "advisory, deferred or not-yet-implemented edge"
+    ],
+    [
+      "[id]",
+      "a durable identifier: run, episode, checkpoint, candidate or digest"
+    ],
+    [
+      "\u00a7",
+      "state that is written to durable storage and survives a restart"
+    ]
+  ],
+  "metadata": [
+    {
+      "label": "Protocol schema",
+      "note": "",
+      "value": "synth.optimizer_env.v1"
+    },
+    {
+      "label": "Reference implementation",
+      "note": "dungeongrid.mapo.episode.v1",
+      "value": "MAPO"
+    },
+    {
+      "label": "Mapped optimizers",
+      "note": "GEPA, GELO, OHCO, VZPO outstanding",
+      "value": "1 of 5"
+    },
+    {
+      "label": "Policy training",
+      "note": "no policy update run",
+      "value": "surface only"
+    }
+  ],
+  "optimizer": "Shared platform",
+  "panels": [
+    {
+      "ascii_map": "synth.optimizer_env.v1 \u2014 five optimizers, one state machine, no algorithm names in generic code\n\n\n\u250c\u2500\u2500\u2500\u2500\u2500\u2500 OptimizerObservation \u2500\u2500\u2500\u2500\u2500\u2500\u2510              \u250c\u2500\u2500\u2500\u2500\u2500\u2500 OptimizerAction \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510              \u250c\u2500\u2500\u2500\u2500\u2500\u2500 OptimizerTransition \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\n\u2502 objective \u00b7 hypotheses           \u2502              \u2502 propose \u00b7 select_parent      \u2502              \u2502 pre-observation digest           \u2502\n\u2502 incumbent \u00b7 candidates           \u2502              \u2502 allocate_evaluation          \u2502              \u2502 pre-state digest                 \u2502\n\u2502 frontier \u00b7 lineage               \u2502              \u2502 accept \u00b7 reject \u00b7 defer      \u2502              \u2502 action + actor identity          \u2502\n\u2502 evidence + uncertainty           \u2502    policy    \u2502 merge \u00b7 patch \u00b7 discard      \u2502   execute    \u2502 executed work + evidence         \u2502\n\u2502 failure clusters \u00b7 signals       \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2502 adjust_setting \u00b7 annotate    \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2502 post-state digest                \u2502\n\u2502 pending / in-flight work         \u2502              \u2502 checkpoint \u00b7 pause \u00b7 resume  \u2502              \u2502 RewardVector                     \u2502\n\u2502 budgets \u00b7 allowed actions        \u2502              \u2502 fork \u00b7 stop                  \u2502              \u2502 usage \u00b7 violations               \u2502\n\u2502 versions \u00b7 digest                \u2502              \u2502                              \u2502              \u2502 continuation / terminal          \u2502\n\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518              \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518              \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\n    \u2502\n    \u2502 checkpoint \u00a7\n    \u25bc\n\u250c\u2500\u2500\u2500\u2500\u2500 OptimizerCheckpoint \u00a7 \u2500\u2500\u2500\u2500\u2500\u2500\u2510              \u250c\u2500\u2500\u2500\u2500 ALGORITHM EXTENSIONS \u2500\u2500\u2500\u2500\u2510              \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 LIFECYCLE \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\n\u2502 schema + algorithm versions      \u2502              \u2502 extensions{gepa: \u2026}          \u2502              \u2502 pause: stop new work, resolve    \u2502\n\u2502 state and event cursor           \u2502              \u2502 extensions{gelo: \u2026}          \u2502              \u2502   in-flight, persist cursor      \u2502\n\u2502 candidates \u00b7 lineage \u00b7 frontier  \u2502   carried    \u2502 extensions{ohco: \u2026}          \u2502   uniform    \u2502 restart: verify, reconcile,      \u2502\n\u2502 pending work dispositions        \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2502 extensions{vzpo: \u2026}          \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2502   never re-score or re-charge    \u2502\n\u2502 RNG \u00b7 budgets \u00b7 usage ledger     \u2502              \u2502 extensions{mapo: \u2026}          \u2502              \u2502 fork: new episode id with        \u2502\n\u2502 evaluator + cache identity       \u2502              \u2502                              \u2502              \u2502   parentEpisodeId + digest       \u2502\n\u2502 container manifest digests       \u2502              \u2502 unknown keys survive         \u2502              \u2502 step: exactly one action         \u2502\n\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518              \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518              \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518",
+      "caption": "The nine core types and the four lifecycle operations every optimizer must support identically. Algorithm-specific data rides in extension maps.",
+      "notes": [
+        "A checkpoint validates its own digest on load; a mismatch is an error, not a warning.",
+        "An optimizer advertises only the actions it genuinely supports \u2014 MAPO, for example, declares merge and discard unsupported rather than faking them."
+      ],
+      "slug": "protocol",
+      "title": "Core types and lifecycle"
+    },
+    {
+      "ascii_map": "OPTIMIZER-AS-RL-ENVIRONMENT \u2014 the surface a proposer policy would be trained on\n\n\n\u250c\u2500\u2500\u2500\u2500\u2500\u2500 OPTIMIZER EPISODES \u2500\u2500\u2500\u2500\u2500\u2500\u2510              \u250c\u2500\u2500\u2500\u2500\u2500 TRAJECTORY EXPORT \u2500\u2500\u2500\u2500\u2500\u2500\u2510            \u250f\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 FIXED SPLITS \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2513\n\u2502 GEPA \u00b7 GELO \u00b7 OHCO             \u2502              \u2502 versioned training records   \u2502            \u2503 train / development /          \u2503\n\u2502 VZPO \u00b7 MAPO                    \u2502    export    \u2502 large evidence by reference  \u2502 partition  \u2503 sealed evaluation              \u2503\n\u2502 observation / action /         \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2502 behaviour-policy identity    \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2503 anti-leakage tests guard       \u2503\n\u2502 transition / reward records    \u2502              \u2502 logprobs where claimed       \u2502            \u2503 heldout and verifier state     \u2503\n\u2502                                \u2502              \u2502                              \u2502            \u2503                                \u2503\n\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518              \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518            \u2517\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u251b\n                                                                \u2502\n                                                                \u2502\n                                                                \u2502\n                                                                \u25bc\n\u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 REPLAY \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510              \u250c\u2500\u2500\u2500\u2500\u2500\u2500 PROPOSER POLICY \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510            \u250c\u2500\u2500\u2500\u2500\u2500 WHAT MAY BE CLAIMED \u2500\u2500\u2500\u2500\u2500\u2500\u2510\n\u2502 deterministic or recorded      \u2502              \u2502 deterministic baseline       \u2502            \u2502 environment contract: yes,     \u2502\n\u2502 evaluator where supported      \u2502              \u2502   (the control arm)          \u2502            \u2502   once a real transition runs  \u2502\n\u2502 one-step operation is the      \u2502              \u2502 Nemotron 3.5 Lightning       \u2502            \u2502 policy improvement: only with  \u2502\n\u2502 unit of comparison:            \u2502\u25c0\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2502   adapter + preflight        \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2502   a real optimizer-policy      \u2502\n\u2502 fixed policy vs proposer       \u2502              \u2502 offline imitation first,     \u2502            \u2502   update AND a sealed          \u2502\n\u2502                                \u2502              \u2502 then preference, then RL     \u2502            \u2502   evaluation receipt           \u2502\n\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518              \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518            \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\n\nRenaming prompt optimization to RLVR is not an RL result. A scripted replay is evidence about the environment, not the policy.",
+      "caption": "What has to exist before anyone may say a proposer policy was trained, and the line between environment evidence and policy evidence.",
+      "notes": [
+        "Sealed evaluation splits are fixed before any policy sees a trajectory.",
+        "The one-step operation is deliberately the unit of comparison: it makes a fixed policy and a candidate proposer directly comparable on the same checkpoint."
+      ],
+      "slug": "training-loop",
+      "title": "Trajectory export and the policy loop"
+    }
+  ],
+  "receipts": [
+    {
+      "detail": "protocol, candidates, rollout and episode suites",
+      "identifier": "50 gates passing",
+      "label": "MAPO contract conformance",
+      "present": true
+    },
+    {
+      "detail": "map service state onto the shared protocol",
+      "identifier": "",
+      "label": "GEPA mapping",
+      "present": false
+    },
+    {
+      "detail": "map board and candidate state onto the shared protocol",
+      "identifier": "",
+      "label": "GELO mapping",
+      "present": false
+    },
+    {
+      "detail": "adapter, capability preflight and one bounded inference-only step",
+      "identifier": "",
+      "label": "Nemotron preflight",
+      "present": false
+    }
+  ],
+  "schema": "synth.optimizer_diagram.v1",
+  "schema_version": "synth.optimizer_env.v1",
+  "slug": "optimizer-environment",
+  "subtitle": "One versioned contract for observation, action, transition, reward, checkpoint, pause, fork and single-step \u2014 plus the surface a proposer policy would train on.",
+  "title": "Shared optimizer environment and training loop",
+  "verdict": "Implemented and exercised by MAPO; not yet mapped onto the other four.",
+  "why": "MAPO implements the full contract \u2014 actions, digests, checkpoint, pause/restart, fork, one-step and trajectory export \u2014 and its gates pass. No other optimizer has been mapped onto it yet, so portability is asserted, not shown."
+}

@@ -1,0 +1,187 @@
+{
+  "boundaries": [
+    [
+      "Policy-visible",
+      "Incumbent, candidate summaries, train evidence, failure clusters, budgets, allowed actions."
+    ],
+    [
+      "Operator-only",
+      "Reward source and weighting, evaluator internals, workspace paths."
+    ],
+    [
+      "Sealed evaluation",
+      "Heldout seeds and heldout evidence. Exposed as a digest and a count; a leak check fails the observation closed."
+    ],
+    [
+      "Protected surfaces",
+      "env.py, rules_engine.py, grid_engine.py, engine_runtime.py, achievements.py, rewards.py, evaluator.py, protocol.py \u2014 a patch touching any of them is refused."
+    ],
+    [
+      "Secret",
+      "Provider credentials. No provider is called in any lane, so none are loaded."
+    ]
+  ],
+  "confidence": "Low-to-moderate. The direction is consistent \u2014 6 of 6 matched heldout seeds win in every lane \u2014 but the prompt/protocol and RLVR lanes show zero cross-seed variance, so those six seeds replicate a near-deterministic outcome rather than sampling a noisy one. Only the harness lane has real seed spread (sd 0.027). One quest per lane; scripted and linear policies only.",
+  "hypothesis": "Coordination structure \u2014 what heroes say, how the team is run, and what they choose \u2014 is the binding constraint on DungeonGrid team reward, not individual hero skill.",
+  "legend": [
+    [
+      "\u250c\u2500\u2500 \u2500\u2500\u2510",
+      "runtime / process boundary \u2014 one thing that can crash on its own"
+    ],
+    [
+      "\u2554\u2550\u2550 \u2550\u2550\u2557",
+      "trust boundary \u2014 crossing it changes who may read the data"
+    ],
+    [
+      "\u250f\u2501\u2501 \u2501\u2501\u2513",
+      "sealed or secret region \u2014 never reaches a policy-visible observation"
+    ],
+    [
+      "\u2500\u2500\u2500\u2500\u2500\u2500\u25b6",
+      "control or data flow in the direction of the arrow"
+    ],
+    [
+      "\u254c\u254c\u254c\u254c\u254c\u254c\u25b6",
+      "advisory, deferred or not-yet-implemented edge"
+    ],
+    [
+      "[id]",
+      "a durable identifier: run, episode, checkpoint, candidate or digest"
+    ],
+    [
+      "\u00a7",
+      "state that is written to durable storage and survives a restart"
+    ],
+    [
+      "claim:<id>",
+      "a hero announcing the target it is about to take"
+    ],
+    [
+      "\u00a7",
+      "durable state bound into a checkpoint"
+    ]
+  ],
+  "metadata": [
+    {
+      "label": "Repository",
+      "note": "branch v0.7/mapo-dungeongrid",
+      "value": "DungeonGrid"
+    },
+    {
+      "label": "Optimizer schema",
+      "note": "",
+      "value": "dungeongrid.mapo.episode.v1"
+    },
+    {
+      "label": "Environment schema",
+      "note": "",
+      "value": "synth.optimizer_env.v1"
+    },
+    {
+      "label": "Harness API",
+      "note": "",
+      "value": "dungeongrid.mapo.harness.v1"
+    },
+    {
+      "label": "Reward schema",
+      "note": "",
+      "value": "dungeongrid.mapo.reward.v1"
+    },
+    {
+      "label": "Provider spend",
+      "note": "scripted and linear policies only",
+      "value": "none"
+    }
+  ],
+  "optimizer": "MAPO",
+  "panels": [
+    {
+      "ascii_map": "OPTIMIZER CONTROL PLANE \u2014 one episode model, three candidate varieties\npolicy-visible surface on the left, sealed and protected regions fenced on the right\n                                                            next observation \u00b7 new transition sequence linked to the checkpoint\n    \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\n\u250c\u2500\u2500\u2500\u25bc\u2500\u2500\u2500\u2500\u2500\u2500\u2500 OBSERVATION \u00a7 \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510              \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 PROPOSER POLICY \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510          \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 ACTION \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510    \u2502\n\u2502 sequence \u00b7 digest                    \u2502              \u2502 deterministic grid search        \u2502          \u2502 propose_candidate                    \u2502    \u2502\n\u2502 incumbent \u00b7 candidates \u00b7 frontier    \u2502              \u2502   (spend-free default)           \u2502          \u2502 allocate_evaluation                  \u2502    \u2502\n\u2502 train evidence + uncertainty         \u2502              \u2502 or a learned / LLM proposer      \u2502          \u2502 accept \u00b7 reject \u00b7 defer              \u2502    \u2502\n\u2502 failure clusters \u00b7 pending work      \u2502   observe    \u2502                                  \u2502  decide  \u2502 select_parent \u00b7 annotate             \u2502    \u2502\n\u2502 budgets \u00b7 allowed actions            \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2502 emits exactly ONE                \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2502 checkpoint \u00b7 pause \u00b7 resume          \u2502    \u2502\n\u2502 target modules \u00b7 versions            \u2502              \u2502 typed action per step            \u2502          \u2502 fork \u00b7 stop                          \u2502    \u2502\n\u2502 policy-visible fields only           \u2502              \u2502                                  \u2502          \u2502                                      \u2502    \u2502\n\u2502                                      \u2502              \u2502                                  \u2502          \u2502                                      \u2502    \u2502\n\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518              \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518          \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518    \u2502\n                                                                                                                        \u2502                       \u2502\n                                                                                                                        \u2502 admit                 \u2502\n                                                                                                                        \u25bc                       \u2502\n\u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 DUNGEONGRID ROLLOUTS \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510              \u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550 EVALUATOR (trust) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557          \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 ADMISSION GATE \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510    \u2502\n\u2502 bounded multi-agent episodes         \u2502              \u2551 owns seeds and reward            \u2551          \u2502 schema validation                    \u2502    \u2502\n\u2502 per-agent obs \u00b7 actions \u00b7 messages   \u2502              \u2551 train / selection / heldout      \u2551          \u2502 harness: patch \u2192 build \u2192 contract    \u2502    \u2502\n\u2502 decomposed reward vector             \u2502   allocate   \u2551 paired (quest, seed) compare     \u2551 admitted \u2502 protected-surface refusal            \u2502    \u2502\n\u2502 failure signals                      \u2502\u25c0\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2551 evidence cache, no re-charge     \u2551\u25c0\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2502 rejected \u21d2 zero rollout spend        \u2502    \u2502\n\u2502                                      \u2502              \u2551                                  \u2551          \u2502                                      \u2502    \u2502\n\u2502                                      \u2502              \u2551                                  \u2551          \u2502                                      \u2502    \u2502\n\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518              \u255a\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255d          \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518    \u2502\n                    \u2502                                                   \u2502                               \u2502                                       \u2502\n                    \u2502 evidence \u00a7                                        \u2502                               \u2502                                       \u2502\n                    \u25bc                                                   \u25bc                               \u25bc                                       \u2502\n\u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500 OPTIMIZER CHECKPOINT \u00a7 \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510              \u250f\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 SEALED HELDOUT \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2513          \u250c\u2500\u2500\u2500\u2500\u2500 FORK \u00b7 RESTART \u00b7 ONE-STEP \u2500\u2500\u2500\u2500\u2500\u2500\u2510    \u2502\n\u2502 cursor \u00b7 candidates \u00b7 frontier       \u2502              \u2503 heldout seeds: digest + count    \u2503          \u2502 restore \u21d2 identical state digest     \u2502    \u2502\n\u2502 budgets \u00b7 RNG \u00b7 evaluator id         \u2502              \u2503 generalization reward            \u2503  frozen  \u2502 fork \u21d2 new episode id + lineage      \u2502    \u2502\n\u2502 actor + harness + container ids      \u2502              \u2503 read once, after arms freeze     \u2503\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2502 step --max-actions 1                 \u2502\u2500\u2500\u2500\u2500\u2518\n\u2502 self-verifying sha256 digest         \u2502              \u2503 never enters OBSERVATION         \u2503          \u2502 no double scoring or charging        \u2502\n\u2502                                      \u2502              \u2503                                  \u2503          \u2502                                      \u2502\n\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518              \u2517\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u251b          \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518",
+      "caption": "The observation \u2192 proposer \u2192 action \u2192 admission \u2192 evaluation \u2192 checkpoint loop. Everything a candidate may read is on the left; everything it may never read is fenced on the right.",
+      "notes": [
+        "A rejected candidate costs zero rollout budget: admission runs build and contract tests before the evaluator is ever called.",
+        "The evaluator owns the seeds and the reward definition, and a harness patch that tried to import it would be refused by the protected-surface gate.",
+        "Restarting rehydrates the evaluator cache, so resumed work is never scored or charged twice."
+      ],
+      "slug": "control-plane",
+      "title": "Optimizer control plane"
+    },
+    {
+      "ascii_map": "ONE DUNGEONGRID TRANSITION \u2014 two heroes, one Warden, one shared world\ncommunication edge \u2500\u2500\u25b6 delivered by the environment message bus and counted in the reward vector\n\n\u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 HERO_1 \u00b7 scout \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510              \u250c\u2500\u2500\u2500\u2500\u2500 SHARED / TEAM STATE \u00a7 \u2500\u2500\u2500\u2500\u2500\u2500\u2510              \u250c\u2500\u2500\u2500\u2500\u2500 HERO_2 \u00b7 rear guard \u2500\u2500\u2500\u2500\u2500\u2500\u2510\n\u2502 local observation:             \u2502              \u2502 claims{target \u2192 hero}            \u2502              \u2502 local observation:             \u2502\n\u2502   visible tiles, objects,      \u2502 claim:vault  \u2502 reported tiles \u00b7 threats         \u2502              \u2502   visible tiles, objects,      \u2502\n\u2502   teammates, AP, messages      \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2502 notes \u00b7 routing events           \u2502              \u2502   teammates, AP, messages      \u2502\n\u2502 brief directive: claim         \u2502              \u2502 harness-owned;                   \u2502 reads claim  \u2502 brief directive: claim         \u2502\n\u2502 policy v2 \u00b7 sha256:df83\u2026       \u2502              \u2502 not environment state            \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2502 policy v2 \u00b7 sha256:df83\u2026       \u2502\n\u2502                                \u2502              \u2502                                  \u2502              \u2502                                \u2502\n\u2502                                \u2502              \u2502                                  \u2502              \u2502                                \u2502\n\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518              \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518              \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\n                 \u2502                                                \u2502                                                \u2502\n                 \u2502 action                                         \u2502                                                \u2502 action\n                 \u25bc                                                \u25bc                                                \u25bc\n                \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 HARNESS \u2014 the only patchable surface \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\n                \u2502 encode_observation     route_message        ingest_message                                       \u2502\n                \u2502 arbitrate              note_step            recover                                              \u2502\n                \u2502 should_branch          extract_failure_signals                                                   \u2502\n                \u2502 assign_roles           snapshot / restore                                                        \u2502\n                \u2502                                                                                                  \u2502\n                \u2502                                                                                                  \u2502\n                \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\n                                                                  \u2502\n                                                                  \u25bc admitted actions\n                \u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550 DUNGEONGRID ENVIRONMENT (protected) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557\n                \u2551 rules_engine \u00b7 grid_engine \u00b7 achievements \u00b7 message bus \u00b7 Warden policy                          \u2551\n              \u250c\u2500\u2551 transition: world state, RNG, reward, per-hero ledger, trace record                              \u2551\u2500\u2510\n              \u2502 \u2551                                                                                                  \u2551 \u2502\n              \u2502 \u255a\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255d \u2502\n              \u2502                                                   \u2502                                                  \u2502\n              \u2514\u2500\u2500\u25bc                                                \u25bc                                                \u25bc\u2500\u2518\n\u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500 REWARD \u2192 HERO_1 \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510              \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500 TEAM REWARD VECTOR \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510              \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500 REWARD \u2192 HERO_2 \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\n\u2502 env per-hero ledger            \u2502              \u2502 env_return \u00b7 outcome \u00b7 progress  \u2502              \u2502 env per-hero ledger            \u2502\n\u2502 counterfactual estimate        \u2502              \u2502 cooperation \u00b7 comms \u00b7 penalties  \u2502              \u2502 counterfactual estimate        \u2502\n\u2502                                \u2502              \u2502                                  \u2502              \u2502                                \u2502\n\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518              \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518              \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\nteam reward, per-agent attribution and counterfactual contribution stay three separate quantities",
+      "caption": "Two heroes with genuinely local observations, a communication edge carrying a claim, the harness-owned shared state, the protected environment, and reward flowing back along three separately-labelled paths.",
+      "notes": [
+        "Messages are only useful because a teammate reads them: a claim announcement lands in shared state and steers the other hero off the same target.",
+        "The harness sits between agents and environment and is the only patchable surface; rules, reward and achievements are protected.",
+        "Team reward, per-agent attribution and counterfactual contribution are three different quantities and are never collapsed into one number."
+      ],
+      "slug": "multi-agent-step",
+      "title": "One multi-agent transition"
+    },
+    {
+      "ascii_map": "BRANCH CHECKPOINTS \u2014 the environment-level pause, restart and fork lattice\n                                                                                          two forks, one immutable parent\n                                                                                              \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 FORK A \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\n                                                                                              \u2502 resume \u2192 identical digest      \u2502\n                                                                                      \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2502 team reward recorded           \u2502\n                                                                                      \u2502       \u2502                                \u2502\n\u250c\u2500\u2500\u2500\u2500\u2500\u2500 ROLLOUT (parent) \u2500\u2500\u2500\u2500\u2500\u2500\u2510                \u250f\u2501\u2501\u2501\u2501\u2501\u2501 BRANCH CHECKPOINT \u00a7 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2513  \u2502       \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\n\u2502 quest \u00b7 seed \u00b7 env revision  \u2502                \u2503 world state + RNG state          \u2503  \u2502\n\u2502 harness + policy snapshots   \u2502 should_branch  \u2503 agent states \u00b7 roles \u00b7 versions  \u2503  \u2502\n\u2502 step index 0 \u2026 n             \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2503 messages + pending queue         \u2503\u2500\u2500\u2524\n\u2502 branch policy decides where  \u2502                \u2503 parent rollout id \u00b7 step index   \u2503  \u2502       \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 FORK B \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\n\u2502                              \u2502                \u2503                                  \u2503  \u2502       \u2502 resume \u2192 identical digest      \u2502\n\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518                \u2517\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u251b  \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2502 compared, never re-scored      \u2502\n                                                                  \u2502                           \u2502                                \u2502\n                                                                  \u2502                           \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\n                                                                  \u2502\n                                                                  \u2502\n                                                                  \u25bc\n\u250c\u2500\u2500\u2500\u2500\u2500 IMMUTABILITY GUARD \u2500\u2500\u2500\u2500\u2500\u2510                \u250c\u2500\u2500\u2500\u2500\u2500 LEAVE-ONE-OUT CREDIT \u2500\u2500\u2500\u2500\u2500\u2510            \u250c\u2500\u2500\u2500\u2500\u2500\u2500 ONE PROPOSER STEP \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\n\u2502 digest before forks          \u2502                \u2502 one fork per hero,             \u2502            \u2502 load checkpoint \u2192 1 action     \u2502\n\u2502 == digest after forks        \u2502                \u2502 that hero forced passive       \u2502            \u2502 optionally 1 bounded eval      \u2502\n\u2502 restore deep-copies state    \u2502\u25c0\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2502 \u0394 team reward = contribution   \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2502 the loop never continues       \u2502\n\u2502                              \u2502                \u2502                                \u2502            \u2502                                \u2502\n\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518                \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518            \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\n\nA fork is a new episode id carrying parentEpisodeId and parentCheckpointDigest; the parent history is never rewritten.",
+      "caption": "The environment-level lattice. A branch checkpoint binds world state and RNG together with agent, harness and policy state, so two forks from the same point reproduce identically and the parent never moves.",
+      "notes": [
+        "The state digest is computed over the decoded environment state, not the pickle bytes \u2014 pickle output is not stable across processes, so a byte comparison would prove nothing.",
+        "Leave-one-out credit is the only causal estimator here: it costs one bounded fork per hero and is labelled as an estimate, not an accounting split."
+      ],
+      "slug": "branch-lattice",
+      "title": "Branch checkpoints, forks and one-step"
+    },
+    {
+      "ascii_map": "THREE CANDIDATE VARIETIES \u2014 one envelope, one checkpoint, one evaluator\n                               dispatch                                              collect\n\n                                                    \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500 prompt_protocol \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\n                                                    \u2502 role briefs \u00b7 protocol mode    \u2502\n                                   \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2502 target: what heroes say        \u2502\u2500\u2500\u2510\n                                   \u2502                \u2502                                \u2502  \u2502\n                                   \u2502                \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518  \u2502\n                                   \u2502                                                    \u2502\n\u250c\u2500\u2500\u2500\u2500\u2500 CANDIDATE ENVELOPE \u2500\u2500\u2500\u2500\u2500\u2510   \u2502                                                    \u2502\n\u2502 id \u00b7 variety \u00b7 generation    \u2502   \u2502                \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 harness \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510  \u2502   \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500 ONE EVALUATOR \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\n\u2502 parent \u00b7 proposer \u00b7 digest   \u2502   \u2502                \u2502 unified diff to harness.py     \u2502  \u2502   \u2502 same seeds and reward,       \u2502\n\u2502 admission \u00b7 scores \u00b7 status  \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2502 target: how the team is run    \u2502\u2500\u2500\u2500\u2500\u2500\u25b6\u2502 same sealed heldout          \u2502\n\u2502 target modules               \u2502   \u2502                \u2502                                \u2502  \u2502   \u2502                              \u2502\n\u2502                              \u2502   \u2502                \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518  \u2502   \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\n\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518   \u2502                                                    \u2502\n                                   \u2502                                                    \u2502\n                                   \u2502                \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 rlvr \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510  \u2502\n                                   \u2502                \u2502 policy weight vector           \u2502  \u2502\n                                   \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2502 target: what heroes choose     \u2502\u2500\u2500\u2518\n                                                    \u2502                                \u2502\n                                                    \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\n\n\nThe episode state machine never branches on these names; it dispatches through the variety registry.",
+      "caption": "Prompt/protocol, harness and RLVR candidates differ only in their payload schema and their admission path. Everything downstream is shared.",
+      "notes": [
+        "Adding a fourth variety means adding one entry to the proposer registry, not editing the state machine.",
+        "Candidates are single-patch: lineage is recorded but harness patches are not yet composed across generations.",
+        "Two of the three lanes are seed-invariant under a deterministic hero policy, so their six matched seeds are replications, not independent samples. The paired verdict is sound; the implied power is not."
+      ],
+      "slug": "varieties",
+      "title": "Three varieties, one envelope"
+    }
+  ],
+  "receipts": [
+    {
+      "detail": "moonblade_vault_lite, heldout +1.1313, 6/6 seeds, sd 0.000",
+      "identifier": "mapo_prompt_6f1ea6e815",
+      "label": "prompt/protocol lane",
+      "present": true
+    },
+    {
+      "detail": "glass_maze_lite, heldout +0.1486, 6/6 seeds, sd 0.027",
+      "identifier": "mapo_harness_224dcfcc98",
+      "label": "harness lane",
+      "present": true
+    },
+    {
+      "detail": "moonblade_vault_lite, heldout +0.0800, 6/6 seeds, sd 0.000",
+      "identifier": "mapo_rlvr_6f48cb973a",
+      "label": "RLVR lane",
+      "present": true
+    },
+    {
+      "detail": "all three lanes; rollouts never double-charged",
+      "identifier": "state_digest_identical",
+      "label": "pause / restart",
+      "present": true
+    },
+    {
+      "detail": "all three lanes; new episode id with parent checkpoint digest",
+      "identifier": "parent_state_digest_unchanged",
+      "label": "fork",
+      "present": true
+    },
+    {
+      "detail": "bounded; --execute adds exactly one evaluation transition",
+      "identifier": "actions_taken = 1",
+      "label": "one proposer step",
+      "present": true
+    }
+  ],
+  "schema": "synth.optimizer_diagram.v1",
+  "schema_version": "dungeongrid.mapo.episode.v1 \u00b7 synth.optimizer_env.v1",
+  "slug": "mapo-dungeongrid",
+  "subtitle": "Multi-agent prompt/protocol, harness and RLVR optimization behind one episode model, one checkpoint format and one evaluator.",
+  "title": "MAPO on multi-agent DungeonGrid",
+  "verdict": "Proven in all three varieties on bounded paired-seed runs.",
+  "why": "Each lane's champion was selected on train seeds and then improved on disjoint sealed heldout seeds: +1.13 (prompt/protocol), +0.15 (harness), +0.08 (RLVR)."
+}

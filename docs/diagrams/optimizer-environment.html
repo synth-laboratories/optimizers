@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Shared optimizer environment and training loop</title>
+  <meta name="description" content="One versioned contract for observation, action, transition, reward, checkpoint, pause, fork and single-step — plus the surface a proposer policy would train on.">
+  <meta name="generator" content="synth.optimizer_diagram.v1">
+  <meta name="synth:protocol_schema" content="synth.optimizer_env.v1">
+  <meta name="synth:reference_implementation" content="MAPO">
+  <meta name="synth:mapped_optimizers" content="1 of 5">
+  <meta name="synth:policy_training" content="surface only">
+  <style>
+:root {
+  color-scheme: light dark;
+  --paper: #fbfaf9;
+  --paper-raised: #ffffff;
+  --ink: #16150f;
+  --ink-soft: #5c5850;
+  --ink-faint: #8a857b;
+  --rule: #e0dcd4;
+  --rule-strong: #c8c2b7;
+  --accent: #c2560a;
+  --accent-soft: #fdf1e6;
+  --map-bg: #ffffff;
+  --map-ink: #23211a;
+  --ok: #1f6d43;
+  --absent: #8a857b;
+  --measure: 74ch;
+  --radius: 10px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #0e0e0d;
+    --paper-raised: #171716;
+    --ink: #f2efe9;
+    --ink-soft: #b3ada2;
+    --ink-faint: #837e75;
+    --rule: #2a2926;
+    --rule-strong: #3d3b36;
+    --accent: #ff8a2a;
+    --accent-soft: #2a1a0c;
+    --map-bg: #121211;
+    --map-ink: #e8e4dc;
+    --ok: #57c98c;
+    --absent: #837e75;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: ui-sans-serif, -apple-system, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.6;
+  text-rendering: optimizeLegibility;
+}
+.skip {
+  position: absolute; left: -9999px; top: 0;
+  background: var(--accent); color: #fff; padding: 0.6rem 1rem; z-index: 10;
+}
+.skip:focus { left: 0; }
+.wrap { max-width: 1180px; margin: 0 auto; padding: 2.5rem 1.5rem 5rem; }
+header.page { border-bottom: 1px solid var(--rule); padding-bottom: 1.75rem; margin-bottom: 2rem; }
+.eyebrow {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.75rem; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--accent); margin: 0 0 0.6rem;
+}
+h1 { font-size: clamp(1.7rem, 1.2rem + 1.6vw, 2.5rem); line-height: 1.15; margin: 0 0 0.5rem; letter-spacing: -0.015em; }
+.subtitle { color: var(--ink-soft); max-width: var(--measure); margin: 0 0 1.5rem; font-size: 1.05rem; }
+.summary {
+  background: var(--paper-raised); border: 1px solid var(--rule); border-left: 3px solid var(--accent);
+  border-radius: var(--radius); padding: 1.1rem 1.3rem; max-width: var(--measure);
+}
+.summary dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.35rem 1rem; margin: 0; }
+.summary dt {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.72rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-faint);
+  padding-top: 0.22rem;
+}
+.summary dd { margin: 0; }
+nav.toc { margin: 2rem 0; }
+nav.toc h2 {
+  font-size: 0.72rem; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--ink-faint); margin: 0 0 0.6rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+nav.toc ol { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 0.4rem; counter-reset: toc; }
+nav.toc a {
+  display: inline-block; padding: 0.35rem 0.7rem; border: 1px solid var(--rule);
+  border-radius: 999px; text-decoration: none; color: var(--ink-soft); font-size: 0.85rem;
+}
+nav.toc a:hover, nav.toc a:focus-visible { border-color: var(--accent); color: var(--accent); }
+section.panel { margin: 3rem 0 0; scroll-margin-top: 1rem; }
+section.panel > h2 { font-size: 1.25rem; margin: 0 0 0.35rem; letter-spacing: -0.01em; }
+section.panel > p.caption { color: var(--ink-soft); max-width: var(--measure); margin: 0 0 1rem; }
+figure.map { margin: 0; }
+.map-scroll {
+  overflow-x: auto; overflow-y: hidden;
+  background: var(--map-bg); border: 1px solid var(--rule-strong); border-radius: var(--radius);
+  padding: 1.25rem 1.4rem;
+}
+.map-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+pre.ascii {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace;
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "calt" 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  white-space: pre;
+  tab-size: 4;
+  color: var(--map-ink);
+}
+figcaption { color: var(--ink-faint); font-size: 0.85rem; margin-top: 0.6rem; }
+ul.notes { max-width: var(--measure); color: var(--ink-soft); padding-left: 1.1rem; }
+ul.notes li { margin: 0.3rem 0; }
+table { border-collapse: collapse; width: 100%; margin: 0.5rem 0 0; font-size: 0.92rem; }
+th, td { text-align: left; padding: 0.5rem 0.7rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { color: var(--ink-faint); font-weight: 600; font-size: 0.72rem; letter-spacing: 0.1em; text-transform: uppercase; }
+td.glyph, td.mono, code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-variant-ligatures: none;
+  white-space: pre;
+}
+td.glyph { color: var(--accent); }
+.table-scroll { overflow-x: auto; }
+.tag {
+  display: inline-block; font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase;
+  padding: 0.1rem 0.5rem; border-radius: 999px; border: 1px solid currentColor;
+}
+.tag.present { color: var(--ok); }
+.tag.absent { color: var(--absent); }
+footer.page { margin-top: 4rem; padding-top: 1.5rem; border-top: 1px solid var(--rule); color: var(--ink-faint); font-size: 0.85rem; }
+footer.page dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; margin: 0; }
+footer.page dt { color: var(--ink-faint); }
+footer.page dd { margin: 0; color: var(--ink-soft); }
+a { color: var(--accent); }
+@media print {
+  :root { --paper: #fff; --paper-raised: #fff; --map-bg: #fff; --ink: #000; --map-ink: #000; --rule: #999; --rule-strong: #555; }
+  body { font-size: 11pt; }
+  nav.toc, .skip { display: none; }
+  .map-scroll { overflow: visible; border: 1px solid #555; page-break-inside: avoid; }
+  pre.ascii { font-size: 8pt; }
+  section.panel { page-break-inside: avoid; }
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to the systems maps</a>
+<div class="wrap">
+  <header class="page">
+    <p class="eyebrow">Shared platform · synth.optimizer_env.v1</p>
+    <h1>Shared optimizer environment and training loop</h1>
+    <p class="subtitle">One versioned contract for observation, action, transition, reward, checkpoint, pause, fork and single-step — plus the surface a proposer policy would train on.</p>
+    <div class="summary">
+      <dl>
+        <dt>Hypothesis</dt><dd>GEPA, GELO, OHCO, VZPO and MAPO can share one resumable environment contract without pushing algorithm names into generic state-machine code.</dd>
+        <dt>Verdict</dt><dd>Implemented and exercised by MAPO; not yet mapped onto the other four.</dd>
+        <dt>Confidence</dt><dd>Moderate for the contract, none for cross-optimizer portability.</dd>
+        <dt>Why</dt><dd>MAPO implements the full contract — actions, digests, checkpoint, pause/restart, fork, one-step and trajectory export — and its gates pass. No other optimizer has been mapped onto it yet, so portability is asserted, not shown.</dd>
+      </dl>
+    </div>
+  </header>
+  <nav class="toc" aria-label="Sections">
+    <h2>Sections</h2>
+    <ol>
+      <li><a href="#protocol">Core types and lifecycle</a></li>
+      <li><a href="#training-loop">Trajectory export and the policy loop</a></li>
+      <li><a href="#boundaries">Boundaries</a></li>
+      <li><a href="#receipts">Receipts</a></li>
+      <li><a href="#legend">Legend</a></li>
+    </ol>
+  </nav>
+  <main id="main">
+  <section class="panel" id="protocol" aria-labelledby="protocol-h">
+    <h2 id="protocol-h">Core types and lifecycle</h2>
+    <p class="caption">The nine core types and the four lifecycle operations every optimizer must support identically. Algorithm-specific data rides in extension maps.</p>
+    <figure class="map">
+      <div class="map-scroll" tabindex="0" role="group" aria-label="Core types and lifecycle systems map, monospace text">
+        <pre class="ascii">synth.optimizer_env.v1 — five optimizers, one state machine, no algorithm names in generic code
+
+
+┌────── OptimizerObservation ──────┐              ┌────── OptimizerAction ───────┐              ┌────── OptimizerTransition ───────┐
+│ objective · hypotheses           │              │ propose · select_parent      │              │ pre-observation digest           │
+│ incumbent · candidates           │              │ allocate_evaluation          │              │ pre-state digest                 │
+│ frontier · lineage               │              │ accept · reject · defer      │              │ action + actor identity          │
+│ evidence + uncertainty           │    policy    │ merge · patch · discard      │   execute    │ executed work + evidence         │
+│ failure clusters · signals       │─────────────▶│ adjust_setting · annotate    │─────────────▶│ post-state digest                │
+│ pending / in-flight work         │              │ checkpoint · pause · resume  │              │ RewardVector                     │
+│ budgets · allowed actions        │              │ fork · stop                  │              │ usage · violations               │
+│ versions · digest                │              │                              │              │ continuation / terminal          │
+└──────────────────────────────────┘              └──────────────────────────────┘              └──────────────────────────────────┘
+    │
+    │ checkpoint §
+    ▼
+┌───── OptimizerCheckpoint § ──────┐              ┌──── ALGORITHM EXTENSIONS ────┐              ┌─────────── LIFECYCLE ────────────┐
+│ schema + algorithm versions      │              │ extensions{gepa: …}          │              │ pause: stop new work, resolve    │
+│ state and event cursor           │              │ extensions{gelo: …}          │              │   in-flight, persist cursor      │
+│ candidates · lineage · frontier  │   carried    │ extensions{ohco: …}          │   uniform    │ restart: verify, reconcile,      │
+│ pending work dispositions        │─────────────▶│ extensions{vzpo: …}          │─────────────▶│   never re-score or re-charge    │
+│ RNG · budgets · usage ledger     │              │ extensions{mapo: …}          │              │ fork: new episode id with        │
+│ evaluator + cache identity       │              │                              │              │   parentEpisodeId + digest       │
+│ container manifest digests       │              │ unknown keys survive         │              │ step: exactly one action         │
+└──────────────────────────────────┘              └──────────────────────────────┘              └──────────────────────────────────┘</pre>
+      </div>
+      <figcaption>Selectable monospace map — search this page to find any node label.</figcaption>
+    </figure>
+    <ul class="notes">
+      <li>A checkpoint validates its own digest on load; a mismatch is an error, not a warning.</li>
+      <li>An optimizer advertises only the actions it genuinely supports — MAPO, for example, declares merge and discard unsupported rather than faking them.</li>
+    </ul>
+  </section>
+  <section class="panel" id="training-loop" aria-labelledby="training-loop-h">
+    <h2 id="training-loop-h">Trajectory export and the policy loop</h2>
+    <p class="caption">What has to exist before anyone may say a proposer policy was trained, and the line between environment evidence and policy evidence.</p>
+    <figure class="map">
+      <div class="map-scroll" tabindex="0" role="group" aria-label="Trajectory export and the policy loop systems map, monospace text">
+        <pre class="ascii">OPTIMIZER-AS-RL-ENVIRONMENT — the surface a proposer policy would be trained on
+
+
+┌────── OPTIMIZER EPISODES ──────┐              ┌───── TRAJECTORY EXPORT ──────┐            ┏━━━━━━━━━ FIXED SPLITS ━━━━━━━━━┓
+│ GEPA · GELO · OHCO             │              │ versioned training records   │            ┃ train / development /          ┃
+│ VZPO · MAPO                    │    export    │ large evidence by reference  │ partition  ┃ sealed evaluation              ┃
+│ observation / action /         │─────────────▶│ behaviour-policy identity    │───────────▶┃ anti-leakage tests guard       ┃
+│ transition / reward records    │              │ logprobs where claimed       │            ┃ heldout and verifier state     ┃
+│                                │              │                              │            ┃                                ┃
+└────────────────────────────────┘              └──────────────────────────────┘            ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+                                                                │
+                                                                │
+                                                                │
+                                                                ▼
+┌──────────── REPLAY ────────────┐              ┌────── PROPOSER POLICY ───────┐            ┌───── WHAT MAY BE CLAIMED ──────┐
+│ deterministic or recorded      │              │ deterministic baseline       │            │ environment contract: yes,     │
+│ evaluator where supported      │              │   (the control arm)          │            │   once a real transition runs  │
+│ one-step operation is the      │              │ Nemotron 3.5 Lightning       │            │ policy improvement: only with  │
+│ unit of comparison:            │◀─────────────│   adapter + preflight        │───────────▶│   a real optimizer-policy      │
+│ fixed policy vs proposer       │              │ offline imitation first,     │            │   update AND a sealed          │
+│                                │              │ then preference, then RL     │            │   evaluation receipt           │
+└────────────────────────────────┘              └──────────────────────────────┘            └────────────────────────────────┘
+
+Renaming prompt optimization to RLVR is not an RL result. A scripted replay is evidence about the environment, not the policy.</pre>
+      </div>
+      <figcaption>Selectable monospace map — search this page to find any node label.</figcaption>
+    </figure>
+    <ul class="notes">
+      <li>Sealed evaluation splits are fixed before any policy sees a trajectory.</li>
+      <li>The one-step operation is deliberately the unit of comparison: it makes a fixed policy and a candidate proposer directly comparable on the same checkpoint.</li>
+    </ul>
+  </section>
+  <section class="panel" id="boundaries" aria-labelledby="boundaries-h">
+    <h2 id="boundaries-h">Boundaries and who may read what</h2>
+    <p class="caption">Each row is a boundary drawn in the maps above. Crossing it changes ownership, visibility, or both.</p>
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th scope="col">Boundary</th><th scope="col">Rule</th></tr></thead>
+      <tbody>
+      <tr><td class="glyph">Policy-visible</td><td>Observation fields explicitly classified as policy-visible, and nothing else.</td></tr>
+      <tr><td class="glyph">Operator-only</td><td>Reward weighting, evaluator internals, workspace and artifact paths.</td></tr>
+      <tr><td class="glyph">Sealed evaluation</td><td>Heldout data, hidden rubric state and generalization reward.</td></tr>
+      <tr><td class="glyph">Secret</td><td>Provider credentials and prohibited trace content. Never reachable from an observation.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  </section>
+  <section class="panel" id="receipts" aria-labelledby="receipts-h">
+    <h2 id="receipts-h">Receipts</h2>
+    <p class="caption">Identifiers from real runs. A row marked <em>not recorded</em> means the corresponding run has not been executed yet — the map still renders, it just cannot point at evidence.</p>
+    <div class="table-scroll">
+      <table>
+      <thead><tr><th scope="col">Receipt</th><th scope="col">Identifier</th><th scope="col">Detail</th><th scope="col">Status</th></tr></thead>
+      <tbody>
+      <tr><td>MAPO contract conformance</td><td class="mono">50 gates passing</td><td>protocol, candidates, rollout and episode suites</td><td><span class="tag present">recorded</span></td></tr>
+      <tr><td>GEPA mapping</td><td class="mono">—</td><td>map service state onto the shared protocol</td><td><span class="tag absent">not recorded</span></td></tr>
+      <tr><td>GELO mapping</td><td class="mono">—</td><td>map board and candidate state onto the shared protocol</td><td><span class="tag absent">not recorded</span></td></tr>
+      <tr><td>Nemotron preflight</td><td class="mono">—</td><td>adapter, capability preflight and one bounded inference-only step</td><td><span class="tag absent">not recorded</span></td></tr>
+      </tbody>
+      </table>
+    </div>
+  </section>
+  <section class="panel" id="legend" aria-labelledby="legend-h">
+    <h2 id="legend-h">Legend</h2>
+    <p class="caption">One visual language across all seven maps.</p>
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th scope="col">Glyph</th><th scope="col">Meaning</th></tr></thead>
+      <tbody>
+      <tr><td class="glyph">┌── ──┐</td><td>runtime / process boundary — one thing that can crash on its own</td></tr>
+      <tr><td class="glyph">╔══ ══╗</td><td>trust boundary — crossing it changes who may read the data</td></tr>
+      <tr><td class="glyph">┏━━ ━━┓</td><td>sealed or secret region — never reaches a policy-visible observation</td></tr>
+      <tr><td class="glyph">──────▶</td><td>control or data flow in the direction of the arrow</td></tr>
+      <tr><td class="glyph">╌╌╌╌╌╌▶</td><td>advisory, deferred or not-yet-implemented edge</td></tr>
+      <tr><td class="glyph">[id]</td><td>a durable identifier: run, episode, checkpoint, candidate or digest</td></tr>
+      <tr><td class="glyph">§</td><td>state that is written to durable storage and survives a restart</td></tr>
+      </tbody>
+    </table>
+  </div>
+  </section>
+  </main>
+  <footer class="page">
+    <dl>
+      <dt>Protocol schema</dt><dd>synth.optimizer_env.v1</dd>
+      <dt>Reference implementation</dt><dd>MAPO <span class="tag">dungeongrid.mapo.episode.v1</span></dd>
+      <dt>Mapped optimizers</dt><dd>1 of 5 <span class="tag">GEPA, GELO, OHCO, VZPO outstanding</span></dd>
+      <dt>Policy training</dt><dd>surface only <span class="tag">no policy update run</span></dd>
+    </dl>
+  </footer>
+</div>
+</body>
+</html>

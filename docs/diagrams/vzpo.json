@@ -1,0 +1,129 @@
+{
+  "boundaries": [
+    [
+      "Optimizer side",
+      "Candidates, lineage, budgets, and the four proxy fields."
+    ],
+    [
+      "Verifier proxy",
+      "Capability-scoped. Enumerates exactly what may cross."
+    ],
+    [
+      "Sealed verifier",
+      "Rubric internals, per-criterion detail, grader prompts."
+    ],
+    [
+      "Sealed heldout",
+      "Heldout essays and the frozen grader outcome."
+    ]
+  ],
+  "confidence": "None for the v0.7 adapter; the REB-063 prompt result is historical evidence, not proof of this adapter.",
+  "hypothesis": "A capability-scoped verifier proxy can drive prompt, preference and reward optimization without ever exposing rubric internals or heldout essays.",
+  "legend": [
+    [
+      "\u250c\u2500\u2500 \u2500\u2500\u2510",
+      "runtime / process boundary \u2014 one thing that can crash on its own"
+    ],
+    [
+      "\u2554\u2550\u2550 \u2550\u2550\u2557",
+      "trust boundary \u2014 crossing it changes who may read the data"
+    ],
+    [
+      "\u250f\u2501\u2501 \u2501\u2501\u2513",
+      "sealed or secret region \u2014 never reaches a policy-visible observation"
+    ],
+    [
+      "\u2500\u2500\u2500\u2500\u2500\u2500\u25b6",
+      "control or data flow in the direction of the arrow"
+    ],
+    [
+      "\u254c\u254c\u254c\u254c\u254c\u254c\u25b6",
+      "advisory, deferred or not-yet-implemented edge"
+    ],
+    [
+      "[id]",
+      "a durable identifier: run, episode, checkpoint, candidate or digest"
+    ],
+    [
+      "\u00a7",
+      "state that is written to durable storage and survives a restart"
+    ]
+  ],
+  "metadata": [
+    {
+      "label": "Reference tasks",
+      "note": "",
+      "value": "REB-063 \u00b7 REB-064 \u00b7 REB-065"
+    },
+    {
+      "label": "Benchmark",
+      "note": "",
+      "value": "EssayBench"
+    },
+    {
+      "label": "Adapter status",
+      "note": "",
+      "value": "not built"
+    },
+    {
+      "label": "Known blocker",
+      "note": "",
+      "value": "provider TPM retry / cooldown"
+    }
+  ],
+  "optimizer": "VZPO",
+  "panels": [
+    {
+      "ascii_map": "VZPO \u2014 THE CHINESE WALL: what the optimizer may read from the verifier, and nothing more\n\n\n\n\u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 OPTIMIZER SIDE \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510                \u2554\u2550\u2550\u2550\u2550\u2550\u2550 VERIFIER PROXY \u2550\u2550\u2550\u2550\u2550\u2550\u2557          \u250f\u2501\u2501\u2501\u2501\u2501\u2501 VERIFIER (sealed) \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2513\n\u2502 candidate prompts,             \u2502                \u2551 capability-scoped          \u2551          \u2503 rubric internals               \u2503\n\u2502 preference pairs or            \u2502                \u2551 returns:                   \u2551          \u2503 per-criterion detail           \u2503\n\u2502 reward-model configs           \u2502                \u2551   score                    \u2551          \u2503 heldout essays                 \u2503\n\u2502 lineage and budgets            \u2502   candidate    \u2551   rank                     \u2551  scoped  \u2503 grader prompts                 \u2503\n\u2502                                \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2551   weakest dimension        \u2551\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2503                                \u2503\n\u2502 sees only the four fields      \u2502                \u2551   allowed hints            \u2551          \u2503 unreachable from the           \u2503\n\u2502 the proxy is allowed to        \u2502                \u2551                            \u2551          \u2503 optimizer side by              \u2503\n\u2502 return                         \u2502                \u2551 nothing else crosses       \u2551          \u2503 construction                   \u2503\n\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518                \u255a\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255d          \u2517\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u251b\n                                                                 \u2502\n                                                                 \u2502\n                                                                 \u25bc\n\u250c\u2500\u2500\u2500\u2500\u2500\u2500 PINS AND CONTROLS \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510                \u250c\u2500\u2500\u2500\u2500\u2500 VERIFIER REWARD \u2500\u2500\u2500\u2500\u2500\u2500\u2510          \u250f\u2501\u2501\u2501\u2501 FROZEN HELDOUT GRADER \u2501\u2501\u2501\u2501\u2501\u2513\n\u2502 model \u00b7 decode \u00b7 repeats       \u2502                \u2502 the training signal        \u2502          \u2503 the outcome measure            \u2503\n\u2502 sample size \u00b7 null control     \u2502    carried     \u2502 may saturate               \u2502 distinct \u2503 never the training signal      \u2503\n\u2502 blinded comparison             \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2502 fidelity is reported       \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2503 read once, after freezing      \u2503\n\u2502                                \u2502                \u2502                            \u2502          \u2503                                \u2503\n\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518                \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518          \u2517\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u251b\n\nVerifier reward and frozen heldout outcome are different quantities; reporting\none as the other is the failure this wall exists to prevent.",
+      "caption": "Four fields cross the proxy: score, rank, weakest dimension, and the hints explicitly allowed. Everything else stays sealed.",
+      "notes": [
+        "Verifier reward may saturate; reward-model fidelity is reported alongside it rather than assumed.",
+        "Selection never reads the frozen heldout grader."
+      ],
+      "slug": "wall",
+      "title": "The verifier wall"
+    },
+    {
+      "ascii_map": "THREE VZPO LANES ON ESSAYBENCH \u2014 substrate proven, lift still open\n\n\n\u250c\u2500\u2500\u2500\u2500 REB-063 \u00b7 prompt / GEPA \u2500\u2500\u2500\u2500\u2500\u2510\n\u2502 verifier-scored prompt search    \u2502\n\u2502 positive blinded result exists   \u2502\n\u2502 historical evidence, not proof   \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\n\u2502 of the new hosted adapter        \u2502             \u2502\n\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518             \u2502\n                                                 \u2502\n                                                 \u2502\n\u250c\u2500\u2500\u2500 REB-064 \u00b7 Zeno-ranked DPO \u2500\u2500\u2500\u2500\u2510             \u2502  \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500 HOSTED ADAPTER \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510          \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 KNOWN BLOCKER \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\n\u2502 preference pairs from ranks      \u2502             \u2502  \u2502 one optimizer with modes,    \u2502          \u2502 provider TPM retry and         \u2502\n\u2502 substrate proven                 \u2502             \u2502  \u2502 or a family with distinct    \u2502   risk   \u2502 cooldown defect: bound it      \u2502\n\u2502 measured lift: open              \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2502 algorithm ids \u2014 decide and   \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2502 or stop cleanly and record     \u2502\n\u2502                                  \u2502             \u2502  \u2502 write it down                \u2502          \u2502 the exact resume point         \u2502\n\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518             \u2502  \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518          \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\n                                                 \u2502\n                                                 \u2502\n\u250c\u2500\u2500\u2500 REB-065 \u00b7 Zeno-reward RLVR \u2500\u2500\u2500\u2510             \u2502\n\u2502 verifier reward for GRPO         \u2502             \u2502\n\u2502 substrate proven                 \u2502             \u2502\n\u2502 measured lift: open              \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\n\u2502                                  \u2502\n\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\n\nDo not claim DPO or RLVR lift. Their substrates are proven; the measured effect is not.",
+      "caption": "Whether VZPO is one optimizer with modes or a family with distinct algorithm ids is an open decision that has to be written down before the adapter ships.",
+      "notes": [
+        "Start with the smallest methodologically valid prompt-lane test; escalate only once the wall audit passes."
+      ],
+      "slug": "lanes",
+      "title": "Three lanes, one adapter"
+    }
+  ],
+  "receipts": [
+    {
+      "detail": "positive blinded result; predates this adapter",
+      "identifier": "historical",
+      "label": "REB-063 prompt result",
+      "present": true
+    },
+    {
+      "detail": "wall audit, calls, tokens, lineage, checkpoint",
+      "identifier": "",
+      "label": "hosted adapter run",
+      "present": false
+    },
+    {
+      "detail": "frozen grader, read once",
+      "identifier": "",
+      "label": "heldout evaluation",
+      "present": false
+    },
+    {
+      "detail": "durability proof",
+      "identifier": "",
+      "label": "pause / restart / one-step",
+      "present": false
+    }
+  ],
+  "schema": "synth.optimizer_diagram.v1",
+  "schema_version": "synth.optimizer_env.v1 (target)",
+  "slug": "vzpo",
+  "subtitle": "Verifier-driven prompt, preference and reward optimization on EssayBench, with a hard wall between the training signal and the outcome measure.",
+  "title": "VZPO",
+  "verdict": "Measurement spine exists as REB evidence. The hosted adapter is not built.",
+  "why": "REB-063/064/065 establish the wall, the pins and the substrates. Extracting them into a reusable hosted adapter, and bounding the provider TPM retry defect, is outstanding work."
+}

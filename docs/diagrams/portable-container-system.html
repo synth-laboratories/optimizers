@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Portable container bundle standard</title>
+  <meta name="description" content="One immutable image, one content-addressed source bundle, one manifest that binds them, and one launcher that verifies and records everything it did.">
+  <meta name="generator" content="synth.optimizer_diagram.v1">
+  <meta name="synth:manifest_schema" content="synth.container_bundle.v1">
+  <meta name="synth:status" content="design">
+  <meta name="synth:task_families" content="healthbench · craftax · essaybench · dungeongrid">
+  <meta name="synth:dispatch_rule" content="declared capabilities, never task names">
+  <style>
+:root {
+  color-scheme: light dark;
+  --paper: #fbfaf9;
+  --paper-raised: #ffffff;
+  --ink: #16150f;
+  --ink-soft: #5c5850;
+  --ink-faint: #8a857b;
+  --rule: #e0dcd4;
+  --rule-strong: #c8c2b7;
+  --accent: #c2560a;
+  --accent-soft: #fdf1e6;
+  --map-bg: #ffffff;
+  --map-ink: #23211a;
+  --ok: #1f6d43;
+  --absent: #8a857b;
+  --measure: 74ch;
+  --radius: 10px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #0e0e0d;
+    --paper-raised: #171716;
+    --ink: #f2efe9;
+    --ink-soft: #b3ada2;
+    --ink-faint: #837e75;
+    --rule: #2a2926;
+    --rule-strong: #3d3b36;
+    --accent: #ff8a2a;
+    --accent-soft: #2a1a0c;
+    --map-bg: #121211;
+    --map-ink: #e8e4dc;
+    --ok: #57c98c;
+    --absent: #837e75;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: ui-sans-serif, -apple-system, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.6;
+  text-rendering: optimizeLegibility;
+}
+.skip {
+  position: absolute; left: -9999px; top: 0;
+  background: var(--accent); color: #fff; padding: 0.6rem 1rem; z-index: 10;
+}
+.skip:focus { left: 0; }
+.wrap { max-width: 1180px; margin: 0 auto; padding: 2.5rem 1.5rem 5rem; }
+header.page { border-bottom: 1px solid var(--rule); padding-bottom: 1.75rem; margin-bottom: 2rem; }
+.eyebrow {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.75rem; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--accent); margin: 0 0 0.6rem;
+}
+h1 { font-size: clamp(1.7rem, 1.2rem + 1.6vw, 2.5rem); line-height: 1.15; margin: 0 0 0.5rem; letter-spacing: -0.015em; }
+.subtitle { color: var(--ink-soft); max-width: var(--measure); margin: 0 0 1.5rem; font-size: 1.05rem; }
+.summary {
+  background: var(--paper-raised); border: 1px solid var(--rule); border-left: 3px solid var(--accent);
+  border-radius: var(--radius); padding: 1.1rem 1.3rem; max-width: var(--measure);
+}
+.summary dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.35rem 1rem; margin: 0; }
+.summary dt {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.72rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-faint);
+  padding-top: 0.22rem;
+}
+.summary dd { margin: 0; }
+nav.toc { margin: 2rem 0; }
+nav.toc h2 {
+  font-size: 0.72rem; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--ink-faint); margin: 0 0 0.6rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+nav.toc ol { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 0.4rem; counter-reset: toc; }
+nav.toc a {
+  display: inline-block; padding: 0.35rem 0.7rem; border: 1px solid var(--rule);
+  border-radius: 999px; text-decoration: none; color: var(--ink-soft); font-size: 0.85rem;
+}
+nav.toc a:hover, nav.toc a:focus-visible { border-color: var(--accent); color: var(--accent); }
+section.panel { margin: 3rem 0 0; scroll-margin-top: 1rem; }
+section.panel > h2 { font-size: 1.25rem; margin: 0 0 0.35rem; letter-spacing: -0.01em; }
+section.panel > p.caption { color: var(--ink-soft); max-width: var(--measure); margin: 0 0 1rem; }
+figure.map { margin: 0; }
+.map-scroll {
+  overflow-x: auto; overflow-y: hidden;
+  background: var(--map-bg); border: 1px solid var(--rule-strong); border-radius: var(--radius);
+  padding: 1.25rem 1.4rem;
+}
+.map-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+pre.ascii {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace;
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "calt" 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  white-space: pre;
+  tab-size: 4;
+  color: var(--map-ink);
+}
+figcaption { color: var(--ink-faint); font-size: 0.85rem; margin-top: 0.6rem; }
+ul.notes { max-width: var(--measure); color: var(--ink-soft); padding-left: 1.1rem; }
+ul.notes li { margin: 0.3rem 0; }
+table { border-collapse: collapse; width: 100%; margin: 0.5rem 0 0; font-size: 0.92rem; }
+th, td { text-align: left; padding: 0.5rem 0.7rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { color: var(--ink-faint); font-weight: 600; font-size: 0.72rem; letter-spacing: 0.1em; text-transform: uppercase; }
+td.glyph, td.mono, code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-variant-ligatures: none;
+  white-space: pre;
+}
+td.glyph { color: var(--accent); }
+.table-scroll { overflow-x: auto; }
+.tag {
+  display: inline-block; font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase;
+  padding: 0.1rem 0.5rem; border-radius: 999px; border: 1px solid currentColor;
+}
+.tag.present { color: var(--ok); }
+.tag.absent { color: var(--absent); }
+footer.page { margin-top: 4rem; padding-top: 1.5rem; border-top: 1px solid var(--rule); color: var(--ink-faint); font-size: 0.85rem; }
+footer.page dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; margin: 0; }
+footer.page dt { color: var(--ink-faint); }
+footer.page dd { margin: 0; color: var(--ink-soft); }
+a { color: var(--accent); }
+@media print {
+  :root { --paper: #fff; --paper-raised: #fff; --map-bg: #fff; --ink: #000; --map-ink: #000; --rule: #999; --rule-strong: #555; }
+  body { font-size: 11pt; }
+  nav.toc, .skip { display: none; }
+  .map-scroll { overflow: visible; border: 1px solid #555; page-break-inside: avoid; }
+  pre.ascii { font-size: 8pt; }
+  section.panel { page-break-inside: avoid; }
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to the systems maps</a>
+<div class="wrap">
+  <header class="page">
+    <p class="eyebrow">Shared platform · synth.container_bundle.v1</p>
+    <h1>Portable container bundle standard</h1>
+    <p class="subtitle">One immutable image, one content-addressed source bundle, one manifest that binds them, and one launcher that verifies and records everything it did.</p>
+    <div class="summary">
+      <dl>
+        <dt>Hypothesis</dt><dd>Every supported task runtime can be launched, verified and restarted through one capability-dispatched path, with no benchmark-name conditionals in generic code.</dd>
+        <dt>Verdict</dt><dd>Specified. Not yet proven end to end in this campaign.</dd>
+        <dt>Confidence</dt><dd>None — no bundle has been built, uploaded or launched under this schema yet.</dd>
+        <dt>Why</dt><dd>The v0.7 MAPO lanes ran against the in-process DungeonGrid environment, not through a published bundle, so every receipt row below is honestly empty.</dd>
+      </dl>
+    </div>
+  </header>
+  <nav class="toc" aria-label="Sections">
+    <h2>Sections</h2>
+    <ol>
+      <li><a href="#binding">Image and source binding</a></li>
+      <li><a href="#launcher">Downloader and launcher</a></li>
+      <li><a href="#boundaries">Boundaries</a></li>
+      <li><a href="#receipts">Receipts</a></li>
+      <li><a href="#legend">Legend</a></li>
+    </ol>
+  </nav>
+  <main id="main">
+  <section class="panel" id="binding" aria-labelledby="binding-h">
+    <h2 id="binding-h">Image and source binding</h2>
+    <p class="caption">The manifest is the only place the image digest, the source digest, the task contract and the build revision meet. Everything downstream cites its digest.</p>
+    <figure class="map">
+      <div class="map-scroll" tabindex="0" role="group" aria-label="Image and source binding systems map, monospace text">
+        <pre class="ascii">ONE MANIFEST BINDS AN IMMUTABLE IMAGE TO A CONTENT-ADDRESSED SOURCE BUNDLE
+
+
+┌──── BUILD (clean revision) ────┐                ╔═════ REGISTRY (immutable) ═════╗
+│ repository · full commit sha   │                ║ image reference                ║
+│ build recipe digest            │                ║ digest sha256:…                ║
+│ builder identity               │   push image   ║ platforms: amd64, arm64        ║ bind
+│ excludes .git, creds, caches,  │───────────────▶║                                ║─────▶
+│ venvs, weights, local outputs  │                ║ mutable tags are display-only  ║      ┌─── synth.container_bundle.v1 ────┐
+│                                │                ║                                ║      │ bundleId · revision              │
+└────────────────────────────────┘                ╚════════════════════════════════╝      │ image{reference, digest}         │
+                 │                                                                        │ source{uri, digest, mediaType}   │
+                 │                                                                        │ contracts{taskFamily,            │
+                 │                                ╔═══════ S3 SOURCE BUNDLE ═══════╗      │   capabilities, optimizer}       │
+                 │                                ║ content-addressed key          ║      │ runtime{command, ports,          │
+                 │                                ║ digest sha256:…                ║      │   healthcheck, timeout}          │
+                 │                   upload src   ║ media type + size bytes        ║ bind │ security · provenance · license  │
+                 └───────────────────────────────▶║                                ║─────▶│ manifest digest sha256:…         │
+                                                  ║ digest computed before upload  ║      │                                  │
+                                                  ║                                ║      └──────────────────────────────────┘
+                                                  ╚════════════════════════════════╝
+
+
+Generic orchestration dispatches on declared capabilities — never on a benchmark name.
+A mismatch is a refusal to launch, never a pin quietly rewritten to match a local tag.</pre>
+      </div>
+      <figcaption>Selectable monospace map — search this page to find any node label.</figcaption>
+    </figure>
+    <ul class="notes">
+      <li>Mutable tags are display-only; an immutable registry digest is required.</li>
+      <li>Credentials never enter the source bundle or the manifest — only secret references, resolved at launch and never logged.</li>
+    </ul>
+  </section>
+  <section class="panel" id="launcher" aria-labelledby="launcher-h">
+    <h2 id="launcher-h">Downloader and launcher</h2>
+    <p class="caption">One CLI path, eleven ordered steps, and a conformance suite that exercises the failure half of each one.</p>
+    <figure class="map">
+      <div class="map-scroll" tabindex="0" role="group" aria-label="Downloader and launcher systems map, monospace text">
+        <pre class="ascii">ONE DOWNLOADER / LAUNCHER — the same eleven steps for HealthBench, Craftax, EssayBench and DungeonGrid
+
+
+┌── 1–4  RESOLVE + VERIFY ───┐              ┌── 5–6  IMAGE + PREFLIGHT ──┐              ┌─── 7–9  START + RECORD ────┐
+│ resolve manifest           │              │ pull exact image digest    │              │ isolated run root          │
+│ check authorization        │              │ validate platform          │              │ wait on declared health    │
+│ download / cache source    │   verified   │ validate resources, ports  │   admitted   │ and capability contract    │
+│ verify digest              │─────────────▶│ validate network policy    │─────────────▶│ record container id, ports │
+│ safe extract:              │              │ resolve secret references  │              │ image / source / manifest  │
+│   no traversal,            │              │   (never logged)           │              │ digests, log paths         │
+│   no symlink escape        │              │                            │              │                            │
+└────────────────────────────┘              └────────────────────────────┘              └────────────────────────────┘
+                                                           │
+                                                           │
+                                                           ▼
+┌────── CONFORMANCE SUITE ───────┐            ┌── 10–11  STOP + RESTART ───┐        ┌────── PROVENANCE RECORD § ───────┐
+│ 403 · 404 · timeout · cut body │            │ stop descendants           │        │ every run cites the manifest     │
+│ arch mismatch · no capability  │            │ clean temporary state      │        │ digest it actually launched      │
+│ cache corruption · concurrent  │◀───────────│ restart from same bundle   │───────▶│ round-trips back to the build    │
+│                                │            │                            │        │                                  │
+└────────────────────────────────┘            └────────────────────────────┘        └──────────────────────────────────┘
+
+Refuse to launch when the image, source, architecture, task contract or optimizer capability is unavailable.</pre>
+      </div>
+      <figcaption>Selectable monospace map — search this page to find any node label.</figcaption>
+    </figure>
+    <ul class="notes">
+      <li>Restart uses the same immutable bundle, so a restarted container is the same container by construction rather than by convention.</li>
+    </ul>
+  </section>
+  <section class="panel" id="boundaries" aria-labelledby="boundaries-h">
+    <h2 id="boundaries-h">Boundaries and who may read what</h2>
+    <p class="caption">Each row is a boundary drawn in the maps above. Crossing it changes ownership, visibility, or both.</p>
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th scope="col">Boundary</th><th scope="col">Rule</th></tr></thead>
+      <tbody>
+      <tr><td class="glyph">Registry</td><td>Immutable. A digest is required; a tag is a label for humans.</td></tr>
+      <tr><td class="glyph">Object store</td><td>Content-addressed. Bytes are verified before extraction, not after.</td></tr>
+      <tr><td class="glyph">Secrets</td><td>Referenced by name in the manifest, resolved at launch, never written to logs or bundles.</td></tr>
+      <tr><td class="glyph">Generic orchestration</td><td>May read declared capabilities only. A benchmark-name branch here is a defect.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  </section>
+  <section class="panel" id="receipts" aria-labelledby="receipts-h">
+    <h2 id="receipts-h">Receipts</h2>
+    <p class="caption">Identifiers from real runs. A row marked <em>not recorded</em> means the corresponding run has not been executed yet — the map still renders, it just cannot point at evidence.</p>
+    <div class="table-scroll">
+      <table>
+      <thead><tr><th scope="col">Receipt</th><th scope="col">Identifier</th><th scope="col">Detail</th><th scope="col">Status</th></tr></thead>
+      <tbody>
+      <tr><td>HealthBench bundle</td><td class="mono">—</td><td>manifest, image digest, source digest</td><td><span class="tag absent">not recorded</span></td></tr>
+      <tr><td>Craftax bundle</td><td class="mono">—</td><td>manifest, image digest, source digest</td><td><span class="tag absent">not recorded</span></td></tr>
+      <tr><td>EssayBench bundle</td><td class="mono">—</td><td>manifest, image digest, source digest</td><td><span class="tag absent">not recorded</span></td></tr>
+      <tr><td>Conformance suite</td><td class="mono">—</td><td>schema, security, failure-injection and restart tests</td><td><span class="tag absent">not recorded</span></td></tr>
+      </tbody>
+      </table>
+    </div>
+  </section>
+  <section class="panel" id="legend" aria-labelledby="legend-h">
+    <h2 id="legend-h">Legend</h2>
+    <p class="caption">One visual language across all seven maps.</p>
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th scope="col">Glyph</th><th scope="col">Meaning</th></tr></thead>
+      <tbody>
+      <tr><td class="glyph">┌── ──┐</td><td>runtime / process boundary — one thing that can crash on its own</td></tr>
+      <tr><td class="glyph">╔══ ══╗</td><td>trust boundary — crossing it changes who may read the data</td></tr>
+      <tr><td class="glyph">┏━━ ━━┓</td><td>sealed or secret region — never reaches a policy-visible observation</td></tr>
+      <tr><td class="glyph">──────▶</td><td>control or data flow in the direction of the arrow</td></tr>
+      <tr><td class="glyph">╌╌╌╌╌╌▶</td><td>advisory, deferred or not-yet-implemented edge</td></tr>
+      <tr><td class="glyph">[id]</td><td>a durable identifier: run, episode, checkpoint, candidate or digest</td></tr>
+      <tr><td class="glyph">§</td><td>state that is written to durable storage and survives a restart</td></tr>
+      </tbody>
+    </table>
+  </div>
+  </section>
+  </main>
+  <footer class="page">
+    <dl>
+      <dt>Manifest schema</dt><dd>synth.container_bundle.v1</dd>
+      <dt>Status</dt><dd>design <span class="tag">no bundle materialised</span></dd>
+      <dt>Task families</dt><dd>healthbench · craftax · essaybench · dungeongrid</dd>
+      <dt>Dispatch rule</dt><dd>declared capabilities, never task names</dd>
+    </dl>
+  </footer>
+</div>
+</body>
+</html>

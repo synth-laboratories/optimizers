@@ -1,0 +1,131 @@
+{
+  "boundaries": [
+    [
+      "Policy-visible",
+      "Pool, frontier, train evidence, budgets, allowed actions."
+    ],
+    [
+      "Sealed evaluation",
+      "Heldout examples. Excluded from both observation and selection."
+    ],
+    [
+      "Operator-only",
+      "Evaluator internals, cache keys, provider routing."
+    ]
+  ],
+  "confidence": "None for the v0.7 claims \u2014 no GEPA lane was run in this campaign.",
+  "hypothesis": "GEPA's existing candidate, frontier, reflection and merge behaviour already fits the shared optimizer-environment contract, and the remaining work is durability, not algorithm change.",
+  "legend": [
+    [
+      "\u250c\u2500\u2500 \u2500\u2500\u2510",
+      "runtime / process boundary \u2014 one thing that can crash on its own"
+    ],
+    [
+      "\u2554\u2550\u2550 \u2550\u2550\u2557",
+      "trust boundary \u2014 crossing it changes who may read the data"
+    ],
+    [
+      "\u250f\u2501\u2501 \u2501\u2501\u2513",
+      "sealed or secret region \u2014 never reaches a policy-visible observation"
+    ],
+    [
+      "\u2500\u2500\u2500\u2500\u2500\u2500\u25b6",
+      "control or data flow in the direction of the arrow"
+    ],
+    [
+      "\u254c\u254c\u254c\u254c\u254c\u254c\u25b6",
+      "advisory, deferred or not-yet-implemented edge"
+    ],
+    [
+      "[id]",
+      "a durable identifier: run, episode, checkpoint, candidate or digest"
+    ],
+    [
+      "\u00a7",
+      "state that is written to durable storage and survives a restart"
+    ]
+  ],
+  "metadata": [
+    {
+      "label": "Repository",
+      "note": "branch v0.7/better-optimizer-visuals",
+      "value": "optimizers"
+    },
+    {
+      "label": "Shipped surface",
+      "note": "",
+      "value": "local engine + hosted runs"
+    },
+    {
+      "label": "State slices",
+      "note": "",
+      "value": "candidates \u00b7 frontier"
+    },
+    {
+      "label": "Protocol mapping",
+      "note": "",
+      "value": "not started"
+    }
+  ],
+  "optimizer": "GEPA",
+  "panels": [
+    {
+      "ascii_map": "GEPA SEARCH \u2014 parent selection, reflective proposal, evaluation, frontier update\n\n\n\u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500 CANDIDATE POOL \u00a7 \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510              \u250c\u2500\u2500\u2500\u2500\u2500 PARENT SELECTION \u2500\u2500\u2500\u2500\u2500\u2510              \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 REFLECTION / ASI \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\n\u2502 seed instruction modules       \u2502              \u2502 frontier-aware sampling    \u2502              \u2502 failure traces for the           \u2502\n\u2502 per-candidate lineage          \u2502              \u2502 per-example dominance      \u2502              \u2502 selected module only             \u2502\n\u2502 per-example scores and         \u2502    sample    \u2502 not a global argmax:       \u2502    target    \u2502 proposer rewrites the            \u2502\n\u2502 aggregate scores               \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2502 a candidate that wins one  \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2502 instruction text                 \u2502\n\u2502 frontier membership            \u2502              \u2502 example keeps its place   candidate       \u2502 merge combines two parents       \u2502\n\u2502 archive of rejected arms       \u2502              \u2502                            \u2502       \u2510\u2500\u2500\u2500\u2500\u2500\u2500\u2502 module-by-module                 \u2502\n\u2502                                \u2502              \u2502                            \u2502       \u2502      \u2502                                  \u2502\n\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518              \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518       \u2502      \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\n    \u25b2                                                                                \u2502\n    \u2502 accepted \u00a7                                                                     \u2502\n    \u2502                                                                                \u2502\n\u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500 FRONTIER UPDATE \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510              \u2554\u2550\u2550\u2550\u2550 EVALUATION (trust) \u2550\u2550\u2550\u2550\u2557       \u2502      \u250f\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 SEALED HELDOUT \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2513\n\u2502 accept \u00b7 reject \u00b7 archive      \u2502              \u2551 minibatch on train split   \u2551       \u2502      \u2503 never used for selection         \u2503\n\u2502 per-example Pareto retained    \u2502              \u2551 full train on promotion    \u2551       \u2502      \u2503 read once on the frozen          \u2503\n\u2502 regression on any example is   \u2502    scores    \u2551 evaluator-owned scoring    \u2551       \u2502      \u2503 winner, for the verdict only     \u2503\n\u2502 recorded, not averaged away    \u2502\u25c0\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2551 cache keyed by candidate   \u2551\u25c0\u2500\u2500\u2500\u2500\u2500\u2500\u2518      \u2503                                  \u2503\n\u2502                                \u2502              \u2551                            \u2551              \u2503                                  \u2503\n\u2502                                \u2502              \u2551                            \u2551              \u2503                                  \u2503\n\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518              \u255a\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255d              \u2517\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u251b\n\nSelection reads train evidence only; heldout is opened after the arms are frozen.",
+      "caption": "Parent selection is frontier-aware rather than a global argmax, which is what keeps a candidate that wins a single example alive.",
+      "notes": [
+        "Per-example scores are retained, so a regression on one example is visible instead of averaged away.",
+        "Reflection sees failure traces for the targeted module only."
+      ],
+      "slug": "search",
+      "title": "Search loop"
+    },
+    {
+      "ascii_map": "GEPA DURABILITY \u2014 the v0.7 target mapping onto synth.optimizer_env.v1\n\n\n\u250c\u2500\u2500\u2500\u2500 GEPA SERVICE (shipped) \u2500\u2500\u2500\u2500\u2510              \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 SHARED PROTOCOL \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510          \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 CHECKPOINT \u00a7 \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\n\u2502 local engine + hosted runs     \u2502              \u2502 observation \u2190 pool, frontier,    \u2502          \u2502 cursor \u00b7 pool \u00b7 frontier     \u2502\n\u2502 state slices: candidates,      \u2502              \u2502   evidence, budgets              \u2502          \u2502 evaluator + cache identity   \u2502\n\u2502   frontier                     \u2502     map      \u2502 action \u2192 propose, select,        \u2502   bind   \u2502 model / prompt / decode pins \u2502\n\u2502 algorithm event stream         \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2502   evaluate, accept, merge        \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2502 container manifest digests   \u2502\n\u2502 tunnel or container pool       \u2502              \u2502 reward \u2190 decomposed vector       \u2502          \u2502                              \u2502\n\u2502                                \u2502              \u2502                                  \u2502          \u2502                              \u2502\n\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518              \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518          \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\n\n\n\n\u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 KNOWN GAPS \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510              \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500 ONE PROPOSER STEP \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510          \u250c\u2500\u2500 RLVR-COMPATIBLE EPISODE \u2500\u2500\u2500\u2510\n\u2502 lossy pause / resume paths     \u2502              \u2502 load checkpoint \u2192 one            \u2502          \u2502 a real observation / action  \u2502\n\u2502 one-step not yet uniform       \u2502    close     \u2502 reflective proposal, no loop     \u2502 enables  \u2502 reward transition \u2014 not a    \u2502\n\u2502 reward not yet decomposed      \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2502 replayable vs a frozen evaluator \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2502 renamed prompt search        \u2502\n\u2502                                \u2502              \u2502                                  \u2502          \u2502                              \u2502\n\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518              \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518          \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\nAsync and flash modes may advertise different capabilities, but the sync path stays the correctness baseline.",
+      "caption": "The v0.7 work: map the shipped service state onto the shared protocol, close the lossy resume paths, and add the uniform one-step operation.",
+      "notes": [
+        "'RLVR-compatible' means a real observation/action/reward transition suitable for policy training. It does not mean relabelling prompt optimization."
+      ],
+      "slug": "durability",
+      "title": "Durability and protocol mapping"
+    }
+  ],
+  "receipts": [
+    {
+      "detail": "bounded eval receipt",
+      "identifier": "",
+      "label": "HealthBench hello-world",
+      "present": false
+    },
+    {
+      "detail": "bounded eval receipt",
+      "identifier": "",
+      "label": "Craftax hello-world",
+      "present": false
+    },
+    {
+      "detail": "reconciliation proof",
+      "identifier": "",
+      "label": "pause \u2192 restart \u2192 continue",
+      "present": false
+    },
+    {
+      "detail": "single reflective proposal from a checkpoint",
+      "identifier": "",
+      "label": "one proposer step",
+      "present": false
+    },
+    {
+      "detail": "one real transition with a decomposed reward",
+      "identifier": "",
+      "label": "RLVR-compatible episode",
+      "present": false
+    }
+  ],
+  "schema": "synth.optimizer_diagram.v1",
+  "schema_version": "synth.optimizer_env.v1 (target)",
+  "slug": "gepa",
+  "subtitle": "Reflective prompt evolution over a per-example frontier, and what it takes to make it durable enough to be the reference optimizer environment.",
+  "title": "GEPA",
+  "verdict": "Search behaviour shipped. Protocol mapping and durability work outstanding.",
+  "why": "The hosted and local GEPA surfaces exist and expose candidate and frontier state, but nothing here has been mapped onto synth.optimizer_env.v1 or given a one-step operation yet."
+}

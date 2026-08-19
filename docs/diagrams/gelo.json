@@ -1,0 +1,135 @@
+{
+  "boundaries": [
+    [
+      "Policy-visible",
+      "Board rows, cell descriptors, train evidence, budgets."
+    ],
+    [
+      "Operator-only",
+      "Cache keys, workspace paths, proposer routing and billing mode."
+    ],
+    [
+      "Sealed evaluation",
+      "Heldout evidence for the frozen winner."
+    ],
+    [
+      "Sandbox",
+      "Harness and SFT modes execute candidate code or training under a declared sandbox and network policy."
+    ]
+  ],
+  "confidence": "None for the four unvalidated modes; no v0.7 GELO lane was run.",
+  "hypothesis": "Coverage-first exploration over an archive of behaviour cells generalises from prompts to harness patches, training configs, policies and student models \u2014 behind one candidate envelope with per-mode schemas.",
+  "legend": [
+    [
+      "\u250c\u2500\u2500 \u2500\u2500\u2510",
+      "runtime / process boundary \u2014 one thing that can crash on its own"
+    ],
+    [
+      "\u2554\u2550\u2550 \u2550\u2550\u2557",
+      "trust boundary \u2014 crossing it changes who may read the data"
+    ],
+    [
+      "\u250f\u2501\u2501 \u2501\u2501\u2513",
+      "sealed or secret region \u2014 never reaches a policy-visible observation"
+    ],
+    [
+      "\u2500\u2500\u2500\u2500\u2500\u2500\u25b6",
+      "control or data flow in the direction of the arrow"
+    ],
+    [
+      "\u254c\u254c\u254c\u254c\u254c\u254c\u25b6",
+      "advisory, deferred or not-yet-implemented edge"
+    ],
+    [
+      "[id]",
+      "a durable identifier: run, episode, checkpoint, candidate or digest"
+    ],
+    [
+      "\u00a7",
+      "state that is written to durable storage and survives a restart"
+    ]
+  ],
+  "metadata": [
+    {
+      "label": "Repository",
+      "note": "branch v0.7/better-optimizer-visuals",
+      "value": "optimizers"
+    },
+    {
+      "label": "Shipped surface",
+      "note": "no public local executor",
+      "value": "hosted only"
+    },
+    {
+      "label": "State slice",
+      "note": "",
+      "value": "board"
+    },
+    {
+      "label": "Validated modes",
+      "note": "prompt",
+      "value": "1 of 5"
+    }
+  ],
+  "optimizer": "GELO",
+  "panels": [
+    {
+      "ascii_map": "GELO \u2014 GO-EXPLORE ARCHIVE: cells, returns, mutations, admission\n\n\n\u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500 ARCHIVE / BOARD \u00a7 \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510              \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 RETURN \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510          \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 MUTATE \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\n\u2502 cells keyed by a behaviour       \u2502              \u2502 pick a promising cell      \u2502          \u2502 proposer role rewrites the     \u2502\n\u2502 descriptor, not by score         \u2502              \u2502 restore its state          \u2502          \u2502 candidate for that cell        \u2502\n\u2502 one incumbent per cell           \u2502    select    \u2502 explore from there         \u2502 explore  \u2502 mutation vocabulary is         \u2502\n\u2502 visit counts and returns         \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2502                            \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2502 declared per target mode       \u2502\n\u2502 lineage back to the seed         \u2502              \u2502 coverage beats greed:      \u2502          \u2502 cache mode controls reuse      \u2502\n\u2502 public board rows only           \u2502              \u2502 an unvisited cell beats    \u2502          \u2502                                \u2502\n\u2502                                  \u2502              \u2502 a marginal score gain      \u2502          \u2502                                \u2502\n\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518              \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518          \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\n                                                                                                \u2502\n                                                                                                \u2502 candidate\n                                                                                                \u2502\n                                                  \u2554\u2550\u2550\u2550\u2550 ADMISSION (trust) \u2550\u2550\u2550\u2550\u2550\u2557                \u2502\n                                                  \u2551 evaluate on train split    \u2551                \u2502\n                                       update \u00a7   \u2551 reward mode declared       \u2551                \u2502\n                                    \u25c0\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2551 cell reassignment allowed  \u2551\u25c0\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\n                                                  \u2551 invalid evidence \u2260 zero    \u2551\n                                                  \u2551                            \u2551\n                                                  \u255a\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255d\nA candidate that lands in a new cell is kept for coverage even when its score is lower than the incumbent's.",
+      "caption": "The Go-Explore loop: cells are keyed by behaviour rather than score, so coverage survives contact with a greedy objective.",
+      "notes": [
+        "Cache mode, reward mode and checkpoint semantics are declared configuration, not implicit behaviour.",
+        "Public board rows must not leak internal paths."
+      ],
+      "slug": "archive",
+      "title": "Archive, return and mutate"
+    },
+    {
+      "ascii_map": "FIVE TARGET MODES BEHIND ONE HONEST CAPABILITY MODEL\n\n                                            \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 prompt \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\n                                            \u2502 instruction modules                  \u2502\n                                \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2502 SHIPPED (hosted)                     \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\n                                \u2502           \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518       \u2502\n                                \u2502           \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 harness \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510       \u2502\n                                \u2502           \u2502 reviewed code patch                  \u2502       \u2502\n                                \u251c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2502 sandboxed build + test               \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2524\n                                \u2502           \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518       \u2502\n\u250c\u2500\u2500\u2500\u2500 CANDIDATE ENVELOPE \u2500\u2500\u2500\u2500\u2510  \u2502           \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 sft \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510       \u2502  \u250f\u2501\u2501\u2501\u2501\u2501\u2501 CAPABILITY GATE \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2513\n\u2502 common identity, lineage,  \u2502  \u2502           \u2502 training config \u2192 adapter            \u2502       \u2502  \u2503 a mode is 'validated' only   \u2503\n\u2502 cell descriptor, reward    \u2502  \u251c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2502 capability preflight                 \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2524  \u2503 with a real run behind it    \u2503\n\u2502                            \u2502\u2500\u2500\u2502           \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518       \u2500\u2500\u25b6\u2503                              \u2503\n\u2502 mode-specific payload belo \u2502  \u2502           \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 rlvr \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510       \u2502  \u2503 preflight \u2260 proof            \u2503\n\u2502                            \u2502  \u2502           \u2502 policy state + rollouts              \u2502       \u2502  \u2503                              \u2503\n\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518  \u251c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2502 capability preflight                 \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2524  \u2517\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u251b\n                                \u2502           \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518       \u2502\n                                \u2502           \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 distillation \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510       \u2502\n                                \u2502           \u2502 student + teacher traces             \u2502       \u2502\n                                \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2502 fidelity evaluation                  \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\n                                            \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\n\n\n\nOne untyped payload for all five modes would hide exactly the differences that matter; each mode declares its own schema.",
+      "caption": "One candidate envelope, five payload schemas, and a capability gate that refuses to call a mode validated without a real run.",
+      "notes": [
+        "If a task does not expose a methodologically sound RLVR action/reward contract, the honest move is to record that limitation, not to invent one."
+      ],
+      "slug": "modes",
+      "title": "Five target modes"
+    }
+  ],
+  "receipts": [
+    {
+      "detail": "bounded eval receipt",
+      "identifier": "",
+      "label": "HealthBench hello-world",
+      "present": false
+    },
+    {
+      "detail": "bounded eval receipt",
+      "identifier": "",
+      "label": "Craftax hello-world",
+      "present": false
+    },
+    {
+      "detail": "real bounded patch \u2192 test \u2192 eval loop",
+      "identifier": "",
+      "label": "harness mode",
+      "present": false
+    },
+    {
+      "detail": "one bounded run with a real reward contract",
+      "identifier": "",
+      "label": "RLVR mode",
+      "present": false
+    },
+    {
+      "detail": "durability proof",
+      "identifier": "",
+      "label": "pause / restart / fork",
+      "present": false
+    }
+  ],
+  "schema": "synth.optimizer_diagram.v1",
+  "schema_version": "synth.optimizer_env.v1 (target)",
+  "slug": "gelo",
+  "subtitle": "Go-Explore over a prompt space today, and the five-target capability model that turns it into a general exploration optimizer.",
+  "title": "GELO",
+  "verdict": "Prompt mode shipped hosted. The other four modes are specified, not validated.",
+  "why": "The public package exposes hosted GELO with a board state slice and Go-Explore prompt-space configuration. Harness, SFT, RLVR and distillation exist as design targets with no run behind them."
+}

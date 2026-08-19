@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MAPO on multi-agent DungeonGrid</title>
+  <meta name="description" content="Multi-agent prompt/protocol, harness and RLVR optimization behind one episode model, one checkpoint format and one evaluator.">
+  <meta name="generator" content="synth.optimizer_diagram.v1">
+  <meta name="synth:repository" content="DungeonGrid">
+  <meta name="synth:optimizer_schema" content="dungeongrid.mapo.episode.v1">
+  <meta name="synth:environment_schema" content="synth.optimizer_env.v1">
+  <meta name="synth:harness_api" content="dungeongrid.mapo.harness.v1">
+  <meta name="synth:reward_schema" content="dungeongrid.mapo.reward.v1">
+  <meta name="synth:provider_spend" content="none">
+  <style>
+:root {
+  color-scheme: light dark;
+  --paper: #fbfaf9;
+  --paper-raised: #ffffff;
+  --ink: #16150f;
+  --ink-soft: #5c5850;
+  --ink-faint: #8a857b;
+  --rule: #e0dcd4;
+  --rule-strong: #c8c2b7;
+  --accent: #c2560a;
+  --accent-soft: #fdf1e6;
+  --map-bg: #ffffff;
+  --map-ink: #23211a;
+  --ok: #1f6d43;
+  --absent: #8a857b;
+  --measure: 74ch;
+  --radius: 10px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #0e0e0d;
+    --paper-raised: #171716;
+    --ink: #f2efe9;
+    --ink-soft: #b3ada2;
+    --ink-faint: #837e75;
+    --rule: #2a2926;
+    --rule-strong: #3d3b36;
+    --accent: #ff8a2a;
+    --accent-soft: #2a1a0c;
+    --map-bg: #121211;
+    --map-ink: #e8e4dc;
+    --ok: #57c98c;
+    --absent: #837e75;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: ui-sans-serif, -apple-system, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.6;
+  text-rendering: optimizeLegibility;
+}
+.skip {
+  position: absolute; left: -9999px; top: 0;
+  background: var(--accent); color: #fff; padding: 0.6rem 1rem; z-index: 10;
+}
+.skip:focus { left: 0; }
+.wrap { max-width: 1180px; margin: 0 auto; padding: 2.5rem 1.5rem 5rem; }
+header.page { border-bottom: 1px solid var(--rule); padding-bottom: 1.75rem; margin-bottom: 2rem; }
+.eyebrow {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.75rem; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--accent); margin: 0 0 0.6rem;
+}
+h1 { font-size: clamp(1.7rem, 1.2rem + 1.6vw, 2.5rem); line-height: 1.15; margin: 0 0 0.5rem; letter-spacing: -0.015em; }
+.subtitle { color: var(--ink-soft); max-width: var(--measure); margin: 0 0 1.5rem; font-size: 1.05rem; }
+.summary {
+  background: var(--paper-raised); border: 1px solid var(--rule); border-left: 3px solid var(--accent);
+  border-radius: var(--radius); padding: 1.1rem 1.3rem; max-width: var(--measure);
+}
+.summary dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.35rem 1rem; margin: 0; }
+.summary dt {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.72rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-faint);
+  padding-top: 0.22rem;
+}
+.summary dd { margin: 0; }
+nav.toc { margin: 2rem 0; }
+nav.toc h2 {
+  font-size: 0.72rem; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--ink-faint); margin: 0 0 0.6rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+nav.toc ol { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 0.4rem; counter-reset: toc; }
+nav.toc a {
+  display: inline-block; padding: 0.35rem 0.7rem; border: 1px solid var(--rule);
+  border-radius: 999px; text-decoration: none; color: var(--ink-soft); font-size: 0.85rem;
+}
+nav.toc a:hover, nav.toc a:focus-visible { border-color: var(--accent); color: var(--accent); }
+section.panel { margin: 3rem 0 0; scroll-margin-top: 1rem; }
+section.panel > h2 { font-size: 1.25rem; margin: 0 0 0.35rem; letter-spacing: -0.01em; }
+section.panel > p.caption { color: var(--ink-soft); max-width: var(--measure); margin: 0 0 1rem; }
+figure.map { margin: 0; }
+.map-scroll {
+  overflow-x: auto; overflow-y: hidden;
+  background: var(--map-bg); border: 1px solid var(--rule-strong); border-radius: var(--radius);
+  padding: 1.25rem 1.4rem;
+}
+.map-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+pre.ascii {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace;
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "calt" 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  white-space: pre;
+  tab-size: 4;
+  color: var(--map-ink);
+}
+figcaption { color: var(--ink-faint); font-size: 0.85rem; margin-top: 0.6rem; }
+ul.notes { max-width: var(--measure); color: var(--ink-soft); padding-left: 1.1rem; }
+ul.notes li { margin: 0.3rem 0; }
+table { border-collapse: collapse; width: 100%; margin: 0.5rem 0 0; font-size: 0.92rem; }
+th, td { text-align: left; padding: 0.5rem 0.7rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { color: var(--ink-faint); font-weight: 600; font-size: 0.72rem; letter-spacing: 0.1em; text-transform: uppercase; }
+td.glyph, td.mono, code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-variant-ligatures: none;
+  white-space: pre;
+}
+td.glyph { color: var(--accent); }
+.table-scroll { overflow-x: auto; }
+.tag {
+  display: inline-block; font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase;
+  padding: 0.1rem 0.5rem; border-radius: 999px; border: 1px solid currentColor;
+}
+.tag.present { color: var(--ok); }
+.tag.absent { color: var(--absent); }
+footer.page { margin-top: 4rem; padding-top: 1.5rem; border-top: 1px solid var(--rule); color: var(--ink-faint); font-size: 0.85rem; }
+footer.page dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; margin: 0; }
+footer.page dt { color: var(--ink-faint); }
+footer.page dd { margin: 0; color: var(--ink-soft); }
+a { color: var(--accent); }
+@media print {
+  :root { --paper: #fff; --paper-raised: #fff; --map-bg: #fff; --ink: #000; --map-ink: #000; --rule: #999; --rule-strong: #555; }
+  body { font-size: 11pt; }
+  nav.toc, .skip { display: none; }
+  .map-scroll { overflow: visible; border: 1px solid #555; page-break-inside: avoid; }
+  pre.ascii { font-size: 8pt; }
+  section.panel { page-break-inside: avoid; }
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to the systems maps</a>
+<div class="wrap">
+  <header class="page">
+    <p class="eyebrow">MAPO · dungeongrid.mapo.episode.v1 · synth.optimizer_env.v1</p>
+    <h1>MAPO on multi-agent DungeonGrid</h1>
+    <p class="subtitle">Multi-agent prompt/protocol, harness and RLVR optimization behind one episode model, one checkpoint format and one evaluator.</p>
+    <div class="summary">
+      <dl>
+        <dt>Hypothesis</dt><dd>Coordination structure — what heroes say, how the team is run, and what they choose — is the binding constraint on DungeonGrid team reward, not individual hero skill.</dd>
+        <dt>Verdict</dt><dd>Proven in all three varieties on bounded paired-seed runs.</dd>
+        <dt>Confidence</dt><dd>Low-to-moderate. The direction is consistent — 6 of 6 matched heldout seeds win in every lane — but the prompt/protocol and RLVR lanes show zero cross-seed variance, so those six seeds replicate a near-deterministic outcome rather than sampling a noisy one. Only the harness lane has real seed spread (sd 0.027). One quest per lane; scripted and linear policies only.</dd>
+        <dt>Why</dt><dd>Each lane&#x27;s champion was selected on train seeds and then improved on disjoint sealed heldout seeds: +1.13 (prompt/protocol), +0.15 (harness), +0.08 (RLVR).</dd>
+      </dl>
+    </div>
+  </header>
+  <nav class="toc" aria-label="Sections">
+    <h2>Sections</h2>
+    <ol>
+      <li><a href="#control-plane">Optimizer control plane</a></li>
+      <li><a href="#multi-agent-step">One multi-agent transition</a></li>
+      <li><a href="#branch-lattice">Branch checkpoints, forks and one-step</a></li>
+      <li><a href="#varieties">Three varieties, one envelope</a></li>
+      <li><a href="#boundaries">Boundaries</a></li>
+      <li><a href="#receipts">Receipts</a></li>
+      <li><a href="#legend">Legend</a></li>
+    </ol>
+  </nav>
+  <main id="main">
+  <section class="panel" id="control-plane" aria-labelledby="control-plane-h">
+    <h2 id="control-plane-h">Optimizer control plane</h2>
+    <p class="caption">The observation → proposer → action → admission → evaluation → checkpoint loop. Everything a candidate may read is on the left; everything it may never read is fenced on the right.</p>
+    <figure class="map">
+      <div class="map-scroll" tabindex="0" role="group" aria-label="Optimizer control plane systems map, monospace text">
+        <pre class="ascii">OPTIMIZER CONTROL PLANE — one episode model, three candidate varieties
+policy-visible surface on the left, sealed and protected regions fenced on the right
+                                                            next observation · new transition sequence linked to the checkpoint
+    ┌───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+┌───▼─────── OBSERVATION § ────────────┐              ┌──────── PROPOSER POLICY ─────────┐          ┌─────────────── ACTION ───────────────┐    │
+│ sequence · digest                    │              │ deterministic grid search        │          │ propose_candidate                    │    │
+│ incumbent · candidates · frontier    │              │   (spend-free default)           │          │ allocate_evaluation                  │    │
+│ train evidence + uncertainty         │              │ or a learned / LLM proposer      │          │ accept · reject · defer              │    │
+│ failure clusters · pending work      │   observe    │                                  │  decide  │ select_parent · annotate             │    │
+│ budgets · allowed actions            │─────────────▶│ emits exactly ONE                │─────────▶│ checkpoint · pause · resume          │    │
+│ target modules · versions            │              │ typed action per step            │          │ fork · stop                          │    │
+│ policy-visible fields only           │              │                                  │          │                                      │    │
+│                                      │              │                                  │          │                                      │    │
+└──────────────────────────────────────┘              └──────────────────────────────────┘          └──────────────────────────────────────┘    │
+                                                                                                                        │                       │
+                                                                                                                        │ admit                 │
+                                                                                                                        ▼                       │
+┌──────── DUNGEONGRID ROLLOUTS ────────┐              ╔═══════ EVALUATOR (trust) ════════╗          ┌─────────── ADMISSION GATE ───────────┐    │
+│ bounded multi-agent episodes         │              ║ owns seeds and reward            ║          │ schema validation                    │    │
+│ per-agent obs · actions · messages   │              ║ train / selection / heldout      ║          │ harness: patch → build → contract    │    │
+│ decomposed reward vector             │   allocate   ║ paired (quest, seed) compare     ║ admitted │ protected-surface refusal            │    │
+│ failure signals                      │◀─────────────║ evidence cache, no re-charge     ║◀─────────│ rejected ⇒ zero rollout spend        │    │
+│                                      │              ║                                  ║          │                                      │    │
+│                                      │              ║                                  ║          │                                      │    │
+└──────────────────────────────────────┘              ╚══════════════════════════════════╝          └──────────────────────────────────────┘    │
+                    │                                                   │                               │                                       │
+                    │ evidence §                                        │                               │                                       │
+                    ▼                                                   ▼                               ▼                                       │
+┌─────── OPTIMIZER CHECKPOINT § ───────┐              ┏━━━━━━━━━ SEALED HELDOUT ━━━━━━━━━┓          ┌───── FORK · RESTART · ONE-STEP ──────┐    │
+│ cursor · candidates · frontier       │              ┃ heldout seeds: digest + count    ┃          │ restore ⇒ identical state digest     │    │
+│ budgets · RNG · evaluator id         │              ┃ generalization reward            ┃  frozen  │ fork ⇒ new episode id + lineage      │    │
+│ actor + harness + container ids      │              ┃ read once, after arms freeze     ┃─────────▶│ step --max-actions 1                 │────┘
+│ self-verifying sha256 digest         │              ┃ never enters OBSERVATION         ┃          │ no double scoring or charging        │
+│                                      │              ┃                                  ┃          │                                      │
+└──────────────────────────────────────┘              ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛          └──────────────────────────────────────┘</pre>
+      </div>
+      <figcaption>Selectable monospace map — search this page to find any node label.</figcaption>
+    </figure>
+    <ul class="notes">
+      <li>A rejected candidate costs zero rollout budget: admission runs build and contract tests before the evaluator is ever called.</li>
+      <li>The evaluator owns the seeds and the reward definition, and a harness patch that tried to import it would be refused by the protected-surface gate.</li>
+      <li>Restarting rehydrates the evaluator cache, so resumed work is never scored or charged twice.</li>
+    </ul>
+  </section>
+  <section class="panel" id="multi-agent-step" aria-labelledby="multi-agent-step-h">
+    <h2 id="multi-agent-step-h">One multi-agent transition</h2>
+    <p class="caption">Two heroes with genuinely local observations, a communication edge carrying a claim, the harness-owned shared state, the protected environment, and reward flowing back along three separately-labelled paths.</p>
+    <figure class="map">
+      <div class="map-scroll" tabindex="0" role="group" aria-label="One multi-agent transition systems map, monospace text">
+        <pre class="ascii">ONE DUNGEONGRID TRANSITION — two heroes, one Warden, one shared world
+communication edge ──▶ delivered by the environment message bus and counted in the reward vector
+
+┌──────── HERO_1 · scout ────────┐              ┌───── SHARED / TEAM STATE § ──────┐              ┌───── HERO_2 · rear guard ──────┐
+│ local observation:             │              │ claims{target → hero}            │              │ local observation:             │
+│   visible tiles, objects,      │ claim:vault  │ reported tiles · threats         │              │   visible tiles, objects,      │
+│   teammates, AP, messages      │─────────────▶│ notes · routing events           │              │   teammates, AP, messages      │
+│ brief directive: claim         │              │ harness-owned;                   │ reads claim  │ brief directive: claim         │
+│ policy v2 · sha256:df83…       │              │ not environment state            │─────────────▶│ policy v2 · sha256:df83…       │
+│                                │              │                                  │              │                                │
+│                                │              │                                  │              │                                │
+└────────────────────────────────┘              └──────────────────────────────────┘              └────────────────────────────────┘
+                 │                                                │                                                │
+                 │ action                                         │                                                │ action
+                 ▼                                                ▼                                                ▼
+                ┌────────────────────────────── HARNESS — the only patchable surface ──────────────────────────────┐
+                │ encode_observation     route_message        ingest_message                                       │
+                │ arbitrate              note_step            recover                                              │
+                │ should_branch          extract_failure_signals                                                   │
+                │ assign_roles           snapshot / restore                                                        │
+                │                                                                                                  │
+                │                                                                                                  │
+                └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+                                                                  │
+                                                                  ▼ admitted actions
+                ╔══════════════════════════════ DUNGEONGRID ENVIRONMENT (protected) ═══════════════════════════════╗
+                ║ rules_engine · grid_engine · achievements · message bus · Warden policy                          ║
+              ┌─║ transition: world state, RNG, reward, per-hero ledger, trace record                              ║─┐
+              │ ║                                                                                                  ║ │
+              │ ╚══════════════════════════════════════════════════════════════════════════════════════════════════╝ │
+              │                                                   │                                                  │
+              └──▼                                                ▼                                                ▼─┘
+┌─────── REWARD → HERO_1 ────────┐              ┌─────── TEAM REWARD VECTOR ───────┐              ┌─────── REWARD → HERO_2 ────────┐
+│ env per-hero ledger            │              │ env_return · outcome · progress  │              │ env per-hero ledger            │
+│ counterfactual estimate        │              │ cooperation · comms · penalties  │              │ counterfactual estimate        │
+│                                │              │                                  │              │                                │
+└────────────────────────────────┘              └──────────────────────────────────┘              └────────────────────────────────┘
+team reward, per-agent attribution and counterfactual contribution stay three separate quantities</pre>
+      </div>
+      <figcaption>Selectable monospace map — search this page to find any node label.</figcaption>
+    </figure>
+    <ul class="notes">
+      <li>Messages are only useful because a teammate reads them: a claim announcement lands in shared state and steers the other hero off the same target.</li>
+      <li>The harness sits between agents and environment and is the only patchable surface; rules, reward and achievements are protected.</li>
+      <li>Team reward, per-agent attribution and counterfactual contribution are three different quantities and are never collapsed into one number.</li>
+    </ul>
+  </section>
+  <section class="panel" id="branch-lattice" aria-labelledby="branch-lattice-h">
+    <h2 id="branch-lattice-h">Branch checkpoints, forks and one-step</h2>
+    <p class="caption">The environment-level lattice. A branch checkpoint binds world state and RNG together with agent, harness and policy state, so two forks from the same point reproduce identically and the parent never moves.</p>
+    <figure class="map">
+      <div class="map-scroll" tabindex="0" role="group" aria-label="Branch checkpoints, forks and one-step systems map, monospace text">
+        <pre class="ascii">BRANCH CHECKPOINTS — the environment-level pause, restart and fork lattice
+                                                                                          two forks, one immutable parent
+                                                                                              ┌──────────── FORK A ────────────┐
+                                                                                              │ resume → identical digest      │
+                                                                                      ┌──────▶│ team reward recorded           │
+                                                                                      │       │                                │
+┌────── ROLLOUT (parent) ──────┐                ┏━━━━━━ BRANCH CHECKPOINT § ━━━━━━━┓  │       └────────────────────────────────┘
+│ quest · seed · env revision  │                ┃ world state + RNG state          ┃  │
+│ harness + policy snapshots   │ should_branch  ┃ agent states · roles · versions  ┃  │
+│ step index 0 … n             │───────────────▶┃ messages + pending queue         ┃──┤
+│ branch policy decides where  │                ┃ parent rollout id · step index   ┃  │       ┌──────────── FORK B ────────────┐
+│                              │                ┃                                  ┃  │       │ resume → identical digest      │
+└──────────────────────────────┘                ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛  └──────▶│ compared, never re-scored      │
+                                                                  │                           │                                │
+                                                                  │                           └────────────────────────────────┘
+                                                                  │
+                                                                  │
+                                                                  ▼
+┌───── IMMUTABILITY GUARD ─────┐                ┌───── LEAVE-ONE-OUT CREDIT ─────┐            ┌────── ONE PROPOSER STEP ───────┐
+│ digest before forks          │                │ one fork per hero,             │            │ load checkpoint → 1 action     │
+│ == digest after forks        │                │ that hero forced passive       │            │ optionally 1 bounded eval      │
+│ restore deep-copies state    │◀───────────────│ Δ team reward = contribution   │───────────▶│ the loop never continues       │
+│                              │                │                                │            │                                │
+└──────────────────────────────┘                └────────────────────────────────┘            └────────────────────────────────┘
+
+A fork is a new episode id carrying parentEpisodeId and parentCheckpointDigest; the parent history is never rewritten.</pre>
+      </div>
+      <figcaption>Selectable monospace map — search this page to find any node label.</figcaption>
+    </figure>
+    <ul class="notes">
+      <li>The state digest is computed over the decoded environment state, not the pickle bytes — pickle output is not stable across processes, so a byte comparison would prove nothing.</li>
+      <li>Leave-one-out credit is the only causal estimator here: it costs one bounded fork per hero and is labelled as an estimate, not an accounting split.</li>
+    </ul>
+  </section>
+  <section class="panel" id="varieties" aria-labelledby="varieties-h">
+    <h2 id="varieties-h">Three varieties, one envelope</h2>
+    <p class="caption">Prompt/protocol, harness and RLVR candidates differ only in their payload schema and their admission path. Everything downstream is shared.</p>
+    <figure class="map">
+      <div class="map-scroll" tabindex="0" role="group" aria-label="Three varieties, one envelope systems map, monospace text">
+        <pre class="ascii">THREE CANDIDATE VARIETIES — one envelope, one checkpoint, one evaluator
+                               dispatch                                              collect
+
+                                                    ┌─────── prompt_protocol ────────┐
+                                                    │ role briefs · protocol mode    │
+                                   ┌───────────────▶│ target: what heroes say        │──┐
+                                   │                │                                │  │
+                                   │                └────────────────────────────────┘  │
+                                   │                                                    │
+┌───── CANDIDATE ENVELOPE ─────┐   │                                                    │
+│ id · variety · generation    │   │                ┌─────────── harness ────────────┐  │   ┌─────── ONE EVALUATOR ────────┐
+│ parent · proposer · digest   │   │                │ unified diff to harness.py     │  │   │ same seeds and reward,       │
+│ admission · scores · status  │───────────────────▶│ target: how the team is run    │─────▶│ same sealed heldout          │
+│ target modules               │   │                │                                │  │   │                              │
+│                              │   │                └────────────────────────────────┘  │   └──────────────────────────────┘
+└──────────────────────────────┘   │                                                    │
+                                   │                                                    │
+                                   │                ┌───────────── rlvr ─────────────┐  │
+                                   │                │ policy weight vector           │  │
+                                   └───────────────▶│ target: what heroes choose     │──┘
+                                                    │                                │
+                                                    └────────────────────────────────┘
+
+
+The episode state machine never branches on these names; it dispatches through the variety registry.</pre>
+      </div>
+      <figcaption>Selectable monospace map — search this page to find any node label.</figcaption>
+    </figure>
+    <ul class="notes">
+      <li>Adding a fourth variety means adding one entry to the proposer registry, not editing the state machine.</li>
+      <li>Candidates are single-patch: lineage is recorded but harness patches are not yet composed across generations.</li>
+      <li>Two of the three lanes are seed-invariant under a deterministic hero policy, so their six matched seeds are replications, not independent samples. The paired verdict is sound; the implied power is not.</li>
+    </ul>
+  </section>
+  <section class="panel" id="boundaries" aria-labelledby="boundaries-h">
+    <h2 id="boundaries-h">Boundaries and who may read what</h2>
+    <p class="caption">Each row is a boundary drawn in the maps above. Crossing it changes ownership, visibility, or both.</p>
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th scope="col">Boundary</th><th scope="col">Rule</th></tr></thead>
+      <tbody>
+      <tr><td class="glyph">Policy-visible</td><td>Incumbent, candidate summaries, train evidence, failure clusters, budgets, allowed actions.</td></tr>
+      <tr><td class="glyph">Operator-only</td><td>Reward source and weighting, evaluator internals, workspace paths.</td></tr>
+      <tr><td class="glyph">Sealed evaluation</td><td>Heldout seeds and heldout evidence. Exposed as a digest and a count; a leak check fails the observation closed.</td></tr>
+      <tr><td class="glyph">Protected surfaces</td><td>env.py, rules_engine.py, grid_engine.py, engine_runtime.py, achievements.py, rewards.py, evaluator.py, protocol.py — a patch touching any of them is refused.</td></tr>
+      <tr><td class="glyph">Secret</td><td>Provider credentials. No provider is called in any lane, so none are loaded.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  </section>
+  <section class="panel" id="receipts" aria-labelledby="receipts-h">
+    <h2 id="receipts-h">Receipts</h2>
+    <p class="caption">Identifiers from real runs. A row marked <em>not recorded</em> means the corresponding run has not been executed yet — the map still renders, it just cannot point at evidence.</p>
+    <div class="table-scroll">
+      <table>
+      <thead><tr><th scope="col">Receipt</th><th scope="col">Identifier</th><th scope="col">Detail</th><th scope="col">Status</th></tr></thead>
+      <tbody>
+      <tr><td>prompt/protocol lane</td><td class="mono">mapo_prompt_6f1ea6e815</td><td>moonblade_vault_lite, heldout +1.1313, 6/6 seeds, sd 0.000</td><td><span class="tag present">recorded</span></td></tr>
+      <tr><td>harness lane</td><td class="mono">mapo_harness_224dcfcc98</td><td>glass_maze_lite, heldout +0.1486, 6/6 seeds, sd 0.027</td><td><span class="tag present">recorded</span></td></tr>
+      <tr><td>RLVR lane</td><td class="mono">mapo_rlvr_6f48cb973a</td><td>moonblade_vault_lite, heldout +0.0800, 6/6 seeds, sd 0.000</td><td><span class="tag present">recorded</span></td></tr>
+      <tr><td>pause / restart</td><td class="mono">state_digest_identical</td><td>all three lanes; rollouts never double-charged</td><td><span class="tag present">recorded</span></td></tr>
+      <tr><td>fork</td><td class="mono">parent_state_digest_unchanged</td><td>all three lanes; new episode id with parent checkpoint digest</td><td><span class="tag present">recorded</span></td></tr>
+      <tr><td>one proposer step</td><td class="mono">actions_taken = 1</td><td>bounded; --execute adds exactly one evaluation transition</td><td><span class="tag present">recorded</span></td></tr>
+      </tbody>
+      </table>
+    </div>
+  </section>
+  <section class="panel" id="legend" aria-labelledby="legend-h">
+    <h2 id="legend-h">Legend</h2>
+    <p class="caption">One visual language across all seven maps.</p>
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th scope="col">Glyph</th><th scope="col">Meaning</th></tr></thead>
+      <tbody>
+      <tr><td class="glyph">┌── ──┐</td><td>runtime / process boundary — one thing that can crash on its own</td></tr>
+      <tr><td class="glyph">╔══ ══╗</td><td>trust boundary — crossing it changes who may read the data</td></tr>
+      <tr><td class="glyph">┏━━ ━━┓</td><td>sealed or secret region — never reaches a policy-visible observation</td></tr>
+      <tr><td class="glyph">──────▶</td><td>control or data flow in the direction of the arrow</td></tr>
+      <tr><td class="glyph">╌╌╌╌╌╌▶</td><td>advisory, deferred or not-yet-implemented edge</td></tr>
+      <tr><td class="glyph">[id]</td><td>a durable identifier: run, episode, checkpoint, candidate or digest</td></tr>
+      <tr><td class="glyph">§</td><td>state that is written to durable storage and survives a restart</td></tr>
+      <tr><td class="glyph">claim:&lt;id&gt;</td><td>a hero announcing the target it is about to take</td></tr>
+      <tr><td class="glyph">§</td><td>durable state bound into a checkpoint</td></tr>
+      </tbody>
+    </table>
+  </div>
+  </section>
+  </main>
+  <footer class="page">
+    <dl>
+      <dt>Repository</dt><dd>DungeonGrid <span class="tag">branch v0.7/mapo-dungeongrid</span></dd>
+      <dt>Optimizer schema</dt><dd>dungeongrid.mapo.episode.v1</dd>
+      <dt>Environment schema</dt><dd>synth.optimizer_env.v1</dd>
+      <dt>Harness API</dt><dd>dungeongrid.mapo.harness.v1</dd>
+      <dt>Reward schema</dt><dd>dungeongrid.mapo.reward.v1</dd>
+      <dt>Provider spend</dt><dd>none <span class="tag">scripted and linear policies only</span></dd>
+    </dl>
+  </footer>
+</div>
+</body>
+</html>

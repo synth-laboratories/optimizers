@@ -1,0 +1,129 @@
+{
+  "boundaries": [
+    [
+      "Registry",
+      "Immutable. A digest is required; a tag is a label for humans."
+    ],
+    [
+      "Object store",
+      "Content-addressed. Bytes are verified before extraction, not after."
+    ],
+    [
+      "Secrets",
+      "Referenced by name in the manifest, resolved at launch, never written to logs or bundles."
+    ],
+    [
+      "Generic orchestration",
+      "May read declared capabilities only. A benchmark-name branch here is a defect."
+    ]
+  ],
+  "confidence": "None \u2014 no bundle has been built, uploaded or launched under this schema yet.",
+  "hypothesis": "Every supported task runtime can be launched, verified and restarted through one capability-dispatched path, with no benchmark-name conditionals in generic code.",
+  "legend": [
+    [
+      "\u250c\u2500\u2500 \u2500\u2500\u2510",
+      "runtime / process boundary \u2014 one thing that can crash on its own"
+    ],
+    [
+      "\u2554\u2550\u2550 \u2550\u2550\u2557",
+      "trust boundary \u2014 crossing it changes who may read the data"
+    ],
+    [
+      "\u250f\u2501\u2501 \u2501\u2501\u2513",
+      "sealed or secret region \u2014 never reaches a policy-visible observation"
+    ],
+    [
+      "\u2500\u2500\u2500\u2500\u2500\u2500\u25b6",
+      "control or data flow in the direction of the arrow"
+    ],
+    [
+      "\u254c\u254c\u254c\u254c\u254c\u254c\u25b6",
+      "advisory, deferred or not-yet-implemented edge"
+    ],
+    [
+      "[id]",
+      "a durable identifier: run, episode, checkpoint, candidate or digest"
+    ],
+    [
+      "\u00a7",
+      "state that is written to durable storage and survives a restart"
+    ]
+  ],
+  "metadata": [
+    {
+      "label": "Manifest schema",
+      "note": "",
+      "value": "synth.container_bundle.v1"
+    },
+    {
+      "label": "Status",
+      "note": "no bundle materialised",
+      "value": "design"
+    },
+    {
+      "label": "Task families",
+      "note": "",
+      "value": "healthbench \u00b7 craftax \u00b7 essaybench \u00b7 dungeongrid"
+    },
+    {
+      "label": "Dispatch rule",
+      "note": "",
+      "value": "declared capabilities, never task names"
+    }
+  ],
+  "optimizer": "Shared platform",
+  "panels": [
+    {
+      "ascii_map": "ONE MANIFEST BINDS AN IMMUTABLE IMAGE TO A CONTENT-ADDRESSED SOURCE BUNDLE\n\n\n\u250c\u2500\u2500\u2500\u2500 BUILD (clean revision) \u2500\u2500\u2500\u2500\u2510                \u2554\u2550\u2550\u2550\u2550\u2550 REGISTRY (immutable) \u2550\u2550\u2550\u2550\u2550\u2557\n\u2502 repository \u00b7 full commit sha   \u2502                \u2551 image reference                \u2551\n\u2502 build recipe digest            \u2502                \u2551 digest sha256:\u2026                \u2551\n\u2502 builder identity               \u2502   push image   \u2551 platforms: amd64, arm64        \u2551 bind\n\u2502 excludes .git, creds, caches,  \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2551                                \u2551\u2500\u2500\u2500\u2500\u2500\u25b6\n\u2502 venvs, weights, local outputs  \u2502                \u2551 mutable tags are display-only  \u2551      \u250c\u2500\u2500\u2500 synth.container_bundle.v1 \u2500\u2500\u2500\u2500\u2510\n\u2502                                \u2502                \u2551                                \u2551      \u2502 bundleId \u00b7 revision              \u2502\n\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518                \u255a\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255d      \u2502 image{reference, digest}         \u2502\n                 \u2502                                                                        \u2502 source{uri, digest, mediaType}   \u2502\n                 \u2502                                                                        \u2502 contracts{taskFamily,            \u2502\n                 \u2502                                \u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550 S3 SOURCE BUNDLE \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557      \u2502   capabilities, optimizer}       \u2502\n                 \u2502                                \u2551 content-addressed key          \u2551      \u2502 runtime{command, ports,          \u2502\n                 \u2502                                \u2551 digest sha256:\u2026                \u2551      \u2502   healthcheck, timeout}          \u2502\n                 \u2502                   upload src   \u2551 media type + size bytes        \u2551 bind \u2502 security \u00b7 provenance \u00b7 license  \u2502\n                 \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2551                                \u2551\u2500\u2500\u2500\u2500\u2500\u25b6\u2502 manifest digest sha256:\u2026         \u2502\n                                                  \u2551 digest computed before upload  \u2551      \u2502                                  \u2502\n                                                  \u2551                                \u2551      \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\n                                                  \u255a\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255d\n\n\nGeneric orchestration dispatches on declared capabilities \u2014 never on a benchmark name.\nA mismatch is a refusal to launch, never a pin quietly rewritten to match a local tag.",
+      "caption": "The manifest is the only place the image digest, the source digest, the task contract and the build revision meet. Everything downstream cites its digest.",
+      "notes": [
+        "Mutable tags are display-only; an immutable registry digest is required.",
+        "Credentials never enter the source bundle or the manifest \u2014 only secret references, resolved at launch and never logged."
+      ],
+      "slug": "binding",
+      "title": "Image and source binding"
+    },
+    {
+      "ascii_map": "ONE DOWNLOADER / LAUNCHER \u2014 the same eleven steps for HealthBench, Craftax, EssayBench and DungeonGrid\n\n\n\u250c\u2500\u2500 1\u20134  RESOLVE + VERIFY \u2500\u2500\u2500\u2510              \u250c\u2500\u2500 5\u20136  IMAGE + PREFLIGHT \u2500\u2500\u2510              \u250c\u2500\u2500\u2500 7\u20139  START + RECORD \u2500\u2500\u2500\u2500\u2510\n\u2502 resolve manifest           \u2502              \u2502 pull exact image digest    \u2502              \u2502 isolated run root          \u2502\n\u2502 check authorization        \u2502              \u2502 validate platform          \u2502              \u2502 wait on declared health    \u2502\n\u2502 download / cache source    \u2502   verified   \u2502 validate resources, ports  \u2502   admitted   \u2502 and capability contract    \u2502\n\u2502 verify digest              \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2502 validate network policy    \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2502 record container id, ports \u2502\n\u2502 safe extract:              \u2502              \u2502 resolve secret references  \u2502              \u2502 image / source / manifest  \u2502\n\u2502   no traversal,            \u2502              \u2502   (never logged)           \u2502              \u2502 digests, log paths         \u2502\n\u2502   no symlink escape        \u2502              \u2502                            \u2502              \u2502                            \u2502\n\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518              \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518              \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\n                                                           \u2502\n                                                           \u2502\n                                                           \u25bc\n\u250c\u2500\u2500\u2500\u2500\u2500\u2500 CONFORMANCE SUITE \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510            \u250c\u2500\u2500 10\u201311  STOP + RESTART \u2500\u2500\u2500\u2510        \u250c\u2500\u2500\u2500\u2500\u2500\u2500 PROVENANCE RECORD \u00a7 \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\n\u2502 403 \u00b7 404 \u00b7 timeout \u00b7 cut body \u2502            \u2502 stop descendants           \u2502        \u2502 every run cites the manifest     \u2502\n\u2502 arch mismatch \u00b7 no capability  \u2502            \u2502 clean temporary state      \u2502        \u2502 digest it actually launched      \u2502\n\u2502 cache corruption \u00b7 concurrent  \u2502\u25c0\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2502 restart from same bundle   \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2502 round-trips back to the build    \u2502\n\u2502                                \u2502            \u2502                            \u2502        \u2502                                  \u2502\n\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518            \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518        \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\n\nRefuse to launch when the image, source, architecture, task contract or optimizer capability is unavailable.",
+      "caption": "One CLI path, eleven ordered steps, and a conformance suite that exercises the failure half of each one.",
+      "notes": [
+        "Restart uses the same immutable bundle, so a restarted container is the same container by construction rather than by convention."
+      ],
+      "slug": "launcher",
+      "title": "Downloader and launcher"
+    }
+  ],
+  "receipts": [
+    {
+      "detail": "manifest, image digest, source digest",
+      "identifier": "",
+      "label": "HealthBench bundle",
+      "present": false
+    },
+    {
+      "detail": "manifest, image digest, source digest",
+      "identifier": "",
+      "label": "Craftax bundle",
+      "present": false
+    },
+    {
+      "detail": "manifest, image digest, source digest",
+      "identifier": "",
+      "label": "EssayBench bundle",
+      "present": false
+    },
+    {
+      "detail": "schema, security, failure-injection and restart tests",
+      "identifier": "",
+      "label": "Conformance suite",
+      "present": false
+    }
+  ],
+  "schema": "synth.optimizer_diagram.v1",
+  "schema_version": "synth.container_bundle.v1",
+  "slug": "portable-container-system",
+  "subtitle": "One immutable image, one content-addressed source bundle, one manifest that binds them, and one launcher that verifies and records everything it did.",
+  "title": "Portable container bundle standard",
+  "verdict": "Specified. Not yet proven end to end in this campaign.",
+  "why": "The v0.7 MAPO lanes ran against the in-process DungeonGrid environment, not through a published bundle, so every receipt row below is honestly empty."
+}

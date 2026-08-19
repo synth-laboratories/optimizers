@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GEPA</title>
+  <meta name="description" content="Reflective prompt evolution over a per-example frontier, and what it takes to make it durable enough to be the reference optimizer environment.">
+  <meta name="generator" content="synth.optimizer_diagram.v1">
+  <meta name="synth:repository" content="optimizers">
+  <meta name="synth:shipped_surface" content="local engine + hosted runs">
+  <meta name="synth:state_slices" content="candidates · frontier">
+  <meta name="synth:protocol_mapping" content="not started">
+  <style>
+:root {
+  color-scheme: light dark;
+  --paper: #fbfaf9;
+  --paper-raised: #ffffff;
+  --ink: #16150f;
+  --ink-soft: #5c5850;
+  --ink-faint: #8a857b;
+  --rule: #e0dcd4;
+  --rule-strong: #c8c2b7;
+  --accent: #c2560a;
+  --accent-soft: #fdf1e6;
+  --map-bg: #ffffff;
+  --map-ink: #23211a;
+  --ok: #1f6d43;
+  --absent: #8a857b;
+  --measure: 74ch;
+  --radius: 10px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #0e0e0d;
+    --paper-raised: #171716;
+    --ink: #f2efe9;
+    --ink-soft: #b3ada2;
+    --ink-faint: #837e75;
+    --rule: #2a2926;
+    --rule-strong: #3d3b36;
+    --accent: #ff8a2a;
+    --accent-soft: #2a1a0c;
+    --map-bg: #121211;
+    --map-ink: #e8e4dc;
+    --ok: #57c98c;
+    --absent: #837e75;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: ui-sans-serif, -apple-system, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.6;
+  text-rendering: optimizeLegibility;
+}
+.skip {
+  position: absolute; left: -9999px; top: 0;
+  background: var(--accent); color: #fff; padding: 0.6rem 1rem; z-index: 10;
+}
+.skip:focus { left: 0; }
+.wrap { max-width: 1180px; margin: 0 auto; padding: 2.5rem 1.5rem 5rem; }
+header.page { border-bottom: 1px solid var(--rule); padding-bottom: 1.75rem; margin-bottom: 2rem; }
+.eyebrow {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.75rem; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--accent); margin: 0 0 0.6rem;
+}
+h1 { font-size: clamp(1.7rem, 1.2rem + 1.6vw, 2.5rem); line-height: 1.15; margin: 0 0 0.5rem; letter-spacing: -0.015em; }
+.subtitle { color: var(--ink-soft); max-width: var(--measure); margin: 0 0 1.5rem; font-size: 1.05rem; }
+.summary {
+  background: var(--paper-raised); border: 1px solid var(--rule); border-left: 3px solid var(--accent);
+  border-radius: var(--radius); padding: 1.1rem 1.3rem; max-width: var(--measure);
+}
+.summary dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.35rem 1rem; margin: 0; }
+.summary dt {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.72rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-faint);
+  padding-top: 0.22rem;
+}
+.summary dd { margin: 0; }
+nav.toc { margin: 2rem 0; }
+nav.toc h2 {
+  font-size: 0.72rem; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--ink-faint); margin: 0 0 0.6rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+nav.toc ol { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 0.4rem; counter-reset: toc; }
+nav.toc a {
+  display: inline-block; padding: 0.35rem 0.7rem; border: 1px solid var(--rule);
+  border-radius: 999px; text-decoration: none; color: var(--ink-soft); font-size: 0.85rem;
+}
+nav.toc a:hover, nav.toc a:focus-visible { border-color: var(--accent); color: var(--accent); }
+section.panel { margin: 3rem 0 0; scroll-margin-top: 1rem; }
+section.panel > h2 { font-size: 1.25rem; margin: 0 0 0.35rem; letter-spacing: -0.01em; }
+section.panel > p.caption { color: var(--ink-soft); max-width: var(--measure); margin: 0 0 1rem; }
+figure.map { margin: 0; }
+.map-scroll {
+  overflow-x: auto; overflow-y: hidden;
+  background: var(--map-bg); border: 1px solid var(--rule-strong); border-radius: var(--radius);
+  padding: 1.25rem 1.4rem;
+}
+.map-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+pre.ascii {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace;
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "calt" 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  white-space: pre;
+  tab-size: 4;
+  color: var(--map-ink);
+}
+figcaption { color: var(--ink-faint); font-size: 0.85rem; margin-top: 0.6rem; }
+ul.notes { max-width: var(--measure); color: var(--ink-soft); padding-left: 1.1rem; }
+ul.notes li { margin: 0.3rem 0; }
+table { border-collapse: collapse; width: 100%; margin: 0.5rem 0 0; font-size: 0.92rem; }
+th, td { text-align: left; padding: 0.5rem 0.7rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { color: var(--ink-faint); font-weight: 600; font-size: 0.72rem; letter-spacing: 0.1em; text-transform: uppercase; }
+td.glyph, td.mono, code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-variant-ligatures: none;
+  white-space: pre;
+}
+td.glyph { color: var(--accent); }
+.table-scroll { overflow-x: auto; }
+.tag {
+  display: inline-block; font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase;
+  padding: 0.1rem 0.5rem; border-radius: 999px; border: 1px solid currentColor;
+}
+.tag.present { color: var(--ok); }
+.tag.absent { color: var(--absent); }
+footer.page { margin-top: 4rem; padding-top: 1.5rem; border-top: 1px solid var(--rule); color: var(--ink-faint); font-size: 0.85rem; }
+footer.page dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; margin: 0; }
+footer.page dt { color: var(--ink-faint); }
+footer.page dd { margin: 0; color: var(--ink-soft); }
+a { color: var(--accent); }
+@media print {
+  :root { --paper: #fff; --paper-raised: #fff; --map-bg: #fff; --ink: #000; --map-ink: #000; --rule: #999; --rule-strong: #555; }
+  body { font-size: 11pt; }
+  nav.toc, .skip { display: none; }
+  .map-scroll { overflow: visible; border: 1px solid #555; page-break-inside: avoid; }
+  pre.ascii { font-size: 8pt; }
+  section.panel { page-break-inside: avoid; }
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to the systems maps</a>
+<div class="wrap">
+  <header class="page">
+    <p class="eyebrow">GEPA · synth.optimizer_env.v1 (target)</p>
+    <h1>GEPA</h1>
+    <p class="subtitle">Reflective prompt evolution over a per-example frontier, and what it takes to make it durable enough to be the reference optimizer environment.</p>
+    <div class="summary">
+      <dl>
+        <dt>Hypothesis</dt><dd>GEPA&#x27;s existing candidate, frontier, reflection and merge behaviour already fits the shared optimizer-environment contract, and the remaining work is durability, not algorithm change.</dd>
+        <dt>Verdict</dt><dd>Search behaviour shipped. Protocol mapping and durability work outstanding.</dd>
+        <dt>Confidence</dt><dd>None for the v0.7 claims — no GEPA lane was run in this campaign.</dd>
+        <dt>Why</dt><dd>The hosted and local GEPA surfaces exist and expose candidate and frontier state, but nothing here has been mapped onto synth.optimizer_env.v1 or given a one-step operation yet.</dd>
+      </dl>
+    </div>
+  </header>
+  <nav class="toc" aria-label="Sections">
+    <h2>Sections</h2>
+    <ol>
+      <li><a href="#search">Search loop</a></li>
+      <li><a href="#durability">Durability and protocol mapping</a></li>
+      <li><a href="#boundaries">Boundaries</a></li>
+      <li><a href="#receipts">Receipts</a></li>
+      <li><a href="#legend">Legend</a></li>
+    </ol>
+  </nav>
+  <main id="main">
+  <section class="panel" id="search" aria-labelledby="search-h">
+    <h2 id="search-h">Search loop</h2>
+    <p class="caption">Parent selection is frontier-aware rather than a global argmax, which is what keeps a candidate that wins a single example alive.</p>
+    <figure class="map">
+      <div class="map-scroll" tabindex="0" role="group" aria-label="Search loop systems map, monospace text">
+        <pre class="ascii">GEPA SEARCH — parent selection, reflective proposal, evaluation, frontier update
+
+
+┌─────── CANDIDATE POOL § ───────┐              ┌───── PARENT SELECTION ─────┐              ┌──────── REFLECTION / ASI ────────┐
+│ seed instruction modules       │              │ frontier-aware sampling    │              │ failure traces for the           │
+│ per-candidate lineage          │              │ per-example dominance      │              │ selected module only             │
+│ per-example scores and         │    sample    │ not a global argmax:       │    target    │ proposer rewrites the            │
+│ aggregate scores               │─────────────▶│ a candidate that wins one  │─────────────▶│ instruction text                 │
+│ frontier membership            │              │ example keeps its place   candidate       │ merge combines two parents       │
+│ archive of rejected arms       │              │                            │       ┐──────│ module-by-module                 │
+│                                │              │                            │       │      │                                  │
+└────────────────────────────────┘              └────────────────────────────┘       │      └──────────────────────────────────┘
+    ▲                                                                                │
+    │ accepted §                                                                     │
+    │                                                                                │
+┌─────── FRONTIER UPDATE ────────┐              ╔════ EVALUATION (trust) ════╗       │      ┏━━━━━━━━━ SEALED HELDOUT ━━━━━━━━━┓
+│ accept · reject · archive      │              ║ minibatch on train split   ║       │      ┃ never used for selection         ┃
+│ per-example Pareto retained    │              ║ full train on promotion    ║       │      ┃ read once on the frozen          ┃
+│ regression on any example is   │    scores    ║ evaluator-owned scoring    ║       │      ┃ winner, for the verdict only     ┃
+│ recorded, not averaged away    │◀─────────────║ cache keyed by candidate   ║◀──────┘      ┃                                  ┃
+│                                │              ║                            ║              ┃                                  ┃
+│                                │              ║                            ║              ┃                                  ┃
+└────────────────────────────────┘              ╚════════════════════════════╝              ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+Selection reads train evidence only; heldout is opened after the arms are frozen.</pre>
+      </div>
+      <figcaption>Selectable monospace map — search this page to find any node label.</figcaption>
+    </figure>
+    <ul class="notes">
+      <li>Per-example scores are retained, so a regression on one example is visible instead of averaged away.</li>
+      <li>Reflection sees failure traces for the targeted module only.</li>
+    </ul>
+  </section>
+  <section class="panel" id="durability" aria-labelledby="durability-h">
+    <h2 id="durability-h">Durability and protocol mapping</h2>
+    <p class="caption">The v0.7 work: map the shipped service state onto the shared protocol, close the lossy resume paths, and add the uniform one-step operation.</p>
+    <figure class="map">
+      <div class="map-scroll" tabindex="0" role="group" aria-label="Durability and protocol mapping systems map, monospace text">
+        <pre class="ascii">GEPA DURABILITY — the v0.7 target mapping onto synth.optimizer_env.v1
+
+
+┌──── GEPA SERVICE (shipped) ────┐              ┌──────── SHARED PROTOCOL ─────────┐          ┌──────── CHECKPOINT § ────────┐
+│ local engine + hosted runs     │              │ observation ← pool, frontier,    │          │ cursor · pool · frontier     │
+│ state slices: candidates,      │              │   evidence, budgets              │          │ evaluator + cache identity   │
+│   frontier                     │     map      │ action → propose, select,        │   bind   │ model / prompt / decode pins │
+│ algorithm event stream         │─────────────▶│   evaluate, accept, merge        │─────────▶│ container manifest digests   │
+│ tunnel or container pool       │              │ reward ← decomposed vector       │          │                              │
+│                                │              │                                  │          │                              │
+└────────────────────────────────┘              └──────────────────────────────────┘          └──────────────────────────────┘
+
+
+
+┌────────── KNOWN GAPS ──────────┐              ┌─────── ONE PROPOSER STEP ────────┐          ┌── RLVR-COMPATIBLE EPISODE ───┐
+│ lossy pause / resume paths     │              │ load checkpoint → one            │          │ a real observation / action  │
+│ one-step not yet uniform       │    close     │ reflective proposal, no loop     │ enables  │ reward transition — not a    │
+│ reward not yet decomposed      │─────────────▶│ replayable vs a frozen evaluator │─────────▶│ renamed prompt search        │
+│                                │              │                                  │          │                              │
+└────────────────────────────────┘              └──────────────────────────────────┘          └──────────────────────────────┘
+Async and flash modes may advertise different capabilities, but the sync path stays the correctness baseline.</pre>
+      </div>
+      <figcaption>Selectable monospace map — search this page to find any node label.</figcaption>
+    </figure>
+    <ul class="notes">
+      <li>&#x27;RLVR-compatible&#x27; means a real observation/action/reward transition suitable for policy training. It does not mean relabelling prompt optimization.</li>
+    </ul>
+  </section>
+  <section class="panel" id="boundaries" aria-labelledby="boundaries-h">
+    <h2 id="boundaries-h">Boundaries and who may read what</h2>
+    <p class="caption">Each row is a boundary drawn in the maps above. Crossing it changes ownership, visibility, or both.</p>
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th scope="col">Boundary</th><th scope="col">Rule</th></tr></thead>
+      <tbody>
+      <tr><td class="glyph">Policy-visible</td><td>Pool, frontier, train evidence, budgets, allowed actions.</td></tr>
+      <tr><td class="glyph">Sealed evaluation</td><td>Heldout examples. Excluded from both observation and selection.</td></tr>
+      <tr><td class="glyph">Operator-only</td><td>Evaluator internals, cache keys, provider routing.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  </section>
+  <section class="panel" id="receipts" aria-labelledby="receipts-h">
+    <h2 id="receipts-h">Receipts</h2>
+    <p class="caption">Identifiers from real runs. A row marked <em>not recorded</em> means the corresponding run has not been executed yet — the map still renders, it just cannot point at evidence.</p>
+    <div class="table-scroll">
+      <table>
+      <thead><tr><th scope="col">Receipt</th><th scope="col">Identifier</th><th scope="col">Detail</th><th scope="col">Status</th></tr></thead>
+      <tbody>
+      <tr><td>HealthBench hello-world</td><td class="mono">—</td><td>bounded eval receipt</td><td><span class="tag absent">not recorded</span></td></tr>
+      <tr><td>Craftax hello-world</td><td class="mono">—</td><td>bounded eval receipt</td><td><span class="tag absent">not recorded</span></td></tr>
+      <tr><td>pause → restart → continue</td><td class="mono">—</td><td>reconciliation proof</td><td><span class="tag absent">not recorded</span></td></tr>
+      <tr><td>one proposer step</td><td class="mono">—</td><td>single reflective proposal from a checkpoint</td><td><span class="tag absent">not recorded</span></td></tr>
+      <tr><td>RLVR-compatible episode</td><td class="mono">—</td><td>one real transition with a decomposed reward</td><td><span class="tag absent">not recorded</span></td></tr>
+      </tbody>
+      </table>
+    </div>
+  </section>
+  <section class="panel" id="legend" aria-labelledby="legend-h">
+    <h2 id="legend-h">Legend</h2>
+    <p class="caption">One visual language across all seven maps.</p>
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th scope="col">Glyph</th><th scope="col">Meaning</th></tr></thead>
+      <tbody>
+      <tr><td class="glyph">┌── ──┐</td><td>runtime / process boundary — one thing that can crash on its own</td></tr>
+      <tr><td class="glyph">╔══ ══╗</td><td>trust boundary — crossing it changes who may read the data</td></tr>
+      <tr><td class="glyph">┏━━ ━━┓</td><td>sealed or secret region — never reaches a policy-visible observation</td></tr>
+      <tr><td class="glyph">──────▶</td><td>control or data flow in the direction of the arrow</td></tr>
+      <tr><td class="glyph">╌╌╌╌╌╌▶</td><td>advisory, deferred or not-yet-implemented edge</td></tr>
+      <tr><td class="glyph">[id]</td><td>a durable identifier: run, episode, checkpoint, candidate or digest</td></tr>
+      <tr><td class="glyph">§</td><td>state that is written to durable storage and survives a restart</td></tr>
+      </tbody>
+    </table>
+  </div>
+  </section>
+  </main>
+  <footer class="page">
+    <dl>
+      <dt>Repository</dt><dd>optimizers <span class="tag">branch v0.7/better-optimizer-visuals</span></dd>
+      <dt>Shipped surface</dt><dd>local engine + hosted runs</dd>
+      <dt>State slices</dt><dd>candidates · frontier</dd>
+      <dt>Protocol mapping</dt><dd>not started</dd>
+    </dl>
+  </footer>
+</div>
+</body>
+</html>

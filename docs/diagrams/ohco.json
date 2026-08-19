@@ -1,0 +1,135 @@
+{
+  "boundaries": [
+    [
+      "Writable subtree",
+      "The declared harness allowlist and nothing else."
+    ],
+    [
+      "Protected",
+      "Evaluator, heldout seeds, reward implementation, evidence gates, protected task files."
+    ],
+    [
+      "Sandbox",
+      "Candidate code runs under a declared sandbox and network policy, in a candidate-private workspace."
+    ],
+    [
+      "Sealed evaluation",
+      "Heldout seeds, opened only for the frozen winner."
+    ]
+  ],
+  "confidence": "None.",
+  "hypothesis": "Measured Craftax performance is limited by the CodeAct harness \u2014 observation encoding, tool wiring, retry logic \u2014 more than by the instruction text, so a real code patch should beat a prompt rewrite.",
+  "legend": [
+    [
+      "\u250c\u2500\u2500 \u2500\u2500\u2510",
+      "runtime / process boundary \u2014 one thing that can crash on its own"
+    ],
+    [
+      "\u2554\u2550\u2550 \u2550\u2550\u2557",
+      "trust boundary \u2014 crossing it changes who may read the data"
+    ],
+    [
+      "\u250f\u2501\u2501 \u2501\u2501\u2513",
+      "sealed or secret region \u2014 never reaches a policy-visible observation"
+    ],
+    [
+      "\u2500\u2500\u2500\u2500\u2500\u2500\u25b6",
+      "control or data flow in the direction of the arrow"
+    ],
+    [
+      "\u254c\u254c\u254c\u254c\u254c\u254c\u25b6",
+      "advisory, deferred or not-yet-implemented edge"
+    ],
+    [
+      "[id]",
+      "a durable identifier: run, episode, checkpoint, candidate or digest"
+    ],
+    [
+      "\u00a7",
+      "state that is written to durable storage and survives a restart"
+    ]
+  ],
+  "metadata": [
+    {
+      "label": "Repository",
+      "note": "branch v0.7/better-optimizer-visuals",
+      "value": "optimizers"
+    },
+    {
+      "label": "Public status",
+      "note": "no public local executor",
+      "value": "future hosted lane"
+    },
+    {
+      "label": "Proof target",
+      "note": "",
+      "value": "Craftax CodeAct harness"
+    },
+    {
+      "label": "Executed analogue",
+      "note": "DungeonGrid, heldout +0.1486",
+      "value": "MAPO harness lane"
+    }
+  ],
+  "optimizer": "OHCO",
+  "panels": [
+    {
+      "ascii_map": "OHCO HARNESS CANDIDATE \u2014 a real code patch, admitted before it costs environment spend\n\n\n\u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 BASE + SCOPE \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510                \u250c\u2500\u2500\u2500\u2500\u2500 ISOLATED WORKSPACE \u2500\u2500\u2500\u2500\u2500\u2510            \u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550 ADMISSION GATE \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557\n\u2502 repository \u00b7 full commit sha   \u2502                \u2502 candidate-private checkout   \u2502            \u2551 build                          \u2551\n\u2502 allowed subtree (allowlist)    \u2502                \u2502 declared sandbox             \u2502            \u2551 typecheck                      \u2551\n\u2502 parent candidate id            \u2502                \u2502 declared network policy      \u2502            \u2551 unit tests                     \u2551\n\u2502 patch digest sha256:\u2026          \u2502  materialise   \u2502 apply patch                  \u2502 build+test \u2551 integration tests              \u2551\n\u2502 code size / file / path caps   \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2502                              \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2551 environment QA                 \u2551\n\u2502 explicit harness objective     \u2502                \u2502 rollback proof and           \u2502            \u2551                                \u2551\n\u2502 immutable container + source   \u2502                \u2502 workspace-integrity check    \u2502            \u2551 a broken candidate is          \u2551\n\u2502 bundle digests                 \u2502                \u2502                              \u2502            \u2551 rejected here, not scored      \u2551\n\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518                \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518            \u255a\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255d\n\n\n\n\u250c\u2500\u2500\u2500\u2500 BASELINE vs CANDIDATE \u2500\u2500\u2500\u2500\u2500\u2510                \u250c\u2500\u2500 PINNED CRAFTAX CONTAINER \u2500\u2500\u2510\n\u2502 matched seeds only             \u2502                \u2502 fixed seeds                  \u2502\n\u2502 patch provenance retained      \u2502    evidence    \u2502 evidence gates               \u2502  admitted\n\u2502 improvement hypothesis is      \u2502\u25c0\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2502 traces \u00b7 rewards \u00b7 steps     \u2502\u25c0\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\u2502 resolved honestly              \u2502                \u2502 achievements \u00b7 errors        \u2502\n\u2502                                \u2502                \u2502                              \u2502\n\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518                \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\n\nThe candidate never sees the evaluator, the heldout seeds, the reward implementation or the evidence gates.",
+      "caption": "Every stage a patch must survive before a single rollout is spent on it, and the provenance that follows it through.",
+      "notes": [
+        "Rejecting broken candidates before environment spend is what makes a code-editing optimizer affordable at all.",
+        "The MAPO harness lane implements exactly this shape end to end: patch ops \u2192 workspace \u2192 py_compile \u2192 contract test \u2192 rollout, with a unified diff and a patch digest in the receipt."
+      ],
+      "slug": "candidate-contract",
+      "title": "Harness candidate contract"
+    },
+    {
+      "ascii_map": "WHAT OHCO MAY AND MAY NOT TOUCH\n\n\n\u250c\u2500\u2500\u2500\u2500\u2500 WRITABLE (allowlisted subtree) \u2500\u2500\u2500\u2500\u2500\u2510                \u250f\u2501\u2501\u2501\u2501\u2501 PROTECTED (refusal, not warning) \u2501\u2501\u2501\u2501\u2501\u2513\n\u2502 CodeAct harness / library surface        \u2502                \u2503 evaluator implementation                   \u2503\n\u2502 observation encoding                     \u2502                \u2503 heldout seeds and splits                   \u2503\n\u2502 tool and action wiring                   \u2502    refused     \u2503 reward implementation                      \u2503\n\u2502 planning and retry logic                 \u2502\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b6\u2503 evidence gates                             \u2503\n\u2502 prompt scaffolding inside the harness    \u2502                \u2503 protected task files                       \u2503\n\u2502 configuration the harness owns           \u2502                \u2503 the benchmark itself                       \u2503\n\u2502                                          \u2502                \u2503                                            \u2503\n\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518                \u2517\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u251b\n\n\n\u250c\u2500\u2500\u2500\u2500\u2500\u2500 WHY THIS IS THE WHOLE POINT \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510                A patch that touches a protected path is rejected\n\u2502 a candidate that can edit the benchmark  \u2502                at admission, before any container is launched, so\n\u2502 will edit the benchmark                  \u2502                the refusal costs nothing and leaves a receipt.\n\u2502                                          \u2502\n\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518",
+      "caption": "The allowlist is the safety property. A candidate that can edit the benchmark will eventually edit the benchmark.",
+      "notes": [
+        "Refusal happens at admission, so it costs nothing and still leaves a receipt."
+      ],
+      "slug": "protected",
+      "title": "Writable and protected surfaces"
+    }
+  ],
+  "receipts": [
+    {
+      "detail": "fixed seeds, frozen harness",
+      "identifier": "",
+      "label": "Craftax baseline",
+      "present": false
+    },
+    {
+      "detail": "unified diff + patch digest",
+      "identifier": "",
+      "label": "real patch candidate",
+      "present": false
+    },
+    {
+      "detail": "rejected candidates cost zero rollouts",
+      "identifier": "",
+      "label": "build / test admission",
+      "present": false
+    },
+    {
+      "detail": "durability proof",
+      "identifier": "",
+      "label": "pause / restart",
+      "present": false
+    },
+    {
+      "detail": "single patch proposal from a checkpoint",
+      "identifier": "",
+      "label": "one proposer step",
+      "present": false
+    }
+  ],
+  "schema": "synth.optimizer_diagram.v1",
+  "schema_version": "synth.optimizer_env.v1 (target)",
+  "slug": "ohco",
+  "subtitle": "Optimizing the harness rather than the prompt: real code patches, admitted by build and test before they are allowed to cost environment spend.",
+  "title": "OHCO",
+  "verdict": "Specified. Not proven: no OHCO Craftax lane was run in this campaign.",
+  "why": "OHCO is a private hosted compatibility lane in the public package today. The candidate contract and the protected-surface rules below are design, and the one place the pattern has actually been executed is MAPO's harness lane on DungeonGrid."
+}

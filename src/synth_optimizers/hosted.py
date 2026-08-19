@@ -1021,6 +1021,7 @@ class HostedOptimizerClient:
         requested_ttl_seconds: int = 3600,
         metadata: Mapping[str, Any] | None = None,
         capabilities: Mapping[str, Any] | None = None,
+        wait_ready: bool = True,
     ) -> SynthTunnelLease:
         lease = self.open_tunnel(
             local_base_url,
@@ -1028,6 +1029,7 @@ class HostedOptimizerClient:
             requested_ttl_seconds=requested_ttl_seconds,
             metadata=metadata,
             capabilities=capabilities,
+            wait_ready=wait_ready,
         )
         if not isinstance(lease, SynthTunnelLease):
             raise HostedOptimizerError("open_synth_tunnel did not return a SynthTunnel lease")

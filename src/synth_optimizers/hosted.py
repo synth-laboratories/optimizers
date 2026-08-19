@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import time
@@ -16,6 +17,16 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlencode, urljoin
+
+from .checkpoints import (
+    OptimizerRunOutputs,
+    SavedLoraCheckpoint,
+    SavedLoraCheckpointPage,
+    SavedLoraDownload,
+    SavedLoraRunPage,
+    SavedLoraUploadIntent,
+)
+from .model_catalog import HostedTrainingModelCatalog
 
 from .tunnels import (
     SynthTunnelLease,
@@ -86,21 +97,47 @@ class OptimizerAlgorithmSlug(StrEnum):
     GEPA = "gepa"
     GELO = "go-ex"
     SFT = "sft"
+    CISPO = "cispo"
+    PPO = "ppo"
     MAPO = "mapo"
     OHCO = "ohco"
     ONLINE_REFLEXION = "online-reflexion"
 
 
 class RunStatus(StrEnum):
+    DRAFT = "draft"
+    VALIDATING = "validating"
     QUEUED = "queued"
+    PROVISIONING = "provisioning"
     RUNNING = "running"
+    ENV_UNREACHABLE = "env_unreachable"
+    CHECKPOINTING = "checkpointing"
+    EVALUATING = "evaluating"
+    CANCELLING = "cancelling"
     SUCCEEDED = "succeeded"
+    COMPLETED = "completed"
+    DEGRADED = "degraded"
+    FAILED_EVIDENCE = "failed_evidence"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    PAUSED = "paused"
+    INFRASTRUCTURE_LOST = "infrastructure_lost"
+    CAP_REACHED = "cap_reached"
 
     @classmethod
     def terminal(cls) -> frozenset[str]:
-        return frozenset({cls.SUCCEEDED.value, cls.FAILED.value, cls.CANCELLED.value})
+        return frozenset(
+            {
+                cls.SUCCEEDED.value,
+                cls.COMPLETED.value,
+                cls.DEGRADED.value,
+                cls.FAILED_EVIDENCE.value,
+                cls.FAILED.value,
+                cls.CANCELLED.value,
+                cls.INFRASTRUCTURE_LOST.value,
+                cls.CAP_REACHED.value,
+            }
+        )
 
 
 class ContainerTargetKind(StrEnum):
@@ -165,6 +202,9 @@ class OptimizerRunSubmitResponse:
     status_url: str
     artifact_base_url: str
     algorithm: OptimizerAlgorithmSlug | None = None
+    implementation: str | None = None
+    implementation_version: str | None = None
+    attempt_id: str | None = None
     raw: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -190,6 +230,9 @@ class OptimizerRunSubmitResponse:
                 context=context,
             ),
             algorithm=algorithm,
+            implementation=_str_or_none(payload.get("implementation")),
+            implementation_version=_str_or_none(payload.get("implementation_version")),
+            attempt_id=_str_or_none(payload.get("attempt_id")),
             raw=dict(payload),
         )
 
@@ -199,6 +242,10 @@ class OptimizerRunRecord:
     run_id: str
     status: RunStatus
     algorithm: OptimizerAlgorithmSlug | None
+    implementation: str | None = None
+    implementation_version: str | None = None
+    attempt_id: str | None = None
+    current_phase: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
     error: str | None = None
@@ -216,6 +263,10 @@ class OptimizerRunRecord:
             run_id=_required_text(payload.get("run_id"), field="run_id", context=context),
             status=_run_status(payload.get("status"), context=context),
             algorithm=_algorithm_or_none(payload.get("algorithm"), context=context),
+            implementation=_str_or_none(payload.get("implementation")),
+            implementation_version=_str_or_none(payload.get("implementation_version")),
+            attempt_id=_str_or_none(payload.get("attempt_id")),
+            current_phase=_str_or_none(payload.get("current_phase")),
             created_at=_str_or_none(payload.get("created_at")),
             updated_at=_str_or_none(payload.get("updated_at")),
             error=_str_or_none(payload.get("error")),
@@ -226,6 +277,47 @@ class OptimizerRunRecord:
             finalize_state=_str_or_none(payload.get("finalize_state")),
             raw=dict(payload),
         )
+
+
+@dataclass(slots=True)
+class HostedTrainingLaunch:
+    """Owns the local rollout tunnel for the lifetime of a hosted RL job."""
+
+    client: "HostedOptimizerClient"
+    run: OptimizerRunSubmitResponse
+    lease: TunnelLease
+    config: Mapping[str, Any]
+    provider_preflight: Any
+    container_preflight: Any
+    _closed: bool = False
+
+    def wait(
+        self,
+        *,
+        poll_seconds: float = 2.0,
+        timeout_seconds: float | None = None,
+        close: bool = True,
+    ) -> OptimizerRunRecord:
+        try:
+            return self.client.wait_for_run(
+                self.run.run_id,
+                poll_seconds=poll_seconds,
+                timeout_seconds=timeout_seconds,
+            )
+        finally:
+            if close:
+                self.close()
+
+    def close(self) -> None:
+        if not self._closed:
+            self.lease.close()
+            self._closed = True
+
+    def __enter__(self) -> "HostedTrainingLaunch":
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
 
 
 @dataclass(slots=True)
@@ -401,6 +493,95 @@ class HostedOptimizerClient:
         """Submit a hosted SFT run executed by the Optimizers-beta backend."""
         return self._submit(OptimizerAlgorithmSlug.SFT, config, **kwargs)
 
+    def submit_cispo(
+        self,
+        config: Mapping[str, Any] | Any,
+        **kwargs: Any,
+    ) -> OptimizerRunSubmitResponse:
+        """Submit slime-reference CISPO after local rollout preflight."""
+        return self._submit_on_policy(OptimizerAlgorithmSlug.CISPO, config, **kwargs)
+
+    def submit_ppo(
+        self,
+        config: Mapping[str, Any] | Any,
+        **kwargs: Any,
+    ) -> OptimizerRunSubmitResponse:
+        """Submit the named GLM PPO lane after local rollout preflight."""
+        return self._submit_on_policy(OptimizerAlgorithmSlug.PPO, config, **kwargs)
+
+    def training_capabilities(
+        self,
+        *,
+        model_id: str,
+        algorithm: OptimizerAlgorithmSlug | str,
+    ) -> Any:
+        """Run spend-free provider preflight through the hosted control plane."""
+
+        from .training import validate_provider_training_capabilities
+
+        resolved = _algorithm_slug(algorithm, context="training capability preflight")
+        if resolved not in {
+            OptimizerAlgorithmSlug.SFT,
+            OptimizerAlgorithmSlug.CISPO,
+            OptimizerAlgorithmSlug.PPO,
+        }:
+            raise HostedOptimizerError("training capability preflight requires sft, cispo, or ppo")
+        query = urlencode({"model": model_id, "algorithm": resolved.value})
+        payload = self._json_request("GET", f"/api/v1/optimizers/capabilities/training?{query}")
+        return validate_provider_training_capabilities(
+            payload,
+            model_id=model_id,
+            algorithm=resolved.value,
+        )
+
+    def hosted_training_models(
+        self,
+        *,
+        algorithm: str | None = None,
+        status: str | None = None,
+        query: str | None = None,
+    ) -> HostedTrainingModelCatalog:
+        """List the policy-supported model matrix before live provider preflight."""
+
+        params = {
+            name: value
+            for name, value in (("algorithm", algorithm), ("status", status), ("q", query))
+            if value is not None and str(value).strip()
+        }
+        suffix = f"?{urlencode(params)}" if params else ""
+        payload = self._json_request("GET", f"/api/v1/optimizers/models/training{suffix}")
+        return HostedTrainingModelCatalog.from_payload(payload)
+
+    def _submit_on_policy(
+        self,
+        algorithm: OptimizerAlgorithmSlug,
+        config: Mapping[str, Any] | Any,
+        **kwargs: Any,
+    ) -> OptimizerRunSubmitResponse:
+        config_json = _config_to_json(config)
+        rollout = config_json.get("rollout")
+        if not isinstance(rollout, Mapping):
+            raise HostedOptimizerError("on-policy training requires rollout preflight")
+        capability_hash = str(rollout.get("container_capability_hash") or "")
+        if not capability_hash.startswith("sha256:"):
+            raise HostedOptimizerError("on-policy training requires container capability_hash")
+        tinker = config_json.get("tinker")
+        if not isinstance(tinker, Mapping) or not str(
+            tinker.get("capability_hash") or ""
+        ).startswith("sha256:"):
+            raise HostedOptimizerError("on-policy training requires provider capability preflight")
+        caps = config_json.get("bounded_run_caps")
+        if not isinstance(caps, Mapping) or any(
+            not isinstance(caps.get(name), (int, float))
+            or isinstance(caps.get(name), bool)
+            or caps[name] <= 0
+            for name in ("steps", "wall_clock_seconds", "cost_usd")
+        ):
+            raise HostedOptimizerError("on-policy training requires positive bounded_run_caps")
+        if kwargs.get("container_tunnel") is None:
+            raise HostedOptimizerError("on-policy training requires a SynthTunnel lease")
+        return self._submit(algorithm, config_json, **kwargs)
+
     def submit_mapo(
         self,
         config: Mapping[str, Any] | Any,
@@ -451,6 +632,183 @@ class HostedOptimizerClient:
             f"/api/v1/optimizers/runs/{run_id}/artifacts/{name}",
             context="artifact",
         )
+
+    def run_outputs(self, run_id: str) -> OptimizerRunOutputs:
+        """Return all automatically persisted outputs for one optimizer run."""
+
+        run_path = quote(run_id, safe="")
+        payload = self._json_request(
+            "GET", f"/api/v1/optimizers/runs/{run_path}/outputs"
+        )
+        return OptimizerRunOutputs.from_payload(payload)
+
+    def search_saved_lora_checkpoints(
+        self,
+        *,
+        query: str | None = None,
+        scope: str = "all",
+        provider: str | None = None,
+        checkpoint_kind: str | None = None,
+        base_model: str | None = None,
+        run_id: str | None = None,
+        attempt_id: str | None = None,
+        source_checkpoint_id: str | None = None,
+        optimizer_algorithm: str | None = None,
+        status: str | None = "ready",
+        tags: Sequence[str] = (),
+        limit: int = 50,
+        offset: int = 0,
+    ) -> SavedLoraCheckpointPage:
+        """Search visible saved LoRA archives in the current user and org scope."""
+
+        params: list[tuple[str, str]] = [
+            ("scope", scope),
+            ("limit", str(max(1, min(100, int(limit))))),
+            ("offset", str(max(0, int(offset)))),
+        ]
+        for name, value in (
+            ("q", query),
+            ("provider", provider),
+            ("checkpoint_kind", checkpoint_kind),
+            ("base_model", base_model),
+            ("run_id", run_id),
+            ("attempt_id", attempt_id),
+            ("source_checkpoint_id", source_checkpoint_id),
+            ("optimizer_algorithm", optimizer_algorithm),
+            ("status", status),
+        ):
+            if value is not None and str(value).strip():
+                params.append((name, str(value).strip()))
+        params.extend(("tags", str(tag)) for tag in tags if str(tag).strip())
+        payload = self._json_request("GET", f"/api/v1/optimizers/checkpoints?{urlencode(params)}")
+        return SavedLoraCheckpointPage.from_payload(payload)
+
+    def list_saved_lora_checkpoints_for_run(
+        self,
+        run_id: str,
+        *,
+        checkpoint_kind: str | None = None,
+        status: str | None = "ready",
+        limit: int = 100,
+        offset: int = 0,
+    ) -> SavedLoraRunPage:
+        """List automatically persisted LoRAs for a run with exact kind counts."""
+
+        params: list[tuple[str, str]] = [
+            ("limit", str(max(1, min(100, int(limit))))),
+            ("offset", str(max(0, int(offset)))),
+        ]
+        if checkpoint_kind:
+            params.append(("checkpoint_kind", checkpoint_kind))
+        if status:
+            params.append(("status", status))
+        run_path = quote(run_id, safe="")
+        payload = self._json_request(
+            "GET",
+            f"/api/v1/optimizers/runs/{run_path}/saved-checkpoints?{urlencode(params)}",
+        )
+        return SavedLoraRunPage.from_payload(payload)
+
+    def get_saved_lora_checkpoint(self, checkpoint_id: str) -> SavedLoraCheckpoint:
+        checkpoint_path = quote(checkpoint_id, safe="")
+        payload = self._json_request("GET", f"/api/v1/optimizers/checkpoints/{checkpoint_path}")
+        return SavedLoraCheckpoint.from_payload(payload)
+
+    def create_saved_lora_upload(self, request: Mapping[str, Any]) -> SavedLoraUploadIntent:
+        payload = self._json_request(
+            "POST", "/api/v1/optimizers/checkpoints/uploads", dict(request)
+        )
+        return SavedLoraUploadIntent.from_payload(payload)
+
+    def complete_saved_lora_upload(
+        self,
+        checkpoint_id: str,
+        *,
+        sha256: str | None = None,
+        storage_version: str | None = None,
+    ) -> SavedLoraCheckpoint:
+        checkpoint_path = quote(checkpoint_id, safe="")
+        payload = self._json_request(
+            "POST",
+            f"/api/v1/optimizers/checkpoints/{checkpoint_path}/complete",
+            {"sha256": sha256, "storage_version": storage_version},
+        )
+        return SavedLoraCheckpoint.from_payload(payload)
+
+    def upload_saved_lora_archive(
+        self,
+        archive_path: str | os.PathLike[str],
+        request: Mapping[str, Any],
+    ) -> SavedLoraCheckpoint:
+        """Create a catalog record, PUT its archive to Wasabi, and verify completion."""
+
+        path = Path(archive_path)
+        if not path.is_file():
+            raise HostedOptimizerError(f"saved LoRA archive does not exist: {path}")
+        size_bytes = path.stat().st_size
+        if size_bytes <= 0:
+            raise HostedOptimizerError("saved LoRA archive must not be empty")
+        digest = hashlib.sha256()
+        with path.open("rb") as archive:
+            while chunk := archive.read(1024 * 1024):
+                digest.update(chunk)
+        intent = self.create_saved_lora_upload(request)
+        headers = {
+            "Content-Type": intent.content_type,
+            "Content-Length": str(size_bytes),
+        }
+        try:
+            with path.open("rb") as archive:
+                upload_request = urllib.request.Request(
+                    intent.url,
+                    data=archive,
+                    headers=headers,
+                    method=intent.method,
+                )
+                with urllib.request.urlopen(
+                    upload_request, timeout=self.timeout_seconds
+                ) as response:
+                    response.read()
+        except urllib.error.HTTPError as exc:
+            raise HostedOptimizerError(f"saved LoRA Wasabi upload failed: HTTP {exc.code}") from exc
+        except urllib.error.URLError as exc:
+            raise HostedOptimizerError(f"saved LoRA Wasabi upload failed: {exc}") from exc
+        return self.complete_saved_lora_upload(
+            intent.checkpoint.checkpoint_id,
+            sha256=digest.hexdigest(),
+        )
+
+    def update_saved_lora_checkpoint(
+        self, checkpoint_id: str, changes: Mapping[str, Any]
+    ) -> SavedLoraCheckpoint:
+        checkpoint_path = quote(checkpoint_id, safe="")
+        payload = self._json_request(
+            "PATCH",
+            f"/api/v1/optimizers/checkpoints/{checkpoint_path}",
+            dict(changes),
+        )
+        return SavedLoraCheckpoint.from_payload(payload)
+
+    def archive_saved_lora_checkpoint(self, checkpoint_id: str) -> SavedLoraCheckpoint:
+        checkpoint_path = quote(checkpoint_id, safe="")
+        payload = self._json_request("DELETE", f"/api/v1/optimizers/checkpoints/{checkpoint_path}")
+        return SavedLoraCheckpoint.from_payload(payload)
+
+    def purge_saved_lora_checkpoint(self, checkpoint_id: str) -> Mapping[str, Any]:
+        checkpoint_path = quote(checkpoint_id, safe="")
+        return self._json_request(
+            "DELETE", f"/api/v1/optimizers/checkpoints/{checkpoint_path}?purge=true"
+        )
+
+    def saved_lora_download(
+        self, checkpoint_id: str, *, expires_in: int = 900
+    ) -> SavedLoraDownload:
+        checkpoint_path = quote(checkpoint_id, safe="")
+        query = urlencode({"expires_in": max(60, min(3600, int(expires_in)))})
+        payload = self._json_request(
+            "GET", f"/api/v1/optimizers/checkpoints/{checkpoint_path}/download?{query}"
+        )
+        return SavedLoraDownload.from_payload(payload)
 
     def events(self, run_id: str) -> Iterator[Mapping[str, Any]]:
         for payload in self._sse_events(f"/api/v1/optimizers/runs/{run_id}/events"):
@@ -718,6 +1076,171 @@ class HostedOptimizerClient:
             )
         except RuntimeError as exc:
             raise HostedOptimizerError(_public_error_text(str(exc))) from exc
+
+    def prepare_training_rollout(
+        self,
+        local_base_url: str,
+        *,
+        task_id: str,
+        min_concurrency: int = 1,
+        requested_ttl_seconds: int = 3600,
+        wait_ready: bool = True,
+    ) -> tuple[Any, TunnelLease]:
+        """Preflight a local task container, then open its job-ready tunnel.
+
+        The returned preflight must be applied to the config with
+        ``apply_rollout_preflight`` before calling ``submit_cispo`` or
+        ``submit_ppo``. Keeping the lease in the return value makes Workshop
+        own its lifetime for the whole hosted job.
+        """
+        from .training import TrainingRolloutRequirement, preflight_training_container
+
+        requirement = TrainingRolloutRequirement(
+            task_id=task_id,
+            min_concurrency=min_concurrency,
+            connection_mode="close",
+        )
+        preflight = preflight_training_container(local_base_url, requirement)
+        lease = self.open_synth_tunnel(
+            local_base_url,
+            requested_ttl_seconds=requested_ttl_seconds,
+            metadata={
+                "purpose": "hosted_training_rollout",
+                "task_id": task_id,
+                "container_capability_hash": preflight.capability_hash,
+            },
+            capabilities=preflight.capabilities,
+            wait_ready=wait_ready,
+        )
+        return preflight, lease
+
+    def launch_training(
+        self,
+        spec: Any,
+        *,
+        local_base_url: str,
+        task_id: str,
+        min_concurrency: int = 1,
+        requested_ttl_seconds: int = 3600,
+        wait_ready: bool = True,
+        run_id: str | None = None,
+        idempotency_key: str | None = None,
+        project_id: str | None = None,
+    ) -> HostedTrainingLaunch:
+        """Preflight provider+container, open SynthTunnel, submit, and own it."""
+
+        from .training import HostedTrainingSpec, build_hosted_training_config
+
+        if not isinstance(spec, HostedTrainingSpec):
+            raise HostedOptimizerError("launch_training requires HostedTrainingSpec")
+        resolved = _algorithm_slug(spec.algorithm, context="hosted training launch")
+        if resolved not in {OptimizerAlgorithmSlug.CISPO, OptimizerAlgorithmSlug.PPO}:
+            raise HostedOptimizerError("launch_training requires cispo or ppo")
+        provider = self.training_capabilities(
+            model_id=spec.model_id,
+            algorithm=resolved,
+        )
+        container_preflight, lease = self.prepare_training_rollout(
+            local_base_url,
+            task_id=task_id,
+            min_concurrency=min_concurrency,
+            requested_ttl_seconds=requested_ttl_seconds,
+            wait_ready=wait_ready,
+        )
+        try:
+            config = build_hosted_training_config(
+                spec,
+                provider=provider,
+                rollout=container_preflight,
+            )
+            submit = self._submit_on_policy(
+                resolved,
+                config,
+                container_tunnel=lease,
+                run_id=run_id,
+                idempotency_key=idempotency_key,
+                project_id=project_id,
+            )
+        except Exception:
+            lease.close()
+            raise
+        return HostedTrainingLaunch(
+            client=self,
+            run=submit,
+            lease=lease,
+            config=config,
+            provider_preflight=provider,
+            container_preflight=container_preflight,
+        )
+
+    def resume_training(
+        self,
+        run_id: str,
+        checkpoint_id: str,
+        spec: Any,
+        *,
+        idempotency_key: str,
+        local_base_url: str,
+        task_id: str,
+        min_concurrency: int = 1,
+        requested_ttl_seconds: int = 3600,
+        wait_ready: bool = True,
+        project_id: str | None = None,
+    ) -> HostedTrainingLaunch:
+        """Open a fresh rollout lease and resume a backend-bound attempt."""
+
+        from .training import HostedTrainingSpec, build_hosted_training_config
+
+        if not isinstance(spec, HostedTrainingSpec):
+            raise HostedOptimizerError("resume_training requires HostedTrainingSpec")
+        resolved = _algorithm_slug(spec.algorithm, context="hosted training resume")
+        if resolved not in {OptimizerAlgorithmSlug.CISPO, OptimizerAlgorithmSlug.PPO}:
+            raise HostedOptimizerError("resume_training requires cispo or ppo")
+        if not run_id.strip() or not checkpoint_id.strip() or not idempotency_key.strip():
+            raise HostedOptimizerError(
+                "resume_training requires run_id, checkpoint_id, and idempotency_key"
+            )
+        provider = self.training_capabilities(
+            model_id=spec.model_id,
+            algorithm=resolved,
+        )
+        container_preflight, lease = self.prepare_training_rollout(
+            local_base_url,
+            task_id=task_id,
+            min_concurrency=min_concurrency,
+            requested_ttl_seconds=requested_ttl_seconds,
+            wait_ready=wait_ready,
+        )
+        try:
+            config = build_hosted_training_config(
+                spec,
+                provider=provider,
+                rollout=container_preflight,
+            )
+            config = _with_tunnel_container(config, lease)
+            response = self._json_request(
+                "POST",
+                f"/api/v1/optimizers/runs/{quote(run_id, safe='')}/resume",
+                {
+                    "algorithm": resolved.value,
+                    "checkpoint_id": checkpoint_id,
+                    "idempotency_key": idempotency_key,
+                    "project_id": project_id,
+                    "config_json": config,
+                },
+            )
+            submit = OptimizerRunSubmitResponse.from_payload(response)
+        except Exception:
+            lease.close()
+            raise
+        return HostedTrainingLaunch(
+            client=self,
+            run=submit,
+            lease=lease,
+            config=config,
+            provider_preflight=provider,
+            container_preflight=container_preflight,
+        )
 
     def _submit(
         self,
@@ -1001,6 +1524,26 @@ def submit_sft(
     """Submit an SFT run through the public hosted Optimizers API."""
     active_client = client or HostedOptimizerClient()
     return active_client.submit_sft(config, **kwargs)
+
+
+def submit_cispo(
+    config: Mapping[str, Any] | Any,
+    *,
+    client: HostedOptimizerClient | None = None,
+    **kwargs: Any,
+) -> OptimizerRunSubmitResponse:
+    active_client = client or HostedOptimizerClient()
+    return active_client.submit_cispo(config, **kwargs)
+
+
+def submit_ppo(
+    config: Mapping[str, Any] | Any,
+    *,
+    client: HostedOptimizerClient | None = None,
+    **kwargs: Any,
+) -> OptimizerRunSubmitResponse:
+    active_client = client or HostedOptimizerClient()
+    return active_client.submit_ppo(config, **kwargs)
 
 
 def submit_online_reflexion(

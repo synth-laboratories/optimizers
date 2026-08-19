@@ -1,0 +1,21 @@
+{
+  "schema_version": "training.event.v1",
+  "event_id": "evt_01K30TRAININGFIXTURE",
+  "job_id": "job_training_fixture",
+  "attempt_id": "attempt_training_fixture_1",
+  "sequence": 42,
+  "occurred_at": "2026-08-18T18:00:00Z",
+  "kind": "metric",
+  "phase": "training",
+  "payload": {
+    "metrics": {
+      "train_loss": 0.75
+    },
+    "policy_version": "checkpoint:step-4"
+  },
+  "producer": {
+    "service": "optimizers-beta",
+    "version": "0.1.0",
+    "commit": "032366c2215a498524b456fbd713c1574ca830bc"
+  }
+}

@@ -31,6 +31,9 @@ from .models import (
     CONTAINER_STATUSES,
     EVAL_ALGORITHM_ID,
     EVAL_ALGORITHM_VERSION,
+    MLX_LORA_ADAPTER_FILES,
+    MLX_LORA_POLICY_KIND,
+    MLX_LORA_POLICY_SCHEMA,
     POLICY_CANDIDATE_SCHEMA,
     RUN_MANIFEST_SCHEMA,
     SEED_LEDGER_SCHEMA,
@@ -46,6 +49,8 @@ from .models import (
     ContainerResult,
     EvalContractError,
     MetricSpec,
+    MlxLoraPolicy,
+    ModelRoute,
     PolicyCandidate,
     SeedLedger,
     SelectionDecision,
@@ -56,9 +61,16 @@ from .models import (
     TrialRecord,
     digest_of,
     digest_of_tree,
+    read_mlx_lora_policy,
 )
 from .recipes import EvalRecipe, catalog, get_recipe
-from .runner import EvalRunner, WorkerManifest, request_cancel, run_worker
+from .runner import (
+    EvalRunner,
+    PolicySnapshotRegistrar,
+    WorkerManifest,
+    request_cancel,
+    run_worker,
+)
 from .scoring import apply_elimination, decide, paired_lift, summarize_candidate
 from .semaphore import Lease, SemaphoreTimeout, TrialSemaphore
 
@@ -69,6 +81,9 @@ __all__ = [
     "CONTAINER_STATUSES",
     "EVAL_ALGORITHM_ID",
     "EVAL_ALGORITHM_VERSION",
+    "MLX_LORA_ADAPTER_FILES",
+    "MLX_LORA_POLICY_KIND",
+    "MLX_LORA_POLICY_SCHEMA",
     "POLICY_CANDIDATE_SCHEMA",
     "RUN_MANIFEST_SCHEMA",
     "SEED_LEDGER_SCHEMA",
@@ -89,8 +104,11 @@ __all__ = [
     "EvalRunner",
     "Lease",
     "MetricSpec",
+    "MlxLoraPolicy",
+    "ModelRoute",
     "OciTrialExecutor",
     "PolicyCandidate",
+    "PolicySnapshotRegistrar",
     "RuntimeConfig",
     "SeedLedger",
     "SelectionDecision",
@@ -112,6 +130,7 @@ __all__ = [
     "digest_of_tree",
     "get_recipe",
     "paired_lift",
+    "read_mlx_lora_policy",
     "request_cancel",
     "run_worker",
     "summarize_candidate",

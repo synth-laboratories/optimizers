@@ -1,0 +1,82 @@
+# GSM8K scored against a local MLX policy: the base model and each trained
+# LoRA checkpoint in one content-addressed candidate set, on shared seeds, so
+# "did the adapter learn anything" is a paired difference rather than two runs
+# compared by hand.  The base model is the declared baseline and enters the set
+# as an adapter-free `mlx-lora.v1` candidate.
+#
+# `network = "bridge"` is mandatory here and is not a relaxation of the fixture
+# recipe's `none`: the policy lives in an MLX service on the host, and a trial
+# on no network cannot reach it at all.  What keeps that honest is that the
+# route is still recipe-owned and still local-only — the container may reach
+# host.docker.internal and gets no credential beyond the run's own bearer
+# token.
+#
+# The rates are 0.0 because the compute is this machine, not a vendor.  That
+# makes `budget.max_usd` vacuous, so `budget.max_llm_calls` is the ceiling that
+# actually bounds a run on this lane; the dollar cap is kept only because the
+# schema requires a positive one, and it should never be the binding limit.
+#
+# Unavailable until the GSM8K eval target is published and pinned: no
+# `image_digest` is set, so `EvalRecipe.available` is false and the runner
+# refuses to start rather than running whatever the tag points at today.
+
+[recipe]
+id = "eval.mlx.local-policy.smoke.v1"
+title = "Local MLX policy smoke (GSM8K)"
+description = "Score a local MLX base model and its LoRA checkpoints on GSM8K, report only."
+task = "gsm8k"
+policy_kind = "mlx-lora.v1"
+image = "ghcr.io/synth-laboratories/workshop-gsm8k-eval-target"
+prerequisites = [
+    "Published gsm8k-eval-target image pinned by digest",
+    "synth-mlx-rl serving the base model and accepting policy snapshot registration",
+    "SYNTH_MLX_RL_TOKEN in the eval home's secrets.toml",
+]
+scenarios = ["gsm8k-test"]
+screening_seeds = [101, 102, 103, 104, 105, 106, 107, 108, 109, 110]
+confirmation_seeds = []
+secrets = ["SYNTH_MLX_RL_TOKEN"]
+
+[recipe.budget]
+max_llm_calls = 40
+max_usd = 0.01
+
+[[recipe.models]]
+id = "mlx-local-base"
+route = "http://host.docker.internal:8787/v1/chat/completions"
+secret = "SYNTH_MLX_RL_TOKEN"
+efforts = []
+usd_per_1m_input = 0.0
+usd_per_1m_output = 0.0
+usd_per_1m_cached_input = 0.0
+price_source = "local-compute"
+price_as_of = "2026-08-18"
+
+[recipe.target]
+schema_version = "eval.target.v1"
+policy_kinds = ["mlx-lora.v1"]
+trial_mode = "one-policy-one-seed"
+required_gates = ["policy_loaded", "verifier_completed"]
+required_artifacts = ["trace"]
+supports_live_events = true
+network = "bridge"
+
+[[recipe.target.metrics]]
+id = "accuracy"
+direction = "maximize"
+
+[recipe.selection]
+primary_metric = "accuracy"
+min_lift = 0.0
+min_valid_trials = 10
+decision_mode = "report_only"
+
+[recipe.selection.elimination]
+kind = "none"
+
+[recipe.limits]
+max_parallel_trials = 2
+timeout_seconds = 1800
+cpus = 2.0
+memory_mb = 4096
+max_output_bytes = 268435456

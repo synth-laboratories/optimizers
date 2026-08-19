@@ -1480,8 +1480,8 @@ wheels = [
 
 [[package]]
 name = "synth-containers"
-version = "0.4.1.dev20260814"
-source = { git = "https://github.com/synth-laboratories/containers.git?rev=e76f8e4ba3edae10dec24bf9e71ec1a7fb332bed#e76f8e4ba3edae10dec24bf9e71ec1a7fb332bed" }
+version = "0.4.1.dev20260817"
+source = { git = "https://github.com/synth-laboratories/containers.git?rev=a2a316b2e113883349b096ae07e17898f14bc7e5#a2a316b2e113883349b096ae07e17898f14bc7e5" }
 dependencies = [
     { name = "certifi" },
     { name = "fastapi" },
@@ -1527,7 +1527,7 @@ requires-dist = [
     { name = "openai", marker = "extra == 'banking77'", specifier = ">=1.0.0" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6.0" },
-    { name = "synth-containers", git = "https://github.com/synth-laboratories/containers.git?rev=e76f8e4ba3edae10dec24bf9e71ec1a7fb332bed" },
+    { name = "synth-containers", git = "https://github.com/synth-laboratories/containers.git?rev=a2a316b2e113883349b096ae07e17898f14bc7e5" },
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.32" },
     { name = "websocket-client", specifier = ">=1.8.0" },
 ]

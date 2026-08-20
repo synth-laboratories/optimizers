@@ -1,0 +1,108 @@
+name: Publish GSM8K eval target
+
+# Same shape as publish-craftax-eval-target.yml: an immutable build context from
+# pinned sources, a multi-arch push by digest, a receipt artifact. The dataset
+# pin (revision + split digests) is owned by containers' gsm8k_world.py; the
+# stage step refuses to build if the rows fetched at that revision do not
+# reproduce the recorded digests.
+
+on:
+  workflow_dispatch:
+    inputs:
+      containers_ref:
+        description: "containers commit to vendor gsm8k_world.py from (full SHA)"
+        required: true
+        default: "9916cd7479c1029d7dd9091db43f52af1cdf484e"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out Optimizers producer
+        uses: actions/checkout@v4
+
+      - name: Check out pinned containers source
+        uses: actions/checkout@v4
+        with:
+          repository: synth-laboratories/containers
+          ref: ${{ inputs.containers_ref }}
+          path: containers-source
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Assemble immutable build context (pinned dataset, verified digests)
+        id: stage
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet "huggingface_hub>=0.25" "pyarrow>=15"
+          python docker/gsm8k-eval-target/stage.py \
+            --containers-src containers-source/src \
+            --out "${RUNNER_TEMP}/gsm8k-eval-target"
+          revision="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["revision"])' \
+            "${RUNNER_TEMP}/gsm8k-eval-target/stage-receipt.json")"
+          containers_sha="$(git -C containers-source rev-parse HEAD)"
+          echo "revision=${revision}" >> "$GITHUB_OUTPUT"
+          echo "containers_sha=${containers_sha}" >> "$GITHUB_OUTPUT"
+          echo "tag=v0.7-gsm8k-${revision:0:8}-containers-${containers_sha:0:8}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish immutable multi-architecture target
+        id: publish
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ runner.temp }}/gsm8k-eval-target
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ghcr.io/synth-laboratories/workshop-gsm8k-eval-target:${{ steps.stage.outputs.tag }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/synth-laboratories/optimizers
+            org.opencontainers.image.revision=${{ steps.stage.outputs.containers_sha }}
+            org.opencontainers.image.title=Workshop GSM8K eval target
+          build-args: |
+            GSM8K_REVISION=${{ steps.stage.outputs.revision }}
+            CONTAINERS_SOURCE_COMMIT=${{ steps.stage.outputs.containers_sha }}
+          provenance: mode=max
+          sbom: true
+
+      - name: Record immutable publication receipt
+        run: |
+          cp "${RUNNER_TEMP}/gsm8k-eval-target/stage-receipt.json" gsm8k-eval-target-stage-receipt.json
+          printf '%s\n' \
+            'image=ghcr.io/synth-laboratories/workshop-gsm8k-eval-target' \
+            'tag=${{ steps.stage.outputs.tag }}' \
+            'dataset_revision=${{ steps.stage.outputs.revision }}' \
+            'containers_source_commit=${{ steps.stage.outputs.containers_sha }}' \
+            'architectures=linux/amd64,linux/arm64' \
+            'digest=${{ steps.publish.outputs.digest }}' | tee gsm8k-eval-target-receipt.txt
+
+      # Known to 404 on this org (same step as the Craftax workflow); the image
+      # is pushed and its digest recorded regardless, and visibility can be
+      # fixed from the org's package settings.
+      - name: Make the repository-linked target public
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api --method PATCH \
+            /orgs/synth-laboratories/packages/container/workshop-gsm8k-eval-target \
+            -f visibility=public
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gsm8k-eval-target-receipt
+          path: |
+            gsm8k-eval-target-receipt.txt
+            gsm8k-eval-target-stage-receipt.json

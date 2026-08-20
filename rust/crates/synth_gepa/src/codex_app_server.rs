@@ -1593,6 +1593,8 @@ fn rollouts_read_model(input: &CodexProposerInput<'_>) -> Value {
                 "usage": frame.usage,
                 "artifact_refs": artifact_refs,
                 "trace_refs": trace_refs,
+                "trace_v5_path": frame.metadata.get("trace_v5_path"),
+                "trace_v5_ref": frame.metadata.get("trace_v5_ref"),
                 "candidate_status": candidate.status,
                 "actionable_side_info": frame.actionable_side_info,
             }));
@@ -3507,8 +3509,6 @@ fn non_empty(value: Option<&str>) -> Option<&str> {
         Some(value)
     }
 }
-
-
 #[cfg(test)]
 mod proposal_validator_tests {
     use super::*;

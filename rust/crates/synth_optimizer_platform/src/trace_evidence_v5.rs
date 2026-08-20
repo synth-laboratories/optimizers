@@ -118,6 +118,114 @@ pub fn jesterky_v4_projection(trace: &SealedTraceV5, rollout: &Value) -> Value {
     })
 }
 
+/// Archive a container-owned rollout payload as a sealed Trace V5 document.
+///
+/// This is an explicit import, not a V4 relabel: the original payload is kept
+/// under `extensions.synth_gepa_rollout_import`, the source format and losses are
+/// declared, and the resulting V5 document has its own immutable digest.  The
+/// archive is therefore safe to target with V5 evidence while remaining honest
+/// that GEPA did not capture every provider event natively.
+pub fn seal_gepa_rollout_trace_v5(
+    run_id: &str,
+    sensor_frame_id: &str,
+    rollout_trace: &Value,
+    metadata: &Value,
+) -> Result<Value> {
+    let now = rfc3339_now()?;
+    let rollout_id = rollout_trace
+        .get("rollout_id")
+        .and_then(Value::as_str)
+        .or_else(|| metadata.get("rollout_id").and_then(Value::as_str));
+    let task_id = rollout_trace
+        .get("task_id")
+        .and_then(Value::as_str)
+        .or_else(|| metadata.get("task_id").and_then(Value::as_str));
+    let correlation_id = rollout_trace
+        .get("trace_correlation_id")
+        .and_then(Value::as_str)
+        .or(rollout_id);
+    let trace_id = format!(
+        "trace_gepa_{}",
+        short_hash(&format!(
+            "{run_id}:{sensor_frame_id}:{}",
+            content_digest_for(rollout_trace)
+        ))
+    );
+    let capture_id = format!("cap_gepa_{}", short_hash(&trace_id));
+    let status = rollout_trace
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("completed");
+    let lifecycle_status = if matches!(status, "completed" | "succeeded") {
+        "completed"
+    } else {
+        "failed"
+    };
+    let raw_digest = content_digest_for(rollout_trace);
+    let mut document = json!({
+        "trace_id": trace_id,
+        "trace_kind": "agent_rollout",
+        "identity": {
+            "rollout_id": rollout_id,
+            "run_id": run_id,
+            "correlation_id": correlation_id,
+            "task_id": task_id,
+        },
+        "lifecycle": {"status": lifecycle_status, "started_at": now, "ended_at": now, "termination": {"reason": status, "detail": ""}},
+        "capture": {
+            "capture_id": capture_id,
+            "binding_id": "gepa_rollout_import",
+            "binding_digest": raw_digest,
+            "capture_profile": "synth_gepa.rollout_trace_v4_import.v1",
+            "interception": "producer_event_import",
+            "mode": "import",
+            "segment_digests": [],
+            "segment_count": 0,
+            "raw_record_count": rollout_trace.get("event_history").and_then(Value::as_array).map(Vec::len).unwrap_or(0),
+        },
+        "provenance": {
+            "producer": "synth_gepa",
+            "producer_version": "trace-v5-import.v1",
+            "source_format": "synth_rollout_trace_v4",
+            "harness": "gepa_container_rollout",
+            "captured_at": now,
+            "transformation_chain": ["container rollout response", "synth_gepa rollout_trace capture", "Trace V5 aggregate import"],
+            "aliases": [],
+            "extra": {"source_rollout_digest": raw_digest}
+        },
+        "completeness": {
+            "capture_status": "partial",
+            "terminal_event_observed": true,
+            "model_calls": "aggregate_only",
+            "raw_provider": "unavailable",
+            "agent_events": "aggregate_only",
+            "environment_events": "aggregate_only",
+            "tool_events": "aggregate_only",
+            "usage": "aggregate_only",
+            "artifact_finalization": "complete",
+            "missing_ranges": [],
+            "truncation_reasons": [],
+            "repair_receipt_ids": [],
+            "digest_algorithm": "sha256",
+            "metadata": {},
+            "reasons": ["Imported from the container rollout payload; provider-native streaming is not claimed."],
+        },
+        "actors": [], "sessions": [], "messages": [], "branches": [], "spans": [], "events": [], "artifacts": [], "errors": [], "usage": {"provenance": "unavailable", "unavailable_fields": [], "source_refs": []}, "aliases": [], "links": [],
+        "visibility": "private",
+        "extensions": {
+            "synth_gepa_rollout_import": {
+                "schema_version": "synth_gepa.rollout_trace_v5_import.v1",
+                "source_rollout_digest": raw_digest,
+                "source_rollout_trace": rollout_trace,
+                "source_metadata": metadata,
+            }
+        },
+        "schema_version": TRACE_V5_SCHEMA_VERSION,
+    });
+    seal(&mut document);
+    Ok(document)
+}
+
 /// Produce a sealed V5 evidence bundle from one Jesterky result.  The result is
 /// a descriptive proposer input only: no evaluator score, reward authority, or
 /// benchmark verdict is ever emitted here.
@@ -344,6 +452,12 @@ fn sanitize(raw: &str) -> String {
         .collect()
 }
 
+fn rfc3339_now() -> Result<String> {
+    time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .map_err(|error| OptimizerError::Config(format!("format Trace V5 timestamp: {error}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -387,6 +501,41 @@ mod tests {
         document["trace_id"] = json!("tampered");
         fs::write(&path, serde_json::to_string(&document).unwrap()).unwrap();
         assert!(load_sealed_trace_v5(&path).is_err());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn imported_gepa_rollout_is_a_sealed_v5_trace_with_declared_capture_limits() {
+        let path = std::env::temp_dir().join(format!(
+            "synth-gepa-import-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let document = seal_gepa_rollout_trace_v5(
+            "run_1",
+            "sensor_1",
+            &json!({
+                "schema_version": "synth_rollout_trace_v4",
+                "rollout_id": "rollout_1",
+                "trace_correlation_id": "correlation_1",
+                "status": "completed",
+                "event_history": []
+            }),
+            &json!({"task_id":"task_1"}),
+        )
+        .unwrap();
+        assert_eq!(document["schema_version"], TRACE_V5_SCHEMA_VERSION);
+        assert_eq!(document["completeness"]["capture_status"], "partial");
+        assert_eq!(
+            document.pointer("/extensions/synth_gepa_rollout_import/source_rollout_trace/schema_version"),
+            Some(&json!("synth_rollout_trace_v4"))
+        );
+        fs::write(&path, serde_json::to_string(&document).unwrap()).unwrap();
+        let loaded = load_sealed_trace_v5(&path).unwrap();
+        assert_eq!(loaded.document["content_digest"], document["content_digest"]);
         let _ = fs::remove_file(path);
     }
 }

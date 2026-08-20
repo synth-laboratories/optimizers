@@ -879,4 +879,58 @@ mod tests {
             .is_empty());
         let _ = fs::remove_dir_all(dir);
     }
+
+    #[test]
+    #[ignore = "requires JESTERKY_LOCAL_BIN and JESTERKY_GEPA_SPEC"]
+    fn local_fake_actor_fails_closed_on_hollow_annotations() {
+        let command = std::env::var("JESTERKY_LOCAL_BIN")
+            .expect("set JESTERKY_LOCAL_BIN to the local jesterky executable");
+        let spec = std::env::var("JESTERKY_GEPA_SPEC")
+            .expect("set JESTERKY_GEPA_SPEC to examples/gepa_trace_annotate.json");
+        let dir = temp_path("fake-actor");
+        let workspace = dir.join("proposer_workspaces/generation_001");
+        fs::create_dir_all(&workspace).unwrap();
+        let trace_path = dir.join("source.v5.json");
+        let trace = synth_optimizer_platform::seal_gepa_rollout_trace_v5(
+            "run_fake_actor",
+            "sensor_fake_actor",
+            &json!({
+                "schema_version": "synth_rollout_trace_v4",
+                "rollout_id": "rollout_fake_actor",
+                "trace_correlation_id": "correlation_fake_actor",
+                "status": "completed",
+                "summary": {"expected":"alpha", "prediction":"beta"},
+                "event_history": []
+            }),
+            &json!({"task_id":"task_fake_actor"}),
+        )
+        .unwrap();
+        fs::write(&trace_path, serde_json::to_string_pretty(&trace).unwrap()).unwrap();
+        let mut config = SynthOptimizerConfig::default();
+        config.run.run_id = "run_fake_actor".to_string();
+        config.jesterky_workflow.enabled = true;
+        config.jesterky_workflow.command = command;
+        config.jesterky_workflow.spec = spec;
+        config.jesterky_workflow.actor = "fake".to_string();
+        config.jesterky_workflow.model = Some("fake-pinned-model".to_string());
+        config.jesterky_workflow.provider = "local-fake".to_string();
+        config.jesterky_workflow.max_spend_usd = Some(1.0);
+        let error = prepare_jesterky_workflow_for_generation(
+            &config,
+            &json!([{
+                "trace_v5_path": trace_path,
+                "candidate_id": "candidate_fake_actor",
+                "task_id": "task_fake_actor",
+                "reward": 0.0,
+                "status": "completed"
+            }]),
+            &workspace,
+            1,
+        )
+        .expect_err("the deterministic fake actor intentionally produces no themes");
+        assert!(error.to_string().contains("produced empty annotate signal"));
+        assert!(workspace.join(JESTERKY_ANNOTATE_MANIFEST_FILE).is_file());
+        assert!(!workspace.join("state/trace_evidence_v5").exists());
+        let _ = fs::remove_dir_all(dir);
+    }
 }

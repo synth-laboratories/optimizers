@@ -20,28 +20,29 @@ use synth_optimizer_platform::limits::{
     RuntimeEffectAdmissionInput, RuntimeEffectAdmissionRecord, RuntimeEffectBudgetEstimate,
 };
 use synth_optimizer_platform::{
-    budget_limit_engine_input, normalize_event_feed, stable_json_hash, task_identity,
-    write_run_storage_report, ArtifactPaths, ArtifactRef, CacheMode, CacheProfileRecord,
-    CandidateOverlay, CheckpointInput, CheckpointRecord, CheckpointSummaryRecord,
-    ConfiguredGepaRunLimits, ContainerClient, ContainerContractSnapshotInput,
-    ContainerContractSnapshotRecord, DiskBudget, EvaluationCacheRecord, EvaluationCacheRecordInput,
-    EventStreamRecord, EventWriter, EvidenceFrame, FailurePayload, ForecastConfidence,
-    GepaBatchSamplerConfig, GepaCandidateSelectorConfig, GepaObjectiveAcceptanceConfig,
-    GepaPipelineMode, GepaRunResult, LeverBundle, LeverKind, LeverManifest, LimitDefinition,
-    LimitEngine, LimitEngineInput, LimitForecast, LimitKind, LimitObservation, LimitSnapshot,
-    LimitStatus, ManagedContainerProcess, MaterializationRecord, MaterializationRecordInput,
-    ObjectiveScore, ObjectiveSetRecord, ObjectiveSpec, OptimizerError, OptimizerJob,
-    OptimizerJobKind, OptimizerJobStatus, OptimizerRunState, OptimizerStateMachine,
-    OptimizerTransition, OptimizerTransitionTrigger, ParetoComparisonRecord, PlanLinkInput,
-    PlanLinkRecord, PromptCandidatePayload, PromptProgram, PromptProgramSnapshotInput,
-    PromptProgramSnapshotRecord, RequestCache, ResolvedRunConfigInput, ResolvedRunConfigRecord,
-    Result, RetryPolicy, RolloutMaterializationIdentity, RunArtifactStore, RunPhaseTimingInput,
-    RunRegistry, RunRegistryEntry, RunStorageInspectionInput, RuntimeEffectInput,
-    RuntimeEffectRecord, ScoreRecord, ScoreVectorRecord, SensorFrame, StateMachineEntity,
-    StopperStateInput, StopperStateRecord, SynthOptimizerConfig, TasksetResponse,
-    TasksetSnapshotInput, TasksetSnapshotRecord, TasksetTasksRequest, TasksetTasksResponse,
-    TransitionInput, TransitionLog, TransitionSink, UsageLedgerInput, UsageLedgerRecord,
-    WorkspaceStore, GEPA_KNOWN_PROTOCOL_IDS, LIMIT_ENGINE_SCHEMA_VERSION,
+    budget_limit_engine_input, normalize_event_feed, seal_gepa_rollout_trace_v5,
+    stable_json_hash, task_identity, write_run_storage_report, ArtifactPaths, ArtifactRef,
+    CacheMode, CacheProfileRecord, CandidateOverlay, CheckpointInput, CheckpointRecord,
+    CheckpointSummaryRecord, ConfiguredGepaRunLimits, ContainerClient,
+    ContainerContractSnapshotInput, ContainerContractSnapshotRecord, DiskBudget,
+    EvaluationCacheRecord, EvaluationCacheRecordInput, EventStreamRecord, EventWriter,
+    EvidenceFrame, FailurePayload, ForecastConfidence, GepaBatchSamplerConfig,
+    GepaCandidateSelectorConfig, GepaObjectiveAcceptanceConfig, GepaPipelineMode, GepaRunResult,
+    LeverBundle, LeverKind, LeverManifest, LimitDefinition, LimitEngine, LimitEngineInput,
+    LimitForecast, LimitKind, LimitObservation, LimitSnapshot, LimitStatus,
+    ManagedContainerProcess, MaterializationRecord, MaterializationRecordInput, ObjectiveScore,
+    ObjectiveSetRecord, ObjectiveSpec, OptimizerError, OptimizerJob, OptimizerJobKind,
+    OptimizerJobStatus, OptimizerRunState, OptimizerStateMachine, OptimizerTransition,
+    OptimizerTransitionTrigger, ParetoComparisonRecord, PlanLinkInput, PlanLinkRecord,
+    PromptCandidatePayload, PromptProgram, PromptProgramSnapshotInput, PromptProgramSnapshotRecord,
+    RequestCache, ResolvedRunConfigInput, ResolvedRunConfigRecord, Result, RetryPolicy,
+    RolloutMaterializationIdentity, RunArtifactStore, RunPhaseTimingInput, RunRegistry,
+    RunRegistryEntry, RunStorageInspectionInput, RuntimeEffectInput, RuntimeEffectRecord,
+    ScoreRecord, ScoreVectorRecord, SensorFrame, StateMachineEntity, StopperStateInput,
+    StopperStateRecord, SynthOptimizerConfig, TasksetResponse, TasksetSnapshotInput,
+    TasksetSnapshotRecord, TasksetTasksRequest, TasksetTasksResponse, TransitionInput,
+    TransitionLog, TransitionSink, UsageLedgerInput, UsageLedgerRecord, WorkspaceStore,
+    GEPA_KNOWN_PROTOCOL_IDS, LIMIT_ENGINE_SCHEMA_VERSION,
 };
 
 mod codex_app_server;
@@ -50,12 +51,12 @@ mod fixtures;
 mod jesterky_workflow;
 mod operator_workspace;
 mod lane_executor;
-mod usage_pricing;
 mod machines;
 pub mod pipeline;
 pub mod planner;
 pub mod runtime;
 pub mod service;
+mod usage_pricing;
 
 pub use fixtures::{
     cursor_fixture_from_cursor, export_cursor_fixture, fork_cursor_checkpoint,
@@ -10364,7 +10365,7 @@ fn record_rollout_materialization_from_outcome(
 
 fn attach_rollout_trace_artifact(
     paths: &ArtifactPaths,
-    _run_id: &str,
+    run_id: &str,
     sensor_frame: &mut SensorFrame,
 ) -> Result<()> {
     let Some(trace_payload) = sensor_frame.metadata.get("rollout_trace").cloned() else {
@@ -10376,6 +10377,42 @@ fn attach_rollout_trace_artifact(
     paths.write_json(&trace_path, &trace_payload)?;
     let artifact = paths.artifact_ref(&trace_path, "rollout_trace_payload", "debug")?;
     sensor_frame.artifact_refs.push(artifact);
+    let trace_v5_dir = paths.run_dir.join("trace_v5");
+    fs::create_dir_all(&trace_v5_dir)
+        .map_err(|source| OptimizerError::io(&trace_v5_dir, source))?;
+    let archive_metadata = json!({
+        "rollout_id": sensor_frame.rollout_id,
+        "candidate_id": sensor_frame.candidate_id,
+        "task_id": sensor_frame.task_id,
+        "example_id": sensor_frame.example_id,
+        "evaluation_stage": sensor_frame.evaluation_stage,
+        "split": sensor_frame.split,
+        "status": sensor_frame.status,
+        "success_status": sensor_frame.success_status,
+    });
+    let trace_v5 = seal_gepa_rollout_trace_v5(
+        run_id,
+        &sensor_frame.sensor_frame_id,
+        &trace_payload,
+        &archive_metadata,
+    )?;
+    let trace_v5_path = trace_v5_dir.join(format!("{}.v5.json", sensor_frame.sensor_frame_id));
+    paths.write_json(&trace_v5_path, &trace_v5)?;
+    let trace_v5_artifact =
+        paths.artifact_ref(&trace_v5_path, "trace_v5_document", "run_evidence")?;
+    sensor_frame.artifact_refs.push(trace_v5_artifact);
+    sensor_frame.metadata.insert(
+        "trace_v5_path".to_string(),
+        json!(trace_v5_path.display().to_string()),
+    );
+    sensor_frame.metadata.insert(
+        "trace_v5_ref".to_string(),
+        json!({
+            "trace_id": trace_v5.get("trace_id"),
+            "content_digest": trace_v5.get("content_digest"),
+            "schema_version": "synth.trace.v5",
+        }),
+    );
     Ok(())
 }
 

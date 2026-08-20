@@ -186,7 +186,7 @@ pub use storage_maintenance::{
 };
 pub use trace_evidence_v5::{
     build_jesterky_evidence_bundle, canonical_json, content_digest_for, jesterky_v4_projection,
-    load_sealed_trace_v5, write_evidence_bundle_v5, SealedTraceV5,
+    load_sealed_trace_v5, seal_gepa_rollout_trace_v5, write_evidence_bundle_v5, SealedTraceV5,
     TraceEvidenceBundleV5Materialization, TRACE_EVIDENCE_BUNDLE_V5_SCHEMA_VERSION,
     TRACE_V5_SCHEMA_VERSION,
 };

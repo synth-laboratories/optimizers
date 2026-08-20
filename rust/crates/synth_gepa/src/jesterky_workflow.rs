@@ -974,7 +974,7 @@ mod tests {
         config.jesterky_workflow.command = command;
         config.jesterky_workflow.spec = spec;
         config.jesterky_workflow.actor = "codex".to_string();
-        config.jesterky_workflow.model = Some("gpt-5.5".to_string());
+        config.jesterky_workflow.model = Some("gpt-5.6-luna".to_string());
         config.jesterky_workflow.provider = "chatgpt".to_string();
         config.jesterky_workflow.max_targets = 1;
         config.jesterky_workflow.max_spend_usd = Some(1.0);

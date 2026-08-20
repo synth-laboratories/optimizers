@@ -66,15 +66,30 @@ jobs:
             'architectures=linux/amd64,linux/arm64' \
             'digest=${{ steps.publish.outputs.digest }}' | tee craftax-eval-target-receipt.txt
 
-      - name: Make the repository-linked target public
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh api --method PATCH \
-            /orgs/synth-laboratories/packages/container/workshop-craftax-eval-target \
-            -f visibility=public
-
       - uses: actions/upload-artifact@v4
         with:
           name: craftax-eval-target-receipt
           path: craftax-eval-target-receipt.txt
+
+      # GitHub has no REST route for package visibility: PATCH
+      # /orgs/{org}/packages/container/{name} is 404 for every token, which is
+      # what failed runs 32094428767 and 32098386835 after the push succeeded.
+      # Visibility is a one-time package-settings action by an org owner, so
+      # verify it here instead of pretending to set it. Once the package is
+      # public this step passes on every later run.
+      - name: Verify the target is anonymously pullable
+        env:
+          DIGEST: ${{ steps.publish.outputs.digest }}
+        run: |
+          set -euo pipefail
+          repo='synth-laboratories/workshop-craftax-eval-target'
+          token="$(curl -sS "https://ghcr.io/token?scope=repository:${repo}:pull" | jq -r '.token // empty')"
+          if [ -z "$token" ]; then
+            echo "::error::ghcr.io/${repo} is not anonymously pullable. The image ${DIGEST} was pushed and its receipt uploaded; an org owner must set the package public once at https://github.com/orgs/synth-laboratories/packages/container/workshop-craftax-eval-target/settings (Danger Zone -> Change visibility -> Public)."
+            exit 1
+          fi
+          curl -fsS -o /dev/null \
+            -H "Authorization: Bearer ${token}" \
+            -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json' \
+            "https://ghcr.io/v2/${repo}/manifests/${DIGEST}"
+          echo "anonymous pull verified for ${DIGEST}"

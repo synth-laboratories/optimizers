@@ -8,6 +8,7 @@ use serde_json::{Map, Value};
 
 use crate::agent_runtime::{validate_execution_mode_compat, ExecutionSubstrate};
 use crate::configured_limits::validate_gepa_limit_config;
+use crate::correlation::CorrelationEnvelope;
 use crate::disk_budget::DiskBudgetConfig;
 use crate::error::{OptimizerError, Result};
 
@@ -825,6 +826,10 @@ pub struct RunConfig {
     pub output_dir: PathBuf,
     #[serde(default)]
     pub seed: u64,
+    /// Set when an experiment dispatched this run. The service still mints
+    /// `run_id` itself; this only records which trial asked for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation: Option<CorrelationEnvelope>,
 }
 
 impl Default for RunConfig {
@@ -833,6 +838,7 @@ impl Default for RunConfig {
             run_id: default_run_id(),
             output_dir: default_output_dir(),
             seed: 0,
+            correlation: None,
         }
     }
 }
@@ -2976,6 +2982,65 @@ fn validate_gepa_leakage_config(config: &GepaLeakageConfig) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Byte-for-byte what `experiment.adapters.gepa_cli` writes into a rendered
+    /// trial config.
+    ///
+    /// `RunConfig` is `deny_unknown_fields`, so this is the exact place a
+    /// correlation envelope would be rejected at parse time -- before a
+    /// container starts and long before anyone notices a manifest that cannot
+    /// be joined to an arm.
+    const RENDERED_TRIAL_RUN_SECTION: &str = r#"
+[run]
+run_id = "gepa_t676b09f94e51e2f3"
+output_dir = "runs/t676b09f94e51e2f3"
+seed = 104
+
+[run.correlation]
+schema_version = "synth.correlation.v1"
+experiment_id = "luna-effort-v1"
+arm_id = "arm_6edf53cf5835"
+block_id = "seed:104"
+replicate = 0
+trial_id = "t676b09f94e51e2f3"
+plan_digest = "sha256:abababababababababababababababababababababababababababababababab"
+
+[run.correlation.subject]
+subject_kind = "proposer-policy"
+subject_id = "gpt-5.6-luna@low"
+subject_content_digest = "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+"#;
+
+    #[derive(Deserialize)]
+    struct RunSectionOnly {
+        run: RunConfig,
+    }
+
+    #[test]
+    fn a_rendered_trial_config_parses_with_its_envelope_intact() {
+        let parsed: RunSectionOnly =
+            toml::from_str(RENDERED_TRIAL_RUN_SECTION).expect("rendered trial config parses");
+        assert_eq!(parsed.run.run_id, "gepa_t676b09f94e51e2f3");
+        assert_eq!(parsed.run.seed, 104);
+
+        let envelope = parsed.run.correlation.expect("envelope survives the TOML");
+        envelope.validate().expect("valid");
+        assert_eq!(envelope.trial_id, "t676b09f94e51e2f3");
+        assert_eq!(envelope.subject.subject_id, "gpt-5.6-luna@low");
+        // TOML cannot express null, so the optionals must be absent rather than
+        // empty; a `candidate_id = null` here would not have parsed at all.
+        assert!(envelope.candidate_id.is_none());
+        assert!(envelope.subject.parent_subject_id.is_none());
+    }
+
+    #[test]
+    fn an_ordinary_run_section_still_parses_without_one() {
+        let parsed: RunSectionOnly = toml::from_str(
+            "[run]\nrun_id = \"plain\"\noutput_dir = \"runs\"\nseed = 0\n",
+        )
+        .expect("a run without an experiment behind it parses");
+        assert!(parsed.run.correlation.is_none());
+    }
 
     #[test]
     fn locked_5_6_chatgpt_proposers_are_allowed() {

@@ -133,6 +133,18 @@ impl CheckpointRecord {
                 .unwrap_or(false)
     }
 
+    pub fn is_retained(&self) -> bool {
+        self.metadata
+            .get("retain")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    }
+
+    pub fn with_retain(mut self) -> Self {
+        self.metadata.insert("retain".to_string(), json!(true));
+        self
+    }
+
     pub fn storage_compacted_summary(mut self, original_snapshot_bytes: u64) -> Self {
         let original_checkpoint_id = self.checkpoint_id.clone();
         let original_snapshot_kind = self

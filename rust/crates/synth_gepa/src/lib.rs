@@ -13,6 +13,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
+use synth_optimizer_platform::workspace::labelled;
 use synth_optimizer_platform::limits::{
     BudgetCommitInput, BudgetCommitRecord, BudgetLimitBreach, BudgetReleaseInput,
     BudgetReleaseRecord, BudgetReservationInput, BudgetReservationRecord, RunLimitPolicy,
@@ -40,16 +41,27 @@ use synth_optimizer_platform::{
     StopperStateInput, StopperStateRecord, SynthOptimizerConfig, TasksetResponse,
     TasksetSnapshotInput, TasksetSnapshotRecord, TasksetTasksRequest, TasksetTasksResponse,
     TransitionInput, TransitionLog, TransitionSink, UsageLedgerInput, UsageLedgerRecord,
-    WorkspaceStore, LIMIT_ENGINE_SCHEMA_VERSION,
+    WorkspaceStore, GEPA_KNOWN_PROTOCOL_IDS, LIMIT_ENGINE_SCHEMA_VERSION,
 };
 
 mod codex_app_server;
+mod episode;
+mod fixtures;
 mod jesterky_workflow;
+mod operator_workspace;
+mod lane_executor;
+mod usage_pricing;
 mod machines;
 pub mod pipeline;
 pub mod planner;
 pub mod runtime;
 pub mod service;
+
+pub use fixtures::{
+    cursor_fixture_from_cursor, export_cursor_fixture, fork_cursor_checkpoint,
+    import_cursor_fixture, load_fixture_file, pin_run_checkpoint, GepaCursorFixture,
+    GEPA_CURSOR_FIXTURE_SCHEMA,
+};
 
 use machines::{
     CandidateEntity, CandidateState, CandidateTrigger, ProposerRoundEntity, ProposerRoundState,
@@ -465,6 +477,101 @@ fn hydrate_candidate_sensor_frames_from_workspace(
         }
     }
     Ok(())
+}
+
+fn cursor_selection_objective_name(cursor: &GepaCursor) -> String {
+    cursor
+        .objective_set
+        .get("selection_objective")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            cursor
+                .objective_set
+                .get("objectives")
+                .and_then(Value::as_array)
+                .and_then(|rows| rows.first())
+                .and_then(|row| row.get("name"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        })
+        .unwrap_or("outcome_reward")
+        .to_string()
+}
+
+fn hydrate_candidate_sensor_frames_from_scores(
+    cursor: &GepaCursor,
+    candidates: &mut [CandidateRecord],
+) {
+    let objective = cursor_selection_objective_name(cursor);
+    for candidate in candidates {
+        if !candidate.sensor_frames.is_empty() {
+            continue;
+        }
+        let train_stage = if candidate.source == "seed" {
+            "seed_full_train"
+        } else {
+            "candidate_full_train"
+        };
+        let mut frames = sensor_frames_from_rollout_scores(
+            &candidate.candidate_id,
+            train_stage,
+            "train",
+            &objective,
+            &candidate.train_scores,
+        );
+        frames.extend(sensor_frames_from_rollout_scores(
+            &candidate.candidate_id,
+            "candidate_minibatch",
+            "train",
+            &objective,
+            &candidate.minibatch_scores,
+        ));
+        candidate.sensor_frames = frames;
+    }
+}
+
+fn sensor_frames_from_rollout_scores(
+    candidate_id: &str,
+    evaluation_stage: &str,
+    split: &str,
+    objective: &str,
+    scores: &[RolloutScore],
+) -> Vec<SensorFrame> {
+    scores
+        .iter()
+        .map(|score| SensorFrame {
+            schema_version: "sensor_frame.v1".to_string(),
+            sensor_frame_id: format!(
+                "hydrated_{candidate_id}_{evaluation_stage}_{}",
+                score.task_id
+            ),
+            candidate_id: candidate_id.to_string(),
+            rollout_id: None,
+            example_id: score.example_id.clone(),
+            task_id: score.task_id.clone(),
+            split: split.to_string(),
+            evaluation_stage: evaluation_stage.to_string(),
+            reward: score.reward,
+            status: "completed".to_string(),
+            success_status: None,
+            objective_scores: vec![ObjectiveScore {
+                objective: objective.to_string(),
+                value: score.reward,
+                source: "cursor.embedded_scores".to_string(),
+                rationale: None,
+                metadata: Map::new(),
+            }],
+            usage: Value::Null,
+            trace_digest: None,
+            actionable_side_info: None,
+            artifact_refs: Vec::new(),
+            failure: None,
+            metadata: Map::new(),
+        })
+        .collect()
 }
 
 fn candidate_checkpoint_summaries(candidates: &[CandidateRecord]) -> Vec<Value> {
@@ -1125,9 +1232,18 @@ struct GepaRunContext {
     state_machine: OptimizerStateMachine,
     transitions: TransitionSink,
     cache: RequestCache,
+    cache_path: PathBuf,
     config: SynthOptimizerConfig,
     cache_mode: CacheMode,
     cache_namespace: String,
+    /// Worker threads that execute leased lane jobs off the driver tick. `None`
+    /// for `sync_serial` and for any async plan with
+    /// `pipeline.background_execution = false`, which keeps the pre-2026-08-19
+    /// inline behaviour.
+    lane_executor: Option<lane_executor::LaneExecutorPool>,
+    /// Measured propose/rollout wall-clock overlap. This is the number that
+    /// decides whether FlashEvolve is earning its name on a workload.
+    lane_overlap: lane_executor::LaneOverlapTracker,
     container_process: Option<ManagedContainerProcess>,
     client: Option<ContainerClient>,
     program: Option<PromptProgram>,
@@ -1934,10 +2050,15 @@ pub(crate) fn append_global_gepa_run_index(
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct UsageTotals {
+    #[serde(default)]
     pub prompt_tokens: u64,
+    #[serde(default)]
     pub completion_tokens: u64,
+    #[serde(default)]
     pub total_tokens: u64,
+    #[serde(default)]
     pub rollout_calls: u64,
+    #[serde(default)]
     pub proposer_calls: u64,
 }
 
@@ -2153,6 +2274,10 @@ pub fn execute_gepa_from_toml_with_options(
     execute_gepa_with_options(config, options)
 }
 
+fn fixture_path_from_config(config: &SynthOptimizerConfig) -> Option<PathBuf> {
+    config.run.fixture_path.clone()
+}
+
 fn open_gepa_run_context(
     config: SynthOptimizerConfig,
     options: &GepaExecutionOptions,
@@ -2187,8 +2312,12 @@ fn open_gepa_run_context(
         .namespace
         .clone()
         .unwrap_or_else(|| format!("gepa:{}", config.run.run_id));
-    let workspace = WorkspaceStore::open(&paths.workspace_db_path)?;
+    let mut workspace = WorkspaceStore::open(&paths.workspace_db_path)?;
     workspace.record_run_started(&paths, &config, cache_mode, &cache_namespace)?;
+    if let Some(fixture_path) = fixture_path_from_config(&config) {
+        let fixture = crate::load_fixture_file(&fixture_path)?;
+        crate::import_cursor_fixture(&mut workspace, &config.run.run_id, &fixture)?;
+    }
     record_initial_platform_snapshots(&workspace, &config, cache_mode, &cache_namespace, &paths)?;
     let is_resumed_run = workspace
         .latest_checkpoint(&config.run.run_id, GEPA_CURSOR_CHECKPOINT_KIND)?
@@ -2243,7 +2372,7 @@ fn open_gepa_run_context(
             "state": state_machine.state().as_str(),
         }),
     )?;
-    let cache = RequestCache::open(cache_path, cache_mode)?;
+    let cache = RequestCache::open(&cache_path, cache_mode)?;
     Ok(GepaRunContext {
         paths,
         workspace,
@@ -2252,9 +2381,12 @@ fn open_gepa_run_context(
         state_machine,
         transitions,
         cache,
+        cache_path,
         config,
         cache_mode,
         cache_namespace,
+        lane_executor: None,
+        lane_overlap: lane_executor::LaneOverlapTracker::new(),
         container_process: None,
         client: None,
         program: None,
@@ -2340,6 +2472,17 @@ fn ensure_container_inputs(context: &mut GepaRunContext) -> Result<GepaContainer
         &context.config.candidate.target_modules,
         &context.config.seed_candidate,
     )?;
+    if let Some(route) = gepa_contract
+        .candidates_route
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        program
+            .metadata
+            .insert("gepa_candidates_route".to_string(), json!(route));
+    }
+    preflight_custom_levers(&program, &context.config)?;
     let lever_manifest = LeverManifest::from_prompt_program(&program);
     let rollout_task_id = rollout_task_id(&program);
     context
@@ -2557,6 +2700,9 @@ fn restore_gepa_run_state(context: &mut GepaRunContext) -> Result<GepaRunState> 
         &context.config.run.run_id,
         &mut candidates,
     )?;
+    hydrate_candidate_sensor_frames_from_scores(&cursor, &mut candidates);
+    let mut cursor = cursor;
+    crate::episode::pin_episode_origin_if_missing(&mut cursor);
     let best_idx = cursor.best_candidate_id.as_ref().and_then(|candidate_id| {
         candidates
             .iter()
@@ -2626,9 +2772,21 @@ fn restore_state_machine_from_cursor(
     if cursor.state_history.is_null() {
         return Ok(());
     }
-    let history: Vec<OptimizerTransition> = serde_json::from_value(cursor.state_history.clone())?;
+    let mut history: Vec<OptimizerTransition> =
+        serde_json::from_value(cursor.state_history.clone())?;
     if history.is_empty() {
         return Ok(());
+    }
+    // A forked/imported cursor carries transitions stamped with the run that
+    // produced the archive (e.g. `b77_gepa_eval_mfg_20260819`). `optimizer_state_history`
+    // is keyed to this workspace's run and FKs to `optimization_runs`, so persisting
+    // them unbound fails the terminal `persist_state_history` with
+    // `FOREIGN KEY constraint failed` *after* the run has already completed. Rebind to
+    // this run, exactly as the imported candidates and checkpoints already are; the
+    // originating run stays recorded on the cursor and the fixture.
+    let run_id = context.config.run.run_id.clone();
+    for transition in &mut history {
+        transition.run_id = run_id.clone();
     }
     let state = history
         .last()
@@ -2765,7 +2923,14 @@ fn persist_gepa_run_state(
     state.cursor.program = serde_json::to_value(&resources.program)?;
     state.cursor.objective_set = serde_json::to_value(&resources.objective_set)?;
     state.cursor.state_history = serde_json::to_value(&context.state_machine.history)?;
-    let metadata = metadata_with_pipeline_state(context, state, metadata)?;
+    let mut metadata = metadata_with_pipeline_state(context, state, metadata)?;
+    crate::episode::copy_episode_into(&mut metadata, &state.cursor);
+    if matches!(
+        state.cursor.phase,
+        GepaCursorPhase::GenerationStart | GepaCursorPhase::Paused
+    ) {
+        metadata.insert("retain".to_string(), json!(true));
+    }
     state.cursor.metadata = Value::Object(metadata.clone());
     let cursor_value = serde_json::to_value(&state.cursor)?;
     let checkpoint = CheckpointRecord::from_input(CheckpointInput {
@@ -2984,6 +3149,7 @@ fn pipeline_state_metadata_summary(state: &planner::GepaAsyncPipelineCursorState
         "candidate_partial_count": state.candidate_partials.len(),
         "speculative_release_count": state.speculative_releases.len(),
         "staleness_review_count": state.staleness_reviews.len(),
+        "lane_overlap": state.lane_overlap,
         "rollout_concurrency": {
             "initialized": state.adaptive_rollout_concurrency.initialized,
             "current_limit": state.adaptive_rollout_concurrency.current_limit,
@@ -3305,10 +3471,17 @@ fn terminalize_restored_unclaimable_async_job(
         .cloned()
         .collect::<Vec<_>>();
     leases.sort_by(|left, right| left.lease_id.cmp(&right.lease_id));
+    // A job this process dispatched to its own lane workers is legitimately
+    // Leased/Running right now. Only a job left running by a *previous* process
+    // is unclaimable, which is what this guard is for.
+    let dispatched = dispatched_lane_job_ids(context);
     for lease in leases {
         let Some(job_id) = lease.job_id.as_deref() else {
             continue;
         };
+        if dispatched.contains(job_id) {
+            continue;
+        }
         let job = context
             .workspace
             .optimizer_job(&context.config.run.run_id, job_id)?;
@@ -3405,6 +3578,13 @@ fn refresh_async_pipeline_cursor_state(
         "adaptive_stage_workers": adaptive_stage_workers_snapshot(state, plan),
         "speculative_releases": state.cursor.pipeline_state.speculative_releases.len(),
         "staleness_reviews": state.cursor.pipeline_state.staleness_reviews.len(),
+        "background_execution": plan.background_execution,
+        "lane_overlap": state.cursor.pipeline_state.lane_overlap,
+        "lane_jobs_in_flight": context
+            .lane_executor
+            .as_ref()
+            .map(|pool| pool.in_flight_summary())
+            .unwrap_or(Value::Null),
     });
 }
 
@@ -3432,6 +3612,30 @@ fn async_pipeline_in_flight_candidate_count(state: &GepaRunState) -> usize {
         }
     }
     candidate_ids.len()
+}
+
+/// True when this partial already has lane work queued or leased.
+///
+/// `advance_proposer_waiting` can return a prerequisite evaluation (a
+/// `parent_minibatch_reference`) *without* advancing `proposal_index`, meaning
+/// "run this, then call me again". Enqueuing it unconditionally on every such
+/// call grew `rollout_queue` to 6218 identical items and livelocked the driver
+/// on the 2026-08-19 FlashEvolve smoke, because the flash branch schedules
+/// minibatches ahead of rollouts and so never reached the code that drains them.
+fn async_lane_work_already_queued(state: &GepaRunState, partial_id: &str) -> bool {
+    state
+        .cursor
+        .pipeline_state
+        .rollout_queue
+        .iter()
+        .chain(state.cursor.pipeline_state.evaluate_queue.iter())
+        .any(|item| item.partial_id.as_deref() == Some(partial_id))
+        || state
+            .cursor
+            .pipeline_state
+            .lane_leases
+            .values()
+            .any(|lease| lease.partial_id.as_deref() == Some(partial_id))
 }
 
 fn async_stage_work_pending(state: &GepaRunState, stages: &[&str]) -> bool {
@@ -3470,6 +3674,9 @@ fn consume_async_lane_work(
         .cloned()
         .collect::<Vec<_>>();
     lease_keys.sort();
+    // A lane worker marks the job terminal in the workspace before the driver
+    // has folded its outcome, so a dispatched job is not foldable yet.
+    let dispatched = dispatched_lane_job_ids(context);
     for lease_key in lease_keys {
         let Some(lease) = state
             .cursor
@@ -3483,6 +3690,9 @@ fn consume_async_lane_work(
         let Some(job_id) = lease.job_id.clone() else {
             continue;
         };
+        if dispatched.contains(&job_id) {
+            continue;
+        }
         let job = context
             .workspace
             .optimizer_job(&context.config.run.run_id, &job_id)?;
@@ -4462,6 +4672,7 @@ fn discard_stale_evaluate_item(
             .candidate_partials
             .remove(partial_id);
     }
+    context.lane_overlap.record_stale_gap(decision.stale_gap);
     context.events.emit(
         "pipeline.stale_item.discarded",
         "Stale pipeline item discarded",
@@ -4495,26 +4706,32 @@ fn schedule_async_lane_transition(
     }
 
     if !plan.uses_generation_barrier() {
+        // FlashEvolve admit order. Seed full-train stays exclusive because
+        // there is no parent to reflect on until the seed has a train reward.
         if async_stage_work_pending(state, &["seed_full_train"]) {
             if let Some(outcome) = schedule_async_rollout_job(context, state, resources, plan)? {
                 return Ok(Some(outcome));
             }
             return Ok(None);
         }
+        // Dispatching the current generation's proposals into candidate
+        // minibatch work is what drains `proposal_queue` and advances the
+        // generation counter, which is a precondition for admitting the next
+        // proposer. It is bookkeeping, not execution, so it never blocks.
         if let Some(outcome) =
             schedule_async_candidate_minibatches(context, state, resources, plan)?
         {
             return Ok(Some(outcome));
         }
-        if async_stage_work_pending(state, &["candidate_full_train"]) {
-            if let Some(outcome) = schedule_async_proposer_job(context, state, resources, plan)? {
-                return Ok(Some(outcome));
-            }
-        }
-        if let Some(outcome) = schedule_async_rollout_job(context, state, resources, plan)? {
+        // Proposer priority: try to admit generation n+1 reflection *before*
+        // planning more rollout chunks, so the propose lane never queues behind
+        // a generation-n full-train drain. Previously this attempt was gated on
+        // `candidate_full_train` being pending and rollout was tried first,
+        // which put propose at the back of the line.
+        if let Some(outcome) = schedule_async_proposer_job(context, state, resources, plan)? {
             return Ok(Some(outcome));
         }
-        if let Some(outcome) = schedule_async_proposer_job(context, state, resources, plan)? {
+        if let Some(outcome) = schedule_async_rollout_job(context, state, resources, plan)? {
             return Ok(Some(outcome));
         }
         return Ok(None);
@@ -4617,6 +4834,325 @@ fn plan_async_seed_full_train(
     })
 }
 
+/// Worker id for jobs a lane worker claims. Kept identical to the inline
+/// executor's id so resume/lease diagnostics read the same either way.
+fn lane_worker_id() -> String {
+    runtime::DEFAULT_RUNTIME_WORKER_ID.to_string()
+}
+
+/// Job ids currently dispatched to lane workers. `consume_async_lane_work` must
+/// not fold these: the worker marks the job `Completed` in the workspace before
+/// the driver has written `runtime_outcome` into the payload, so folding early
+/// would read a job that looks finished but has no outcome attached.
+fn dispatched_lane_job_ids(context: &GepaRunContext) -> BTreeSet<String> {
+    context
+        .lane_executor
+        .as_ref()
+        .map(|pool| pool.dispatched_job_ids())
+        .unwrap_or_default()
+}
+
+fn ensure_lane_executor(
+    context: &mut GepaRunContext,
+    resources: &GepaStepResources,
+    plan: &GepaAsyncPipelinePlan,
+) -> Result<()> {
+    if context.lane_executor.is_some() {
+        return Ok(());
+    }
+    let workers = plan.background_workers.max(1);
+    let resources = lane_executor::LaneWorkerResources {
+        workspace_path: context.paths.workspace_db_path.clone(),
+        cache_path: context.cache_path.clone(),
+        cache_mode: context.cache_mode,
+        cache_max_bytes: context.cache.max_bytes(),
+        config: context.config.clone(),
+        client: resources.client.clone(),
+    };
+    context.lane_executor = Some(lane_executor::LaneExecutorPool::production(
+        workers, resources,
+    ));
+    context.events.emit(
+        "pipeline.lane_executor.started",
+        "Lane executor pool started",
+        json!({
+            "mode": plan.mode.as_str(),
+            "workers": workers,
+            "propose_workers": plan.propose_workers,
+            "rollout_workers": plan.rollout_workers,
+            "evaluate_workers": plan.evaluate_workers,
+        }),
+    )?;
+    Ok(())
+}
+
+/// Background lane execution.
+///
+/// Two things happen here and the order matters. First fold at most one
+/// finished job, so every completion goes through exactly the same main-thread
+/// bookkeeping inline execution used. Then dispatch whatever is pending and
+/// return `None`, so the same tick falls through to
+/// `schedule_async_lane_transition` and can admit the next proposer while
+/// rollouts are still running on workers. Dispatch never blocks — that is the
+/// whole point, and it is what the inline executor could not do.
+fn execute_async_lane_jobs_in_background(
+    context: &mut GepaRunContext,
+    state: &mut GepaRunState,
+    resources: &GepaStepResources,
+    plan: &GepaAsyncPipelinePlan,
+) -> Result<Option<GepaAdvanceOutcome>> {
+    ensure_lane_executor(context, resources, plan)?;
+
+    if let Some(completion) = context
+        .lane_executor
+        .as_mut()
+        .and_then(|pool| pool.try_take_completion())
+    {
+        return fold_lane_job_completion(context, state, resources, plan, completion).map(Some);
+    }
+
+    dispatch_pending_lane_jobs(context, state, resources, plan)?;
+    Ok(None)
+}
+
+fn dispatch_pending_lane_jobs(
+    context: &mut GepaRunContext,
+    state: &mut GepaRunState,
+    resources: &GepaStepResources,
+    plan: &GepaAsyncPipelinePlan,
+) -> Result<usize> {
+    let mut lease_keys = state
+        .cursor
+        .pipeline_state
+        .lane_leases
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    lease_keys.sort();
+    let mut dispatched = 0usize;
+    for lease_key in lease_keys {
+        let Some(pool) = context.lane_executor.as_ref() else {
+            break;
+        };
+        if !pool.has_capacity() {
+            break;
+        }
+        let Some(lease) = state
+            .cursor
+            .pipeline_state
+            .lane_leases
+            .get(&lease_key)
+            .cloned()
+        else {
+            continue;
+        };
+        let Some(job_id) = lease.job_id.clone() else {
+            continue;
+        };
+        if pool.is_dispatched(&job_id) {
+            continue;
+        }
+        let job = context
+            .workspace
+            .optimizer_job(&context.config.run.run_id, &job_id)?;
+        if !matches!(
+            job.status,
+            OptimizerJobStatus::Pending | OptimizerJobStatus::RetryScheduled
+        ) {
+            continue;
+        }
+        if matches!(job.status, OptimizerJobStatus::RetryScheduled)
+            && !context
+                .workspace
+                .optimizer_job_claimable(&context.config.run.run_id, &job_id)?
+        {
+            continue;
+        }
+        let request = lane_executor::LaneJobRequest {
+            run_id: context.config.run.run_id.clone(),
+            job_id: job_id.clone(),
+            lane: lease.lane.clone(),
+            lease_key: lease_key.clone(),
+            worker_id: lane_worker_id(),
+            lease_seconds: runtime::DEFAULT_RUNTIME_LEASE_SECONDS,
+        };
+        let sent = context
+            .lane_executor
+            .as_mut()
+            .map(|pool| pool.dispatch(request))
+            .transpose()?
+            .unwrap_or(false);
+        if !sent {
+            continue;
+        }
+        dispatched += 1;
+        context.lane_overlap.lane_started(&lease.lane);
+        if let Some(updated) = state.cursor.pipeline_state.lane_leases.get_mut(&lease_key) {
+            updated.status = "dispatched".to_string();
+        }
+        let snapshot = context.lane_overlap.snapshot();
+        context.events.emit(
+            "pipeline.lane_job.dispatched",
+            "Lane job dispatched to a worker thread",
+            json!({
+                "job_id": job_id,
+                "lane": lease.lane,
+                "lease_key": lease_key,
+                "stage": lease.stage,
+                "mode": plan.mode.as_str(),
+                "in_flight_lane_jobs": context
+                    .lane_executor
+                    .as_ref()
+                    .map(|pool| pool.in_flight_count())
+                    .unwrap_or(0),
+                "overlap_seconds": snapshot.overlap_seconds,
+            }),
+        )?;
+    }
+    if dispatched > 0 {
+        refresh_async_pipeline_cursor_state(context, state, plan);
+        persist_gepa_run_state(
+            context,
+            state,
+            resources,
+            state.cursor.phase.clone(),
+            "running",
+            "dispatched async lane runtime jobs",
+            Map::new(),
+        )?;
+    }
+    Ok(dispatched)
+}
+
+/// Fold a lane worker's finished job back into driver state. This mirrors the
+/// bookkeeping the inline path did around `advance_pending_runtime_job` so the
+/// two executors produce identical state, events, and artifacts.
+fn fold_lane_job_completion(
+    context: &mut GepaRunContext,
+    state: &mut GepaRunState,
+    resources: &GepaStepResources,
+    plan: &GepaAsyncPipelinePlan,
+    completion: lane_executor::LaneJobCompletion,
+) -> Result<GepaAdvanceOutcome> {
+    let lane_executor::LaneJobCompletion {
+        request,
+        outcome,
+        wall_seconds,
+        cache_counters,
+        cache_access_log,
+    } = completion;
+    context.lane_overlap.lane_finished(&request.lane);
+    // The worker used a private cache handle on the shared sqlite file; fold its
+    // activity in so the run manifest still reports one cache boundary.
+    context
+        .cache
+        .absorb_worker_activity(cache_counters, cache_access_log);
+
+    let lease = state
+        .cursor
+        .pipeline_state
+        .lane_leases
+        .get(&request.lease_key)
+        .cloned();
+    if let Some(lease) = lease.as_ref() {
+        restore_async_partial_as_active(state, lease.partial_id.as_deref())?;
+        state.cursor.pending_job_id = Some(request.job_id.clone());
+        state.cursor.pending_effect_id = lease.effect_id.clone();
+        state.cursor.pending_reservation_ids = lease.reservation_ids.clone();
+    }
+
+    let job = context
+        .workspace
+        .optimizer_job(&context.config.run.run_id, &request.job_id)?;
+    let mut result = match outcome {
+        Ok(outcome) => fold_completed_runtime_job_execution(
+            context,
+            state,
+            resources,
+            Some(plan),
+            &request.job_id,
+            &job,
+            outcome,
+            wall_seconds,
+        ),
+        Err(error) => fold_failed_runtime_job_execution(
+            context,
+            state,
+            resources,
+            Some(plan),
+            &request.job_id,
+            &job,
+            error,
+        ),
+    }?;
+
+    if let Some(lease) = lease.as_ref() {
+        if let Some(active) = state.active_evaluation.as_ref() {
+            let partial_id = lease
+                .partial_id
+                .clone()
+                .unwrap_or_else(|| async_partial_id(&active.stage, active.generation));
+            upsert_async_partial_from_active(
+                state,
+                &partial_id,
+                &lease.lane,
+                lease.parent_pool_version,
+            )?;
+        }
+        state.cursor.pending_job_id = None;
+        state.cursor.pending_effect_id = None;
+        state.cursor.pending_reservation_ids.clear();
+        state.active_evaluation = None;
+        let status = context
+            .workspace
+            .optimizer_job(&context.config.run.run_id, &request.job_id)?
+            .status
+            .as_str()
+            .to_string();
+        if let Some(updated) = state
+            .cursor
+            .pipeline_state
+            .lane_leases
+            .get_mut(&request.lease_key)
+        {
+            updated.status = status;
+        }
+    }
+
+    let snapshot = context.lane_overlap.snapshot();
+    apply_lane_overlap_snapshot(state, &snapshot);
+    refresh_async_pipeline_cursor_state(context, state, plan);
+    persist_gepa_run_state(
+        context,
+        state,
+        resources,
+        state.cursor.phase.clone(),
+        "completed",
+        "folded async lane runtime job",
+        Map::new(),
+    )?;
+    result.message = format!("{} {}: {}", plan.label(), request.lane, result.message);
+    Ok(result)
+}
+
+fn apply_lane_overlap_snapshot(
+    state: &mut GepaRunState,
+    snapshot: &lane_executor::LaneOverlapSnapshot,
+) {
+    let overlap = &mut state.cursor.pipeline_state.lane_overlap;
+    overlap.wall_seconds = snapshot.wall_seconds;
+    overlap.propose_busy_seconds = snapshot.propose_busy_seconds;
+    overlap.rollout_busy_seconds = snapshot.rollout_busy_seconds;
+    overlap.evaluate_busy_seconds = snapshot.evaluate_busy_seconds;
+    overlap.lane_busy_seconds = snapshot.lane_busy_seconds;
+    overlap.overlap_seconds = snapshot.overlap_seconds;
+    overlap.overlap_ratio = snapshot.overlap_ratio;
+    overlap.max_concurrent_lane_jobs = snapshot.max_concurrent_lane_jobs;
+    overlap.dispatched_lane_jobs = snapshot.dispatched_lane_jobs;
+    overlap.mean_stale_gap = snapshot.mean_stale_gap;
+    overlap.stale_gap_samples = snapshot.stale_gap_samples;
+}
+
 fn execute_async_leased_runtime_job(
     context: &mut GepaRunContext,
     state: &mut GepaRunState,
@@ -4624,6 +5160,9 @@ fn execute_async_leased_runtime_job(
     mode: GepaAdvanceMode,
     plan: &GepaAsyncPipelinePlan,
 ) -> Result<Option<GepaAdvanceOutcome>> {
+    if plan.background_execution {
+        return execute_async_lane_jobs_in_background(context, state, resources, plan);
+    }
     let mut leases = state
         .cursor
         .pipeline_state
@@ -4853,7 +5392,10 @@ fn schedule_async_candidate_minibatches(
     }
     state.cursor.phase = GepaCursorPhase::ProposerWaiting;
     let before_generation = state.cursor.generation;
+    let before_proposal_index = state.cursor.proposal_index;
+    let before_queue_len = state.proposal_queue.len();
     let mut outcome = advance_proposer_waiting(context, state, resources)?;
+    let mut enqueued = false;
     if let Some(active) = state.active_evaluation.clone() {
         let partial_id = async_partial_id(&active.stage, active.generation);
         let parent_pool_version = state
@@ -4862,10 +5404,22 @@ fn schedule_async_candidate_minibatches(
             .parent_pool_version
             .unwrap_or(state.cursor.pipeline_state.pool_version);
         upsert_async_partial_from_active(state, &partial_id, "rollout", parent_pool_version)?;
-        let item =
-            async_work_item_from_active(&active, "rollout", parent_pool_version, Some(partial_id))?;
-        state.cursor.pipeline_state.rollout_queue.push(item);
-        state.active_evaluation = None;
+        // Enqueue once. A prerequisite evaluation is re-planned identically on
+        // every call until its scores land, so pushing unconditionally appends a
+        // duplicate per tick forever.
+        if async_lane_work_already_queued(state, &partial_id) {
+            state.active_evaluation = None;
+        } else {
+            let item = async_work_item_from_active(
+                &active,
+                "rollout",
+                parent_pool_version,
+                Some(partial_id),
+            )?;
+            state.cursor.pipeline_state.rollout_queue.push(item);
+            state.active_evaluation = None;
+            enqueued = true;
+        }
         if !plan.uses_generation_barrier()
             && state.cursor.proposal_index >= state.proposal_queue.len()
         {
@@ -4886,27 +5440,79 @@ fn schedule_async_candidate_minibatches(
             Map::new(),
         )?;
     }
+    // Only claim the tick when something actually moved. Reporting progress on a
+    // no-op makes the run loop skip its backoff and spin at full CPU, which is
+    // how the duplicate-enqueue bug above presented: 80% CPU, no events, and a
+    // rollout queue growing without bound.
+    let advanced = state.cursor.proposal_index != before_proposal_index
+        || state.proposal_queue.len() != before_queue_len
+        || state.cursor.generation != before_generation;
+    if !advanced && !enqueued {
+        return Ok(None);
+    }
     outcome.message = format!("{} candidate queue: {}", plan.label(), outcome.message);
     Ok(Some(outcome))
 }
 
-fn schedule_async_proposer_job(
-    context: &mut GepaRunContext,
-    state: &mut GepaRunState,
-    resources: &GepaStepResources,
+/// Why the scheduler will or will not start another proposer round.
+///
+/// This is the decision the 2026-06-02 FlashEvolve note was about. It is split
+/// out as a pure function so the generation-barrier difference between
+/// `async_pipelined` and `flash_evolve` is directly testable: given identical
+/// state with generation-n `candidate_full_train` work still outstanding,
+/// flash must admit generation n+1 and pipelined must not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProposerAdmission {
+    Admit,
+    ProposeLaneSaturated,
+    ProposeJobAlreadyQueued,
+    ProposalsNotYetDispatched,
+    GenerationBudgetReached,
+    InFlightCandidateCap,
+    TrainRolloutBudgetReached,
+    CostBudgetReached,
+    GenerationBarrier,
+}
+
+impl ProposerAdmission {
+    fn admits(self) -> bool {
+        matches!(self, Self::Admit)
+    }
+}
+
+fn async_proposer_admission(
+    state: &GepaRunState,
     plan: &GepaAsyncPipelinePlan,
-) -> Result<Option<GepaAdvanceOutcome>> {
+    max_generations: usize,
+    train_rollout_budget_reached: bool,
+    cost_budget_reached: bool,
+) -> ProposerAdmission {
     if async_lane_lease_count(state, "propose")
         >= adaptive_stage_worker_limit(state, plan, "propose")
-        || !state.cursor.pipeline_state.propose_queue.is_empty()
-        || !state.proposal_queue.is_empty()
-        || state.cursor.generation >= context.config.gepa.max_generations
-        || state.cursor.pipeline_state.in_flight_candidate_count >= plan.max_in_flight_candidates
-        || train_rollout_budget_reached(&context.config, state.rollout_count)
-        || cost_budget_reached(&context.config, state.total_cost)
     {
-        return Ok(None);
+        return ProposerAdmission::ProposeLaneSaturated;
     }
+    if !state.cursor.pipeline_state.propose_queue.is_empty() {
+        return ProposerAdmission::ProposeJobAlreadyQueued;
+    }
+    if !state.proposal_queue.is_empty() {
+        return ProposerAdmission::ProposalsNotYetDispatched;
+    }
+    if state.cursor.generation >= max_generations {
+        return ProposerAdmission::GenerationBudgetReached;
+    }
+    if state.cursor.pipeline_state.in_flight_candidate_count >= plan.max_in_flight_candidates {
+        return ProposerAdmission::InFlightCandidateCap;
+    }
+    if train_rollout_budget_reached {
+        return ProposerAdmission::TrainRolloutBudgetReached;
+    }
+    if cost_budget_reached {
+        return ProposerAdmission::CostBudgetReached;
+    }
+    // `async_pipelined` keeps the generation barrier: no generation n+1
+    // proposer until generation n's minibatch *and* full-train work is folded.
+    // FlashEvolve is exactly the absence of this clause.
     if plan.uses_generation_barrier()
         && async_stage_work_pending(
             state,
@@ -4917,6 +5523,28 @@ fn schedule_async_proposer_job(
             ],
         )
     {
+        return ProposerAdmission::GenerationBarrier;
+    }
+    ProposerAdmission::Admit
+}
+
+fn schedule_async_proposer_job(
+    context: &mut GepaRunContext,
+    state: &mut GepaRunState,
+    resources: &GepaStepResources,
+    plan: &GepaAsyncPipelinePlan,
+) -> Result<Option<GepaAdvanceOutcome>> {
+    if crate::episode::horizon_reason(
+        &context.config.gepa,
+        &state.cursor,
+        state.rollout_count,
+        state.total_cost,
+    )
+    .is_some()
+    {
+        return Ok(None);
+    }
+    if !async_proposer_admission(state, plan, usize::MAX, false, false).admits() {
         return Ok(None);
     }
     if let Some(train_best_idx) = select_best_train_candidate(
@@ -6315,9 +6943,13 @@ fn async_pipeline_retry_scheduled(state: &GepaRunState) -> bool {
 }
 
 fn async_pipeline_stopper_satisfied(context: &GepaRunContext, state: &GepaRunState) -> bool {
-    state.cursor.generation >= context.config.gepa.max_generations
-        || train_rollout_budget_reached(&context.config, state.rollout_count)
-        || cost_budget_reached(&context.config, state.total_cost)
+    crate::episode::horizon_reason(
+        &context.config.gepa,
+        &state.cursor,
+        state.rollout_count,
+        state.total_cost,
+    )
+    .is_some()
         || score_threshold_reached(&context.config, state)
         || no_improvement_reached(&context.config, state)
 }
@@ -6643,6 +7275,89 @@ fn advance_pending_runtime_job(
             ) {
                 Ok(outcome) => outcome,
                 Err(error) => {
+                    return fold_failed_runtime_job_execution(
+                        context, state, resources, async_plan, job_id, &job, error,
+                    );
+                }
+            };
+            fold_completed_runtime_job_execution(
+                context,
+                state,
+                resources,
+                async_plan,
+                job_id,
+                &job,
+                outcome,
+                runtime_started.elapsed().as_secs_f64(),
+            )
+        }
+        OptimizerJobStatus::Completed => {
+            consume_completed_runtime_job(context, state, resources, job)
+        }
+        OptimizerJobStatus::Failed
+        | OptimizerJobStatus::Cancelled
+        | OptimizerJobStatus::Expired => {
+            if let Some(outcome) =
+                schedule_failed_rollout_retry_if_allowed(context, state, resources, &job)?
+            {
+                return Ok(outcome);
+            }
+            if matches!(job.kind, OptimizerJobKind::Rollout)
+                && consume_failed_rollout_job_as_degraded(context, state, resources, &job)?
+            {
+                state.cursor.pending_job_id = None;
+                state.cursor.pending_effect_id = None;
+                state.cursor.pending_reservation_ids.clear();
+                persist_gepa_run_state(
+                    context,
+                    state,
+                    resources,
+                    state.cursor.phase.clone(),
+                    "completed",
+                    "degraded failed rollout runtime job",
+                    Map::new(),
+                )?;
+                Ok(GepaAdvanceOutcome {
+                    action: planner::GepaTickAction::ConsumeRuntimeOutcome {
+                        run_id: context.config.run.run_id.clone(),
+                        job_id: job.job_id,
+                    },
+                    terminal: false,
+                    result: None,
+                    message: "degraded failed rollout runtime job".to_string(),
+                })
+            } else {
+                consume_failed_runtime_job(context, state, resources, job)
+            }
+        }
+        _ => Ok(GepaAdvanceOutcome {
+            action: planner::GepaTickAction::Noop,
+            terminal: false,
+            result: None,
+            message: format!(
+                "runtime job {} is already {}",
+                job.job_id,
+                job.status.as_str()
+            ),
+        }),
+    }
+}
+
+/// Main-thread bookkeeping for a runtime job that failed, whether it ran inline
+/// on the tick or on a lane worker thread.
+fn fold_failed_runtime_job_execution(
+    context: &mut GepaRunContext,
+    state: &mut GepaRunState,
+    resources: &GepaStepResources,
+    async_plan: Option<&GepaAsyncPipelinePlan>,
+    job_id: &str,
+    job: &OptimizerJob,
+    error: OptimizerError,
+) -> Result<GepaAdvanceOutcome> {
+    {
+        {
+            {
+                {
                     if let Some(plan) = async_plan {
                         if job.payload.get("lane").and_then(Value::as_str) == Some("rollout") {
                             let provider_signal =
@@ -6751,100 +7466,59 @@ fn advance_pending_runtime_job(
                             );
                         }
                     }
-                    return terminalize_aborted_gepa_run(
-                        context,
-                        state,
-                        error,
-                        "GEPA runtime job failed",
-                    );
+                    terminalize_aborted_gepa_run(context, state, error, "GEPA runtime job failed")
                 }
-            };
-            let wall_seconds = runtime_started.elapsed().as_secs_f64();
-            emit_runtime_job_completed_event(context, state, job_id, &job, &outcome, wall_seconds)?;
-            if let Some(plan) = async_plan {
-                let rollout_count = runtime_rollout_success_count(&outcome);
-                record_adaptive_rollout_success(context, state, plan, rollout_count)?;
-            }
-            let stored = stored_runtime_outcome(&outcome)?;
-            let mut updated_job = context
-                .workspace
-                .optimizer_job(&context.config.run.run_id, job_id)?;
-            updated_job
-                .payload
-                .insert("runtime_outcome".to_string(), serde_json::to_value(stored)?);
-            context.workspace.record_optimizer_job(&updated_job)?;
-            if let Some(active) = state.active_evaluation.as_mut() {
-                active.planned_job_id = Some(job_id.to_string());
-            }
-            persist_gepa_run_state(
-                context,
-                state,
-                resources,
-                state.cursor.phase.clone(),
-                "running",
-                "executed GEPA runtime job",
-                Map::new(),
-            )?;
-            Ok(GepaAdvanceOutcome {
-                action: planner::GepaTickAction::ExecuteRuntimeJob {
-                    run_id: context.config.run.run_id.clone(),
-                    job_id: job_id.to_string(),
-                },
-                terminal: false,
-                result: None,
-                message: "executed GEPA runtime job".to_string(),
-            })
-        }
-        OptimizerJobStatus::Completed => {
-            consume_completed_runtime_job(context, state, resources, job)
-        }
-        OptimizerJobStatus::Failed
-        | OptimizerJobStatus::Cancelled
-        | OptimizerJobStatus::Expired => {
-            if let Some(outcome) =
-                schedule_failed_rollout_retry_if_allowed(context, state, resources, &job)?
-            {
-                return Ok(outcome);
-            }
-            if matches!(job.kind, OptimizerJobKind::Rollout)
-                && consume_failed_rollout_job_as_degraded(context, state, resources, &job)?
-            {
-                state.cursor.pending_job_id = None;
-                state.cursor.pending_effect_id = None;
-                state.cursor.pending_reservation_ids.clear();
-                persist_gepa_run_state(
-                    context,
-                    state,
-                    resources,
-                    state.cursor.phase.clone(),
-                    "completed",
-                    "degraded failed rollout runtime job",
-                    Map::new(),
-                )?;
-                Ok(GepaAdvanceOutcome {
-                    action: planner::GepaTickAction::ConsumeRuntimeOutcome {
-                        run_id: context.config.run.run_id.clone(),
-                        job_id: job.job_id,
-                    },
-                    terminal: false,
-                    result: None,
-                    message: "degraded failed rollout runtime job".to_string(),
-                })
-            } else {
-                consume_failed_runtime_job(context, state, resources, job)
             }
         }
-        _ => Ok(GepaAdvanceOutcome {
-            action: planner::GepaTickAction::Noop,
-            terminal: false,
-            result: None,
-            message: format!(
-                "runtime job {} is already {}",
-                job.job_id,
-                job.status.as_str()
-            ),
-        }),
     }
+}
+
+/// Main-thread bookkeeping for a runtime job that succeeded, whether it ran
+/// inline on the tick or on a lane worker thread.
+fn fold_completed_runtime_job_execution(
+    context: &mut GepaRunContext,
+    state: &mut GepaRunState,
+    resources: &GepaStepResources,
+    async_plan: Option<&GepaAsyncPipelinePlan>,
+    job_id: &str,
+    job: &OptimizerJob,
+    outcome: runtime::RuntimeEffectOutcome,
+    wall_seconds: f64,
+) -> Result<GepaAdvanceOutcome> {
+    emit_runtime_job_completed_event(context, state, job_id, job, &outcome, wall_seconds)?;
+    if let Some(plan) = async_plan {
+        let rollout_count = runtime_rollout_success_count(&outcome);
+        record_adaptive_rollout_success(context, state, plan, rollout_count)?;
+    }
+    let stored = stored_runtime_outcome(&outcome)?;
+    let mut updated_job = context
+        .workspace
+        .optimizer_job(&context.config.run.run_id, job_id)?;
+    updated_job
+        .payload
+        .insert("runtime_outcome".to_string(), serde_json::to_value(stored)?);
+    context.workspace.record_optimizer_job(&updated_job)?;
+    if let Some(active) = state.active_evaluation.as_mut() {
+        active.planned_job_id = Some(job_id.to_string());
+    }
+    persist_gepa_run_state(
+        context,
+        state,
+        resources,
+        state.cursor.phase.clone(),
+        "running",
+        "executed GEPA runtime job",
+        Map::new(),
+    )?;
+    Ok(GepaAdvanceOutcome {
+        action: planner::GepaTickAction::ExecuteRuntimeJob {
+            run_id: context.config.run.run_id.clone(),
+            job_id: job_id.to_string(),
+        },
+        terminal: false,
+        result: None,
+        message: "executed GEPA runtime job".to_string(),
+    })
 }
 
 fn stored_runtime_outcome(outcome: &runtime::RuntimeEffectOutcome) -> Result<StoredRuntimeOutcome> {
@@ -6896,7 +7570,7 @@ fn stored_runtime_outcome(outcome: &runtime::RuntimeEffectOutcome) -> Result<Sto
 
 fn emit_runtime_job_completed_event(
     context: &mut GepaRunContext,
-    state: &GepaRunState,
+    state: &mut GepaRunState,
     job_id: &str,
     job: &OptimizerJob,
     outcome: &runtime::RuntimeEffectOutcome,
@@ -7666,6 +8340,22 @@ fn record_candidate_transition(
     trigger: CandidateTrigger,
     metadata: Value,
 ) -> Result<()> {
+    if matches!(to, CandidateState::HeldoutEvaluating)
+        && context
+            .transitions
+            .latest_state(CandidateEntity::ENTITY_TYPE, candidate_id)?
+            .is_none()
+    {
+        // Fixture-imported candidates have cursor scores but no machine row.
+        context.transitions.transition_entity::<CandidateEntity>(
+            candidate_id,
+            CandidateState::Registered,
+            CandidateTrigger::Registered,
+            Some(usize_to_i64(generation)),
+            parent_id,
+            json!({ "reason": "fixture_candidate_registered_for_heldout" }),
+        )?;
+    }
     context.transitions.transition_entity::<CandidateEntity>(
         candidate_id,
         to,
@@ -7880,7 +8570,7 @@ fn record_proposer_round_completed(
 
 fn record_runtime_job_transitions(
     context: &GepaRunContext,
-    state: &GepaRunState,
+    state: &mut GepaRunState,
     job_id: &str,
     job: &OptimizerJob,
     outcome: &runtime::RuntimeEffectOutcome,
@@ -7916,6 +8606,7 @@ fn record_runtime_job_transitions(
                     "usage": &outcome.usage,
                 }),
             )?;
+            crate::episode::increment_proposer_rounds(&mut state.cursor);
         }
         runtime::RuntimeEffectOutcome::Rollout(outcome) => {
             record_rollout_transition_span(
@@ -8475,26 +9166,13 @@ fn plan_rollout_runtime_batch_job_for_candidates(
             let Some(row) = group.rows.get(row_index) else {
                 continue;
             };
-            let seed = row.get("seed").and_then(Value::as_i64).unwrap_or(0);
-            let overlay = CandidateOverlay {
-                candidate: PromptCandidatePayload::from_map(group.candidate.payload.clone()),
-                metadata: Map::new(),
-            };
-            let prompt_assertions =
-                prompt_assertions_for_candidate(&overlay.candidate, &context.config);
-            let request = json!({
-                "submission_mode": rollout_submission_mode_for_request(&context.config),
-                "task_id": resources.rollout_task_id,
-                "candidate": overlay.candidate.to_value(),
-                "candidate_overlay": overlay,
-                "prompt_assertions": prompt_assertions,
-                "policy": rollout_policy_for_request(&context.config),
-                "task": row,
-                "metadata": {
-                    "candidate_id": group.candidate.candidate_id,
-                    "seed": seed,
-                },
-            });
+            let request = gepa_container_rollout_request(
+                &context.config,
+                &resources.program,
+                &group.candidate,
+                row,
+                &resources.rollout_task_id,
+            );
             let mut cache_metadata = Map::new();
             cache_metadata.insert(
                 "candidate_id".to_string(),
@@ -8610,10 +9288,114 @@ fn rollout_policy_for_request(config: &SynthOptimizerConfig) -> Value {
     }
 }
 
+fn container_candidates_route(program: &PromptProgram) -> Option<String> {
+    program
+        .metadata
+        .get("gepa_candidates_route")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| value.starts_with('/'))
+        .map(str::to_string)
+}
+
+fn gepa_container_rollout_request(
+    config: &SynthOptimizerConfig,
+    program: &PromptProgram,
+    candidate: &CandidateRecord,
+    row: &Value,
+    fallback_task_id: &str,
+) -> Value {
+    let overlay = CandidateOverlay {
+        candidate: PromptCandidatePayload::from_map(candidate.payload.clone()),
+        metadata: Map::new(),
+    };
+    let prompt_assertions = prompt_assertions_for_candidate(&overlay.candidate, config);
+    let example_task_id = row_task_id(row);
+    let seed = row.get("seed").and_then(Value::as_i64).unwrap_or(0);
+    let register_route = container_candidates_route(program);
+    let task_id = if register_route.is_some() {
+        example_task_id.clone()
+    } else {
+        fallback_task_id.to_string()
+    };
+    let mut request = json!({
+        "submission_mode": rollout_submission_mode_for_request(config),
+        "task_id": task_id,
+        "candidate_id": candidate.candidate_id,
+        "candidate": overlay.candidate.to_value(),
+        "candidate_overlay": overlay,
+        "lever_bundle": candidate.lever_bundle,
+        "prompt_assertions": prompt_assertions,
+        "policy": rollout_policy_for_request(config),
+        "task": row,
+        "metadata": {
+            "candidate_id": candidate.candidate_id,
+            "task_id": example_task_id,
+            "seed": seed,
+        },
+    });
+    if let Some(route) = register_route {
+        if let Some(map) = request.as_object_mut() {
+            map.insert(
+                "register".to_string(),
+                json!({
+                    "route": route,
+                    "body": {
+                        "candidate_id": candidate.candidate_id,
+                        "parent_id": candidate.parent_id,
+                        "lever_bundle": candidate.lever_bundle,
+                        "candidate": overlay.candidate.to_value(),
+                    }
+                }),
+            );
+        }
+    }
+    request
+}
+
+fn preflight_custom_levers(program: &PromptProgram, config: &SynthOptimizerConfig) -> Result<()> {
+    let manifest = LeverManifest::from_prompt_program(program);
+    for spec in &manifest.levers {
+        let Some(protocol) = spec.protocol_id() else {
+            continue;
+        };
+        if !GEPA_KNOWN_PROTOCOL_IDS.contains(&protocol) {
+            return Err(OptimizerError::Container(format!(
+                "unknown lever protocol_id {protocol:?} on lever {}; known: {GEPA_KNOWN_PROTOCOL_IDS:?}",
+                spec.lever_id
+            )));
+        }
+    }
+    let isolation = program
+        .metadata
+        .get("apply_isolation")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    if isolation == "serial_restart"
+        && matches!(config.gepa.pipeline.mode, GepaPipelineMode::FlashEvolve)
+    {
+        return Err(OptimizerError::Config(
+            "flash_evolve is incompatible with apply_isolation=serial_restart; use per_candidate_worker or sync_serial"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn prompt_assertions_for_candidate(
     candidate: &PromptCandidatePayload,
     config: &SynthOptimizerConfig,
 ) -> Value {
+    if !config.policy.enabled {
+        return json!({
+            "schema_version": "prompt_assertions.v1",
+            "required": false,
+            "proxy_mode": &config.policy.proxy_mode,
+            "expected_candidate_prompts": {},
+        });
+    }
     let mut expected_candidate_prompts = Map::new();
     for field in &config.candidate.target_modules {
         let Some(prompt) = candidate.fields.get(field) else {
@@ -9505,24 +10287,13 @@ fn record_rollout_materialization_from_outcome(
     cache_hit: bool,
 ) -> Result<()> {
     let task_id = row_task_id(row);
-    let overlay = CandidateOverlay {
-        candidate: PromptCandidatePayload::from_map(candidate.payload.clone()),
-        metadata: Map::new(),
-    };
-    let prompt_assertions = prompt_assertions_for_candidate(&overlay.candidate, &context.config);
-    let request = json!({
-        "submission_mode": rollout_submission_mode_for_request(&context.config),
-        "task_id": resources.rollout_task_id,
-        "candidate": overlay.candidate.to_value(),
-        "candidate_overlay": overlay,
-        "prompt_assertions": prompt_assertions,
-        "policy": rollout_policy_for_request(&context.config),
-        "task": row,
-        "metadata": {
-                "candidate_id": candidate.candidate_id,
-                "task_id": task_id,
-            },
-    });
+    let request = gepa_container_rollout_request(
+        &context.config,
+        &resources.program,
+        candidate,
+        row,
+        &resources.rollout_task_id,
+    );
     let objective_scores = serde_json::to_value(&sensor_frame.objective_scores)?;
     let materialization =
         rollout_materialization_identity(&resources.program, candidate, &resources.objective_set);
@@ -9899,22 +10670,31 @@ fn terminalize_gepa_run_state(
             )
         };
     let usage_value = serde_json::to_value(&state.total_usage)?;
-    context
-        .workspace
-        .record_usage_ledger(&context.config.run.run_id, &state.usage_ledger)?;
-    context
-        .workspace
-        .record_stopper_states(&context.config.run.run_id, &state.stopper_states)?;
+    labelled(
+        "finalize.record_usage_ledger",
+        context
+            .workspace
+            .record_usage_ledger(&context.config.run.run_id, &state.usage_ledger),
+    )?;
+    labelled(
+        "finalize.record_stopper_states",
+        context
+            .workspace
+            .record_stopper_states(&context.config.run.run_id, &state.stopper_states),
+    )?;
     let cache_profile_record = CacheProfileRecord::from_profile(context.cache.profile()?);
     let cache_access_log = context.cache.access_log().to_vec();
     let cache_profile = serde_json::to_value(&cache_profile_record.profile)?;
     context
         .paths
         .write_json(&context.paths.cache_profile_path, &cache_profile)?;
-    context.workspace.record_cache_profile(
-        &context.config.run.run_id,
-        &cache_profile_record,
-        &cache_access_log,
+    labelled(
+        "finalize.record_cache_profile",
+        context.workspace.record_cache_profile(
+            &context.config.run.run_id,
+            &cache_profile_record,
+            &cache_access_log,
+        ),
     )?;
     let best_candidate_id = state
         .best_idx
@@ -9987,9 +10767,12 @@ fn terminalize_gepa_run_state(
         &mut context.events,
     )?;
     context.events.flush()?;
-    context
-        .workspace
-        .record_event_stream(&context.config.run.run_id, context.events.records())?;
+    labelled(
+        "finalize.record_event_stream",
+        context
+            .workspace
+            .record_event_stream(&context.config.run.run_id, context.events.records()),
+    )?;
     if matches!(terminal_state, OptimizerRunState::Cancelled) {
         context.workspace.record_run_cancelled_result(
             &context.config.run.run_id,
@@ -11627,13 +12410,19 @@ fn advance_generation_start(
     state: &mut GepaRunState,
     resources: &GepaStepResources,
 ) -> Result<GepaAdvanceOutcome> {
-    if state.cursor.generation >= context.config.gepa.max_generations {
+    if let Some(reason) = crate::episode::horizon_reason(
+        &context.config.gepa,
+        &state.cursor,
+        state.rollout_count,
+        state.total_cost,
+    ) {
+        crate::episode::record_stop_reason(&mut state.cursor, reason);
+        if context.config.gepa.episode.skip_heldout {
+            return move_to_finalizing(context, state, resources, reason);
+        }
         return move_to_pre_heldout(context, state, resources);
     }
-    if train_rollout_budget_reached(&context.config, state.rollout_count)
-        || cost_budget_reached(&context.config, state.total_cost)
-        || service_stop_condition_reached(&context.config, state)
-    {
+    if service_stop_condition_reached(&context.config, state) {
         return move_to_pre_heldout(context, state, resources);
     }
     if let Some(train_best_idx) = select_best_train_candidate(
@@ -12316,6 +13105,9 @@ fn advance_heldout(
     state: &mut GepaRunState,
     resources: &GepaStepResources,
 ) -> Result<GepaAdvanceOutcome> {
+    if context.config.gepa.episode.skip_heldout {
+        return move_to_finalizing(context, state, resources, "episode skip_heldout");
+    }
     if state
         .active_evaluation
         .as_ref()
@@ -12787,7 +13579,9 @@ fn finalize_completed_gepa_run(
     resources: &GepaStepResources,
 ) -> Result<GepaAdvanceOutcome> {
     let best_idx = state.best_idx.unwrap_or(0);
-    let Some(heldout_best_reward) = state.candidates[best_idx].heldout_reward else {
+    let skip_heldout = context.config.gepa.episode.skip_heldout;
+    let heldout_best_reward = state.candidates[best_idx].heldout_reward;
+    if heldout_best_reward.is_none() && !skip_heldout {
         terminalize_gepa_run_state(
             context,
             state,
@@ -12817,10 +13611,14 @@ fn finalize_completed_gepa_run(
             message: "best candidate missing terminal heldout evidence".to_string(),
         });
     };
-    let heldout_skipped = !state
-        .candidates
-        .iter()
-        .any(|candidate| candidate.heldout_reward.is_some());
+    let heldout_best_reward = heldout_best_reward
+        .or(state.candidates[best_idx].train_reward)
+        .unwrap_or(0.0);
+    let heldout_skipped = skip_heldout
+        || !state
+            .candidates
+            .iter()
+            .any(|candidate| candidate.heldout_reward.is_some());
     let mut stopper_metadata = Map::new();
     stopper_metadata.insert("stage".to_string(), Value::String("heldout".to_string()));
     stopper_metadata.insert("heldout_reward".to_string(), json!(heldout_best_reward));
@@ -12927,12 +13725,18 @@ fn finalize_completed_gepa_run(
     let usage_value = serde_json::to_value(&state.total_usage)?;
     let state_history = serde_json::to_value(&context.state_machine.history)?;
     let candidate_values = candidate_registry.as_array().cloned().unwrap_or_default();
-    context
-        .workspace
-        .persist_candidate_registry(&context.config.run.run_id, &candidate_values)?;
-    context
-        .workspace
-        .persist_state_history(&context.state_machine.history)?;
+    labelled(
+        "finalize.persist_candidate_registry",
+        context
+            .workspace
+            .persist_candidate_registry(&context.config.run.run_id, &candidate_values),
+    )?;
+    labelled(
+        "finalize.persist_state_history",
+        context
+            .workspace
+            .persist_state_history(&context.state_machine.history),
+    )?;
     context
         .paths
         .write_json(&context.paths.best_candidate_path, &best_candidate)?;
@@ -12962,6 +13766,8 @@ fn finalize_completed_gepa_run(
     )?;
     let runtime_summary =
         serde_json::to_value(runtime_usage_summary_from_events(context.events.records()))?;
+    let lane_overlap = context.lane_overlap.snapshot();
+    apply_lane_overlap_snapshot(state, &lane_overlap);
     context.events.emit(
         "gepa.run.finished",
         "GEPA run finished",
@@ -12974,6 +13780,8 @@ fn finalize_completed_gepa_run(
             "runtime_summary": runtime_summary,
             "usage": usage_value,
             "state": context.state_machine.state().as_str(),
+            "pipeline_mode": context.config.gepa.pipeline.mode.as_str(),
+            "lane_overlap": state.cursor.pipeline_state.lane_overlap,
         }),
     )?;
     context.events.flush()?;
@@ -13082,9 +13890,12 @@ fn finalize_completed_gepa_run(
             }),
         );
     }
-    context
-        .workspace
-        .record_artifact_refs(&context.config.run.run_id, &result.artifact_refs)?;
+    labelled(
+        "finalize.record_artifact_refs",
+        context
+            .workspace
+            .record_artifact_refs(&context.config.run.run_id, &result.artifact_refs),
+    )?;
     context.workspace.record_cache_profile(
         &context.config.run.run_id,
         &cache_profile_record,
@@ -13135,6 +13946,41 @@ fn finalize_completed_gepa_run(
 }
 
 fn stopped_by_value(config: &SynthOptimizerConfig, state: &GepaRunState) -> Value {
+    if let Some(reason) = crate::episode::horizon_reason(
+        &config.gepa,
+        &state.cursor,
+        state.rollout_count,
+        state.total_cost,
+    ) {
+        let mut value = crate::episode::horizon_kind(reason);
+        if let Some(object) = value.as_object_mut() {
+            if reason.starts_with("episode_") {
+                if let Some(n) = config.gepa.episode.proposer_rounds {
+                    object.insert("proposer_rounds".to_string(), json!(n));
+                }
+                if let Some(n) = config.gepa.episode.max_rollouts {
+                    object.insert("max_rollouts".to_string(), json!(n));
+                }
+                if let Some(n) = config.gepa.episode.max_wall_seconds {
+                    object.insert("max_wall_seconds".to_string(), json!(n));
+                }
+                if let Some(value_usd) = config.gepa.episode.max_spend_usd {
+                    object.insert("max_spend_usd".to_string(), json!(value_usd));
+                }
+                object.insert(
+                    "skip_heldout".to_string(),
+                    json!(config.gepa.episode.skip_heldout),
+                );
+            } else if reason == "max_generations" {
+                object.insert("n".to_string(), json!(config.gepa.max_generations));
+            } else if reason == "train_rollout_budget" {
+                object.insert("n".to_string(), json!(config.gepa.max_total_rollouts));
+            } else if reason == "cost_budget" {
+                object.insert("value".to_string(), json!(config.gepa.max_cost_usd));
+            }
+        }
+        return value;
+    }
     if score_threshold_reached(config, state) {
         return json!({
             "kind": "score_threshold",
@@ -13148,12 +13994,6 @@ fn stopped_by_value(config: &SynthOptimizerConfig, state: &GepaRunState) -> Valu
             "metric": config.gepa.no_improvement_metric.as_deref().unwrap_or("heldout_score"),
             "generations": config.gepa.no_improvement_generations,
         });
-    }
-    if cost_budget_reached(config, state.total_cost) {
-        return json!({"kind": "max_cost_usd", "value": config.gepa.max_cost_usd});
-    }
-    if train_rollout_budget_reached(config, state.rollout_count) {
-        return json!({"kind": "max_rollouts", "n": config.gepa.max_total_rollouts});
     }
     json!({"kind": "max_generations", "n": config.gepa.max_generations})
 }
@@ -13207,6 +14047,9 @@ pub fn execute_gepa_with_options(
         let outcome =
             advance_gepa_once(&mut context, &mut state, GepaAdvanceMode::RunLoop, &options)?;
         if outcome.terminal {
+            if let Some(pool) = context.lane_executor.as_mut() {
+                pool.shutdown();
+            }
             if let Some(result) = outcome.result {
                 return Ok(result);
             }
@@ -13217,7 +14060,18 @@ pub fn execute_gepa_with_options(
             ));
         }
         if matches!(outcome.action, planner::GepaTickAction::Noop) {
-            thread::sleep(ASYNC_PIPELINE_NOOP_SLEEP);
+            // With background lane execution there is a real signal to wait on:
+            // block until a worker reports back, so the driver can admit the
+            // next proposer the moment a lane frees instead of sleeping a fixed
+            // interval past it.
+            let woke_on_lane_completion = context
+                .lane_executor
+                .as_mut()
+                .map(|pool| pool.await_completion(ASYNC_PIPELINE_NOOP_SLEEP))
+                .unwrap_or(false);
+            if !woke_on_lane_completion {
+                thread::sleep(ASYNC_PIPELINE_NOOP_SLEEP);
+            }
         }
     }
 }
@@ -19703,22 +20557,13 @@ fn evaluate_candidate(call: EvaluationCall<'_>) -> Result<CandidateEvaluation> {
     for row in call.rows {
         check_cancelled(call.cancellation)?;
         let task_id = row_task_id(row);
-        let overlay = CandidateOverlay {
-            candidate: PromptCandidatePayload::from_map(call.candidate.payload.clone()),
-            metadata: Map::new(),
-        };
-        let prompt_assertions = prompt_assertions_for_candidate(&overlay.candidate, call.config);
-        let request = json!({
-            "submission_mode": rollout_submission_mode_for_request(call.config),
-            "task_id": call.task_id,
-            "task_id": task_id,
-            "candidate_id": call.candidate.candidate_id,
-            "candidate": overlay.candidate.to_value(),
-            "candidate_overlay": overlay,
-            "prompt_assertions": prompt_assertions,
-            "policy": rollout_policy_for_request(call.config),
-            "task": row,
-        });
+        let request = gepa_container_rollout_request(
+            call.config,
+            call.program,
+            call.candidate,
+            row,
+            call.task_id,
+        );
         let mut cache_metadata = Map::new();
         cache_metadata.insert(
             "candidate_id".to_string(),
@@ -20649,4 +21494,247 @@ fn candidate_id(payload: &BTreeMap<String, String>) -> String {
     digest.update(synth_optimizer_platform::cache::stable_json(&value).as_bytes());
     let hex = format!("{:x}", digest.finalize());
     format!("gepa_{}", &hex[..12])
+}
+
+#[cfg(test)]
+mod async_scheduler_tests {
+    use super::*;
+    use synth_optimizer_platform::{
+        GepaAdaptiveRolloutConcurrencyConfig, GepaAdaptiveStageWorkersConfig, GepaPipelineMode,
+        GepaSpeculativeCompletionConfig, GepaStalenessPolicy,
+    };
+
+    fn plan(mode: GepaPipelineMode) -> GepaAsyncPipelinePlan {
+        GepaAsyncPipelinePlan {
+            mode,
+            rollout_transport: "inline".to_string(),
+            staleness_policy: GepaStalenessPolicy::Full,
+            delta_max: 2,
+            propose_workers: 1,
+            rollout_workers: 8,
+            evaluate_workers: 1,
+            max_in_flight_candidates: 8,
+            rollout_chunk_size: 8,
+            adaptive_rollout_concurrency: GepaAdaptiveRolloutConcurrencyConfig {
+                enabled: false,
+                ..GepaAdaptiveRolloutConcurrencyConfig::default()
+            },
+            adaptive_stage_workers: GepaAdaptiveStageWorkersConfig {
+                enabled: false,
+                ..GepaAdaptiveStageWorkersConfig::default()
+            },
+            speculative_completion: GepaSpeculativeCompletionConfig::default(),
+            background_execution: matches!(mode, GepaPipelineMode::FlashEvolve),
+            background_workers: 10,
+        }
+    }
+
+    fn state() -> GepaRunState {
+        GepaRunState {
+            cursor: GepaCursor::new("run-scheduler-test"),
+            candidates: Vec::new(),
+            best_idx: None,
+            proposal_queue: Vec::new(),
+            active_evaluation: None,
+            heldout_candidate_index: 0,
+            total_usage: UsageTotals::default(),
+            total_cost: 0.0,
+            rollout_count: 0,
+            usage_ledger: Vec::new(),
+            stopper_states: Vec::new(),
+            stopper_sequence: 0,
+            checkpoint_sequence: 0,
+        }
+    }
+
+    /// Generation 0 has finished proposing and dispatching; its candidates are
+    /// out on the rollout lane running full-train. This is the exact state the
+    /// 2026-06-02 Banking77 matrix spent most of its wall clock in.
+    fn state_with_generation_zero_full_train_in_flight() -> GepaRunState {
+        let mut state = state();
+        state.cursor.generation = 1;
+        state.cursor.pipeline_state.in_flight_candidate_count = 6;
+        state.cursor.pipeline_state.candidate_partials.insert(
+            "async:candidate_full_train:generation_000".to_string(),
+            planner::GepaAsyncCandidatePartial {
+                partial_id: "async:candidate_full_train:generation_000".to_string(),
+                lane: "rollout".to_string(),
+                stage: "candidate_full_train".to_string(),
+                generation: 0,
+                candidate_ids: vec!["cand-0".to_string()],
+                ..planner::GepaAsyncCandidatePartial::default()
+            },
+        );
+        state.cursor.pipeline_state.lane_leases.insert(
+            "rollout:0".to_string(),
+            planner::GepaAsyncLaneLease {
+                lease_id: "rollout:0".to_string(),
+                lane: "rollout".to_string(),
+                stage: "candidate_full_train".to_string(),
+                generation: 0,
+                job_id: Some("job-rollout-0".to_string()),
+                status: "dispatched".to_string(),
+                ..planner::GepaAsyncLaneLease::default()
+            },
+        );
+        state
+    }
+
+    #[test]
+    fn flash_evolve_admits_next_proposer_while_full_train_is_still_running() {
+        let state = state_with_generation_zero_full_train_in_flight();
+        assert_eq!(
+            async_proposer_admission(
+                &state,
+                &plan(GepaPipelineMode::FlashEvolve),
+                2,
+                false,
+                false
+            ),
+            ProposerAdmission::Admit,
+            "flash_evolve must overlap generation 1 propose with generation 0 full-train"
+        );
+    }
+
+    #[test]
+    fn async_pipelined_keeps_its_generation_barrier() {
+        let state = state_with_generation_zero_full_train_in_flight();
+        assert_eq!(
+            async_proposer_admission(
+                &state,
+                &plan(GepaPipelineMode::AsyncPipelined),
+                2,
+                false,
+                false
+            ),
+            ProposerAdmission::GenerationBarrier,
+            "async_pipelined must not propose generation 1 before generation 0 folds"
+        );
+    }
+
+    #[test]
+    fn async_pipelined_admits_once_the_generation_has_folded() {
+        let mut state = state_with_generation_zero_full_train_in_flight();
+        state.cursor.pipeline_state.candidate_partials.clear();
+        state.cursor.pipeline_state.lane_leases.clear();
+        state.cursor.pipeline_state.in_flight_candidate_count = 0;
+        assert_eq!(
+            async_proposer_admission(
+                &state,
+                &plan(GepaPipelineMode::AsyncPipelined),
+                2,
+                false,
+                false
+            ),
+            ProposerAdmission::Admit
+        );
+    }
+
+    fn work_item(partial_id: &str, stage: &str) -> planner::GepaAsyncLaneWorkItem {
+        planner::GepaAsyncLaneWorkItem {
+            item_id: format!("item:{partial_id}"),
+            partial_id: Some(partial_id.to_string()),
+            stage: stage.to_string(),
+            ..planner::GepaAsyncLaneWorkItem::default()
+        }
+    }
+
+    /// Regression for the 2026-08-19 FlashEvolve livelock: a prerequisite
+    /// `parent_minibatch_reference` was re-planned every tick and pushed onto
+    /// `rollout_queue` each time, reaching 6218 identical items at 80% CPU with
+    /// no events emitted.
+    #[test]
+    fn queued_lane_work_is_detected_across_queues_and_leases() {
+        let mut state = state();
+        let partial = "async:parent_minibatch_reference:generation_000";
+        assert!(!async_lane_work_already_queued(&state, partial));
+
+        state
+            .cursor
+            .pipeline_state
+            .rollout_queue
+            .push(work_item(partial, "parent_minibatch_reference"));
+        assert!(async_lane_work_already_queued(&state, partial));
+        assert!(!async_lane_work_already_queued(
+            &state,
+            "async:other:generation_000"
+        ));
+
+        // Once dispatched the item leaves the queue and lives on the lease; it
+        // must still count as queued or the next tick re-enqueues a duplicate.
+        state.cursor.pipeline_state.rollout_queue.clear();
+        state.cursor.pipeline_state.lane_leases.insert(
+            "rollout:0".to_string(),
+            planner::GepaAsyncLaneLease {
+                lane: "rollout".to_string(),
+                stage: "parent_minibatch_reference".to_string(),
+                partial_id: Some(partial.to_string()),
+                job_id: Some("job-0".to_string()),
+                ..planner::GepaAsyncLaneLease::default()
+            },
+        );
+        assert!(async_lane_work_already_queued(&state, partial));
+
+        // Evaluate-lane work counts too.
+        state.cursor.pipeline_state.lane_leases.clear();
+        state
+            .cursor
+            .pipeline_state
+            .evaluate_queue
+            .push(work_item(partial, "parent_minibatch_reference"));
+        assert!(async_lane_work_already_queued(&state, partial));
+    }
+
+    #[test]
+    fn undispatched_proposals_block_both_modes() {
+        // The current generation's proposals still have to become candidate
+        // minibatch work before the generation counter can advance, so neither
+        // mode may start another proposer round here.
+        for mode in [
+            GepaPipelineMode::FlashEvolve,
+            GepaPipelineMode::AsyncPipelined,
+        ] {
+            let mut state = state();
+            state.proposal_queue = vec![ProposedCandidate::default()];
+            assert_eq!(
+                async_proposer_admission(&state, &plan(mode), 2, false, false),
+                ProposerAdmission::ProposalsNotYetDispatched,
+                "{mode:?} admitted a proposer with undispatched proposals"
+            );
+        }
+    }
+
+    #[test]
+    fn in_flight_candidate_cap_still_bounds_flash_evolve() {
+        let mut state = state_with_generation_zero_full_train_in_flight();
+        state.cursor.pipeline_state.in_flight_candidate_count = 8;
+        assert_eq!(
+            async_proposer_admission(
+                &state,
+                &plan(GepaPipelineMode::FlashEvolve),
+                2,
+                false,
+                false
+            ),
+            ProposerAdmission::InFlightCandidateCap
+        );
+    }
+
+    #[test]
+    fn budgets_and_generation_ceiling_refuse_before_the_barrier_check() {
+        let state = state_with_generation_zero_full_train_in_flight();
+        let flash = plan(GepaPipelineMode::FlashEvolve);
+        assert_eq!(
+            async_proposer_admission(&state, &flash, 1, false, false),
+            ProposerAdmission::GenerationBudgetReached
+        );
+        assert_eq!(
+            async_proposer_admission(&state, &flash, 2, true, false),
+            ProposerAdmission::TrainRolloutBudgetReached
+        );
+        assert_eq!(
+            async_proposer_admission(&state, &flash, 2, false, true),
+            ProposerAdmission::CostBudgetReached
+        );
+    }
 }

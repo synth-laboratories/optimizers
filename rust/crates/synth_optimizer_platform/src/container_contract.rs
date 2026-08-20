@@ -91,6 +91,8 @@ pub struct GepaOptimizerContract {
     #[serde(default)]
     pub rollout_route: String,
     #[serde(default)]
+    pub candidates_route: Option<String>,
+    #[serde(default)]
     pub trace_route: Option<String>,
     #[serde(flatten)]
     pub extra: JsonMap,
@@ -107,6 +109,13 @@ impl GepaOptimizerContract {
             if !route.starts_with('/') {
                 return Err(OptimizerError::Container(format!(
                     "metadata.optimizer_contracts.gepa.{name} must be an absolute route, got {route:?}"
+                )));
+            }
+        }
+        if let Some(route) = self.candidates_route.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+            if !route.starts_with('/') {
+                return Err(OptimizerError::Container(format!(
+                    "metadata.optimizer_contracts.gepa.candidates_route must be an absolute route, got {route:?}"
                 )));
             }
         }

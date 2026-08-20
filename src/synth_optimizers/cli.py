@@ -1355,6 +1355,35 @@ def build_parser() -> argparse.ArgumentParser:
     gepa_run = gepa_subcommands.add_parser("run")
     gepa_run.add_argument("--config", required=True)
     gepa_run.add_argument(
+        "--fixture",
+        help="Import a retained GEPA cursor fixture before the first tick.",
+    )
+    gepa_run.add_argument(
+        "--episode-proposer-rounds",
+        type=int,
+        help="Stop after this many proposer rounds from restart/fork.",
+    )
+    gepa_run.add_argument(
+        "--episode-max-rollouts",
+        type=int,
+        help="Stop after this many inner rollouts from restart/fork.",
+    )
+    gepa_run.add_argument(
+        "--episode-max-wall-seconds",
+        type=int,
+        help="Stop after this many wall seconds from restart/fork.",
+    )
+    gepa_run.add_argument(
+        "--episode-max-spend-usd",
+        type=float,
+        help="Stop after this much USD spend from restart/fork.",
+    )
+    gepa_run.add_argument(
+        "--episode-skip-heldout",
+        action="store_true",
+        help="Complete the episode on train evidence and do not run heldout.",
+    )
+    gepa_run.add_argument(
         "--proposer-execution-mode",
         choices=("local_process", "stdio", "websocket", "ws"),
         help=(
@@ -2146,6 +2175,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         old_proposer_service_tier = os.environ.get("SYNTH_OPTIMIZERS_PROPOSER_SERVICE_TIER")
         old_proposer_auth_mode = os.environ.get("SYNTH_OPTIMIZERS_PROPOSER_AUTH_MODE")
         old_proposer_codex_home = os.environ.get("SYNTH_OPTIMIZERS_PROPOSER_CODEX_HOME")
+        old_fixture_path = os.environ.get("SYNTH_OPTIMIZERS_FIXTURE_PATH")
+        old_episode_proposer_rounds = os.environ.get("SYNTH_OPTIMIZERS_EPISODE_PROPOSER_ROUNDS")
+        old_episode_max_rollouts = os.environ.get("SYNTH_OPTIMIZERS_EPISODE_MAX_ROLLOUTS")
+        old_episode_max_wall_seconds = os.environ.get(
+            "SYNTH_OPTIMIZERS_EPISODE_MAX_WALL_SECONDS"
+        )
+        old_episode_max_spend_usd = os.environ.get("SYNTH_OPTIMIZERS_EPISODE_MAX_SPEND_USD")
+        old_episode_skip_heldout = os.environ.get("SYNTH_OPTIMIZERS_EPISODE_SKIP_HELDOUT")
         if not args.json:
             os.environ["SYNTH_OPTIMIZERS_TERMINAL"] = "1"
         if args.proposer_execution_mode:
@@ -2162,8 +2199,38 @@ def main(argv: Sequence[str] | None = None) -> int:
             os.environ["SYNTH_OPTIMIZERS_PROPOSER_AUTH_MODE"] = args.proposer_auth_mode
         if args.proposer_codex_home:
             os.environ["SYNTH_OPTIMIZERS_PROPOSER_CODEX_HOME"] = args.proposer_codex_home
+        if args.fixture:
+            os.environ["SYNTH_OPTIMIZERS_FIXTURE_PATH"] = args.fixture
+        if args.episode_proposer_rounds is not None:
+            os.environ["SYNTH_OPTIMIZERS_EPISODE_PROPOSER_ROUNDS"] = str(
+                args.episode_proposer_rounds
+            )
+        if args.episode_max_rollouts is not None:
+            os.environ["SYNTH_OPTIMIZERS_EPISODE_MAX_ROLLOUTS"] = str(args.episode_max_rollouts)
+        if args.episode_max_wall_seconds is not None:
+            os.environ["SYNTH_OPTIMIZERS_EPISODE_MAX_WALL_SECONDS"] = str(
+                args.episode_max_wall_seconds
+            )
+        if args.episode_max_spend_usd is not None:
+            os.environ["SYNTH_OPTIMIZERS_EPISODE_MAX_SPEND_USD"] = str(
+                args.episode_max_spend_usd
+            )
+        if args.episode_skip_heldout:
+            os.environ["SYNTH_OPTIMIZERS_EPISODE_SKIP_HELDOUT"] = "1"
         try:
             gepa_run = GepaRun.from_toml(args.config)
+            if args.fixture:
+                gepa_run.config.run.fixture_path = args.fixture
+            if args.episode_proposer_rounds is not None:
+                gepa_run.config.episode.proposer_rounds = args.episode_proposer_rounds
+            if args.episode_max_rollouts is not None:
+                gepa_run.config.episode.max_rollouts = args.episode_max_rollouts
+            if args.episode_max_wall_seconds is not None:
+                gepa_run.config.episode.max_wall_seconds = args.episode_max_wall_seconds
+            if args.episode_max_spend_usd is not None:
+                gepa_run.config.episode.max_spend_usd = args.episode_max_spend_usd
+            if args.episode_skip_heldout:
+                gepa_run.config.episode.skip_heldout = True
             if args.disable_usage_registration:
                 gepa_run.config.usage_registration = UsageRegistrationConfig(enabled=False)
             project_gepa_run_started(
@@ -2211,6 +2278,34 @@ def main(argv: Sequence[str] | None = None) -> int:
                 os.environ.pop("SYNTH_OPTIMIZERS_PROPOSER_CODEX_HOME", None)
             else:
                 os.environ["SYNTH_OPTIMIZERS_PROPOSER_CODEX_HOME"] = old_proposer_codex_home
+            if old_fixture_path is None:
+                os.environ.pop("SYNTH_OPTIMIZERS_FIXTURE_PATH", None)
+            else:
+                os.environ["SYNTH_OPTIMIZERS_FIXTURE_PATH"] = old_fixture_path
+            if old_episode_proposer_rounds is None:
+                os.environ.pop("SYNTH_OPTIMIZERS_EPISODE_PROPOSER_ROUNDS", None)
+            else:
+                os.environ["SYNTH_OPTIMIZERS_EPISODE_PROPOSER_ROUNDS"] = (
+                    old_episode_proposer_rounds
+                )
+            if old_episode_max_rollouts is None:
+                os.environ.pop("SYNTH_OPTIMIZERS_EPISODE_MAX_ROLLOUTS", None)
+            else:
+                os.environ["SYNTH_OPTIMIZERS_EPISODE_MAX_ROLLOUTS"] = old_episode_max_rollouts
+            if old_episode_max_wall_seconds is None:
+                os.environ.pop("SYNTH_OPTIMIZERS_EPISODE_MAX_WALL_SECONDS", None)
+            else:
+                os.environ["SYNTH_OPTIMIZERS_EPISODE_MAX_WALL_SECONDS"] = (
+                    old_episode_max_wall_seconds
+                )
+            if old_episode_max_spend_usd is None:
+                os.environ.pop("SYNTH_OPTIMIZERS_EPISODE_MAX_SPEND_USD", None)
+            else:
+                os.environ["SYNTH_OPTIMIZERS_EPISODE_MAX_SPEND_USD"] = old_episode_max_spend_usd
+            if old_episode_skip_heldout is None:
+                os.environ.pop("SYNTH_OPTIMIZERS_EPISODE_SKIP_HELDOUT", None)
+            else:
+                os.environ["SYNTH_OPTIMIZERS_EPISODE_SKIP_HELDOUT"] = old_episode_skip_heldout
         if args.json:
             print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
         else:

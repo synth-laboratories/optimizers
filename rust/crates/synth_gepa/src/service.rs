@@ -26,7 +26,8 @@ use synth_optimizer_platform::{
 };
 
 use crate::{
-    advance_gepa_config_once, execute_gepa_from_toml_with_options,
+    advance_gepa_config_once, execute_gepa_from_toml_with_options, export_cursor_fixture,
+    import_cursor_fixture, pin_run_checkpoint,
     planner::{
         GepaCursor, GepaCursorPhase, GepaTickAction, GepaTickOutcome, GEPA_CURSOR_CHECKPOINT_KIND,
     },
@@ -160,6 +161,17 @@ struct GepaServiceRunRequest {
     stop_conditions: Vec<ServiceStopCondition>,
     #[serde(default)]
     advanced: ServiceAdvancedConfig,
+    #[serde(default)]
+    fork_from: Option<ServiceForkFrom>,
+    #[serde(default)]
+    fixture: Option<Value>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ServiceForkFrom {
+    run_id: String,
+    #[serde(default)]
+    checkpoint_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -196,6 +208,20 @@ struct ServiceProposerSpec {
     copy_host_auth: Option<bool>,
     #[serde(default)]
     codex_home: Option<String>,
+    #[serde(default)]
+    reasoning_effort: Option<String>,
+    /// Explicit opt-in for an OpenRouter proposer model outside the verified
+    /// allowlist. Without it the service cannot express e.g.
+    /// nvidia/nemotron-3.5-lightning, because the wire spec is
+    /// deny_unknown_fields and the internal config defaults this to false.
+    #[serde(default)]
+    allow_unverified_model: Option<bool>,
+    /// Codex `model_context_window` for the proposer's generated config.toml.
+    #[serde(default)]
+    model_context_window: Option<u64>,
+    /// Codex `model_auto_compact_token_limit` for the proposer's generated config.toml.
+    #[serde(default)]
+    model_auto_compact_token_limit: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -240,6 +266,18 @@ enum ServiceStopCondition {
         value: f64,
         metric: Option<String>,
     },
+    Episode {
+        #[serde(default)]
+        proposer_rounds: Option<usize>,
+        #[serde(default)]
+        max_rollouts: Option<usize>,
+        #[serde(default)]
+        max_wall_seconds: Option<u64>,
+        #[serde(default)]
+        max_spend_usd: Option<f64>,
+        #[serde(default)]
+        skip_heldout: bool,
+    },
     ExternalSignal,
 }
 
@@ -258,6 +296,10 @@ struct ServiceAdvancedConfig {
     proposer_io: Option<ServiceProposerIoConfig>,
     #[serde(default)]
     adaptive_rollout_concurrency: Option<bool>,
+    #[serde(default)]
+    operator: Option<synth_optimizer_platform::GepaOperatorConfig>,
+    #[serde(default)]
+    jesterky_workflow: Option<ServiceJesterkyWorkflowConfig>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -318,6 +360,27 @@ struct ServiceProposerIoConfig {
     timeout_seconds: Option<u64>,
     #[serde(default)]
     codex_home: Option<String>,
+    #[serde(default)]
+    schema_repair_rounds: Option<u32>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ServiceJesterkyWorkflowConfig {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    bulk: Option<bool>,
+    #[serde(default)]
+    spec: Option<String>,
+    #[serde(default)]
+    command: Option<String>,
+    #[serde(default)]
+    actor: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    fail_closed: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -858,6 +921,13 @@ fn persist_cursor_checkpoint(
 ) -> Result<()> {
     let mut metadata = Map::new();
     metadata.insert("source".to_string(), json!("gepa_service_tick"));
+    if matches!(
+        cursor.phase,
+        GepaCursorPhase::GenerationStart | GepaCursorPhase::Paused
+    ) || status == "paused"
+    {
+        metadata.insert("retain".to_string(), json!(true));
+    }
     let checkpoint = CheckpointRecord::from_input(CheckpointInput {
         sequence_number: cursor.checkpoint_sequence,
         checkpoint_kind: GEPA_CURSOR_CHECKPOINT_KIND,
@@ -1540,6 +1610,15 @@ fn route_request(request: HttpRequest, runtime: GepaServiceRuntime) -> HttpRespo
         ("POST", ["runs", run_id, "resume"]) => {
             control_run_response(&runtime, run_id, "resume", &request)
         }
+        ("POST", ["runs", run_id, "checkpoints", "pin"]) => {
+            pin_checkpoint_response(config, run_id, &request)
+        }
+        ("GET", ["runs", run_id, "checkpoints"]) => {
+            result_response(list_run_checkpoints(config, run_id), 200)
+        }
+        ("GET", ["runs", run_id, "checkpoints", checkpoint_id, "export"]) => {
+            export_checkpoint_response(config, run_id, checkpoint_id)
+        }
         ("POST", ["runs", run_id, "step"]) => result_response(step_run(config, run_id), 200),
         ("GET", ["runs", run_id, "candidates"]) => {
             result_response(list_candidates(config, run_id, &query), 200)
@@ -1804,7 +1883,165 @@ fn create_run(
     if !request.manual_step {
         runtime.scheduler.notify();
     }
+    seed_forked_cursor(&store, &request, &run_request)?;
     project_run(&store, &request).map(|run| (201, run))
+}
+
+fn seed_forked_cursor(
+    service_store: &WorkspaceStore,
+    request: &WorkspaceRunRequestStatus,
+    run_request: &GepaServiceRunRequest,
+) -> Result<()> {
+    let source = if let Some(fixture_value) = &run_request.fixture {
+        Some(serde_json::from_value(fixture_value.clone())?)
+    } else if let Some(fork) = &run_request.fork_from {
+        let Some(parent) = service_store.run_request_by_run_id(&fork.run_id)? else {
+            return Err(OptimizerError::Config(format!(
+                "fork parent run {} not found",
+                fork.run_id
+            )));
+        };
+        let Some(parent_store) = run_workspace_store(&parent)? else {
+            return Err(OptimizerError::Config(format!(
+                "fork parent run {} has no workspace yet",
+                fork.run_id
+            )));
+        };
+        let record = if let Some(checkpoint_id) = fork.checkpoint_id.as_deref() {
+            parent_store
+                .checkpoint_by_id(&fork.run_id, checkpoint_id)?
+                .ok_or_else(|| {
+                    OptimizerError::Config(format!(
+                        "checkpoint {checkpoint_id} not found on run {}",
+                        fork.run_id
+                    ))
+                })?
+        } else {
+            parent_store
+                .latest_checkpoint(&fork.run_id, GEPA_CURSOR_CHECKPOINT_KIND)?
+                .ok_or_else(|| {
+                    OptimizerError::Config(format!(
+                        "run {} has no gepa_cursor checkpoint to fork",
+                        fork.run_id
+                    ))
+                })?
+        };
+        Some(export_cursor_fixture(&record)?)
+    } else {
+        None
+    };
+    let Some(fixture) = source else {
+        return Ok(());
+    };
+    let mut run_store = ensure_run_workspace(service_store, request)?;
+    import_cursor_fixture(&mut run_store, &request.run_id, &fixture)?;
+    Ok(())
+}
+
+fn list_run_checkpoints(config: &GepaServiceConfig, run_id: &str) -> Result<Value> {
+    let service_store = WorkspaceStore::open_existing(&config.db_path)?;
+    let Some(request) = service_store.run_request_by_run_id(run_id)? else {
+        return Err(OptimizerError::Config(format!("no Run with id {run_id:?}")));
+    };
+    let Some(run_store) = run_workspace_store(&request)? else {
+        return Ok(json!({"run_id": run_id, "checkpoints": []}));
+    };
+    let records = run_store.checkpoint_history(run_id, Some(GEPA_CURSOR_CHECKPOINT_KIND))?;
+    Ok(json!({
+        "run_id": run_id,
+        "checkpoints": records.iter().map(|record| json!({
+            "checkpoint_id": record.checkpoint_id,
+            "sequence_number": record.sequence_number,
+            "status": record.status,
+            "run_state": record.run_state,
+            "generation": record.generation,
+            "retained": record.is_retained(),
+            "compacted": record.is_storage_compacted(),
+            "candidate_count": record.candidate_count,
+            "frontier_count": record.frontier_count,
+        })).collect::<Vec<_>>(),
+    }))
+}
+
+fn pin_checkpoint_response(
+    config: &GepaServiceConfig,
+    run_id: &str,
+    request: &HttpRequest,
+) -> HttpResponse {
+    match pin_run_checkpoint_from_request(config, run_id, request) {
+        Ok(record) => json_response(
+            200,
+            &json!({
+                "run_id": run_id,
+                "checkpoint_id": record.checkpoint_id,
+                "retained": true,
+                "generation": record.generation,
+            }),
+        ),
+        Err(error) => optimizer_error_response(error),
+    }
+}
+
+fn pin_run_checkpoint_from_request(
+    config: &GepaServiceConfig,
+    run_id: &str,
+    request: &HttpRequest,
+) -> Result<CheckpointRecord> {
+    let body: Value = if request.body.is_empty() {
+        json!({})
+    } else {
+        serde_json::from_slice(&request.body)?
+    };
+    let service_store = WorkspaceStore::open_existing(&config.db_path)?;
+    let Some(run_request) = service_store.run_request_by_run_id(run_id)? else {
+        return Err(OptimizerError::Config(format!("no Run with id {run_id:?}")));
+    };
+    let Some(mut run_store) = run_workspace_store(&run_request)? else {
+        return Err(OptimizerError::Config(format!(
+            "run {run_id} has no workspace yet"
+        )));
+    };
+    let checkpoint_id = match body.get("checkpoint_id").and_then(Value::as_str) {
+        Some(id) => id.to_string(),
+        None => {
+            run_store
+                .latest_checkpoint(run_id, GEPA_CURSOR_CHECKPOINT_KIND)?
+                .ok_or_else(|| OptimizerError::Config(format!("run {run_id} has no checkpoint")))?
+                .checkpoint_id
+        }
+    };
+    pin_run_checkpoint(&mut run_store, run_id, &checkpoint_id)
+}
+
+fn export_checkpoint_response(
+    config: &GepaServiceConfig,
+    run_id: &str,
+    checkpoint_id: &str,
+) -> HttpResponse {
+    match export_run_checkpoint(config, run_id, checkpoint_id) {
+        Ok(fixture) => json_response(200, &serde_json::to_value(fixture).unwrap_or(Value::Null)),
+        Err(error) => optimizer_error_response(error),
+    }
+}
+
+fn export_run_checkpoint(
+    config: &GepaServiceConfig,
+    run_id: &str,
+    checkpoint_id: &str,
+) -> Result<crate::GepaCursorFixture> {
+    let service_store = WorkspaceStore::open_existing(&config.db_path)?;
+    let Some(run_request) = service_store.run_request_by_run_id(run_id)? else {
+        return Err(OptimizerError::Config(format!("no Run with id {run_id:?}")));
+    };
+    let Some(run_store) = run_workspace_store(&run_request)? else {
+        return Err(OptimizerError::Config(format!(
+            "run {run_id} has no workspace yet"
+        )));
+    };
+    let record = run_store
+        .checkpoint_by_id(run_id, checkpoint_id)?
+        .ok_or_else(|| OptimizerError::Config(format!("checkpoint {checkpoint_id} not found")))?;
+    export_cursor_fixture(&record)
 }
 
 fn workspace_summary(config: &GepaServiceConfig) -> Result<Value> {
@@ -3076,6 +3313,12 @@ fn run_request_to_optimizer_config(
     apply_policy_credentials(&mut config, &request.policy.credentials)?;
     config.proposer.provider = request.proposer.provider.clone();
     config.proposer.model = Some(request.proposer.model.clone());
+    if let Some(allow_unverified) = request.proposer.allow_unverified_model {
+        config.proposer.allow_unverified_model = allow_unverified;
+    }
+    config.proposer.model_context_window = request.proposer.model_context_window;
+    config.proposer.model_auto_compact_token_limit =
+        request.proposer.model_auto_compact_token_limit;
     config.proposer.api_family = request.proposer.api_family.clone();
     config.proposer.base_url = request
         .proposer
@@ -3097,7 +3340,17 @@ fn run_request_to_optimizer_config(
     // generous turn timeout (go-ex uses 300s; default 120s is too short).
     config.proposer.approval_policy = Some("never".to_string());
     config.proposer.sandbox_mode = Some("workspace-write".to_string());
-    config.proposer.reasoning_effort = Some("medium".to_string());
+    if let Some(effort) = request
+        .proposer
+        .reasoning_effort
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        config.proposer.reasoning_effort = Some(normalize_key(effort));
+    } else if config.proposer.reasoning_effort.is_none() {
+        config.proposer.reasoning_effort = Some("medium".to_string());
+    }
     config.proposer.timeout_seconds = 300;
     apply_stop_conditions(&mut config, &request.stop_conditions)?;
     apply_advanced_config(&mut config, &request.advanced)?;
@@ -3405,6 +3658,35 @@ fn apply_stop_conditions(
                     metric.as_deref().unwrap_or("heldout_score"),
                 )?);
             }
+            ServiceStopCondition::Episode {
+                proposer_rounds,
+                max_rollouts,
+                max_wall_seconds,
+                max_spend_usd,
+                skip_heldout,
+            } => {
+                if let Some(n) = *proposer_rounds {
+                    require_positive_usize("stop_conditions.episode.proposer_rounds", n)?;
+                    config.gepa.episode.proposer_rounds = Some(n);
+                }
+                if let Some(n) = *max_rollouts {
+                    require_positive_usize("stop_conditions.episode.max_rollouts", n)?;
+                    config.gepa.episode.max_rollouts = Some(n);
+                }
+                if let Some(n) = *max_wall_seconds {
+                    require_positive_u64("stop_conditions.episode.max_wall_seconds", n)?;
+                    config.gepa.episode.max_wall_seconds = Some(n);
+                }
+                if let Some(value) = *max_spend_usd {
+                    if !value.is_finite() || value <= 0.0 {
+                        return Err(OptimizerError::Config(
+                            "stop_conditions.episode.max_spend_usd must be positive".to_string(),
+                        ));
+                    }
+                    config.gepa.episode.max_spend_usd = Some(value);
+                }
+                config.gepa.episode.skip_heldout = *skip_heldout;
+            }
         }
     }
     Ok(())
@@ -3532,9 +3814,46 @@ fn apply_advanced_config(
         {
             config.proposer.codex_home = Some(PathBuf::from(path));
         }
+        if let Some(rounds) = proposer_io.schema_repair_rounds {
+            config.proposer.schema_repair_rounds = rounds;
+        }
     }
     if let Some(enabled) = advanced.adaptive_rollout_concurrency {
         config.gepa.pipeline.adaptive_rollout_concurrency.enabled = enabled;
+    }
+    if let Some(operator) = advanced.operator.clone() {
+        config.gepa.operator = operator;
+        if config.gepa.operator.mcp_agent.enabled && !config.proposer.mcp.enabled {
+            config.proposer.mcp = config.gepa.operator.mcp_agent.clone();
+        }
+    }
+    if let Some(wf) = advanced.jesterky_workflow.as_ref() {
+        if let Some(enabled) = wf.enabled {
+            config.jesterky_workflow.enabled = enabled;
+        }
+        if let Some(bulk) = wf.bulk {
+            config.jesterky_workflow.bulk = bulk;
+        }
+        if let Some(spec) = wf.spec.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            config.jesterky_workflow.spec = spec.to_string();
+        }
+        if let Some(command) = wf
+            .command
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            config.jesterky_workflow.command = command.to_string();
+        }
+        if let Some(actor) = wf.actor.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            config.jesterky_workflow.actor = actor.to_string();
+        }
+        if let Some(model) = wf.model.clone() {
+            config.jesterky_workflow.model = Some(model);
+        }
+        if let Some(fail_closed) = wf.fail_closed {
+            config.jesterky_workflow.fail_closed = fail_closed;
+        }
     }
     Ok(())
 }
@@ -4322,6 +4641,7 @@ fn project_run_config(config: &SynthOptimizerConfig, manual_step: bool) -> Value
             "provider": config.proposer.provider,
             "model": config.proposer.model,
             "api_family": config.proposer.api_family,
+            "reasoning_effort": config.proposer.reasoning_effort,
             "credentials": credential_projection(config.proposer.api_key_env.clone()),
         },
         "taskset": {
@@ -4375,6 +4695,27 @@ fn project_stop_conditions(config: &SynthOptimizerConfig) -> Value {
             "value": value,
             "metric": config.gepa.score_threshold_metric.as_deref().unwrap_or("heldout_score"),
         }));
+    }
+    if config.gepa.episode.has_delta_limits() || config.gepa.episode.skip_heldout {
+        let mut episode = serde_json::Map::new();
+        episode.insert("kind".to_string(), json!("episode"));
+        if let Some(n) = config.gepa.episode.proposer_rounds {
+            episode.insert("proposer_rounds".to_string(), json!(n));
+        }
+        if let Some(n) = config.gepa.episode.max_rollouts {
+            episode.insert("max_rollouts".to_string(), json!(n));
+        }
+        if let Some(n) = config.gepa.episode.max_wall_seconds {
+            episode.insert("max_wall_seconds".to_string(), json!(n));
+        }
+        if let Some(value) = config.gepa.episode.max_spend_usd {
+            episode.insert("max_spend_usd".to_string(), json!(value));
+        }
+        episode.insert(
+            "skip_heldout".to_string(),
+            json!(config.gepa.episode.skip_heldout),
+        );
+        conditions.push(Value::Object(episode));
     }
     Value::Array(conditions)
 }

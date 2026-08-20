@@ -169,7 +169,10 @@ impl SensorFrame {
                 Value::Object(rollout_response.usage.clone())
             },
             trace_digest: rollout_response.trace.as_ref().map(trace_digest),
-            actionable_side_info: response.get("actionable_side_info").cloned(),
+            actionable_side_info: response
+                .get("actionable_side_info")
+                .cloned()
+                .or_else(|| response.get("side_info").cloned()),
             artifact_refs: Vec::new(),
             failure,
             metadata,

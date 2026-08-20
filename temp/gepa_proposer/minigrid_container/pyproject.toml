@@ -1,0 +1,13 @@
+[project]
+name = "minigrid-gepa-container"
+version = "0.0.1"
+description = "GEPA http_task wrapper around MiniGrid DoorKey"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn>=0.30",
+  "openai>=1.0",
+  "numpy>=1.26",
+  "gymnasium>=0.29",
+  "minigrid>=2.3",
+]

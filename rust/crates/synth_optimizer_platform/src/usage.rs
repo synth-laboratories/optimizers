@@ -85,15 +85,24 @@ impl UsageLedgerRecord {
             .usage
             .get("cost_usd")
             .and_then(Value::as_f64)
+            .filter(|value| value.is_finite() && *value > 0.0)
             .unwrap_or(0.0);
+        let model = frame
+            .usage
+            .get("model")
+            .and_then(Value::as_str);
+        let provider = frame
+            .usage
+            .get("provider")
+            .and_then(Value::as_str);
         Self::from_input(UsageLedgerInput {
             boundary: "container.rollout",
             source_type: "sensor_frame",
             source_id: &frame.sensor_frame_id,
             candidate_id: Some(&frame.candidate_id),
             evaluation_stage: Some(&frame.evaluation_stage),
-            model: None,
-            provider: None,
+            model,
+            provider,
             call_count: 1,
             usage: frame.usage.clone(),
             cost_usd,

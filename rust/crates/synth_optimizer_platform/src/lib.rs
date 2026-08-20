@@ -52,8 +52,8 @@ pub use agent_runtime::{
 pub use artifact_store::{LocalDevStore, RunArtifactStore, StoredRunArtifact};
 pub use artifacts::{ArtifactPaths, ArtifactRef, GepaRunResult};
 pub use cache::{
-    normalize_for_cache_profile, stable_json_hash, CacheAccessRecord, CacheEntry, CacheMode,
-    CacheProfile, CacheProfileRecord, RequestCache,
+    normalize_for_cache_profile, stable_json_hash, CacheAccessRecord, CacheCounters, CacheEntry,
+    CacheMode, CacheProfile, CacheProfileRecord, RequestCache,
 };
 pub use candidates::{
     AcceptanceDecisionInput, AcceptanceDecisionRecord, CandidateDeltaInput, CandidateDeltaRecord,
@@ -67,11 +67,13 @@ pub use config::{
     validate_chatgpt_proposer_model, CacheConfig, CandidateConfig, ContainerConfig,
     ContainerPoolTargetConfig, GepaAdaptiveRolloutConcurrencyConfig,
     GepaAdaptiveStageWorkersConfig, GepaBatchSamplerConfig, GepaCandidateSelectorConfig,
-    GepaConfig, GepaObjectiveAcceptanceConfig, GepaPipelineConfig, GepaPipelineMode,
-    GepaPipelineWorkers, GepaSpeculativeCompletionConfig, GepaStalenessPolicy, GepaTaskPoolsConfig,
-    JesterkyWorkflowConfig, PolicyConfig, ProposerAuthLaunchMode, ProposerConfig,
-    ProposerDaytonaConfig, ProposerDockerConfig, ProposerPromptConfig, RunConfig,
-    SynthOptimizerConfig, TasksetConfig, CHATGPT_PROPOSER_MODELS,
+    GepaConfig, GepaEpisodeConfig, GepaObjectiveAcceptanceConfig, GepaOperatorConfig,
+    GepaPipelineConfig, GepaPipelineMode, GepaPipelineWorkers, GepaSpeculativeCompletionConfig,
+    GepaStalenessPolicy, GepaTaskPoolsConfig, HypothesesConfig, JesterkyWorkflowConfig,
+    LeverSurfaceConfig, ManderqueueConfig, McpAgentConfig, PolicyConfig, ProposerAuthLaunchMode,
+    ProposerConfig, ProposerDaytonaConfig, ProposerDockerConfig, ProposerPromptConfig,
+    RewardSurfaceConfig, RunConfig, ScratchpadConfig, SynthOptimizerConfig, TasksetConfig,
+    CHATGPT_PROPOSER_MODELS,
 };
 pub use configured_limits::{
     ConfiguredGepaRunLimits, GepaRuntimeEffectBudgetEstimates, GEPA_LIMIT_STOP_POLICY,
@@ -114,7 +116,7 @@ pub use jesterky::{
     JESTERKY_WORKSPACE_READ_MODEL_SCHEMA_VERSION,
 };
 pub use jobs::{OptimizerJob, OptimizerJobKind, OptimizerJobStatus, RetryPolicy};
-pub use levers::{LeverBundle, LeverKind, LeverManifest, LeverSpec};
+pub use levers::{LeverBundle, LeverKind, LeverManifest, LeverSpec, GEPA_KNOWN_PROTOCOL_IDS};
 pub use limit_engine::{
     budget_limit_engine_input, budget_limit_snapshot, ForecastConfidence, LimitDefinition,
     LimitEngine, LimitEngineInput, LimitForecast, LimitKind, LimitObservation, LimitProgressEvent,
@@ -166,9 +168,10 @@ pub use sft_backend::{
 };
 pub use sft_compat::{
     checkpoint_to_fine_tuning_checkpoint, fine_tuning_create_to_run_record,
-    openai_status_to_optimizer, optimizer_event_to_fine_tuning_event, run_record_to_fine_tuning_job,
-    sft_status_to_openai, FineTuningFileObject, FineTuningJob, FineTuningJobCheckpoint,
-    FineTuningJobCreateRequest, FineTuningJobEvent, SynthFineTuningExtensions,
+    openai_status_to_optimizer, optimizer_event_to_fine_tuning_event,
+    run_record_to_fine_tuning_job, sft_status_to_openai, FineTuningFileObject, FineTuningJob,
+    FineTuningJobCheckpoint, FineTuningJobCreateRequest, FineTuningJobEvent,
+    SynthFineTuningExtensions,
 };
 pub use state_machine::{
     OptimizerRunState, OptimizerStateMachine, OptimizerTransition, OptimizerTransitionTrigger,

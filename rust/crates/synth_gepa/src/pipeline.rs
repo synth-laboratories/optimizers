@@ -11,15 +11,19 @@ use synth_optimizer_platform::{
 pub enum GepaPipelineRuntimePlan {
     SyncSerial(GepaSyncSerialPlan),
     AsyncPipelined(GepaAsyncPipelinePlan),
-    /// Shares `GepaAsyncPipelinePlan` with `AsyncPipelined` but is meant to drop
-    /// the generation barrier so proposer reflection overlaps policy rollouts.
+    /// Shares `GepaAsyncPipelinePlan` with `AsyncPipelined` but drops the
+    /// generation barrier so proposer reflection overlaps policy rollouts.
     ///
-    /// LIMITATION (as of 2026-06-02): the overlap is not yet realized — on the
-    /// Banking77 matrix FlashEvolve ran ~31% slower than `SyncSerial` at equal
-    /// heldout quality because full-train rollouts drain before the next
-    /// proposer is admitted (overlap ~0.33s). Pending proposer-priority
-    /// scheduling fix; see `GepaPipelineMode::FlashEvolve` docs and decision
-    /// `2026-06-02-flashevolve-proposer-priority`.
+    /// Overlap needs two things and for a long time only had one. Dropping the
+    /// barrier (`uses_generation_barrier() == false`) lets gen `n+1` propose be
+    /// *admitted* while gen `n` full-train work is still outstanding, but until
+    /// `background_execution` landed the driver still executed each leased job
+    /// inline on the tick, so admitted-but-not-yet-run lanes queued behind each
+    /// other and measured overlap was ~0.33s on the 2026-06-02 Banking77 matrix
+    /// (741s vs 509s for `SyncSerial`, 0.687x, heldout tied at 0.750).
+    ///
+    /// `background_execution` defaults to true for this mode; see
+    /// `GepaPipelineMode::FlashEvolve`.
     FlashEvolve(GepaAsyncPipelinePlan),
 }
 
@@ -76,6 +80,8 @@ impl GepaPipelineRuntimePlan {
                 "adaptive_rollout_concurrency": plan.adaptive_rollout_concurrency,
                 "adaptive_stage_workers": plan.adaptive_stage_workers,
                 "speculative_completion": plan.speculative_completion,
+                "background_execution": plan.background_execution,
+                "background_workers": plan.background_workers,
                 "lanes": plan.lanes(),
             }),
         }
@@ -101,6 +107,12 @@ pub struct GepaAsyncPipelinePlan {
     pub adaptive_rollout_concurrency: GepaAdaptiveRolloutConcurrencyConfig,
     pub adaptive_stage_workers: GepaAdaptiveStageWorkersConfig,
     pub speculative_completion: GepaSpeculativeCompletionConfig,
+    /// Dispatch leased lane jobs to worker threads instead of running them
+    /// inline on the driver tick. Without this, lane leases are bookkeeping
+    /// only and no two lanes can overlap in wall clock.
+    pub background_execution: bool,
+    /// Worker threads backing `background_execution`.
+    pub background_workers: usize,
 }
 
 pub type GepaAsyncPipelinedPlan = GepaAsyncPipelinePlan;
@@ -131,8 +143,23 @@ impl GepaAsyncPipelinePlan {
                 ));
             }
         }
+        let background_execution = config
+            .background_execution
+            .unwrap_or(matches!(mode, GepaPipelineMode::FlashEvolve));
+        let background_workers = config
+            .background_workers
+            .unwrap_or_else(|| {
+                config
+                    .workers
+                    .propose
+                    .saturating_add(config.workers.rollout)
+                    .saturating_add(config.workers.evaluate)
+            })
+            .clamp(1, 64);
         Ok(Self {
             mode,
+            background_execution,
+            background_workers,
             rollout_transport: rollout_transport.to_string(),
             staleness_policy: config.staleness_policy,
             delta_max: config.delta_max,
@@ -306,6 +333,51 @@ mod tests {
         assert_eq!(plan.mode, GepaPipelineMode::FlashEvolve);
         assert_eq!(plan.staleness_policy, GepaStalenessPolicy::Reflective);
         assert!(!plan.uses_generation_barrier());
+    }
+
+    #[test]
+    fn background_execution_defaults_on_for_flash_and_off_for_pipelined() {
+        // Lane leases only model concurrency; `background_execution` is what
+        // actually delivers it. FlashEvolve gets it by default. `async_pipelined`
+        // deliberately does not, so it stays the same control arm the 2026-06-02
+        // matrix measured.
+        let flash = GepaAsyncPipelinePlan::from_config(
+            GepaPipelineMode::FlashEvolve,
+            &pipeline_config(GepaPipelineMode::FlashEvolve, GepaStalenessPolicy::Full),
+            "async",
+            None,
+        )
+        .expect("flash plan should build");
+        assert!(flash.background_execution);
+        assert_eq!(
+            flash.background_workers,
+            flash.propose_workers + flash.rollout_workers + flash.evaluate_workers
+        );
+
+        let pipelined = GepaAsyncPipelinePlan::from_config(
+            GepaPipelineMode::AsyncPipelined,
+            &pipeline_config(GepaPipelineMode::AsyncPipelined, GepaStalenessPolicy::Full),
+            "async",
+            None,
+        )
+        .expect("pipelined plan should build");
+        assert!(!pipelined.background_execution);
+    }
+
+    #[test]
+    fn background_execution_is_explicitly_overridable() {
+        let mut config = pipeline_config(GepaPipelineMode::FlashEvolve, GepaStalenessPolicy::Full);
+        config.background_execution = Some(false);
+        config.background_workers = Some(3);
+        let plan = GepaAsyncPipelinePlan::from_config(
+            GepaPipelineMode::FlashEvolve,
+            &config,
+            "async",
+            None,
+        )
+        .expect("flash plan should build");
+        assert!(!plan.background_execution);
+        assert_eq!(plan.background_workers, 3);
     }
 
     #[test]

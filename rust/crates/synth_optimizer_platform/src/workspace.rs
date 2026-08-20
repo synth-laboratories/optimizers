@@ -301,6 +301,26 @@ struct RunHealthCounts {
     active_resource_leases: u64,
 }
 
+/// Attach a call-site label to a rusqlite failure so constraint violations name
+/// the statement that produced them instead of a bare "sqlite error".
+pub fn sql_at<T>(label: &str, result: std::result::Result<T, rusqlite::Error>) -> Result<T> {
+    result.map_err(|source| OptimizerError::SqliteAt {
+        label: label.to_string(),
+        source,
+    })
+}
+
+/// Same, for helpers that already return `Result<T>`: only Sqlite errors get labelled.
+pub fn labelled<T>(label: &str, result: Result<T>) -> Result<T> {
+    result.map_err(|err| match err {
+        OptimizerError::Sqlite(source) => OptimizerError::SqliteAt {
+            label: label.to_string(),
+            source,
+        },
+        other => other,
+    })
+}
+
 impl WorkspaceStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
@@ -2604,13 +2624,14 @@ impl WorkspaceStore {
     }
 
     pub fn persist_candidate_registry(&mut self, run_id: &str, candidates: &[Value]) -> Result<()> {
+        let ordered = order_candidates_parents_first(candidates);
         let tx = self.conn.transaction()?;
-        for candidate in candidates {
+        for candidate in &ordered {
             let candidate_id = required_string(candidate, "candidate_id")?;
             let parent_id = optional_string(candidate, "parent_id");
             let source = optional_string(candidate, "source").unwrap_or_default();
             let status = optional_string(candidate, "status").unwrap_or_default();
-            tx.execute(
+            sql_at("candidates.insert", tx.execute(
                 r#"
                 INSERT INTO candidates(
                     run_id, candidate_id, parent_id, source, status,
@@ -2642,7 +2663,7 @@ impl WorkspaceStore {
                     candidate.get("heldout_reward").and_then(Value::as_f64),
                     stable_json(candidate),
                 ],
-            )?;
+            ))?;
             let payload_value = candidate.get("payload").unwrap_or(&Value::Null);
             let lever_bundle_value = candidate.get("lever_bundle").unwrap_or(&Value::Null);
             let payload_record = CandidatePayloadRecord::from_input(CandidatePayloadInput {
@@ -2653,8 +2674,8 @@ impl WorkspaceStore {
                 payload: payload_value,
                 lever_bundle: lever_bundle_value,
             });
-            upsert_candidate_payload_tx(&tx, run_id, &payload_record)?;
-            upsert_plan_link_tx(
+            labelled("candidate_payloads", upsert_candidate_payload_tx(&tx, run_id, &payload_record))?;
+            labelled("plan_links", upsert_plan_link_tx(
                 &tx,
                 run_id,
                 &PlanLinkRecord::from_input(PlanLinkInput {
@@ -2667,9 +2688,9 @@ impl WorkspaceStore {
                     confidence: 1.0,
                     metadata: Map::new(),
                 }),
-            )?;
+            ))?;
             let parent_snapshot = if let Some(parent_id) = parent_id.as_deref() {
-                let snapshot = candidate_snapshot_tx(&tx, run_id, parent_id)?.unwrap_or_default();
+                let snapshot = labelled("candidate_snapshot_read", candidate_snapshot_tx(&tx, run_id, parent_id))?.unwrap_or_default();
                 let delta = CandidateDeltaRecord::from_input(CandidateDeltaInput {
                     candidate_id: &candidate_id,
                     parent_candidate_id: parent_id,
@@ -2680,8 +2701,8 @@ impl WorkspaceStore {
                     child_payload: payload_value,
                     child_lever_bundle: lever_bundle_value,
                 });
-                upsert_candidate_delta_tx(&tx, run_id, &delta)?;
-                upsert_plan_link_tx(
+                labelled("candidate_deltas", upsert_candidate_delta_tx(&tx, run_id, &delta))?;
+                labelled("plan_links", upsert_plan_link_tx(
                     &tx,
                     run_id,
                     &PlanLinkRecord::from_input(PlanLinkInput {
@@ -2694,8 +2715,8 @@ impl WorkspaceStore {
                         confidence: 1.0,
                         metadata: Map::new(),
                     }),
-                )?;
-                upsert_plan_link_tx(
+                ))?;
+                labelled("plan_links", upsert_plan_link_tx(
                     &tx,
                     run_id,
                     &PlanLinkRecord::from_input(PlanLinkInput {
@@ -2708,7 +2729,7 @@ impl WorkspaceStore {
                         confidence: 1.0,
                         metadata: Map::new(),
                     }),
-                )?;
+                ))?;
                 Some(snapshot)
             } else {
                 None
@@ -2738,8 +2759,8 @@ impl WorkspaceStore {
                     .cloned()
                     .unwrap_or_default(),
             });
-            upsert_acceptance_decision_tx(&tx, run_id, &acceptance)?;
-            upsert_plan_link_tx(
+            labelled("acceptance_decisions", upsert_acceptance_decision_tx(&tx, run_id, &acceptance))?;
+            labelled("plan_links", upsert_plan_link_tx(
                 &tx,
                 run_id,
                 &PlanLinkRecord::from_input(PlanLinkInput {
@@ -2752,7 +2773,7 @@ impl WorkspaceStore {
                     confidence: 1.0,
                     metadata: Map::new(),
                 }),
-            )?;
+            ))?;
             for frame in candidate
                 .get("sensor_frames")
                 .and_then(Value::as_array)
@@ -2760,9 +2781,9 @@ impl WorkspaceStore {
                 .unwrap_or_default()
             {
                 let frame: SensorFrame = serde_json::from_value(frame)?;
-                upsert_sensor_frame_tx(&tx, run_id, &frame)?;
-                upsert_candidate_seed_reward_tx(&tx, run_id, &frame)?;
-                upsert_plan_link_tx(
+                labelled("sensor_frames", upsert_sensor_frame_tx(&tx, run_id, &frame))?;
+                labelled("candidate_seed_rewards", upsert_candidate_seed_reward_tx(&tx, run_id, &frame))?;
+                labelled("plan_links", upsert_plan_link_tx(
                     &tx,
                     run_id,
                     &PlanLinkRecord::from_input(PlanLinkInput {
@@ -2775,30 +2796,30 @@ impl WorkspaceStore {
                         confidence: 1.0,
                         metadata: Map::new(),
                     }),
-                )?;
-                upsert_rollout_job_tx(&tx, run_id, &frame)?;
+                ))?;
+                labelled("rollout_jobs", upsert_rollout_job_tx(&tx, run_id, &frame))?;
                 let rollout_records = SensorRolloutRecords::from_sensor_frame(&frame);
-                upsert_rollout_record_tx(&tx, run_id, &rollout_records.rollout)?;
+                labelled("rollouts", upsert_rollout_record_tx(&tx, run_id, &rollout_records.rollout))?;
                 for event in &rollout_records.events {
-                    upsert_rollout_event_tx(&tx, run_id, event)?;
+                    labelled("rollout_events", upsert_rollout_event_tx(&tx, run_id, event))?;
                 }
                 let score_records = SensorScoreRecords::from_sensor_frame(&frame);
                 for objective in &score_records.objectives {
-                    upsert_objective_tx(&tx, run_id, objective)?;
+                    labelled("objectives", upsert_objective_tx(&tx, run_id, objective))?;
                 }
                 for score in &score_records.scores {
-                    upsert_score_tx(&tx, run_id, score)?;
+                    labelled("scores", upsert_score_tx(&tx, run_id, score))?;
                 }
                 let derived = SensorDerivedRecords::from_sensor_frame(&frame);
-                upsert_trace_annotation_tx(&tx, run_id, &derived.trace_annotation)?;
+                labelled("trace_annotations", upsert_trace_annotation_tx(&tx, run_id, &derived.trace_annotation))?;
                 for evidence_frame in &derived.evidence_frames {
-                    upsert_evidence_frame_tx(&tx, run_id, evidence_frame)?;
+                    labelled("evidence_frames", upsert_evidence_frame_tx(&tx, run_id, evidence_frame))?;
                 }
-                upsert_verifier_job_tx(&tx, run_id, &derived.verifier_job)?;
-                upsert_subagent_invocation_tx(&tx, run_id, &derived.subagent_invocation)?;
+                labelled("verifier_jobs", upsert_verifier_job_tx(&tx, run_id, &derived.verifier_job))?;
+                labelled("subagent_invocations", upsert_subagent_invocation_tx(&tx, run_id, &derived.subagent_invocation))?;
                 let annotation_job_id =
                     format!("annotation:{}", &derived.trace_annotation.annotation_id);
-                upsert_optimizer_job_tx(
+                labelled("optimizer_jobs", upsert_optimizer_job_tx(
                     &tx,
                     run_id,
                     &OptimizerJobPersist {
@@ -2813,8 +2834,8 @@ impl WorkspaceStore {
                         "status": &derived.trace_annotation.status,
                         }),
                     },
-                )?;
-                upsert_optimizer_job_tx(
+                ))?;
+                labelled("optimizer_jobs", upsert_optimizer_job_tx(
                     &tx,
                     run_id,
                     &OptimizerJobPersist {
@@ -2826,10 +2847,10 @@ impl WorkspaceStore {
                         failure: derived.verifier_job.failure.as_ref(),
                         payload: serde_json::to_value(&derived.verifier_job)?,
                     },
-                )?;
+                ))?;
                 let subagent_job_id =
                     format!("subagent:{}", &derived.subagent_invocation.invocation_id);
-                upsert_optimizer_job_tx(
+                labelled("optimizer_jobs", upsert_optimizer_job_tx(
                     &tx,
                     run_id,
                     &OptimizerJobPersist {
@@ -2841,15 +2862,15 @@ impl WorkspaceStore {
                         failure: derived.subagent_invocation.failure.as_ref(),
                         payload: serde_json::to_value(&derived.subagent_invocation)?,
                     },
-                )?;
+                ))?;
             }
         }
-        let (objective_set, score_vectors) = rebuild_score_vectors_tx(&tx, run_id)?;
+        let (objective_set, score_vectors) = labelled("rebuild_score_vectors", rebuild_score_vectors_tx(&tx, run_id))?;
         if let Some(objective_set) = objective_set.as_ref() {
-            rebuild_pareto_comparisons_tx(&tx, run_id, objective_set, &score_vectors)?;
+            labelled("rebuild_pareto_comparisons", rebuild_pareto_comparisons_tx(&tx, run_id, objective_set, &score_vectors))?;
         }
-        rebuild_frontier_cells_tx(&tx, run_id)?;
-        tx.commit()?;
+        labelled("rebuild_frontier_cells", rebuild_frontier_cells_tx(&tx, run_id))?;
+        sql_at("persist_candidate_registry.commit", tx.commit())?;
         Ok(())
     }
 
@@ -3272,6 +3293,7 @@ impl WorkspaceStore {
         if previous.checkpoint_id == record.checkpoint_id
             || previous.sequence_number >= record.sequence_number
             || previous.is_storage_compacted()
+            || previous.is_retained()
         {
             return Ok(());
         }
@@ -3283,6 +3305,47 @@ impl WorkspaceStore {
     pub fn vacuum(&self) -> Result<()> {
         self.conn.execute_batch("VACUUM")?;
         Ok(())
+    }
+
+    pub fn checkpoint_by_id(
+        &self,
+        run_id: &str,
+        checkpoint_id: &str,
+    ) -> Result<Option<CheckpointRecord>> {
+        self.conn
+            .query_row(
+                r#"
+                SELECT checkpoint_json
+                FROM checkpoints
+                WHERE run_id = ?1 AND checkpoint_id = ?2
+                LIMIT 1
+                "#,
+                params![run_id, checkpoint_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|raw| serde_json::from_str(&raw).map_err(OptimizerError::from))
+            .transpose()
+    }
+
+    pub fn pin_checkpoint(
+        &mut self,
+        run_id: &str,
+        checkpoint_id: &str,
+    ) -> Result<CheckpointRecord> {
+        let Some(record) = self.checkpoint_by_id(run_id, checkpoint_id)? else {
+            return Err(OptimizerError::Config(format!(
+                "checkpoint {checkpoint_id} not found for run {run_id}"
+            )));
+        };
+        if record.is_storage_compacted() {
+            return Err(OptimizerError::Config(format!(
+                "cannot pin compacted checkpoint {checkpoint_id}"
+            )));
+        }
+        let pinned = record.with_retain();
+        self.record_checkpoint(run_id, &pinned)?;
+        Ok(pinned)
     }
 
     pub fn latest_checkpoint(
@@ -9145,6 +9208,41 @@ fn push_at_least_count_violation(
 
 fn is_terminal_run_state(state: &str) -> bool {
     matches!(state, "completed" | "failed" | "cancelled")
+}
+
+fn order_candidates_parents_first(candidates: &[Value]) -> Vec<Value> {
+    let mut remaining: Vec<Value> = candidates.to_vec();
+    let mut ordered = Vec::with_capacity(remaining.len());
+    let mut seen = std::collections::HashSet::new();
+    while !remaining.is_empty() {
+        let mut progressed = false;
+        let mut next = Vec::new();
+        for candidate in remaining {
+            let id = candidate
+                .get("candidate_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let parent = candidate
+                .get("parent_id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty());
+            if parent.is_none_or(|parent_id| seen.contains(parent_id) || parent_id == id) {
+                if !id.is_empty() {
+                    seen.insert(id.to_string());
+                }
+                ordered.push(candidate);
+                progressed = true;
+            } else {
+                next.push(candidate);
+            }
+        }
+        if !progressed {
+            ordered.extend(next);
+            break;
+        }
+        remaining = next;
+    }
+    ordered
 }
 
 fn required_string(value: &Value, field: &str) -> Result<String> {

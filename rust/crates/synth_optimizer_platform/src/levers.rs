@@ -18,6 +18,9 @@ pub enum LeverKind {
     ConfigAppend,
     VerifierRubric,
     ActionPolicy,
+    PolicyScript,
+    SourcedPython,
+    HarnessModule,
     Other,
 }
 
@@ -163,6 +166,34 @@ impl LeverBundle {
     }
 }
 
+pub const GEPA_KNOWN_PROTOCOL_IDS: &[&str] = &[
+    "prompt_overlay.v1",
+    "whole_file.v1",
+    "unified_diff.v1",
+    "harness_restart.v1",
+    "identity",
+];
+
+impl LeverSpec {
+    pub fn protocol_id(&self) -> Option<&str> {
+        self.metadata
+            .get("protocol_id")
+            .or_else(|| self.constraints.get("protocol_id"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    }
+}
+
+impl LeverManifest {
+    pub fn advertised_protocol_ids(&self) -> Vec<String> {
+        self.levers
+            .iter()
+            .filter_map(|lever| lever.protocol_id().map(str::to_string))
+            .collect()
+    }
+}
+
 fn prompt_role_to_lever_kind(role: &str) -> LeverKind {
     match role.trim().to_ascii_lowercase().as_str() {
         "system" => LeverKind::SystemPrompt,
@@ -183,7 +214,34 @@ fn parse_lever_kind(value: &str) -> Option<LeverKind> {
         "config_append" | "config" => Some(LeverKind::ConfigAppend),
         "verifier_rubric" | "rubric" => Some(LeverKind::VerifierRubric),
         "action_policy" | "policy" => Some(LeverKind::ActionPolicy),
+        "policy_script" => Some(LeverKind::PolicyScript),
+        "sourced_python" => Some(LeverKind::SourcedPython),
+        "harness_module" => Some(LeverKind::HarnessModule),
         "other" => Some(LeverKind::Other),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn protocol_id_reads_module_metadata() {
+        let spec: LeverSpec = serde_json::from_value(serde_json::json!({
+            "lever_id": "policy_script",
+            "kind": "policy_script",
+            "mutable": true,
+            "required": true,
+            "metadata": { "protocol_id": "whole_file.v1" }
+        }))
+        .expect("lever spec");
+        assert_eq!(spec.protocol_id(), Some("whole_file.v1"));
+        assert!(GEPA_KNOWN_PROTOCOL_IDS.contains(&spec.protocol_id().unwrap()));
+    }
+
+    #[test]
+    fn unknown_protocol_is_not_in_the_allowlist() {
+        assert!(!GEPA_KNOWN_PROTOCOL_IDS.contains(&"flash_evolve.v0"));
     }
 }

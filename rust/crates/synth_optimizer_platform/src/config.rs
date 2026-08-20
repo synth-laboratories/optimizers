@@ -330,6 +330,9 @@ pub struct JesterkyWorkflowConfig {
     pub timeout_seconds: u64,
     /// When true, annotate/export failures fail the proposer turn.
     pub fail_closed: bool,
+    /// When true, annotate every exported rollout instead of the default cap of 6.
+    #[serde(default)]
+    pub bulk: bool,
 }
 
 impl Default for JesterkyWorkflowConfig {
@@ -343,6 +346,7 @@ impl Default for JesterkyWorkflowConfig {
             concurrency: default_jesterky_workflow_concurrency(),
             timeout_seconds: default_jesterky_workflow_timeout_seconds(),
             fail_closed: true,
+            bulk: false,
         }
     }
 }
@@ -384,6 +388,14 @@ impl SynthOptimizerConfig {
             read_env_override(&["SYNTH_OPTIMIZERS_RUN_ID", "GEPA_PLATFORM_RUN_ID"])
         {
             self.run.run_id = run_id;
+        }
+        if let Some(fixture_path) = read_env_override(&["SYNTH_OPTIMIZERS_FIXTURE_PATH"]) {
+            let trimmed = fixture_path.trim();
+            self.run.fixture_path = if trimmed.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(trimmed))
+            };
         }
         if let Some(output_dir) =
             read_env_override(&["SYNTH_OPTIMIZERS_OUTPUT_DIR", "GEPA_PLATFORM_OUTPUT_DIR"])
@@ -533,6 +545,34 @@ impl SynthOptimizerConfig {
         }
         if let Some(raw) = read_env_override(&["SYNTH_OPTIMIZERS_DISK_BUDGET_PATH"]) {
             self.disk_budget.path = Some(PathBuf::from(raw));
+        }
+        if let Some(raw) = read_env_override(&["SYNTH_OPTIMIZERS_EPISODE_PROPOSER_ROUNDS"]) {
+            self.gepa.episode.proposer_rounds = Some(parse_usize_override(
+                "SYNTH_OPTIMIZERS_EPISODE_PROPOSER_ROUNDS",
+                &raw,
+            )?);
+        }
+        if let Some(raw) = read_env_override(&["SYNTH_OPTIMIZERS_EPISODE_MAX_ROLLOUTS"]) {
+            self.gepa.episode.max_rollouts = Some(parse_usize_override(
+                "SYNTH_OPTIMIZERS_EPISODE_MAX_ROLLOUTS",
+                &raw,
+            )?);
+        }
+        if let Some(raw) = read_env_override(&["SYNTH_OPTIMIZERS_EPISODE_MAX_WALL_SECONDS"]) {
+            self.gepa.episode.max_wall_seconds = Some(parse_u64_override(
+                "SYNTH_OPTIMIZERS_EPISODE_MAX_WALL_SECONDS",
+                &raw,
+            )?);
+        }
+        if let Some(raw) = read_env_override(&["SYNTH_OPTIMIZERS_EPISODE_MAX_SPEND_USD"]) {
+            self.gepa.episode.max_spend_usd = Some(parse_f64_override(
+                "SYNTH_OPTIMIZERS_EPISODE_MAX_SPEND_USD",
+                &raw,
+            )?);
+        }
+        if let Some(raw) = read_env_override(&["SYNTH_OPTIMIZERS_EPISODE_SKIP_HELDOUT"]) {
+            self.gepa.episode.skip_heldout =
+                parse_bool_override("SYNTH_OPTIMIZERS_EPISODE_SKIP_HELDOUT", &raw)?;
         }
         Ok(())
     }
@@ -709,6 +749,7 @@ impl SynthOptimizerConfig {
             &self.taskset.heldout_ids,
         )?;
         validate_gepa_pipeline_config(&self.gepa.pipeline)?;
+        validate_gepa_episode_config(&self.gepa.episode)?;
         if !self.gepa.max_cost_usd.is_finite() || self.gepa.max_cost_usd < 0.0 {
             return Err(OptimizerError::Config(
                 "gepa.max_cost_usd must be finite and non-negative".to_string(),
@@ -764,6 +805,7 @@ impl SynthOptimizerConfig {
         }
         validate_gepa_limit_config(&self.gepa)?;
         validate_jesterky_workflow_config(&self.jesterky_workflow)?;
+        validate_gepa_operator_config(&self.gepa.operator)?;
         self.disk_budget.validate()?;
         let backend = self.proposer.backend.trim();
         match backend {
@@ -799,6 +841,7 @@ impl SynthOptimizerConfig {
         validate_proposer_service_tier(&self.proposer)?;
         validate_proposer_auth_config(&self.proposer)?;
         validate_proposer_prompt_config(&self.proposer.prompt)?;
+        validate_mcp_agent_config("proposer.mcp", &self.proposer.mcp)?;
         Ok(())
     }
 }
@@ -812,6 +855,8 @@ pub struct RunConfig {
     pub output_dir: PathBuf,
     #[serde(default)]
     pub seed: u64,
+    #[serde(default)]
+    pub fixture_path: Option<PathBuf>,
 }
 
 impl Default for RunConfig {
@@ -820,6 +865,7 @@ impl Default for RunConfig {
             run_id: default_run_id(),
             output_dir: default_output_dir(),
             seed: 0,
+            fixture_path: None,
         }
     }
 }
@@ -1064,12 +1110,29 @@ pub struct ProposerConfig {
     /// usage instead of a verified static price.
     #[serde(default)]
     pub allow_unverified_model: bool,
+    /// Codex `model_context_window`. Codex has no per-call output cap, so when it
+    /// does not recognise a model slug it falls back to a conservative window and
+    /// can compact or truncate a large proposer turn mid-flight. Set this for any
+    /// model Codex does not ship metadata for (e.g. OpenRouter slugs).
+    #[serde(default)]
+    pub model_context_window: Option<u64>,
+    /// Codex `model_auto_compact_token_limit`. Raise alongside the context window
+    /// so a long reflection turn is not auto-compacted before it completes.
+    #[serde(default)]
+    pub model_auto_compact_token_limit: Option<u64>,
     #[serde(default)]
     pub prompt: ProposerPromptConfig,
     #[serde(default)]
     pub docker: Option<ProposerDockerConfig>,
     #[serde(default)]
     pub daytona: Option<ProposerDaytonaConfig>,
+    /// Optional MCP server the proposer may call. Off by default.
+    #[serde(default)]
+    pub mcp: McpAgentConfig,
+    /// Follow-up turns after a `validate_manifest_contract` failure. 0 = current
+    /// fail-closed behaviour.
+    #[serde(default)]
+    pub schema_repair_rounds: u32,
 }
 
 impl Default for ProposerConfig {
@@ -1094,9 +1157,13 @@ impl Default for ProposerConfig {
             message_stall_timeout_seconds: default_message_stall_timeout_seconds(),
             model: None,
             allow_unverified_model: false,
+            model_context_window: None,
+            model_auto_compact_token_limit: None,
             prompt: ProposerPromptConfig::default(),
             docker: None,
             daytona: None,
+            mcp: McpAgentConfig::default(),
+            schema_repair_rounds: 0,
         }
     }
 }
@@ -1189,12 +1256,27 @@ impl Default for ProposerDaytonaConfig {
 }
 
 /// Proposer models allowed when using ChatGPT subscription auth (`auth_mode = chatgpt`).
+/// Proposer models a ChatGPT-subscription Codex app-server can launch.
+///
+/// This is not "every model that exists" — it is the set the Codex harness can
+/// actually serve under subscription auth. Adding an id that ChatGPT auth cannot
+/// serve trades a clean config error for a runtime failure mid-run, which is the
+/// worse of the two.
+///
+/// The gpt-5.6 Codex family is luna / sol / terra, corroborated by the backend
+/// model catalog (`packages/smr/config/supported_models_catalog.py`, all three
+/// `harnesses = ["codex"]` on `openai_chatgpt_pool`) and by the desktop app's
+/// model capabilities. Each supports reasoning efforts low/medium/high/xhigh and
+/// defaults to medium.
 pub const CHATGPT_PROPOSER_MODELS: &[&str] = &[
     "gpt-5.4-mini",
     "gpt-5.4",
     "gpt-5.3-codex",
     "gpt-5.3-codex-spark",
     "gpt-5.5",
+    "gpt-5.6-luna",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
 ];
 
 pub fn proposer_auth_mode_normalized(auth_mode: &str) -> String {
@@ -1657,6 +1739,9 @@ pub struct ProposerPromptConfig {
     pub best_practices: Option<String>,
     #[serde(default)]
     pub best_practices_path: Option<PathBuf>,
+    /// Extra prompt-opt style guides concatenated after best_practices.
+    #[serde(default)]
+    pub style_guides: Vec<PathBuf>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1808,6 +1893,14 @@ pub struct GepaConfig {
     pub rollout_estimated_total_tokens: Option<u64>,
     #[serde(default)]
     pub rollout_estimated_wall_seconds: Option<u64>,
+    /// Delta-from-restart episode horizon. When a limit here is set, it
+    /// replaces the matching absolute GEPA budget for search-loop stop.
+    #[serde(default)]
+    pub episode: GepaEpisodeConfig,
+    /// Optional operator surfaces (manderqueue, scratchpad, hypotheses, MCP).
+    /// All default off so existing runs are unchanged.
+    #[serde(default)]
+    pub operator: GepaOperatorConfig,
 }
 
 impl Default for GepaConfig {
@@ -1853,8 +1946,236 @@ impl Default for GepaConfig {
             rollout_estimated_completion_tokens: None,
             rollout_estimated_total_tokens: None,
             rollout_estimated_wall_seconds: None,
+            episode: GepaEpisodeConfig::default(),
+            operator: GepaOperatorConfig::default(),
         }
     }
+}
+
+/// Search-loop stop measured from restart (fresh run or fixture fork).
+/// First matching limit wins. Unset fields fall through to the absolute
+/// `[gepa]` budgets (`max_generations`, `max_train_rollouts`, `max_cost_usd`).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct GepaEpisodeConfig {
+    /// Completed proposer rounds since restart.
+    #[serde(default)]
+    pub proposer_rounds: Option<usize>,
+    /// Inner train rollouts since restart.
+    #[serde(default)]
+    pub max_rollouts: Option<usize>,
+    /// Wall seconds since restart.
+    #[serde(default)]
+    pub max_wall_seconds: Option<u64>,
+    /// Spend USD since restart.
+    #[serde(default)]
+    pub max_spend_usd: Option<f64>,
+    /// Complete on train evidence and do not enter heldout.
+    #[serde(default)]
+    pub skip_heldout: bool,
+}
+
+impl GepaEpisodeConfig {
+    pub fn has_delta_limits(&self) -> bool {
+        self.proposer_rounds.is_some()
+            || self.max_rollouts.is_some()
+            || self.max_wall_seconds.is_some()
+            || self.max_spend_usd.is_some()
+    }
+}
+
+/// Optional GEPA operator surfaces. Default-off; enabling a nested block is the
+/// opt-in. HTTP pause/resume/fork already exist; these knobs expose them to the
+/// proposer workspace and turn on MQ / scratchpad / hypotheses / MCP when wanted.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields, default)]
+pub struct GepaOperatorConfig {
+    pub manderqueue: ManderqueueConfig,
+    pub scratchpad: ScratchpadConfig,
+    pub hypotheses: HypothesesConfig,
+    pub control: ControlSurfaceConfig,
+    pub levers: LeverSurfaceConfig,
+    pub reward: RewardSurfaceConfig,
+    pub mcp_agent: McpAgentConfig,
+}
+
+impl GepaOperatorConfig {
+    pub fn any_enabled(&self) -> bool {
+        self.manderqueue.enabled
+            || self.scratchpad.enabled
+            || self.hypotheses.enabled
+            || self.mcp_agent.enabled
+    }
+}
+
+/// Proposer ↔ operator comms via the Manderqueue HTTP API (`mq-sdk` contract).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields, default)]
+pub struct ManderqueueConfig {
+    pub enabled: bool,
+    pub base_url: Option<String>,
+    #[serde(default = "default_manderqueue_token_env")]
+    pub token_env: String,
+    pub thread_id: Option<String>,
+    pub org_id: Option<String>,
+    pub scope_kind: Option<String>,
+    pub scope_id: Option<String>,
+    #[serde(default = "default_manderqueue_poll_seconds")]
+    pub poll_seconds: u64,
+    pub fail_closed: bool,
+}
+
+impl Default for ManderqueueConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            base_url: None,
+            token_env: default_manderqueue_token_env(),
+            thread_id: None,
+            org_id: None,
+            scope_kind: None,
+            scope_id: None,
+            poll_seconds: default_manderqueue_poll_seconds(),
+            fail_closed: false,
+        }
+    }
+}
+
+fn default_manderqueue_token_env() -> String {
+    "MANDERQUEUE_TOKEN".to_string()
+}
+
+fn default_manderqueue_poll_seconds() -> u64 {
+    5
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields, default)]
+pub struct ScratchpadConfig {
+    pub enabled: bool,
+    #[serde(default = "default_scratchpad_path")]
+    pub path: String,
+    pub shared: bool,
+}
+
+impl Default for ScratchpadConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            path: default_scratchpad_path(),
+            shared: true,
+        }
+    }
+}
+
+fn default_scratchpad_path() -> String {
+    "state/scratchpad.md".to_string()
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields, default)]
+pub struct HypothesesConfig {
+    pub enabled: bool,
+    #[serde(default = "default_hypotheses_max_open")]
+    pub max_open: usize,
+}
+
+impl Default for HypothesesConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_open: default_hypotheses_max_open(),
+        }
+    }
+}
+
+fn default_hypotheses_max_open() -> usize {
+    8
+}
+
+/// Pause / resume / fork are always on the service. This records whether the
+/// proposer workspace should treat them as part of the episode contract.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields, default)]
+pub struct ControlSurfaceConfig {
+    pub pause: bool,
+    pub restart: bool,
+    pub branch: bool,
+}
+
+impl Default for ControlSurfaceConfig {
+    fn default() -> Self {
+        Self {
+            pause: true,
+            restart: true,
+            branch: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields, default)]
+pub struct LeverSurfaceConfig {
+    pub prompt: bool,
+    pub code: bool,
+    pub harness: bool,
+}
+
+impl Default for LeverSurfaceConfig {
+    fn default() -> Self {
+        Self {
+            prompt: true,
+            code: true,
+            harness: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields, default)]
+pub struct RewardSurfaceConfig {
+    /// How a missing optional term is treated (`zero` or `fail`).
+    #[serde(default = "default_reward_missing")]
+    pub missing: String,
+    pub confidence: bool,
+    pub time: bool,
+    pub cost: bool,
+    pub milestones: bool,
+    pub rubrics: bool,
+    #[serde(default = "default_exploration_reduce")]
+    pub exploration_reduce: String,
+}
+
+impl Default for RewardSurfaceConfig {
+    fn default() -> Self {
+        Self {
+            missing: default_reward_missing(),
+            confidence: false,
+            time: false,
+            cost: false,
+            milestones: false,
+            rubrics: false,
+            exploration_reduce: default_exploration_reduce(),
+        }
+    }
+}
+
+fn default_reward_missing() -> String {
+    "zero".to_string()
+}
+
+fn default_exploration_reduce() -> String {
+    "mean".to_string()
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields, default)]
+pub struct McpAgentConfig {
+    pub enabled: bool,
+    /// MCP server command, e.g. `npx -y @modelcontextprotocol/server-github`.
+    pub command: Option<String>,
+    /// Named MCP server the proposer may call. Empty unless `enabled`.
+    pub server: Option<String>,
 }
 
 impl GepaConfig {
@@ -1889,17 +2210,29 @@ pub enum GepaPipelineMode {
     /// Async pipeline that overlaps proposer reflection with policy rollouts to
     /// realize the paper's wall-clock speedup over `SyncSerial`.
     ///
-    /// LIMITATION (Banking77 matrix `20260602052705`, measured 2026-06-02):
-    /// FlashEvolve does NOT yet beat `SyncSerial`. With
-    /// `max_in_flight_candidates=8` it was ~31% *slower* (0.687x speedup, 741s
-    /// vs 509s) at identical heldout quality (0.750), because proposer/policy
-    /// overlap was near-zero (~0.33s mean) — current-generation full-train
-    /// rollout work drains before the next proposer is scheduled, so reflection
-    /// and rollouts never run concurrently. The intended fix is proposer-priority
-    /// scheduling (admit the next proposer before draining current-generation
-    /// full-train rollouts); see decision
-    /// `.jstack/records/decisions/optimizers/2026-06-02-flashevolve-proposer-priority.md`.
-    /// Until that lands, FlashEvolve is a wall-clock regression, not a win.
+    /// HISTORY (Banking77 matrix `20260602052705`, measured 2026-06-02):
+    /// FlashEvolve was ~31% *slower* than `SyncSerial` (0.687x, 741s vs 509s)
+    /// at identical heldout quality (0.750), with proposer/policy overlap of
+    /// ~0.33s. The 2026-06-02 note attributed this to admission order
+    /// (`candidate_full_train` draining before the next proposer is admitted).
+    /// That diagnosis was incomplete: the driver executed every leased lane job
+    /// **inline on the tick**, so no two lanes could occupy wall clock at once
+    /// no matter what order they were admitted in. Lane leases modelled
+    /// concurrency that the executor never provided.
+    ///
+    /// FlashEvolve now defaults to `pipeline.background_execution = true`,
+    /// which dispatches leased jobs to worker threads (each with its own
+    /// workspace and request-cache handle on the shared sqlite files) and
+    /// leaves the tick loop free to admit the next proposer. Admission order
+    /// was fixed alongside it: with background execution on, a pending job no
+    /// longer preempts proposer admission.
+    ///
+    /// `overlap_seconds` on `cursor.pipeline_state` reports measured
+    /// propose/rollout wall-clock overlap; it is the metric that decides
+    /// whether this mode is actually earning its name on a given workload.
+    ///
+    /// `combee` is an alias for this mode.
+    #[serde(alias = "combee", alias = "flash", alias = "flashevolve")]
     FlashEvolve,
 }
 
@@ -1951,6 +2284,25 @@ pub struct GepaPipelineConfig {
     pub adaptive_stage_workers: GepaAdaptiveStageWorkersConfig,
     #[serde(default)]
     pub adaptive_rollout_concurrency: GepaAdaptiveRolloutConcurrencyConfig,
+    /// Run leased lane jobs on background worker threads instead of inline on
+    /// the driver tick.
+    ///
+    /// Without this the "async" pipeline modes are cooperative only: the tick
+    /// loop executes one leased job to completion before it can plan or execute
+    /// the next, so a propose lane and a rollout lane hold leases at the same
+    /// time but never occupy wall clock at the same time. That is what made
+    /// FlashEvolve a wall-clock regression on the 2026-06-02 Banking77 matrix.
+    ///
+    /// Defaults to on for `flash_evolve` and off for every other mode, so
+    /// `async_pipelined` keeps its measured 2026-06-02 behaviour and stays a
+    /// clean control arm.
+    #[serde(default)]
+    pub background_execution: Option<bool>,
+    /// Worker threads backing `background_execution`. Defaults to
+    /// `workers.propose + workers.rollout + workers.evaluate` so every lane can
+    /// be resident at once.
+    #[serde(default)]
+    pub background_workers: Option<usize>,
 }
 
 impl Default for GepaPipelineConfig {
@@ -1964,6 +2316,8 @@ impl Default for GepaPipelineConfig {
             speculative_completion: GepaSpeculativeCompletionConfig::default(),
             adaptive_stage_workers: GepaAdaptiveStageWorkersConfig::default(),
             adaptive_rollout_concurrency: GepaAdaptiveRolloutConcurrencyConfig::default(),
+            background_execution: None,
+            background_workers: None,
         }
     }
 }
@@ -2368,6 +2722,13 @@ fn validate_proposer_prompt_config(config: &ProposerPromptConfig) -> Result<()> 
             "proposer.prompt.best_practices_path must be non-empty when set".to_string(),
         ));
     }
+    for path in &config.style_guides {
+        if path.as_os_str().is_empty() {
+            return Err(OptimizerError::Config(
+                "proposer.prompt.style_guides entries must be non-empty".to_string(),
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -2638,7 +2999,7 @@ fn parse_gepa_pipeline_mode_override(raw_mode: &str) -> Result<GepaPipelineMode>
     match raw_mode.trim().to_ascii_lowercase().as_str() {
         "sync_serial" | "sync" | "serial" => Ok(GepaPipelineMode::SyncSerial),
         "async_pipelined" | "async" | "pipelined" => Ok(GepaPipelineMode::AsyncPipelined),
-        "flash_evolve" | "flashevolve" | "flash" => Ok(GepaPipelineMode::FlashEvolve),
+        "flash_evolve" | "flashevolve" | "flash" | "combee" => Ok(GepaPipelineMode::FlashEvolve),
         _ => Err(OptimizerError::Config(format!(
             "unknown GEPA pipeline mode override: {raw_mode}"
         ))),
@@ -2654,6 +3015,88 @@ fn parse_gepa_staleness_policy_override(raw_policy: &str) -> Result<GepaStalenes
             "unknown GEPA staleness policy override: {raw_policy}"
         ))),
     }
+}
+
+fn validate_gepa_episode_config(config: &GepaEpisodeConfig) -> Result<()> {
+    if config.proposer_rounds == Some(0) {
+        return Err(OptimizerError::Config(
+            "gepa.episode.proposer_rounds must be positive".to_string(),
+        ));
+    }
+    if config.max_rollouts == Some(0) {
+        return Err(OptimizerError::Config(
+            "gepa.episode.max_rollouts must be positive".to_string(),
+        ));
+    }
+    validate_positive_option("gepa.episode.max_wall_seconds", config.max_wall_seconds)?;
+    validate_positive_f64_option("gepa.episode.max_spend_usd", config.max_spend_usd)?;
+    Ok(())
+}
+
+fn validate_gepa_operator_config(config: &GepaOperatorConfig) -> Result<()> {
+    if config.manderqueue.enabled {
+        let url = config
+            .manderqueue
+            .base_url
+            .as_deref()
+            .unwrap_or("")
+            .trim();
+        if url.is_empty() && config.manderqueue.fail_closed {
+            return Err(OptimizerError::Config(
+                "gepa.operator.manderqueue.base_url is required when enabled and fail_closed"
+                    .to_string(),
+            ));
+        }
+        if config.manderqueue.poll_seconds == 0 {
+            return Err(OptimizerError::Config(
+                "gepa.operator.manderqueue.poll_seconds must be positive when enabled".to_string(),
+            ));
+        }
+    }
+    if config.scratchpad.enabled && config.scratchpad.path.trim().is_empty() {
+        return Err(OptimizerError::Config(
+            "gepa.operator.scratchpad.path must be non-empty when enabled".to_string(),
+        ));
+    }
+    if config.hypotheses.enabled && config.hypotheses.max_open == 0 {
+        return Err(OptimizerError::Config(
+            "gepa.operator.hypotheses.max_open must be positive when enabled".to_string(),
+        ));
+    }
+    let missing = config.reward.missing.trim().to_ascii_lowercase();
+    if missing != "zero" && missing != "fail" {
+        return Err(OptimizerError::Config(
+            "gepa.operator.reward.missing must be zero or fail".to_string(),
+        ));
+    }
+    let reduce = config
+        .reward
+        .exploration_reduce
+        .trim()
+        .to_ascii_lowercase();
+    if reduce != "mean" && reduce != "sum" {
+        return Err(OptimizerError::Config(
+            "gepa.operator.reward.exploration_reduce must be mean or sum".to_string(),
+        ));
+    }
+    if config.mcp_agent.enabled {
+        validate_mcp_agent_config("gepa.operator.mcp_agent", &config.mcp_agent)?;
+    }
+    Ok(())
+}
+
+fn validate_mcp_agent_config(name: &str, config: &McpAgentConfig) -> Result<()> {
+    if !config.enabled {
+        return Ok(());
+    }
+    let command = config.command.as_deref().unwrap_or("").trim();
+    let server = config.server.as_deref().unwrap_or("").trim();
+    if command.is_empty() && server.is_empty() {
+        return Err(OptimizerError::Config(format!(
+            "{name}.command or server is required when enabled"
+        )));
+    }
+    Ok(())
 }
 
 fn validate_gepa_pipeline_config(config: &GepaPipelineConfig) -> Result<()> {
@@ -2780,6 +3223,78 @@ mod tests {
     }
 
     #[test]
+    fn chatgpt_proposer_allowlist_covers_the_gpt_5_6_codex_family() {
+        for model in ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"] {
+            validate_chatgpt_proposer_model(model)
+                .unwrap_or_else(|error| panic!("{model} should be allowed: {error}"));
+            // Case and surrounding whitespace are normalized before the lookup.
+            validate_chatgpt_proposer_model(&format!("  {}  ", model.to_ascii_uppercase()))
+                .unwrap_or_else(|error| panic!("{model} should normalize: {error}"));
+        }
+    }
+
+    #[test]
+    fn chatgpt_proposer_allowlist_still_rejects_unknown_models() {
+        // The allowlist is the set Codex can serve under subscription auth, not
+        // a naming pattern. A plausible-looking sibling must still fail closed.
+        let error = validate_chatgpt_proposer_model("gpt-5.6-nonesuch")
+            .expect_err("unknown gpt-5.6 variants must not be admitted");
+        assert!(error.to_string().contains("is not allowed"));
+        assert!(error.to_string().contains("gpt-5.6-luna"));
+    }
+
+    #[test]
+    fn gepa_episode_toml_parses_delta_from_restart_limits() {
+        let gepa: GepaConfig = toml::from_str(
+            r#"
+max_generations = 2
+
+[episode]
+proposer_rounds = 3
+max_rollouts = 200
+max_wall_seconds = 600
+max_spend_usd = 0.5
+skip_heldout = true
+"#,
+        )
+        .expect("parse [gepa.episode]");
+        assert_eq!(gepa.episode.proposer_rounds, Some(3));
+        assert_eq!(gepa.episode.max_rollouts, Some(200));
+        assert_eq!(gepa.episode.max_wall_seconds, Some(600));
+        assert_eq!(gepa.episode.max_spend_usd, Some(0.5));
+        assert!(gepa.episode.skip_heldout);
+        validate_gepa_episode_config(&gepa.episode).expect("episode config");
+    }
+
+    #[test]
+    fn pipeline_toml_accepts_background_execution_keys() {
+        // `GepaPipelineConfig` is `deny_unknown_fields`, so a cookbook TOML
+        // carrying these keys would hard-fail if they were not declared.
+        let config: GepaPipelineConfig = toml::from_str(
+            r#"
+mode = "flash_evolve"
+staleness_policy = "full"
+max_in_flight_candidates = 8
+background_execution = true
+background_workers = 12
+"#,
+        )
+        .expect("background execution keys should deserialize");
+        assert_eq!(config.mode, GepaPipelineMode::FlashEvolve);
+        assert_eq!(config.background_execution, Some(true));
+        assert_eq!(config.background_workers, Some(12));
+        validate_gepa_pipeline_config(&config).expect("config should validate");
+    }
+
+    #[test]
+    fn pipeline_toml_omitting_background_keys_leaves_the_engine_default() {
+        let config: GepaPipelineConfig =
+            toml::from_str("mode = \"flash_evolve\"\n").expect("minimal pipeline config");
+        assert_eq!(config.background_execution, None);
+        assert_eq!(config.background_workers, None);
+    }
+
+    #[test]
     fn speculative_completion_requires_flash_evolve_mode() {
         let mut config = GepaPipelineConfig::default();
         config.mode = GepaPipelineMode::AsyncPipelined;
@@ -2817,5 +3332,64 @@ mod tests {
         assert!(error
             .to_string()
             .contains("adaptive_stage_workers.max must be >= min"));
+    }
+
+    #[test]
+    fn pipeline_toml_accepts_combee_as_flash_evolve_alias() {
+        let config: GepaPipelineConfig =
+            toml::from_str("mode = \"combee\"\n").expect("combee alias");
+        assert_eq!(config.mode, GepaPipelineMode::FlashEvolve);
+    }
+
+    #[test]
+    fn operator_toml_defaults_off_and_parses_opt_in_blocks() {
+        let gepa: GepaConfig = toml::from_str("").expect("empty gepa");
+        assert!(!gepa.operator.manderqueue.enabled);
+        assert!(!gepa.operator.scratchpad.enabled);
+        assert!(!gepa.operator.hypotheses.enabled);
+        assert!(!gepa.operator.mcp_agent.enabled);
+        assert_eq!(gepa.operator.reward.exploration_reduce, "mean");
+        validate_gepa_operator_config(&gepa.operator).expect("defaults");
+
+        let gepa: GepaConfig = toml::from_str(
+            r#"
+[operator.scratchpad]
+enabled = true
+shared = true
+
+[operator.hypotheses]
+enabled = true
+max_open = 4
+
+[operator.manderqueue]
+enabled = true
+base_url = "http://127.0.0.1:7400"
+fail_closed = false
+"#,
+        )
+        .expect("parse operator");
+        assert!(gepa.operator.scratchpad.enabled);
+        assert!(gepa.operator.hypotheses.enabled);
+        assert_eq!(gepa.operator.hypotheses.max_open, 4);
+        assert_eq!(
+            gepa.operator.manderqueue.base_url.as_deref(),
+            Some("http://127.0.0.1:7400")
+        );
+        validate_gepa_operator_config(&gepa.operator).expect("opt-in operator");
+    }
+
+    #[test]
+    fn manderqueue_fail_closed_requires_base_url() {
+        let gepa: GepaConfig = toml::from_str(
+            r#"
+[operator.manderqueue]
+enabled = true
+fail_closed = true
+"#,
+        )
+        .expect("parse");
+        let error = validate_gepa_operator_config(&gepa.operator)
+            .expect_err("fail_closed manderqueue needs a URL");
+        assert!(error.to_string().contains("base_url"));
     }
 }

@@ -22,9 +22,7 @@ pub fn optimizer_event_feed_path_for(event_feed: impl AsRef<Path>) -> PathBuf {
         .file_name()
         .and_then(|v| v.to_str())
         .unwrap_or("events.jsonl");
-    let stem = file_name
-        .strip_suffix(".jsonl")
-        .unwrap_or(file_name);
+    let stem = file_name.strip_suffix(".jsonl").unwrap_or(file_name);
     event_feed.with_file_name(format!("{stem}.optimizer.jsonl"))
 }
 

@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -12,6 +12,7 @@ use crate::error::{OptimizerError, Result};
 
 const CACHE_SCHEMA_VERSION: &str = "synth_optimizers.request_response_cache.v1";
 const DEFAULT_REQUEST_CACHE_MAX_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+const CACHE_SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -97,6 +98,15 @@ pub struct CacheEntry {
     pub hit_count: u64,
 }
 
+/// Cache hit/miss/write counters, moved between a lane worker's private cache
+/// handle and the driver's handle.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CacheCounters {
+    pub hits: usize,
+    pub misses: usize,
+    pub writes: usize,
+}
+
 pub struct RequestCache {
     mode: CacheMode,
     path: PathBuf,
@@ -150,7 +160,16 @@ impl RequestCache {
         let conn = if path.exists() || mode == CacheMode::Readwrite {
             let conn =
                 Connection::open(&path).map_err(|source| cache_corrupt(&path, "open", source))?;
+            // Lane workers open their own connection to this same file, so the
+            // cache has to tolerate concurrent readers/writers the way the
+            // workspace store already does.
+            conn.busy_timeout(CACHE_SQLITE_BUSY_TIMEOUT)
+                .map_err(|source| cache_corrupt(&path, "busy_timeout", source))?;
             if mode == CacheMode::Readwrite {
+                // `execute_batch`, not `pragma_update`: the journal_mode pragma
+                // returns a row and rusqlite's `execute` path rejects that.
+                conn.execute_batch("PRAGMA journal_mode = WAL;")
+                    .map_err(|source| cache_corrupt(&path, "journal_mode", source))?;
                 initialize_request_cache_schema(&path, &conn)?;
                 raise_if_cache_full(&path, max_bytes, 0)?;
             }
@@ -181,8 +200,48 @@ impl RequestCache {
         self.mode
     }
 
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn max_bytes(&self) -> u64 {
+        self.max_bytes
+    }
+
     pub fn access_log(&self) -> &[CacheAccessRecord] {
         &self.access_log
+    }
+
+    /// Counters accumulated by this handle since it was opened.
+    pub fn counters(&self) -> CacheCounters {
+        CacheCounters {
+            hits: self.hits,
+            misses: self.misses,
+            writes: self.writes,
+        }
+    }
+
+    /// Drain this handle's access log. Lane workers own a private
+    /// `RequestCache` on the same sqlite file; the driver folds their activity
+    /// back in so the run manifest still reports one cache boundary.
+    pub fn take_access_log(&mut self) -> Vec<CacheAccessRecord> {
+        std::mem::take(&mut self.access_log)
+    }
+
+    /// Fold a lane worker's counters and access records into this handle,
+    /// renumbering `sequence_number` so the merged log stays monotonic.
+    pub fn absorb_worker_activity(
+        &mut self,
+        counters: CacheCounters,
+        records: Vec<CacheAccessRecord>,
+    ) {
+        self.hits = self.hits.saturating_add(counters.hits);
+        self.misses = self.misses.saturating_add(counters.misses);
+        self.writes = self.writes.saturating_add(counters.writes);
+        for mut record in records {
+            record.sequence_number = self.access_log.len() as u64 + 1;
+            self.access_log.push(record);
+        }
     }
 
     pub fn cache_key(namespace: &str, request: &Value) -> String {
@@ -990,4 +1049,68 @@ fn now_seconds() -> f64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs_f64())
         .unwrap_or(0.0)
+}
+
+#[cfg(test)]
+mod concurrent_handle_tests {
+    use super::*;
+    use serde_json::json;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    /// GEPA lane workers each open their own `RequestCache` on the same sqlite
+    /// file while the driver holds one too. Before background lane execution
+    /// there was exactly one handle, so nothing here was exercised.
+    #[test]
+    fn concurrent_handles_share_one_cache_file() {
+        let dir =
+            std::env::temp_dir().join(format!("synth_cache_concurrency_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let path = dir.join("request_cache.sqlite");
+
+        let driver = RequestCache::open(&path, CacheMode::Readwrite).expect("driver handle");
+        assert_eq!(driver.mode(), CacheMode::Readwrite);
+
+        let workers = 6;
+        let barrier = Arc::new(Barrier::new(workers));
+        let mut handles = Vec::new();
+        for worker in 0..workers {
+            let path = path.clone();
+            let barrier = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                let mut cache =
+                    RequestCache::open(&path, CacheMode::Readwrite).expect("worker handle");
+                barrier.wait();
+                for index in 0..20 {
+                    let key = format!("w{worker}-{index}");
+                    cache
+                        .put("ns", &key, &json!({"k": &key}), &json!({"v": index}))
+                        .expect("concurrent cache write");
+                }
+                let counters = cache.counters();
+                let log = cache.take_access_log();
+                (counters, log)
+            }));
+        }
+
+        let mut driver = driver;
+        for handle in handles {
+            let (counters, log) = handle.join().expect("worker thread");
+            driver.absorb_worker_activity(counters, log);
+        }
+
+        // Every write landed, and the merged access log is renumbered
+        // contiguously so the run manifest still reads as one boundary.
+        let profile = driver.profile().expect("profile");
+        assert_eq!(profile.entries, workers * 20);
+        assert_eq!(driver.access_log().len(), workers * 20);
+        let sequence: Vec<u64> = driver
+            .access_log()
+            .iter()
+            .map(|record| record.sequence_number)
+            .collect();
+        assert_eq!(sequence, (1..=(workers * 20) as u64).collect::<Vec<_>>());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

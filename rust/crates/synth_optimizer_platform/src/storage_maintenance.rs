@@ -945,6 +945,10 @@ fn compact_workspace_checkpoints(
         if checkpoint_is_compacted(&record) {
             continue;
         }
+        if record.is_retained() {
+            kept_full = kept_full.saturating_add(1);
+            continue;
+        }
         let original_bytes = serde_json::to_vec(&record.snapshot)?.len() as u64;
         let compacted = compact_checkpoint_record(record, original_bytes);
         let compacted_bytes = serde_json::to_vec(&compacted.snapshot)?.len() as u64;

@@ -36,6 +36,7 @@ class GepaPipelineMode(StrEnum):
     SYNC_SERIAL = "sync_serial"
     ASYNC_PIPELINED = "async_pipelined"
     FLASH_EVOLVE = "flash_evolve"
+    COMBEE = "combee"
 
 
 class GepaStalenessPolicy(StrEnum):
@@ -107,12 +108,14 @@ class RunSettingsTomlSection(BaseModel):
     run_id: str = "gepa_sdk_run"
     output_dir: str | Path = "runs"
     seed: int = 0
+    fixture_path: str | Path | None = None
 
     def to_domain(self) -> "RunSettings":
         return RunSettings(
             run_id=self.run_id,
             output_dir=self.output_dir,
             seed=self.seed,
+            fixture_path=self.fixture_path,
         )
 
 
@@ -149,17 +152,27 @@ class ProposerPromptTomlSection(BaseModel):
 
     best_practices: str | None = None
     best_practices_path: str | Path | None = None
+    style_guides: list[str | Path] = Field(default_factory=list)
 
     def to_domain(self, base_dir: Path) -> "ProposerPromptConfig | None":
-        if self.best_practices is None and self.best_practices_path is None:
+        if (
+            self.best_practices is None
+            and self.best_practices_path is None
+            and not self.style_guides
+        ):
             return None
         best_practices_path = self.best_practices_path
         if best_practices_path is not None:
             path = Path(best_practices_path)
             best_practices_path = path if path.is_absolute() else base_dir / path
+        style_guides: list[Path] = []
+        for item in self.style_guides:
+            path = Path(item)
+            style_guides.append(path if path.is_absolute() else base_dir / path)
         return ProposerPromptConfig(
             best_practices=self.best_practices,
             best_practices_path=best_practices_path,
+            style_guides=style_guides,
         )
 
 
@@ -199,11 +212,14 @@ class ProposerTomlSection(BaseModel):
     copy_host_auth: bool = False
     codex_home: str | Path | None = None
     timeout_seconds: int = 900
+    message_stall_timeout_seconds: int = 120
     sandbox_mode: str | None = "workspace-write"
     approval_policy: str | None = "never"
     command: list[str] = Field(default_factory=list)
     prompt: ProposerPromptTomlSection = Field(default_factory=ProposerPromptTomlSection)
     docker: ProposerDockerTomlSection | None = None
+    mcp: "McpAgentTomlSection" = Field(default_factory=lambda: McpAgentTomlSection())
+    schema_repair_rounds: int = 0
 
     def to_domain(self, base_dir: Path) -> "ProposerConfig":
         codex_home = None
@@ -231,11 +247,14 @@ class ProposerTomlSection(BaseModel):
             copy_host_auth=self.copy_host_auth,
             codex_home=codex_home,
             timeout_seconds=self.timeout_seconds,
+            message_stall_timeout_seconds=self.message_stall_timeout_seconds,
             sandbox_mode=self.sandbox_mode,
             approval_policy=self.approval_policy,
             command=list(self.command),
             prompt=self.prompt.to_domain(base_dir),
             docker=self.docker.to_domain() if self.docker is not None else None,
+            mcp=self.mcp.to_domain(),
+            schema_repair_rounds=int(self.schema_repair_rounds),
         )
 
 
@@ -309,6 +328,11 @@ class GepaPipelineTomlSection(BaseModel):
     staleness_policy: GepaStalenessPolicy | str = GepaStalenessPolicy.FULL
     delta_max: int = 2
     max_in_flight_candidates: int = 1
+    # None means "let the engine decide": on for flash_evolve, off elsewhere.
+    # Without background execution the async modes hold lane leases but still
+    # run every job inline on the driver tick, so no two lanes overlap.
+    background_execution: bool | None = None
+    background_workers: int | None = None
     workers: GepaPipelineWorkersTomlSection = Field(default_factory=GepaPipelineWorkersTomlSection)
     speculative_completion: GepaSpeculativeCompletionTomlSection = Field(
         default_factory=GepaSpeculativeCompletionTomlSection
@@ -341,6 +365,149 @@ class GepaTaskPoolsTomlSection(BaseModel):
             reflection=list(self.reflection),
             heldout=list(self.heldout),
         )
+
+
+class ManderqueueTomlSection(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = False
+    base_url: str | None = None
+    token_env: str = "MANDERQUEUE_TOKEN"
+    thread_id: str | None = None
+    org_id: str | None = None
+    scope_kind: str | None = None
+    scope_id: str | None = None
+    poll_seconds: int = 5
+    fail_closed: bool = False
+
+    def to_domain(self) -> "ManderqueueConfig":
+        return ManderqueueConfig(
+            enabled=bool(self.enabled),
+            base_url=self.base_url,
+            token_env=self.token_env,
+            thread_id=self.thread_id,
+            org_id=self.org_id,
+            scope_kind=self.scope_kind,
+            scope_id=self.scope_id,
+            poll_seconds=int(self.poll_seconds),
+            fail_closed=bool(self.fail_closed),
+        )
+
+
+class ScratchpadTomlSection(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = False
+    path: str = "state/scratchpad.md"
+    shared: bool = True
+
+    def to_domain(self) -> "ScratchpadConfig":
+        return ScratchpadConfig(enabled=bool(self.enabled), path=self.path, shared=bool(self.shared))
+
+
+class HypothesesTomlSection(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = False
+    max_open: int = 8
+
+    def to_domain(self) -> "HypothesesConfig":
+        return HypothesesConfig(enabled=bool(self.enabled), max_open=int(self.max_open))
+
+
+class ControlSurfaceTomlSection(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    pause: bool = True
+    restart: bool = True
+    branch: bool = True
+
+    def to_domain(self) -> "ControlSurfaceConfig":
+        return ControlSurfaceConfig(
+            pause=bool(self.pause), restart=bool(self.restart), branch=bool(self.branch)
+        )
+
+
+class LeverSurfaceTomlSection(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    prompt: bool = True
+    code: bool = True
+    harness: bool = True
+
+    def to_domain(self) -> "LeverSurfaceConfig":
+        return LeverSurfaceConfig(
+            prompt=bool(self.prompt), code=bool(self.code), harness=bool(self.harness)
+        )
+
+
+class RewardSurfaceTomlSection(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    missing: str = "zero"
+    confidence: bool = False
+    time: bool = False
+    cost: bool = False
+    milestones: bool = False
+    rubrics: bool = False
+    exploration_reduce: str = "mean"
+
+    def to_domain(self) -> "RewardSurfaceConfig":
+        return RewardSurfaceConfig(
+            missing=self.missing,
+            confidence=bool(self.confidence),
+            time=bool(self.time),
+            cost=bool(self.cost),
+            milestones=bool(self.milestones),
+            rubrics=bool(self.rubrics),
+            exploration_reduce=self.exploration_reduce,
+        )
+
+
+class McpAgentTomlSection(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = False
+    command: str | None = None
+    server: str | None = None
+
+    def to_domain(self) -> "McpAgentConfig":
+        return McpAgentConfig(
+            enabled=bool(self.enabled), command=self.command, server=self.server
+        )
+
+
+class GepaOperatorTomlSection(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    manderqueue: ManderqueueTomlSection = Field(default_factory=ManderqueueTomlSection)
+    scratchpad: ScratchpadTomlSection = Field(default_factory=ScratchpadTomlSection)
+    hypotheses: HypothesesTomlSection = Field(default_factory=HypothesesTomlSection)
+    control: ControlSurfaceTomlSection = Field(default_factory=ControlSurfaceTomlSection)
+    levers: LeverSurfaceTomlSection = Field(default_factory=LeverSurfaceTomlSection)
+    reward: RewardSurfaceTomlSection = Field(default_factory=RewardSurfaceTomlSection)
+    mcp_agent: McpAgentTomlSection = Field(default_factory=McpAgentTomlSection)
+
+    def to_domain(self) -> "GepaOperatorConfig":
+        return GepaOperatorConfig(
+            manderqueue=self.manderqueue.to_domain(),
+            scratchpad=self.scratchpad.to_domain(),
+            hypotheses=self.hypotheses.to_domain(),
+            control=self.control.to_domain(),
+            levers=self.levers.to_domain(),
+            reward=self.reward.to_domain(),
+            mcp_agent=self.mcp_agent.to_domain(),
+        )
+
+
+class GepaEpisodeTomlSection(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    proposer_rounds: int | None = None
+    max_rollouts: int | None = None
+    max_wall_seconds: int | None = None
+    max_spend_usd: float | None = None
+    skip_heldout: bool = False
 
 
 class GepaTomlSection(BaseModel):
@@ -381,6 +548,8 @@ class GepaTomlSection(BaseModel):
         default_factory=ObjectiveAcceptanceTomlSection
     )
     task_pools: GepaTaskPoolsTomlSection = Field(default_factory=GepaTaskPoolsTomlSection)
+    episode: GepaEpisodeTomlSection = Field(default_factory=GepaEpisodeTomlSection)
+    operator: GepaOperatorTomlSection = Field(default_factory=GepaOperatorTomlSection)
 
     def budget_config(self) -> "BudgetConfig":
         return BudgetConfig(
@@ -421,6 +590,8 @@ class GepaTomlSection(BaseModel):
             rollout_transport=self.rollout_submission_mode,
             rollout_timeout_seconds=self.rollout_async_timeout_seconds,
             candidate_concurrency=self.pipeline.max_in_flight_candidates,
+            background_execution=self.pipeline.background_execution,
+            background_workers=self.pipeline.background_workers,
             proposer_concurrency=self.pipeline.workers.propose,
             rollout_concurrency=self.pipeline.workers.rollout,
             evaluator_concurrency=self.pipeline.workers.evaluate,
@@ -452,6 +623,18 @@ class GepaTomlSection(BaseModel):
                 self.objective_acceptance.objective_regression_tolerance
             ),
         )
+
+    def episode_config(self) -> "GepaEpisodeConfig":
+        return GepaEpisodeConfig(
+            proposer_rounds=self.episode.proposer_rounds,
+            max_rollouts=self.episode.max_rollouts,
+            max_wall_seconds=self.episode.max_wall_seconds,
+            max_spend_usd=self.episode.max_spend_usd,
+            skip_heldout=self.episode.skip_heldout,
+        )
+
+    def operator_config(self) -> "GepaOperatorConfig":
+        return self.operator.to_domain()
 
 
 class CacheTomlSection(BaseModel):
@@ -486,6 +669,7 @@ class JesterkyWorkflowTomlSection(BaseModel):
     concurrency: int = 4
     timeout_seconds: int = 600
     fail_closed: bool = True
+    bulk: bool = False
 
     def to_domain(self) -> "JesterkyWorkflowConfig":
         return JesterkyWorkflowConfig(
@@ -497,6 +681,7 @@ class JesterkyWorkflowTomlSection(BaseModel):
             concurrency=int(self.concurrency),
             timeout_seconds=int(self.timeout_seconds),
             fail_closed=bool(self.fail_closed),
+            bulk=bool(self.bulk),
         )
 
 
@@ -535,6 +720,8 @@ class GepaTomlDocument(BaseModel):
             task_pools=self.gepa.task_pools.to_domain(),
             budgets=self.gepa.gepa_budget_config(),
             pipeline=self.gepa.pipeline_config(),
+            episode=self.gepa.episode_config(),
+            operator=self.gepa.operator_config(),
             budget=self.gepa.budget_config(),
             jesterky_workflow=self.jesterky_workflow.to_domain(),
             cache=self.cache.to_domain(),
@@ -548,13 +735,15 @@ class GepaTomlDocument(BaseModel):
 class ContainerCapabilityMetadataPayload(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    policy_ready: bool
+    policy_ready: bool = False
 
 
 class ContainerCapabilitiesPayload(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    metadata: ContainerCapabilityMetadataPayload
+    metadata: ContainerCapabilityMetadataPayload = Field(
+        default_factory=ContainerCapabilityMetadataPayload
+    )
 
 
 class ContainerMetadataPayload(BaseModel):
@@ -583,13 +772,17 @@ class RunSettings:
     run_id: str = "gepa_sdk_run"
     output_dir: str | Path = "runs"
     seed: int = 0
+    fixture_path: str | Path | None = None
 
     def to_toml(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "run_id": self.run_id,
             "output_dir": str(self.output_dir),
             "seed": int(self.seed),
         }
+        if self.fixture_path is not None:
+            payload["fixture_path"] = str(self.fixture_path)
+        return payload
 
 
 @dataclass(slots=True)
@@ -686,6 +879,7 @@ class GepaTaskPools:
 class ProposerPromptConfig:
     best_practices: str | None = None
     best_practices_path: str | Path | None = None
+    style_guides: list[str | Path] = field(default_factory=list)
 
     @classmethod
     def from_defaults(cls) -> "ProposerPromptConfig":
@@ -702,7 +896,7 @@ class ProposerPromptConfig:
             )
         if self.best_practices is not None and not self.best_practices.strip():
             raise ValueError("ProposerPromptConfig.best_practices must be non-empty when set")
-        return _drop_none(
+        payload = _drop_none(
             {
                 "best_practices": self.best_practices,
                 "best_practices_path": (
@@ -710,6 +904,9 @@ class ProposerPromptConfig:
                 ),
             }
         )
+        if self.style_guides:
+            payload["style_guides"] = [str(path) for path in self.style_guides]
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -790,11 +987,14 @@ class ProposerConfig:
     copy_host_auth: bool = False
     codex_home: str | Path | None = None
     timeout_seconds: int = 900
+    message_stall_timeout_seconds: int = 120
     sandbox_mode: str | None = "workspace-write"
     approval_policy: str | None = "never"
     command: list[str] = field(default_factory=list)
     prompt: ProposerPromptConfig | None = None
     docker: ProposerDockerConfig | None = None
+    mcp: "McpAgentConfig" = field(default_factory=lambda: McpAgentConfig())
+    schema_repair_rounds: int = 0
 
     @classmethod
     def local(cls, **kwargs: Any) -> "ProposerConfig":
@@ -828,6 +1028,7 @@ class ProposerConfig:
                 "copy_host_auth": bool(self.copy_host_auth),
                 "codex_home": str(self.codex_home) if self.codex_home is not None else None,
                 "timeout_seconds": int(self.timeout_seconds),
+                "message_stall_timeout_seconds": int(self.message_stall_timeout_seconds),
                 "sandbox_mode": self.sandbox_mode,
                 "approval_policy": self.approval_policy,
                 "command": list(self.command),
@@ -839,6 +1040,11 @@ class ProposerConfig:
                 payload["prompt"] = prompt
         if self.docker is not None:
             payload["docker"] = self.docker.to_toml()
+        mcp = self.mcp.to_toml()
+        if mcp:
+            payload["mcp"] = mcp
+        if int(self.schema_repair_rounds) > 0:
+            payload["schema_repair_rounds"] = int(self.schema_repair_rounds)
         return payload
 
 
@@ -994,6 +1200,183 @@ class GepaBudgetConfig:
             gepa["rollout_estimated_wall_seconds"] = int(self.rollout_estimated_wall_seconds)
 
 
+@dataclass(slots=True)
+class GepaEpisodeConfig:
+    proposer_rounds: int | None = None
+    max_rollouts: int | None = None
+    max_wall_seconds: int | None = None
+    max_spend_usd: float | None = None
+    skip_heldout: bool = False
+
+    def apply_to_gepa(self, gepa: dict[str, Any]) -> None:
+        payload: dict[str, Any] = {}
+        if self.proposer_rounds is not None:
+            payload["proposer_rounds"] = int(self.proposer_rounds)
+        if self.max_rollouts is not None:
+            payload["max_rollouts"] = int(self.max_rollouts)
+        if self.max_wall_seconds is not None:
+            payload["max_wall_seconds"] = int(self.max_wall_seconds)
+        if self.max_spend_usd is not None:
+            payload["max_spend_usd"] = float(self.max_spend_usd)
+        if self.skip_heldout:
+            payload["skip_heldout"] = True
+        if payload:
+            gepa["episode"] = payload
+
+
+@dataclass(slots=True)
+class ManderqueueConfig:
+    enabled: bool = False
+    base_url: str | None = None
+    token_env: str = "MANDERQUEUE_TOKEN"
+    thread_id: str | None = None
+    org_id: str | None = None
+    scope_kind: str | None = None
+    scope_id: str | None = None
+    poll_seconds: int = 5
+    fail_closed: bool = False
+
+    def to_toml(self) -> dict[str, Any]:
+        return _drop_none(
+            {
+                "enabled": bool(self.enabled),
+                "base_url": self.base_url,
+                "token_env": self.token_env,
+                "thread_id": self.thread_id,
+                "org_id": self.org_id,
+                "scope_kind": self.scope_kind,
+                "scope_id": self.scope_id,
+                "poll_seconds": int(self.poll_seconds),
+                "fail_closed": bool(self.fail_closed),
+            }
+        )
+
+
+@dataclass(slots=True)
+class ScratchpadConfig:
+    enabled: bool = False
+    path: str = "state/scratchpad.md"
+    shared: bool = True
+
+    def to_toml(self) -> dict[str, Any]:
+        return {
+            "enabled": bool(self.enabled),
+            "path": self.path,
+            "shared": bool(self.shared),
+        }
+
+
+@dataclass(slots=True)
+class HypothesesConfig:
+    enabled: bool = False
+    max_open: int = 8
+
+    def to_toml(self) -> dict[str, Any]:
+        return {"enabled": bool(self.enabled), "max_open": int(self.max_open)}
+
+
+@dataclass(slots=True)
+class ControlSurfaceConfig:
+    pause: bool = True
+    restart: bool = True
+    branch: bool = True
+
+    def to_toml(self) -> dict[str, Any]:
+        return {
+            "pause": bool(self.pause),
+            "restart": bool(self.restart),
+            "branch": bool(self.branch),
+        }
+
+
+@dataclass(slots=True)
+class LeverSurfaceConfig:
+    prompt: bool = True
+    code: bool = True
+    harness: bool = True
+
+    def to_toml(self) -> dict[str, Any]:
+        return {
+            "prompt": bool(self.prompt),
+            "code": bool(self.code),
+            "harness": bool(self.harness),
+        }
+
+
+@dataclass(slots=True)
+class RewardSurfaceConfig:
+    missing: str = "zero"
+    confidence: bool = False
+    time: bool = False
+    cost: bool = False
+    milestones: bool = False
+    rubrics: bool = False
+    exploration_reduce: str = "mean"
+
+    def to_toml(self) -> dict[str, Any]:
+        return {
+            "missing": self.missing,
+            "confidence": bool(self.confidence),
+            "time": bool(self.time),
+            "cost": bool(self.cost),
+            "milestones": bool(self.milestones),
+            "rubrics": bool(self.rubrics),
+            "exploration_reduce": self.exploration_reduce,
+        }
+
+
+@dataclass(slots=True)
+class McpAgentConfig:
+    enabled: bool = False
+    command: str | None = None
+    server: str | None = None
+
+    def to_toml(self) -> dict[str, Any]:
+        return _drop_none(
+            {
+                "enabled": bool(self.enabled),
+                "command": self.command,
+                "server": self.server,
+            }
+        )
+
+
+@dataclass(slots=True)
+class GepaOperatorConfig:
+    manderqueue: ManderqueueConfig = field(default_factory=ManderqueueConfig)
+    scratchpad: ScratchpadConfig = field(default_factory=ScratchpadConfig)
+    hypotheses: HypothesesConfig = field(default_factory=HypothesesConfig)
+    control: ControlSurfaceConfig = field(default_factory=ControlSurfaceConfig)
+    levers: LeverSurfaceConfig = field(default_factory=LeverSurfaceConfig)
+    reward: RewardSurfaceConfig = field(default_factory=RewardSurfaceConfig)
+    mcp_agent: McpAgentConfig = field(default_factory=McpAgentConfig)
+
+    def to_toml(self) -> dict[str, Any]:
+        return {
+            "manderqueue": self.manderqueue.to_toml(),
+            "scratchpad": self.scratchpad.to_toml(),
+            "hypotheses": self.hypotheses.to_toml(),
+            "control": self.control.to_toml(),
+            "levers": self.levers.to_toml(),
+            "reward": self.reward.to_toml(),
+            "mcp_agent": self.mcp_agent.to_toml(),
+        }
+
+    def validate(self) -> None:
+        if self.manderqueue.enabled and self.manderqueue.fail_closed:
+            if not str(self.manderqueue.base_url or "").strip():
+                raise ValueError(
+                    "gepa.operator.manderqueue.base_url is required when enabled and fail_closed"
+                )
+        if self.mcp_agent.enabled:
+            if not str(self.mcp_agent.command or "").strip() and not str(
+                self.mcp_agent.server or ""
+            ).strip():
+                raise ValueError(
+                    "gepa.operator.mcp_agent.command or server is required when enabled"
+                )
+
+
 DEFAULT_PROPOSER_ESTIMATED_COST_USD = 0.05
 DEFAULT_ROLLOUT_ESTIMATED_COST_USD = 0.01
 
@@ -1016,6 +1399,8 @@ class GepaPipeline:
     rollout_concurrency: int = 8
     evaluator_concurrency: int = 1
     candidate_concurrency: int = 1
+    background_execution: bool | None = None
+    background_workers: int | None = None
     speculative_alpha: float | None = None
     adaptive_stage_workers: bool = False
     adaptive_stage_workers_max: int = 128
@@ -1080,13 +1465,20 @@ class GepaPipeline:
             rollout_concurrency=rollout_concurrency,
         )
 
+    @classmethod
+    def combee(cls, **kwargs: Any) -> "GepaPipeline":
+        return cls.flash_evolve(**kwargs)
+
     def apply_to_gepa(self, gepa: dict[str, Any]) -> None:
         rollout_transport = str(self.rollout_transport)
+        mode = str(self.mode)
+        if mode in {"combee", "flash", "flashevolve"}:
+            mode = GepaPipelineMode.FLASH_EVOLVE
         gepa["rollout_submission_mode"] = rollout_transport
         gepa["rollout_poll_interval_ms"] = 250
         gepa["rollout_async_timeout_seconds"] = int(self.rollout_timeout_seconds)
         gepa["pipeline"] = {
-            "mode": str(self.mode),
+            "mode": mode,
             "staleness_policy": str(self.staleness_policy),
             "delta_max": int(self.staleness_delta_max),
             "max_in_flight_candidates": int(self.candidate_concurrency),
@@ -1116,6 +1508,12 @@ class GepaPipeline:
                 "stale_gap_threshold": int(self.adaptive_stage_workers_stale_gap_threshold),
             },
         }
+        # Omit when unset so the engine's per-mode default applies rather than
+        # this layer pinning it.
+        if self.background_execution is not None:
+            gepa["pipeline"]["background_execution"] = bool(self.background_execution)
+        if self.background_workers is not None:
+            gepa["pipeline"]["background_workers"] = int(self.background_workers)
 
 
 @dataclass(slots=True)
@@ -1146,6 +1544,7 @@ class JesterkyWorkflowConfig:
     concurrency: int = 4
     timeout_seconds: int = 600
     fail_closed: bool = True
+    bulk: bool = False
 
     def to_toml(self) -> dict[str, Any]:
         return _drop_none(
@@ -1158,6 +1557,7 @@ class JesterkyWorkflowConfig:
                 "concurrency": int(self.concurrency),
                 "timeout_seconds": int(self.timeout_seconds),
                 "fail_closed": bool(self.fail_closed),
+                "bulk": bool(self.bulk),
             }
         )
 
@@ -1206,6 +1606,8 @@ class GepaConfig:
     proposer: ProposerConfig = field(default_factory=ProposerConfig)
     budgets: GepaBudgetConfig = field(default_factory=GepaBudgetConfig)
     pipeline: GepaPipeline = field(default_factory=GepaPipeline)
+    episode: GepaEpisodeConfig = field(default_factory=GepaEpisodeConfig)
+    operator: GepaOperatorConfig = field(default_factory=GepaOperatorConfig)
     budget: BudgetConfig = field(default_factory=BudgetConfig)
     jesterky_workflow: JesterkyWorkflowConfig = field(
         default_factory=JesterkyWorkflowConfig
@@ -1242,6 +1644,7 @@ class GepaConfig:
             self.taskset.train_ids, self.taskset.heldout_ids
         )
         self.jesterky_workflow.validate()
+        self.operator.validate()
         if self.policy is not None:
             if not self.target_modules:
                 raise ValueError(
@@ -1259,11 +1662,6 @@ class GepaConfig:
                     "policy.proxy_mode must be 'proxy_only' or 'assert_proxy' "
                     "for GEPA policy runs"
                 )
-        elif self.target_modules:
-            raise ValueError(
-                "GEPA prompt-overlay runs require an explicit policy with "
-                "proxy_mode='proxy_only' or 'assert_proxy'"
-            )
 
     def to_toml_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {}
@@ -1300,6 +1698,10 @@ class GepaConfig:
         self.budgets.apply_to_gepa(gepa)
         self.budget.apply_to_gepa(gepa)
         self.pipeline.apply_to_gepa(gepa)
+        self.episode.apply_to_gepa(gepa)
+        operator = self.operator.to_toml()
+        if operator:
+            gepa["operator"] = operator
         if self.objectives is not None:
             self.objectives.apply_to_gepa(gepa)
         _apply_default_budget_estimates(gepa)

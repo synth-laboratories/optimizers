@@ -12,7 +12,9 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Map, Value};
-use synth_optimizer_platform::{JesterkyWorkflowConfig, OptimizerError, Result, SynthOptimizerConfig};
+use synth_optimizer_platform::{
+    JesterkyWorkflowConfig, OptimizerError, Result, SynthOptimizerConfig,
+};
 
 pub const JESTERKY_THEME_REGISTRY_FILE: &str = "jesterky_theme_registry.json";
 pub const JESTERKY_TRACE_ANNOTATIONS_FILE: &str = "jesterky_trace_annotations.jsonl";
@@ -141,7 +143,7 @@ fn run_enabled_jesterky_workflow(
     fs::create_dir_all(&state_dir).map_err(|source| OptimizerError::io(&state_dir, source))?;
     let trace_dir = workspace_dir.join("jesterky_traces");
     fs::create_dir_all(&trace_dir).map_err(|source| OptimizerError::io(&trace_dir, source))?;
-    let exported = export_gepa_rollouts_to_v4(rollouts, &trace_dir)?;
+    let exported = export_gepa_rollouts_to_v4(rollouts, &trace_dir, wf.bulk)?;
     if exported == 0 {
         let empty_registry = json!({
             "optimizer": "gepa",
@@ -333,7 +335,7 @@ fn run_command_with_timeout(
 /// the workflow timeout. Prefer lowest-reward / failed frames first.
 const MAX_JESTERKY_EXPORT_TRACES: usize = 6;
 
-fn export_gepa_rollouts_to_v4(rollouts: &Value, trace_dir: &Path) -> Result<usize> {
+fn export_gepa_rollouts_to_v4(rollouts: &Value, trace_dir: &Path, bulk: bool) -> Result<usize> {
     let rows = match rollouts.as_array() {
         Some(rows) => rows,
         None => return Ok(0),
@@ -363,7 +365,11 @@ fn export_gepa_rollouts_to_v4(rollouts: &Value, trace_dir: &Path) -> Result<usiz
     });
     let selected = ranked
         .into_iter()
-        .take(MAX_JESTERKY_EXPORT_TRACES)
+        .take(if bulk {
+            usize::MAX
+        } else {
+            MAX_JESTERKY_EXPORT_TRACES
+        })
         .collect::<Vec<_>>();
     let mut written = 0usize;
     for (idx, row) in selected {
@@ -387,10 +393,7 @@ fn export_gepa_rollouts_to_v4(rollouts: &Value, trace_dir: &Path) -> Result<usiz
         let outcome = row.get("outcome").cloned().unwrap_or(Value::Null);
         let failure = row.get("failure").cloned().unwrap_or(Value::Null);
         let mut metadata = Map::new();
-        metadata.insert(
-            "source".to_string(),
-            json!("gepa_jesterky_workflow_export"),
-        );
+        metadata.insert("source".to_string(), json!("gepa_jesterky_workflow_export"));
         metadata.insert("candidate_id".to_string(), json!(candidate_id));
         metadata.insert("task_id".to_string(), json!(task_id));
         if let Some(stage) = row.get("evaluation_stage") {
@@ -463,8 +466,8 @@ fn materialize_jesterky_artifacts_from_manifest(
     manifest_path: &Path,
     state_dir: &Path,
 ) -> Result<(usize, usize, usize)> {
-    let text =
-        fs::read_to_string(manifest_path).map_err(|source| OptimizerError::io(manifest_path, source))?;
+    let text = fs::read_to_string(manifest_path)
+        .map_err(|source| OptimizerError::io(manifest_path, source))?;
     let manifest: Value = serde_json::from_str(&text).map_err(|source| {
         OptimizerError::Config(format!(
             "invalid jesterky annotate manifest {}: {source}",
@@ -522,7 +525,8 @@ fn materialize_jesterky_artifacts_from_manifest(
          evaluation-split labels or selection scores.\n",
     );
     let context_path = state_dir.join(JESTERKY_PROPOSER_CONTEXT_FILE);
-    fs::write(&context_path, context).map_err(|source| OptimizerError::io(&context_path, source))?;
+    fs::write(&context_path, context)
+        .map_err(|source| OptimizerError::io(&context_path, source))?;
 
     let annotations_path = state_dir.join(JESTERKY_TRACE_ANNOTATIONS_FILE);
     let mut lines = String::new();
@@ -536,7 +540,11 @@ fn materialize_jesterky_artifacts_from_manifest(
     Ok((theme_count, annotated, blockers))
 }
 
-fn write_theme_artifacts(state_dir: &Path, theme_registry: &Value, generation: usize) -> Result<()> {
+fn write_theme_artifacts(
+    state_dir: &Path,
+    theme_registry: &Value,
+    generation: usize,
+) -> Result<()> {
     let registry_path = state_dir.join(JESTERKY_THEME_REGISTRY_FILE);
     fs::write(
         &registry_path,
@@ -545,7 +553,8 @@ fn write_theme_artifacts(state_dir: &Path, theme_registry: &Value, generation: u
     .map_err(|source| OptimizerError::io(&registry_path, source))?;
     let annotations_path = state_dir.join(JESTERKY_TRACE_ANNOTATIONS_FILE);
     if !annotations_path.exists() {
-        fs::write(&annotations_path, "").map_err(|source| OptimizerError::io(&annotations_path, source))?;
+        fs::write(&annotations_path, "")
+            .map_err(|source| OptimizerError::io(&annotations_path, source))?;
     }
     let context_path = state_dir.join(JESTERKY_PROPOSER_CONTEXT_FILE);
     if !context_path.exists() {
@@ -578,7 +587,10 @@ fn extract_theme_registry(manifest: &Value) -> Value {
             return registry.clone();
         }
     }
-    if let Some(children) = manifest.pointer("/trace/children").and_then(Value::as_array) {
+    if let Some(children) = manifest
+        .pointer("/trace/children")
+        .and_then(Value::as_array)
+    {
         for child in children.iter().rev() {
             if let Some(registry) = child
                 .pointer("/outputs/theme_registry")

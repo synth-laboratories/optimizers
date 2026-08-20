@@ -738,7 +738,9 @@ fn py_error(error: OptimizerError) -> PyErr {
         OptimizerError::Json(_) => OptimizerJsonError::new_err(message),
         OptimizerError::TomlDecode(_) => OptimizerTomlDecodeError::new_err(message),
         OptimizerError::Http(_) => OptimizerHttpError::new_err(message),
-        OptimizerError::Sqlite(_) => OptimizerSqliteError::new_err(message),
+        OptimizerError::Sqlite(_) | OptimizerError::SqliteAt { .. } => {
+            OptimizerSqliteError::new_err(message)
+        }
     }
 }
 

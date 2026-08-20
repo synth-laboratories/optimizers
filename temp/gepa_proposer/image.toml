@@ -1,0 +1,11 @@
+contract = "http_task"
+target_id = "gepa_proposer"
+image_name = "evals-gepa-proposer"
+dockerfile = "http_task.Dockerfile"
+context = "."
+port = 8877
+required_env = ["GEPA_SERVICE_URL"]
+pull = false
+
+[extra_env]
+SYNTH_CONTAINER_TARGET = "gepa_proposer"

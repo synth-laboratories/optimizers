@@ -81,6 +81,11 @@ pub enum OptimizerError {
     Http(#[from] reqwest::Error),
     #[error("sqlite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
+    #[error("sqlite error at {label}: {source}")]
+    SqliteAt {
+        label: String,
+        source: rusqlite::Error,
+    },
 }
 
 impl OptimizerError {
@@ -112,6 +117,7 @@ impl OptimizerError {
             Self::TomlDecode(_) => "synth_optimizer_toml_decode_error",
             Self::Http(_) => "synth_optimizer_http_error",
             Self::Sqlite(_) => "synth_optimizer_sqlite_error",
+            Self::SqliteAt { .. } => "synth_optimizer_sqlite_error",
         }
     }
 }

@@ -137,6 +137,20 @@ impl ContainerClient {
         self.post("/rollout", request)
     }
 
+    pub fn register_candidate(&self, request: &Value) -> Result<Value> {
+        self.register_candidate_at("/candidates", request)
+    }
+
+    pub fn register_candidate_at(&self, route: &str, request: &Value) -> Result<Value> {
+        let route = route.trim();
+        if !route.starts_with('/') {
+            return Err(OptimizerError::Container(format!(
+                "candidates route must be absolute, got {route:?}"
+            )));
+        }
+        self.post(route, request)
+    }
+
     pub fn resume_rollout(
         &self,
         parent_rollout_id: &str,

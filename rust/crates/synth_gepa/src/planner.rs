@@ -7,7 +7,7 @@ use serde_json::Value;
 pub const GEPA_CURSOR_SCHEMA_VERSION: &str = "gepa_cursor.v1";
 pub const GEPA_CURSOR_CHECKPOINT_KIND: &str = "gepa_cursor";
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum GepaCursorPhase {
     #[default]
@@ -201,7 +201,42 @@ pub struct GepaAsyncPipelineCursorState {
     #[serde(default)]
     pub rollout_resilience: GepaRolloutResilienceState,
     #[serde(default)]
+    pub lane_overlap: GepaLaneOverlapState,
+    #[serde(default)]
     pub terminal_readiness: Value,
+}
+
+/// Measured lane concurrency for a run.
+///
+/// `overlap_seconds` is wall-clock time during which at least one propose lane
+/// job and at least one rollout lane job were both *executing*. Lease overlap
+/// is not the same thing and was what earlier FlashEvolve reporting conflated:
+/// before background lane execution landed, leases overlapped freely while
+/// execution stayed strictly serial on the driver tick.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct GepaLaneOverlapState {
+    #[serde(default)]
+    pub wall_seconds: f64,
+    #[serde(default)]
+    pub propose_busy_seconds: f64,
+    #[serde(default)]
+    pub rollout_busy_seconds: f64,
+    #[serde(default)]
+    pub evaluate_busy_seconds: f64,
+    #[serde(default)]
+    pub lane_busy_seconds: f64,
+    #[serde(default)]
+    pub overlap_seconds: f64,
+    #[serde(default)]
+    pub overlap_ratio: f64,
+    #[serde(default)]
+    pub max_concurrent_lane_jobs: usize,
+    #[serde(default)]
+    pub dispatched_lane_jobs: usize,
+    #[serde(default)]
+    pub mean_stale_gap: f64,
+    #[serde(default)]
+    pub stale_gap_samples: u64,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

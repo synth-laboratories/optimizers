@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::env;
 use std::path::PathBuf;
 use std::thread;
@@ -14,18 +14,16 @@ use synth_optimizer_platform::{
 
 use crate::{
     cached_profiled_call_with_access, record_runtime_effect_completed, run_proposer,
-    CandidateRecord, ProposedCandidate, RuntimeEffectCompletionInput, UsageTotals,
+    usage_pricing, CandidateRecord, ProposedCandidate, RuntimeEffectCompletionInput, UsageTotals,
     GEPA_ALGORITHM_ID,
 };
 
 pub const GEPA_RUNTIME_JOB_SCHEMA_VERSION: &str = "gepa_runtime_job.v1";
-const DEFAULT_RUNTIME_WORKER_ID: &str = "gepa_inline_executor";
-const DEFAULT_RUNTIME_LEASE_SECONDS: u64 = 3600;
+pub(crate) const DEFAULT_RUNTIME_WORKER_ID: &str = "gepa_inline_executor";
+pub(crate) const DEFAULT_RUNTIME_LEASE_SECONDS: u64 = 3600;
 const DEFAULT_ROLLOUT_CONCURRENCY: usize = 128;
 const DEFAULT_ROLLOUT_HTTP_RETRIES: usize = 2;
 const DEFAULT_ROLLOUT_RETRY_BACKOFF_MS: u64 = 200;
-const DEEPSEEK_INPUT_USD_PER_MILLION: f64 = 0.27;
-const DEEPSEEK_OUTPUT_USD_PER_MILLION: f64 = 1.10;
 
 #[derive(Clone, Debug)]
 pub struct RuntimeEffectExecutorConfig {
@@ -576,8 +574,23 @@ impl<'a> GepaRuntimeExecutor<'a> {
             proposer_calls: 1,
             ..Default::default()
         };
-        if let Some(response_usage) = response.get("usage") {
-            usage.add_usage_payload(response_usage);
+        if let Some(response_usage) = response.get("usage").and_then(Value::as_object) {
+            let mut priced = response_usage.clone();
+            let proposer_model = self
+                .config
+                .proposer
+                .model
+                .as_deref()
+                .unwrap_or("");
+            usage_pricing::ensure_priced_usage(
+                &mut priced,
+                proposer_model,
+                Some(self.config.proposer.provider.as_str()),
+            );
+            if let Some(map) = response.as_object_mut() {
+                map.insert("usage".to_string(), Value::Object(priced.clone()));
+            }
+            usage.add_usage_payload(&Value::Object(priced));
         }
         let cost_usd = response
             .get("usage")
@@ -655,6 +668,8 @@ impl<'a> GepaRuntimeExecutor<'a> {
             call.cache_hit,
             stage,
             example_id,
+            &self.config.policy.model,
+            &self.config.policy.provider,
         )?;
         if !outcome.cache_hit {
             outcome.dispatch_wall_seconds = Some(dispatch_wall_seconds);
@@ -683,6 +698,8 @@ impl<'a> GepaRuntimeExecutor<'a> {
                     true,
                     rollout.stage,
                     rollout.example_id,
+                    &self.config.policy.model,
+                    &self.config.policy.provider,
                 )?);
                 continue;
             }
@@ -698,6 +715,49 @@ impl<'a> GepaRuntimeExecutor<'a> {
                 cache_key,
             });
         }
+
+        let mut apply_failed = BTreeMap::new();
+        let mut seen_register = HashSet::new();
+        for miss in &misses {
+            let Some((route, body)) = register_spec(&miss.rollout.request) else {
+                continue;
+            };
+            if !seen_register.insert(miss.rollout.candidate_id.clone()) {
+                continue;
+            }
+            let registered = self.client.register_candidate_at(route, &body)?;
+            if !register_apply_ok(&registered) {
+                apply_failed.insert(miss.rollout.candidate_id.clone(), registered);
+            }
+        }
+        let mut remaining = Vec::new();
+        for mut miss in misses {
+            if let Some(registered) = apply_failed.get(&miss.rollout.candidate_id) {
+                let value = apply_failed_rollout_response(&miss.rollout.request, registered);
+                self.cache.put_with_metadata(
+                    &cache_namespace,
+                    &miss.cache_key,
+                    &miss.cache_request,
+                    &value,
+                    &cache_profile,
+                    miss.rollout.cache_metadata.clone(),
+                )?;
+                outcomes[miss.index] = Some(rollout_outcome_from_value(
+                    miss.rollout.candidate_id,
+                    value,
+                    miss.cache_key,
+                    false,
+                    miss.rollout.stage,
+                    miss.rollout.example_id,
+                    &self.config.policy.model,
+                    &self.config.policy.provider,
+                )?);
+                continue;
+            }
+            miss.rollout.request = rollout_request_after_register(&miss.rollout.request);
+            remaining.push(miss);
+        }
+        let misses = remaining;
 
         let concurrency = rollout_concurrency(self.config).max(1);
         let dispatch_config = RolloutDispatchConfig::from_config(self.config);
@@ -736,6 +796,8 @@ impl<'a> GepaRuntimeExecutor<'a> {
                     false,
                     miss.rollout.stage,
                     miss.rollout.example_id,
+                    &self.config.policy.model,
+                    &self.config.policy.provider,
                 )?;
                 outcome.dispatch_wall_seconds = Some(dispatch_wall_seconds);
                 outcome.dispatch_chunk_index = Some(chunk_index);
@@ -767,26 +829,22 @@ fn proposer_static_cost_usd(
     let provider = response
         .get("provider")
         .and_then(Value::as_str)
-        .unwrap_or(config.proposer.provider.as_str())
-        .trim()
-        .to_ascii_lowercase();
+        .unwrap_or(config.proposer.provider.as_str());
     let model = response
         .get("model")
         .and_then(Value::as_str)
         .or(config.proposer.model.as_deref())
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
-    if provider == "deepseek" || model.contains("deepseek") {
-        if usage.prompt_tokens == 0 && usage.completion_tokens == 0 {
-            return None;
-        }
-        return Some(
-            usage.prompt_tokens as f64 * DEEPSEEK_INPUT_USD_PER_MILLION / 1_000_000.0
-                + usage.completion_tokens as f64 * DEEPSEEK_OUTPUT_USD_PER_MILLION / 1_000_000.0,
-        );
+        .unwrap_or_default();
+    if usage.prompt_tokens == 0 && usage.completion_tokens == 0 {
+        return None;
     }
-    None
+    usage_pricing::price_usd(
+        model,
+        Some(provider),
+        usage.prompt_tokens,
+        usage.completion_tokens,
+        0,
+    )
 }
 
 #[derive(Clone, Debug)]
@@ -858,8 +916,74 @@ fn rollout_cache_request(request: &Value) -> Value {
     let mut cache_request = request.clone();
     if let Some(map) = cache_request.as_object_mut() {
         map.remove("submission_mode");
+        map.remove("register");
     }
     cache_request
+}
+
+fn register_spec(request: &Value) -> Option<(&str, Value)> {
+    let register = request.get("register")?;
+    let route = register
+        .get("route")
+        .and_then(Value::as_str)
+        .unwrap_or("/candidates");
+    let body = register.get("body").cloned().unwrap_or(json!({}));
+    Some((route, body))
+}
+
+fn register_apply_ok(response: &Value) -> bool {
+    response
+        .get("apply_ok")
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+}
+
+fn apply_failed_rollout_response(request: &Value, register_response: &Value) -> Value {
+    let candidate_id = request
+        .get("candidate_id")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let task_id = request
+        .get("task_id")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let side_info = register_response
+        .get("apply_reports")
+        .cloned()
+        .or_else(|| register_response.get("side_info").cloned())
+        .unwrap_or_else(|| json!([]));
+    json!({
+        "rollout_id": format!("apply_failed_{candidate_id}_{task_id}"),
+        "status": "completed",
+        "success_status": "apply_failed",
+        "task_id": task_id,
+        "candidate_id": candidate_id,
+        "reward": 0.0,
+        "reward_info": {
+            "outcome_reward": 0.0,
+            "metrics": { "apply_failed": true }
+        },
+        "summary": { "outcome_reward": 0.0 },
+        "side_info": side_info,
+        "actionable_side_info": side_info,
+        "trace": { "schema_version": "trace.v1", "event_history": [] },
+        "usage": {},
+    })
+}
+
+fn rollout_request_after_register(request: &Value) -> Value {
+    let mut body = request.clone();
+    let Some(map) = body.as_object_mut() else {
+        return body;
+    };
+    if map.remove("register").is_some() {
+        map.remove("candidate");
+        map.remove("candidate_overlay");
+        map.remove("lever_bundle");
+        map.remove("prompt_assertions");
+        map.remove("policy");
+    }
+    body
 }
 
 fn dispatch_rollout(
@@ -867,12 +991,19 @@ fn dispatch_rollout(
     request: &Value,
     config: &RolloutDispatchConfig,
 ) -> Result<Value> {
+    if let Some((route, body)) = register_spec(request) {
+        let registered = client.register_candidate_at(route, &body)?;
+        if !register_apply_ok(&registered) {
+            return Ok(apply_failed_rollout_response(request, &registered));
+        }
+    }
+    let request = rollout_request_after_register(request);
     match config.submission_mode.as_str() {
         "sync" => {
-            let response = client.rollout_typed(request)?;
+            let response = client.rollout_typed(&request)?;
             Ok(serde_json::to_value(response)?)
         }
-        "async" => dispatch_async_rollout(client, request, config),
+        "async" => dispatch_async_rollout(client, &request, config),
         other => Err(OptimizerError::Config(format!(
             "unsupported GEPA rollout submission mode {other:?}"
         ))),
@@ -1058,12 +1189,17 @@ fn ensure_active_rollout_status(value: &Value, label: &str) -> Result<()> {
 
 fn rollout_outcome_from_value(
     candidate_id: String,
-    value: Value,
+    mut value: Value,
     cache_key: String,
     cache_hit: bool,
     stage: String,
     example_id: String,
+    policy_model: &str,
+    policy_provider: &str,
 ) -> Result<RuntimeRolloutOutcome> {
+    if let Some(usage) = value.get_mut("usage").and_then(Value::as_object_mut) {
+        usage_pricing::ensure_priced_usage(usage, policy_model, Some(policy_provider));
+    }
     let typed_response = RolloutResponse::from_value(value.clone())?;
     typed_response.validate_for_gepa()?;
     let reward = typed_response.outcome_reward()?;
@@ -1074,6 +1210,7 @@ fn rollout_outcome_from_value(
         cost_usd = response_usage
             .get("cost_usd")
             .and_then(Value::as_f64)
+            .filter(|value| value.is_finite() && *value > 0.0)
             .unwrap_or(0.0);
     }
     usage.rollout_calls = 1;

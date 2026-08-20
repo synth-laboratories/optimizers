@@ -221,7 +221,16 @@ pub fn run_record_to_fine_tuning_job(run: &OptimizerRunRecord) -> FineTuningJob 
         fine_tuned_model: summary
             .and_then(|s| s.get("promotedCheckpointId"))
             .and_then(Value::as_str)
-            .map(|ckpt| format!("{}:{}", run.summary.get("baseModel").and_then(Value::as_str).unwrap_or("model"), ckpt)),
+            .map(|ckpt| {
+                format!(
+                    "{}:{}",
+                    run.summary
+                        .get("baseModel")
+                        .and_then(Value::as_str)
+                        .unwrap_or("model"),
+                    ckpt
+                )
+            }),
         training_file,
         validation_file,
         error: run.error.clone(),
@@ -301,7 +310,10 @@ mod tests {
         let decoded: FineTuningJob = serde_json::from_value(encoded).unwrap();
         assert_eq!(decoded.object, "fine_tuning.job");
         assert_eq!(decoded.model, "openai/gpt-oss-20b");
-        assert_eq!(decoded.synth.as_ref().unwrap().backend.as_deref(), Some("tinker"));
+        assert_eq!(
+            decoded.synth.as_ref().unwrap().backend.as_deref(),
+            Some("tinker")
+        );
         assert_eq!(
             decoded.synth.as_ref().unwrap().heldout_file_id.as_deref(),
             Some("file_heldout")

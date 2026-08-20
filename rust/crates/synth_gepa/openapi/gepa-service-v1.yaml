@@ -1325,11 +1325,37 @@ components:
         base_url: { type: [string, 'null'], format: uri }
         credentials: { $ref: '#/components/schemas/Credentials' }
         copy_host_auth: { type: [boolean, 'null'] }
+        reasoning_effort:
+          type: [string, 'null']
+          enum: [none, low, medium, high, null]
+          description: |
+            Proposer reasoning effort. Required for eval arms that differ only
+            on effort. If omitted, the service default is medium.
         codex_home:
           type: [string, 'null']
           description: |
             Host Codex auth directory used when `auth_mode` is `chatgpt`/`host`
             or `copy_host_auth` is true. Required for ChatGPT-auth proposer runs.
+        model_context_window:
+          type: [integer, 'null']
+          description: |
+            Codex `model_context_window` for the proposer's generated config.toml.
+            Codex has no per-call output cap; when it does not recognise a model
+            slug it falls back to a conservative window and can compact or truncate
+            a large proposer turn. Set this for OpenRouter slugs.
+        model_auto_compact_token_limit:
+          type: [integer, 'null']
+          description: |
+            Codex `model_auto_compact_token_limit`. Raise alongside
+            `model_context_window` so a long reflection turn is not auto-compacted
+            before it completes.
+        allow_unverified_model:
+          type: [boolean, 'null']
+          description: |
+            Explicit opt-in for an OpenRouter `model` outside the verified
+            allowlist. Verified slugs have a known static price; for anything
+            else OpenRouter validates the slug and cost flows through from its
+            reported usage. Required for e.g. `nvidia/nemotron-3.5-lightning`.
 
     Credentials:
       type: object
@@ -1399,6 +1425,7 @@ components:
         - $ref: '#/components/schemas/StopMaxCostUsd'
         - $ref: '#/components/schemas/StopNoImprovement'
         - $ref: '#/components/schemas/StopScoreThreshold'
+        - $ref: '#/components/schemas/StopEpisode'
         - $ref: '#/components/schemas/StopExternalSignal'
 
     StopMaxRollouts:
@@ -1452,6 +1479,21 @@ components:
         kind: { type: string, const: score_threshold }
         value: { type: number }
         metric: { $ref: '#/components/schemas/Metric' }
+    StopEpisode:
+      type: object
+      required: [kind]
+      description: |
+        Delta-from-restart horizon. First matching limit wins. Use this to
+        score "N proposer rounds after a checkpoint" without rewriting
+        absolute `max_generations`. `skip_heldout` completes on train
+        evidence so eval episodes do not enter heldout.
+      properties:
+        kind: { type: string, const: episode }
+        proposer_rounds: { type: integer, minimum: 1 }
+        max_rollouts: { type: integer, minimum: 1 }
+        max_wall_seconds: { type: integer, minimum: 1 }
+        max_spend_usd: { type: number, exclusiveMinimum: 0 }
+        skip_heldout: { type: boolean, default: false }
     StopExternalSignal:
       type: object
       required: [kind]

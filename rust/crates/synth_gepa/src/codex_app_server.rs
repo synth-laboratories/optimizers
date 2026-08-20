@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::usage_pricing;
 use crate::{CandidateRecord, RolloutScore};
 use reqwest::blocking::Client;
 use serde_json::{json, Map, Value};
@@ -20,11 +21,6 @@ const GEPA_ADAPTER_SOURCE: &str = "https://gepa-ai.github.io/gepa/guides/adapter
 const GEPA_ALGORITHM_ID: &str = "synth_gepa.v1";
 const GEPA_WORKSPACE_PROPOSAL_SCHEMA_VERSION: &str = "gepa_workspace_proposal_v3";
 const OPENROUTER_GROK43_MODEL: &str = "x-ai/grok-4.3";
-const OPENROUTER_GROK43_INPUT_USD_PER_MILLION: f64 = 1.25;
-const OPENROUTER_GROK43_CACHED_INPUT_USD_PER_MILLION: f64 = 0.20;
-const OPENROUTER_GROK43_OUTPUT_USD_PER_MILLION: f64 = 2.50;
-const DEEPSEEK_INPUT_USD_PER_MILLION: f64 = 0.27;
-const DEEPSEEK_OUTPUT_USD_PER_MILLION: f64 = 1.10;
 const CHAT_COMPLETIONS_PROPOSER_MAX_TOKENS: u64 = 8_192;
 const CHAT_COMPLETIONS_PROPOSER_MAX_EVIDENCE_CHARS_PER_FILE: usize = 32_000;
 const CHAT_COMPLETIONS_PROPOSER_MAX_TOTAL_EVIDENCE_CHARS: usize = 160_000;
@@ -68,20 +64,58 @@ pub(crate) fn run_codex_app_server_proposer(input: CodexProposerInput<'_>) -> Re
     let timeout = Duration::from_secs(input.config.proposer.timeout_seconds.max(1));
     let message_stall_timeout =
         Duration::from_secs(input.config.proposer.message_stall_timeout_seconds.max(1));
-    let outcome = run_turn(CodexTurnRequest {
-        run_id: &input.config.run.run_id,
-        proposer: &input.config.proposer,
-        workspace_dir: &input.workspace_dir,
-        model: &model,
-        client_name: "synth-optimizers-gepa",
-        client_title: "synth-optimizers GEPA",
-        client_version: env!("CARGO_PKG_VERSION"),
-        thread_start_params: thread_start_params(&input, &model),
-        turn_start_params: turn_start_params(&input, &model)?,
-        timeout,
-        message_stall_timeout,
-    })?;
-    build_response_from_outcome(&input, &model, outcome)
+    let repair_budget = input.config.proposer.schema_repair_rounds;
+    let mut last_error: Option<String> = None;
+    for round in 0..=repair_budget {
+        if round > 0 {
+            write_schema_repair_hint(
+                &input.workspace_dir,
+                last_error.as_deref().unwrap_or("unknown"),
+                round,
+            )?;
+        }
+        let turn_params = if round == 0 {
+            turn_start_params(&input, &model)?
+        } else {
+            schema_repair_turn_start_params(
+                &input,
+                &model,
+                last_error.as_deref().unwrap_or("unknown"),
+            )?
+        };
+        let outcome = run_turn(CodexTurnRequest {
+            run_id: &input.config.run.run_id,
+            proposer: &input.config.proposer,
+            workspace_dir: &input.workspace_dir,
+            model: &model,
+            client_name: "synth-optimizers-gepa",
+            client_title: "synth-optimizers GEPA",
+            client_version: env!("CARGO_PKG_VERSION"),
+            thread_start_params: thread_start_params(&input, &model),
+            turn_start_params: turn_params,
+            timeout,
+            message_stall_timeout,
+        })?;
+        match build_response_from_outcome(&input, &model, outcome) {
+            Ok(mut response) => {
+                response["schema_repair_rounds_used"] = json!(round);
+                response["operator_workspace"] =
+                    crate::operator_workspace::harvest_operator_workspace(&input.workspace_dir)?;
+                return Ok(response);
+            }
+            Err(err)
+                if round < repair_budget && is_schema_repairable(&err) =>
+            {
+                last_error = Some(err.to_string());
+                continue;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Err(OptimizerError::Proposer(format!(
+        "codex app-server proposer manifest still invalid after {repair_budget} schema repair round(s): {}",
+        last_error.unwrap_or_else(|| "unknown".to_string())
+    )))
 }
 
 pub(crate) fn run_codex_staleness_reviewer(
@@ -253,6 +287,7 @@ pub(crate) fn run_deepseek_chat_proposer(input: CodexProposerInput<'_>) -> Resul
     write_json(&manifest_path, &manifest)?;
     let manifest = read_manifest(&input.workspace_dir)?;
     let proposals = proposals_from_manifest(&manifest)?;
+    validate_proposal_payload_fields(&input, &proposals)?;
     let evidence_warnings = manifest_evidence_warnings(&input, &manifest, &proposals);
     let usage = chat_response.get("usage").cloned().ok_or_else(|| {
         OptimizerError::Proposer("chat-completions proposer response missing usage".to_string())
@@ -420,6 +455,7 @@ fn build_response_from_outcome(
     )?;
     let manifest = read_manifest(&input.workspace_dir)?;
     let proposals = proposals_from_manifest(&manifest)?;
+    validate_proposal_payload_fields(input, &proposals)?;
     let mut evidence_warnings = manifest_evidence_warnings(input, &manifest, &proposals);
     if outcome.usage.is_none() {
         evidence_warnings.push(
@@ -460,90 +496,24 @@ fn normalize_proposer_usage(config: &SynthOptimizerConfig, model: &str, usage: V
     let Some(mut usage_map) = usage.as_object().cloned() else {
         return usage;
     };
-    let provider = config.proposer.provider.trim().to_ascii_lowercase();
-    let model_lower = model.trim().to_ascii_lowercase();
-    let reported_cost = usage_f64_from_map(&usage_map, "cost_usd")
-        .filter(|value| value.is_finite() && *value > 0.0);
-    if provider.eq_ignore_ascii_case("openrouter") && model_lower == OPENROUTER_GROK43_MODEL {
-        return normalize_openrouter_grok43_usage(model, usage_map);
-    }
-    if provider.eq_ignore_ascii_case("deepseek") || model_lower.contains("deepseek") {
-        usage_map.insert(
-            "provider".to_string(),
-            Value::String("deepseek".to_string()),
-        );
-        usage_map.insert("model".to_string(), Value::String(model.to_string()));
-        if reported_cost.is_none() {
-            let prompt_tokens = usage_u64_from_any(&usage_map, &["prompt_tokens", "input_tokens"]);
-            let completion_tokens =
-                usage_u64_from_any(&usage_map, &["completion_tokens", "output_tokens"]);
-            if prompt_tokens == 0 && completion_tokens == 0 {
-                return Value::Object(usage_map);
-            }
-            let cost_usd = prompt_tokens as f64 * DEEPSEEK_INPUT_USD_PER_MILLION / 1_000_000.0
-                + completion_tokens as f64 * DEEPSEEK_OUTPUT_USD_PER_MILLION / 1_000_000.0;
-            usage_map.insert("cost_usd".to_string(), json!(cost_usd));
-            usage_map.insert(
-                "cost_source".to_string(),
-                Value::String("deepseek_static_price".to_string()),
-            );
-            usage_map.insert(
-                "cost_pricing".to_string(),
-                json!({
-                    "input_usd_per_million": DEEPSEEK_INPUT_USD_PER_MILLION,
-                    "output_usd_per_million": DEEPSEEK_OUTPUT_USD_PER_MILLION,
-                }),
-            );
-        }
-        return Value::Object(usage_map);
-    }
-    Value::Object(usage_map)
-}
-
-fn normalize_openrouter_grok43_usage(model: &str, mut usage_map: Map<String, Value>) -> Value {
-    usage_map.insert(
-        "provider".to_string(),
-        Value::String("openrouter".to_string()),
+    usage_pricing::ensure_priced_usage(
+        &mut usage_map,
+        model,
+        Some(config.proposer.provider.as_str()),
     );
-    usage_map.insert("model".to_string(), Value::String(model.to_string()));
-    if usage_f64_from_map(&usage_map, "cost_usd")
-        .filter(|value| value.is_finite() && *value > 0.0)
-        .is_none()
+    let model_lower = usage_pricing::normalize_model_id(model);
+    if model_lower == OPENROUTER_GROK43_MODEL
+        && usage_u64_from_map(&usage_map, "total_tokens") > 200_000
+        && usage_map.get("cost_warning").is_none()
     {
-        let prompt_tokens = usage_u64_from_any(&usage_map, &["prompt_tokens", "input_tokens"]);
-        let completion_tokens =
-            usage_u64_from_any(&usage_map, &["completion_tokens", "output_tokens"]);
-        let cached_prompt_tokens =
-            usage_u64_from_map(&usage_map, "cached_prompt_tokens").min(prompt_tokens);
-        let billable_prompt_tokens = prompt_tokens.saturating_sub(cached_prompt_tokens);
-        let cost_usd = billable_prompt_tokens as f64 * OPENROUTER_GROK43_INPUT_USD_PER_MILLION
-            / 1_000_000.0
-            + cached_prompt_tokens as f64 * OPENROUTER_GROK43_CACHED_INPUT_USD_PER_MILLION
-                / 1_000_000.0
-            + completion_tokens as f64 * OPENROUTER_GROK43_OUTPUT_USD_PER_MILLION / 1_000_000.0;
-        usage_map.insert("cost_usd".to_string(), json!(cost_usd));
         usage_map.insert(
-            "cost_source".to_string(),
-            Value::String("openrouter_xai_grok43_static_price".to_string()),
+            "cost_warning".to_string(),
+            Value::String(
+                "OpenRouter Grok 4.3 uses tiered pricing above 200k total tokens; static \
+                 estimate uses base-tier pricing"
+                    .to_string(),
+            ),
         );
-        usage_map.insert(
-            "cost_pricing".to_string(),
-            json!({
-                "input_usd_per_million": OPENROUTER_GROK43_INPUT_USD_PER_MILLION,
-                "cached_input_usd_per_million": OPENROUTER_GROK43_CACHED_INPUT_USD_PER_MILLION,
-                "output_usd_per_million": OPENROUTER_GROK43_OUTPUT_USD_PER_MILLION,
-            }),
-        );
-        if usage_u64_from_map(&usage_map, "total_tokens") > 200_000 {
-            usage_map.insert(
-                "cost_warning".to_string(),
-                Value::String(
-                    "OpenRouter Grok 4.3 uses tiered pricing above 200k total tokens; static \
-                     estimate uses base-tier pricing"
-                        .to_string(),
-                ),
-            );
-        }
     }
     Value::Object(usage_map)
 }
@@ -575,11 +545,6 @@ fn usage_u64_from_any(map: &Map<String, Value>, keys: &[&str]) -> u64 {
 
 fn usage_u64_from_map(map: &Map<String, Value>, key: &str) -> u64 {
     usage_u64_from_any(map, &[key])
-}
-
-fn usage_f64_from_map(map: &Map<String, Value>, key: &str) -> Option<f64> {
-    map.get(key)
-        .and_then(|value| value.as_f64().or_else(|| value.as_str()?.parse().ok()))
 }
 
 fn build_staleness_review_response(
@@ -799,6 +764,10 @@ fn materialize_workspace(input: &CodexProposerInput<'_>) -> Result<()> {
         &proposal_dir.join("PROPOSAL_SCHEMA.md"),
         &proposal_schema(input),
     )?;
+    write_text(
+        &proposal_dir.join("validate.py"),
+        &proposal_validator_script(input.config.gepa.proposals_per_generation),
+    )?;
     write_json(
         &proposal_dir.join("manifest.json"),
         &json!({
@@ -826,6 +795,7 @@ fn materialize_workspace(input: &CodexProposerInput<'_>) -> Result<()> {
         &input.workspace_dir,
         input.generation,
     )?;
+    crate::operator_workspace::prepare_operator_workspace(input.config, &input.workspace_dir)?;
     let proposer_examples = proposer_examples_read_model(input);
     let proposer_failure_summary = proposer_failure_summary_read_model(input, &proposer_examples);
     let proposer_repair_hints = proposer_repair_hints_read_model(input, &proposer_examples);
@@ -939,7 +909,8 @@ fn find_jesterky_manifest_for_proposer(input: &CodexProposerInput<'_>) -> Result
         return read_jesterky_manifest(&annotate_path).map(Some);
     }
     let program_metadata = Value::Object(input.program.metadata.clone());
-    if let Some(manifest) = find_jesterky_manifest_in_value(&program_metadata, &input.workspace_dir)?
+    if let Some(manifest) =
+        find_jesterky_manifest_in_value(&program_metadata, &input.workspace_dir)?
     {
         return Ok(Some(manifest));
     }
@@ -987,7 +958,8 @@ fn find_jesterky_manifest_in_value(value: &Value, workspace_dir: &Path) -> Resul
                     if let Some(manifest) = find_jesterky_manifest_in_value(child, workspace_dir)? {
                         return Ok(Some(manifest));
                     }
-                } else if let Some(manifest) = find_jesterky_manifest_in_value(child, workspace_dir)?
+                } else if let Some(manifest) =
+                    find_jesterky_manifest_in_value(child, workspace_dir)?
                 {
                     return Ok(Some(manifest));
                 }
@@ -1036,13 +1008,21 @@ fn resolve_jesterky_manifest_path(path: &str, workspace_dir: &Path) -> PathBuf {
 
 fn resolved_prompting_best_practices(input: &CodexProposerInput<'_>) -> Result<String> {
     let prompt = &input.config.proposer.prompt;
-    if let Some(text) = prompt.best_practices.as_deref() {
-        return Ok(text.to_string());
+    let mut body = if let Some(text) = prompt.best_practices.as_deref() {
+        text.to_string()
+    } else if let Some(path) = &prompt.best_practices_path {
+        fs::read_to_string(path).map_err(|source| OptimizerError::io(path, source))?
+    } else {
+        crate::default_proposer_best_practices().to_string()
+    };
+    for path in &prompt.style_guides {
+        let extra = fs::read_to_string(path).map_err(|source| OptimizerError::io(path, source))?;
+        body.push_str("\n\n# Style guide: ");
+        body.push_str(&path.display().to_string());
+        body.push('\n');
+        body.push_str(&extra);
     }
-    if let Some(path) = &prompt.best_practices_path {
-        return fs::read_to_string(path).map_err(|source| OptimizerError::io(path, source));
-    }
-    Ok(crate::default_proposer_best_practices().to_string())
+    Ok(body)
 }
 
 fn write_workspace_pack_manifest(workspace_dir: &Path) -> Result<()> {
@@ -1249,10 +1229,10 @@ fn write_agent_artifacts(
 
 fn workspace_readme(input: &CodexProposerInput<'_>) -> String {
     let proposal_policy = proposer_policy_text(input);
-    let jesterky_rule = crate::jesterky_workflow::jesterky_workspace_rule(
-        input.config.jesterky_workflow.enabled,
-    )
-    .unwrap_or("");
+    let jesterky_rule =
+        crate::jesterky_workflow::jesterky_workspace_rule(input.config.jesterky_workflow.enabled)
+            .unwrap_or("");
+    let operator_rule = crate::operator_workspace::operator_workspace_rule(&input.config.gepa.operator);
     let jesterky_section = if input.config.jesterky_workflow.enabled {
         "13. REQUIRED: `state/jesterky_proposer_context.md`, `state/jesterky_theme_registry.json`, and `state/jesterky_trace_annotations.jsonl` for jesterky annotate themes.\n14. If present, `state/jesterky_manifest_summary.json`, `state/jesterky_trace_rows.json`, `state/jesterky_optimizer_triples.json`, and `state/jesterky_evidence_refs.json` for jesterky process-tree evidence."
     } else {
@@ -1286,12 +1266,26 @@ Reflect over the evidence like GEPA's Python workspace proposer. You have wide l
 
 {jesterky_rule}
 
+{operator_rule}
+
 {proposal_policy}
 
 Write exactly {proposal_count} distinct candidate proposals to `proposal/manifest.json`.
+
+Then submit and verify. Run:
+
+    python3 proposal/validate.py
+
+It checks the same contract the engine enforces after your turn ends: schema
+version, the required `evidence` field names, non-empty content where required,
+and the proposal count. A non-zero exit prints exactly what is wrong. Fix the
+manifest and run it again. Do not end the turn until it exits 0 — a manifest that
+fails this check is discarded and the whole run fails, even though your proposals
+were written.
 "#,
         jesterky_section = jesterky_section,
         jesterky_rule = jesterky_rule,
+        operator_rule = operator_rule,
         proposal_policy = proposal_policy,
         proposal_count = input.config.gepa.proposals_per_generation
     )
@@ -2750,6 +2744,80 @@ fn turn_start_params(input: &CodexProposerInput<'_>, model: &str) -> Result<Valu
     Ok(Value::Object(params))
 }
 
+fn schema_repair_turn_start_params(
+    input: &CodexProposerInput<'_>,
+    model: &str,
+    error: &str,
+) -> Result<Value> {
+    let mut params = Map::new();
+    params.insert("model".to_string(), Value::String(model.to_string()));
+    params.insert(
+        "input".to_string(),
+        Value::Array(vec![json!({
+            "type": "text",
+            "text": schema_repair_instructions(error),
+            "textElements": [],
+        })]),
+    );
+    if let Some(reasoning_effort) = non_empty(input.config.proposer.reasoning_effort.as_deref()) {
+        params.insert(
+            "effort".to_string(),
+            Value::String(reasoning_effort.to_string()),
+        );
+    }
+    if let Some(approval_policy) = non_empty(input.config.proposer.approval_policy.as_deref()) {
+        params.insert(
+            "approvalPolicy".to_string(),
+            Value::String(approval_policy.to_string()),
+        );
+    }
+    if let Some(sandbox_mode) = non_empty(input.config.proposer.sandbox_mode.as_deref()) {
+        params.insert(
+            "sandboxPolicy".to_string(),
+            sandbox_policy_for_mode(sandbox_mode),
+        );
+    }
+    Ok(Value::Object(params))
+}
+
+fn schema_repair_instructions(error: &str) -> String {
+    format!(
+        "The previous proposer turn wrote `proposal/manifest.json`, but the engine rejected it:\n\n\
+         {error}\n\n\
+         Read `state/schema_repair.json` and run `python3 proposal/validate.py`.\n\
+         Fix `proposal/manifest.json` so the validator exits 0. Keep the proposal payloads unless \
+         a payload key is itself invalid. `proposed_payload` may only contain the target module ids \
+         from `state/run_context.json` (for Banking77 that is `stage2_system` only — do not add \
+         keys such as `ambition_level`). Do not invent extra top-level fields. Use the exact \
+         evidence field names (`candidate_comparison`, `failure_patterns`, `winning_patterns`, \
+         `example_ids_used`, `reviewed_files`)."
+    )
+}
+
+fn write_schema_repair_hint(workspace_dir: &Path, error: &str, round: u32) -> Result<()> {
+    let state_dir = workspace_dir.join("state");
+    fs::create_dir_all(&state_dir).map_err(|source| OptimizerError::io(&state_dir, source))?;
+    write_json(
+        &state_dir.join("schema_repair.json"),
+        &json!({
+            "schema_version": "gepa_schema_repair.v1",
+            "round": round,
+            "error": error,
+            "instruction": "Fix proposal/manifest.json so python3 proposal/validate.py exits 0.",
+        }),
+    )
+}
+
+fn is_schema_repairable(err: &OptimizerError) -> bool {
+    let msg = err.to_string();
+    msg.contains("manifest")
+        || msg.contains("evidence")
+        || msg.contains("schema_version")
+        || msg.contains("proposals")
+        || msg.contains("unknown candidate field")
+        || msg.contains("proposed_payload")
+}
+
 fn staleness_turn_start_params(input: &CodexStalenessReviewerInput<'_>, model: &str) -> Value {
     let mut params = Map::new();
     params.insert("model".to_string(), Value::String(model.to_string()));
@@ -3056,6 +3124,166 @@ fn proposals_from_manifest(manifest: &Value) -> Result<Value> {
     Ok(Value::Array(proposals))
 }
 
+fn validate_proposal_payload_fields(
+    input: &CodexProposerInput<'_>,
+    proposals: &Value,
+) -> Result<()> {
+    let allowed: BTreeSet<String> = input
+        .config
+        .candidate
+        .target_modules
+        .iter()
+        .cloned()
+        .chain(input.program.mutable_field_ids().into_iter())
+        .collect();
+    if allowed.is_empty() {
+        return Ok(());
+    }
+    let Some(items) = proposals.as_array() else {
+        return Ok(());
+    };
+    for (index, item) in items.iter().enumerate() {
+        let payload = item
+            .get("proposed_payload")
+            .or_else(|| item.get("payload"))
+            .or_else(|| item.get("candidate"));
+        let Some(object) = payload.and_then(Value::as_object) else {
+            continue;
+        };
+        for key in object.keys() {
+            if !allowed.contains(key) {
+                let allowed_list = allowed.iter().cloned().collect::<Vec<_>>().join(", ");
+                return Err(OptimizerError::Proposer(format!(
+                    "proposal {index} proposed_payload has unknown candidate field {key:?}; allowed fields: {allowed_list}. Keep only those keys in proposed_payload."
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Evidence fields the engine requires on a submitted manifest. Shared between
+/// `validate_manifest_contract` (the authority, run after the turn) and the
+/// in-workspace validator the proposer runs before finishing, so the agent cannot
+/// be rejected for a rule it had no way to check.
+const REQUIRED_EVIDENCE_FIELDS: [&str; 4] = [
+    "candidate_comparison",
+    "failure_patterns",
+    "winning_patterns",
+    "example_ids_used",
+];
+
+/// Evidence fields that must be present but may legitimately be empty.
+const PRESENCE_ONLY_EVIDENCE_FIELDS: [&str; 2] = ["failure_patterns", "winning_patterns"];
+
+/// The manifest validator shipped into the proposer workspace.
+///
+/// Generated from the same field constants the engine validates against, so the
+/// proposer can check its own submission before ending the turn instead of
+/// discovering a rejection after the run has already failed. Post-turn
+/// `validate_manifest_contract` remains the authority; this only lets the agent
+/// converge on it.
+fn proposal_validator_script(expected_proposal_count: usize) -> String {
+    let required = REQUIRED_EVIDENCE_FIELDS
+        .iter()
+        .map(|field| format!("{field:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let presence_only = PRESENCE_ONLY_EVIDENCE_FIELDS
+        .iter()
+        .map(|field| format!("{field:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        r#"#!/usr/bin/env python3
+"""Validate proposal/manifest.json against the GEPA proposer contract.
+
+Run this before you finish the turn:
+
+    python3 proposal/validate.py
+
+Exit 0 means the engine will accept the manifest. Any other exit code prints the
+exact reasons; fix them and run again. Do not end the turn on a non-zero exit.
+"""
+import json
+import pathlib
+import sys
+
+SCHEMA_VERSION = {schema_version:?}
+REQUIRED_EVIDENCE_FIELDS = [{required}]
+PRESENCE_ONLY_EVIDENCE_FIELDS = [{presence_only}]
+EXPECTED_PROPOSAL_COUNT = {expected_proposal_count}
+
+path = pathlib.Path(__file__).resolve().parent / "manifest.json"
+errors = []
+
+try:
+    manifest = json.loads(path.read_text())
+except FileNotFoundError:
+    print(f"FAIL: {{path}} does not exist; write the manifest first.")
+    raise SystemExit(2)
+except json.JSONDecodeError as exc:
+    print(f"FAIL: {{path}} is not valid JSON: {{exc}}")
+    raise SystemExit(2)
+
+if not isinstance(manifest, dict):
+    print("FAIL: manifest must be a JSON object")
+    raise SystemExit(2)
+
+found = manifest.get("schema_version")
+if found != SCHEMA_VERSION:
+    errors.append(f"schema_version is {{found!r}}; expected {{SCHEMA_VERSION!r}}")
+
+evidence = manifest.get("evidence")
+if not isinstance(evidence, dict):
+    errors.append("evidence must be an object with the required fields")
+    evidence = {{}}
+
+for field in REQUIRED_EVIDENCE_FIELDS:
+    if field not in evidence:
+        near = [k for k in evidence if k != field]
+        hint = f" (present keys: {{sorted(near)}})" if near else ""
+        errors.append(
+            f"evidence.{{field}} is missing; use this exact name, do not rename it{{hint}}"
+        )
+        continue
+    if field in PRESENCE_ONLY_EVIDENCE_FIELDS:
+        continue
+    value = evidence[field]
+    if isinstance(value, str):
+        empty = not value.strip()
+    elif isinstance(value, list):
+        empty = not any(str(item).strip() for item in value)
+    else:
+        empty = value is None
+    if empty:
+        errors.append(f"evidence.{{field}} is present but empty; it must have content")
+
+proposals = manifest.get("proposals")
+if not isinstance(proposals, list):
+    alt = [k for k in ("candidates", "proposal", "outputs") if isinstance(manifest.get(k), list)]
+    hint = f" (found {{alt[0]!r}} instead; rename it to 'proposals')" if alt else ""
+    errors.append(f"proposals must be a list{{hint}}")
+elif len(proposals) != EXPECTED_PROPOSAL_COUNT:
+    errors.append(
+        f"expected exactly {{EXPECTED_PROPOSAL_COUNT}} proposals; found {{len(proposals)}}"
+    )
+
+if errors:
+    print(f"FAIL: {{len(errors)}} problem(s) in {{path}}:")
+    for error in errors:
+        print(f"  - {{error}}")
+    sys.exit(1)
+
+print(f"OK: manifest accepted ({{len(proposals)}} proposals)")
+"#,
+        schema_version = GEPA_WORKSPACE_PROPOSAL_SCHEMA_VERSION,
+        required = required,
+        presence_only = presence_only,
+        expected_proposal_count = expected_proposal_count,
+    )
+}
+
 fn validate_manifest_contract(manifest: &Value) -> Result<()> {
     let schema_version = manifest
         .get("schema_version")
@@ -3074,12 +3302,7 @@ fn validate_manifest_contract(manifest: &Value) -> Result<()> {
                 "codex app-server proposer manifest omitted required evidence object".to_string(),
             )
         })?;
-    for field in [
-        "candidate_comparison",
-        "failure_patterns",
-        "winning_patterns",
-        "example_ids_used",
-    ] {
+    for field in REQUIRED_EVIDENCE_FIELDS {
         let Some(value) = evidence.get(field) else {
             return Err(OptimizerError::Proposer(format!(
                 "codex app-server proposer evidence missing {field}"
@@ -3089,7 +3312,7 @@ fn validate_manifest_contract(manifest: &Value) -> Result<()> {
         // one-sided: all losses have no winning pattern, and all wins have no
         // failure pattern. Require the fields to be present, but do not force
         // content that the rollouts cannot ground.
-        if matches!(field, "failure_patterns" | "winning_patterns") {
+        if PRESENCE_ONLY_EVIDENCE_FIELDS.contains(&field) {
             continue;
         }
         let has_content = match value {
@@ -3277,5 +3500,20 @@ fn non_empty(value: Option<&str>) -> Option<&str> {
         None
     } else {
         Some(value)
+    }
+}
+
+
+#[cfg(test)]
+mod proposal_validator_tests {
+    use super::*;
+
+    /// Dump the generated validator so it can be exercised against real manifests.
+    #[test]
+    fn emits_validator_script() {
+        let script = proposal_validator_script(6);
+        assert!(script.contains("candidate_comparison"));
+        assert!(script.contains("example_ids_used"));
+        std::fs::write("/tmp/gepa_validate_emitted.py", &script).unwrap();
     }
 }

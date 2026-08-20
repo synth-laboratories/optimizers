@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::{
-    resolve_chatgpt_codex_home_source, resolve_proposer_auth_launch_mode, OptimizerError,
-    ProposerAuthLaunchMode, ProposerConfig, Result,
+    resolve_chatgpt_codex_home_source, resolve_proposer_auth_launch_mode, McpAgentConfig,
+    OptimizerError, ProposerAuthLaunchMode, ProposerConfig, Result,
 };
 
 /// Environment and cleanup state for a Codex app-server subprocess launch.
@@ -58,6 +58,8 @@ pub fn prepare_proposer_codex_launch(
                 proposer.base_url.as_deref(),
                 model,
                 &api_key,
+                proposer.model_context_window,
+                proposer.model_auto_compact_token_limit,
             )?;
             env_map.insert("CODEX_HOME".to_string(), codex_home.display().to_string());
             // Codex reads OPENAI_API_KEY from the subprocess environment even when the
@@ -87,6 +89,9 @@ pub fn prepare_proposer_codex_launch(
             )
         }
     };
+    if let Some(home) = &codex_home_host_path {
+        append_mcp_servers(home, &proposer.mcp)?;
+    }
     Ok(ProposerCodexLaunch {
         env_map,
         auth_home_to_cleanup,
@@ -201,6 +206,8 @@ fn prepare_api_key_codex_home(
     base_url: Option<&str>,
     model: &str,
     api_key: &str,
+    model_context_window: Option<u64>,
+    model_auto_compact_token_limit: Option<u64>,
 ) -> Result<()> {
     if destination.exists() {
         fs::remove_dir_all(destination)
@@ -209,6 +216,15 @@ fn prepare_api_key_codex_home(
     fs::create_dir_all(destination).map_err(|source| OptimizerError::io(destination, source))?;
     let config_path = destination.join("config.toml");
     let provider_base_url = base_url.or_else(|| proposer_provider_default_base_url(provider));
+    // Command-based auth, not `env_key`. Both authenticate, but OpenRouter's Codex
+    // CLI guide is explicit that with a plain `env_key` "Codex won't fetch the
+    // OpenRouter model catalog", so every non-OpenAI slug falls back to "Unknown
+    // model" metadata; command-based auth is what triggers the catalog refresh.
+    // Bad metadata means Codex sizes the turn from defaults rather than the model's
+    // real context window. The command reads OPENAI_API_KEY because the launch path
+    // already injects the resolved proposer secret into the subprocess under that
+    // name regardless of which env var the operator supplied it in, so the key stays
+    // out of config.toml.
     let provider_config = provider_base_url
         .map(|url| {
             format!(
@@ -217,17 +233,32 @@ fn prepare_api_key_codex_home(
                  [model_providers.gepa_proposer]\n\
                  name = \"GEPA proposer\"\n\
                  base_url = {url:?}\n\
-                 env_key = \"OPENAI_API_KEY\"\n\
                  wire_api = \"responses\"\n\
+                 \n\
+                 [model_providers.gepa_proposer.auth]\n\
+                 command = \"sh\"\n\
+                 args = [\"-c\", \"echo $OPENAI_API_KEY\"]\n\
                  \n"
             )
         })
         .unwrap_or_default();
+    // Codex exposes no per-call output cap; the turn budget is governed by the
+    // context window and the auto-compact threshold. Left unset, Codex falls back
+    // to defaults sized for models it ships metadata for, which truncates or
+    // compacts a large proposer turn against an unrecognised slug.
+    let mut token_config = String::new();
+    if let Some(window) = model_context_window {
+        token_config.push_str(&format!("model_context_window = {window}\n"));
+    }
+    if let Some(limit) = model_auto_compact_token_limit {
+        token_config.push_str(&format!("model_auto_compact_token_limit = {limit}\n"));
+    }
     write_text(
         &config_path,
         &format!(
             "model = {model:?}\n\
              preferred_auth_method = \"apikey\"\n\
+             {token_config}\
              {provider_config}\
              [features]\n\
              apps = false\n\
@@ -262,6 +293,43 @@ fn proposer_provider_default_base_url(provider: &str) -> Option<&'static str> {
         "nvidia" => Some("https://integrate.api.nvidia.com/v1"),
         _ => None,
     }
+}
+
+fn append_mcp_servers(codex_home: &Path, mcp: &McpAgentConfig) -> Result<()> {
+    if !mcp.enabled {
+        return Ok(());
+    }
+    let command = mcp.command.as_deref().unwrap_or("").trim();
+    let server = mcp
+        .server
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("gepa_external");
+    if command.is_empty() {
+        return Err(OptimizerError::Config(
+            "proposer.mcp.command is required when mcp.enabled".to_string(),
+        ));
+    }
+    let config_path = codex_home.join("config.toml");
+    let mut body = if config_path.exists() {
+        fs::read_to_string(&config_path).map_err(|source| OptimizerError::io(&config_path, source))?
+    } else {
+        String::new()
+    };
+    let header = format!("[mcp_servers.{server}]");
+    if body.contains(&header) {
+        return Ok(());
+    }
+    let mut parts = command.split_whitespace();
+    let cmd = parts.next().unwrap_or(server);
+    let args: Vec<String> = parts.map(|part| format!("{part:?}")).collect();
+    body.push('\n');
+    body.push_str(&header);
+    body.push('\n');
+    body.push_str(&format!("command = {cmd:?}\n"));
+    body.push_str(&format!("args = [{}]\n", args.join(", ")));
+    write_text(&config_path, &body)
 }
 
 fn write_text(path: &Path, text: &str) -> Result<()> {

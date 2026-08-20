@@ -90,6 +90,12 @@ chooses orchestration:
 - `flash_evolve` uses the same durable lanes without the full-train generation
   barrier, so proposer work for a later generation can overlap rollout/evaluate
   work from earlier generations while `max_in_flight_candidates` has capacity.
+  Dropping the barrier only controls *admission*; `pipeline.background_execution`
+  (default true for this mode, false elsewhere) is what makes admitted lanes run
+  concurrently, by dispatching leased jobs to worker threads instead of running
+  them inline on the driver tick. Measured propose/rollout overlap is reported as
+  `cursor.pipeline_state.lane_overlap.overlap_seconds`; treat that, not the mode
+  flag, as the evidence that the mode is doing anything.
   It supports `full`, `guarded`, and `reflective` staleness policies. `guarded`
   discards stale evaluate items when
   `pool_version - parent_pool_version > delta_max`. `reflective` uses a Codex

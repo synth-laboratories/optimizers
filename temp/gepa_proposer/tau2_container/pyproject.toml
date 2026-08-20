@@ -1,0 +1,10 @@
+[project]
+name = "tau2-gepa-container"
+version = "0.0.1"
+description = "GEPA http_task wrapper around τ²-bench retail"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn>=0.30",
+  "tau2 @ git+https://github.com/sierra-research/tau2-bench.git",
+]

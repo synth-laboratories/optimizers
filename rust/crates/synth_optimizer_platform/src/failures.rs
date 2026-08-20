@@ -290,6 +290,12 @@ impl FailurePayload {
                 error.to_string(),
                 true,
             ),
+            OptimizerError::SqliteAt { label, source } => Self::new(
+                OptimizerFailureType::Sqlite,
+                "sqlite_error",
+                format!("{source} (at {label})"),
+                true,
+            ),
         }
     }
 }

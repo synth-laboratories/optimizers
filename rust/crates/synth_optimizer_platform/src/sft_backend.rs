@@ -463,7 +463,9 @@ mod tests {
         let submitted = backend.submit(sample_request("sft_fake_1")).unwrap();
         assert_eq!(submitted.status, SftJobStatus::Running);
         let events = backend.poll_or_stream_events("sft_fake_1", 0).unwrap();
-        assert!(events.iter().any(|e| e.event_type == "sft.checkpoint.created"));
+        assert!(events
+            .iter()
+            .any(|e| e.event_type == "sft.checkpoint.created"));
         assert!(events.iter().all(|e| e.algorithm_id() == "sft"));
 
         backend.pause("sft_fake_1").unwrap();

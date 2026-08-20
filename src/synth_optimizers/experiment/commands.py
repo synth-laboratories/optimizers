@@ -51,6 +51,14 @@ def register(subcommands: argparse._SubParsersAction) -> None:
     resume = commands.add_parser("resume", help="Continue a frozen plan. Refuses to start one.")
     common(resume)
     resume.add_argument("--limit", type=int)
+    resume.add_argument(
+        "--retry-rig-failures",
+        action="store_true",
+        help=(
+            "Re-dispatch trials whose sealed failure was the rig's, not the arm's. "
+            "The superseded row stays in the log and the report counts every retry."
+        ),
+    )
 
     aa = commands.add_parser(
         "aa", help="A/A preflight: run the baseline against itself to test isolation."
@@ -85,7 +93,10 @@ def dispatch(args: argparse.Namespace) -> int:
         )
         return 1
     if command in ("run", "resume", "aa"):
-        summary = runner.run(limit=getattr(args, "limit", None))
+        summary = runner.run(
+            limit=getattr(args, "limit", None),
+            retry_rig_failures=getattr(args, "retry_rig_failures", False),
+        )
         report = runner.report()
         payload = {"run": summary.to_json(), "report": report.to_json()}
         return _emit(args, payload, _render_report(report, summary.stopped_reason))

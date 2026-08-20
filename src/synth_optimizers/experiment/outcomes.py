@@ -36,11 +36,18 @@ class OutcomeConflict:
 
 @dataclass(frozen=True, slots=True)
 class OutcomeSet:
+    #: The winning row per trial: the highest attempt.
     rows: tuple[TrialOutcome, ...]
     conflicts: tuple[OutcomeConflict, ...]
+    #: Rows a later attempt superseded, kept so a retry is never invisible.
+    superseded: tuple[TrialOutcome, ...] = ()
 
     def by_trial(self) -> dict[str, TrialOutcome]:
         return {row.trial_id: row for row in self.rows}
+
+    @property
+    def retried_trial_ids(self) -> tuple[str, ...]:
+        return tuple(sorted({row.trial_id for row in self.superseded}))
 
     def __iter__(self) -> Iterator[TrialOutcome]:
         return iter(self.rows)
@@ -68,9 +75,10 @@ class OutcomeLog:
     def load(self) -> OutcomeSet:
         if not self.path.is_file():
             return OutcomeSet(rows=(), conflicts=())
-        first: dict[str, TrialOutcome] = {}
-        digests: dict[str, str] = {}
+        winner: dict[str, TrialOutcome] = {}
+        digests: dict[tuple[str, int], str] = {}
         conflicts: list[OutcomeConflict] = []
+        superseded: list[TrialOutcome] = []
         for number, raw in enumerate(self.path.read_text(encoding="utf-8").splitlines(), start=1):
             if not raw.strip():
                 continue
@@ -82,22 +90,40 @@ class OutcomeLog:
                 ) from error
             outcome = TrialOutcome.from_mapping(payload)
             digest = digest_of(payload)
-            if outcome.trial_id in first:
-                if digests[outcome.trial_id] != digest:
+            key = (outcome.trial_id, outcome.attempt)
+            if key in digests:
+                # Two rows for the same attempt are a contradiction, not a
+                # retry: something sealed the same trial twice with different
+                # content and only one of them can be true.
+                if digests[key] != digest:
                     conflicts.append(
                         OutcomeConflict(
                             trial_id=outcome.trial_id,
-                            first_digest=digests[outcome.trial_id],
+                            first_digest=digests[key],
                             second_digest=digest,
                         )
                     )
                 continue
-            first[outcome.trial_id] = outcome
-            digests[outcome.trial_id] = digest
-        return OutcomeSet(rows=tuple(first.values()), conflicts=tuple(conflicts))
+            digests[key] = digest
+            held = winner.get(outcome.trial_id)
+            if held is None:
+                winner[outcome.trial_id] = outcome
+            elif outcome.attempt > held.attempt:
+                superseded.append(held)
+                winner[outcome.trial_id] = outcome
+            else:
+                superseded.append(outcome)
+        return OutcomeSet(
+            rows=tuple(winner.values()),
+            conflicts=tuple(conflicts),
+            superseded=tuple(superseded),
+        )
 
     def sealed_trial_ids(self) -> set[str]:
         return set(self.load().by_trial())
+
+    def last_attempt(self, trial_id: str) -> TrialOutcome | None:
+        return self.load().by_trial().get(trial_id)
 
 
 def reduce_replicates(

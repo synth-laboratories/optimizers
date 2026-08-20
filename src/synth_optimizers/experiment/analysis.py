@@ -256,7 +256,7 @@ def reduce_experiment(
         for secondary_metric in design.get("secondary_metrics", [])
     }
     fairness = _fairness(plan, rows)
-    totals = _totals(plan, rows, by_trial)
+    totals = _totals(plan, rows, by_trial, retried=outcomes.retried_trial_ids)
     claim = _claim(
         plan,
         mode=mode,
@@ -265,6 +265,7 @@ def reduce_experiment(
         fairness=fairness,
         totals=totals,
         conflicts=outcomes.conflicts,
+        retried=outcomes.retried_trial_ids,
     )
     return ExperimentReport(
         experiment_id=plan.experiment_id,
@@ -530,7 +531,11 @@ def _median(values: Sequence[float]) -> float:
 
 
 def _totals(
-    plan: ExperimentPlan, rows: Sequence[TrialOutcome], by_trial: dict[str, TrialOutcome]
+    plan: ExperimentPlan,
+    rows: Sequence[TrialOutcome],
+    by_trial: dict[str, TrialOutcome],
+    *,
+    retried: Sequence[str] = (),
 ) -> dict[str, Any]:
     planned = len(plan.trials)
     sealed = sum(1 for trial in plan.trials if trial.trial_id in by_trial)
@@ -553,6 +558,7 @@ def _totals(
         "elapsed_seconds": (
             (max(finishes) - min(starts)).total_seconds() if starts and finishes else None
         ),
+        "retried_trials": len(retried),
         "unplanned_rows": sorted(
             {row.trial_id for row in rows} - {trial.trial_id for trial in plan.trials}
         ),
@@ -568,6 +574,7 @@ def _claim(
     fairness: FairnessFacts,
     totals: dict[str, Any],
     conflicts: Sequence[Any],
+    retried: Sequence[str] = (),
 ) -> ClaimVerdict:
     design = plan.design
     blockers: list[str] = []
@@ -577,6 +584,13 @@ def _claim(
         blockers.append(
             "this is an A/A run: it tests identity and isolation, and three blocks of "
             "the same arm cannot establish a noise ceiling"
+        )
+    if retried:
+        # Not a blocker: a rig failure is not evidence about an arm. It is
+        # never silent either -- a rig that needed retries is a fact about the
+        # comparison, and the superseded rows stay in the log.
+        notes.append(
+            f"{len(retried)} trial(s) were re-dispatched after a rig failure: {list(retried)[:5]}"
         )
     if conflicts:
         blockers.append(f"{len(conflicts)} trial id(s) were sealed twice with different content")

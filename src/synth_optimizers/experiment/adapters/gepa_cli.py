@@ -317,6 +317,14 @@ class GepaCliAdapter:
         from ...gepa import _toml_dumps
 
         trial = dict(context.trial.trial_derived)
+        if context.attempt:
+            # A retry runs in its own directory and under its own run id; GEPA
+            # resumes its own workspace, so reusing them would replay the run
+            # the retry exists to clear.
+            suffix = f"_r{context.attempt}"
+            trial["run_id"] = f"{trial['run_id']}{suffix}"
+            trial["cache_namespace"] = trial["run_id"]
+            trial["config_path"] = str(Path(trial["config_path"]).with_name(f"config{suffix}.toml"))
         correlation = context.correlation.to_json()
         document = self._render(
             context.spec, context.treatment, trial=trial, correlation=correlation
@@ -376,6 +384,7 @@ class GepaCliAdapter:
         }
         infra = {
             "cache_namespace": trial["cache_namespace"],
+            "attempt": context.attempt,
             "config_path": str(config_path),
             "config_digest": digest_of(
                 tomllib.loads(config_path.read_text(encoding="utf-8"))

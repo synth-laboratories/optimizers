@@ -532,3 +532,96 @@ def test_a_registration_missing_the_protocol_is_refused():
         register_adapter(NoId)
     with pytest.raises(ExperimentContractError, match="from_spec"):
         register_adapter(NoFactory)
+
+
+class FlakyOnceExecutor(FakeExecutor):
+    """Fails every trial on the first pass, succeeds on any re-dispatch."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.seen: set[str] = set()
+
+    def run(self, request, *, on_event, should_cancel, heartbeat):
+        first = request.trial_id not in self.seen
+        self.seen.add(request.trial_id)
+        if first:
+            import time as _t
+
+            from synth_optimizers.eval.executor import TrialExecution
+
+            return TrialExecution(
+                exit_code=1,
+                timed_out=False,
+                cancelled=False,
+                started_at=_t.time(),
+                finished_at=_t.time(),
+                stderr_tail="container vanished",
+            )
+        return super().run(
+            request, on_event=on_event, should_cancel=should_cancel, heartbeat=heartbeat
+        )
+
+
+def test_a_rig_failure_can_be_retried_and_the_retry_is_never_silent(tmp_path, rig):
+    _, _, spec_path = rig
+    root = tmp_path / "exp"
+    spec = load_spec(spec_path)
+    executor = FlakyOnceExecutor()
+
+    first = ExperimentRunner(spec, adapter_for(spec, executor), root)
+    first.run()
+    assert first.report().totals["completed_trials"] == 0
+    assert not first.report().claim.allowed
+
+    second = ExperimentRunner(spec, adapter_for(spec, executor), root)
+    assert second.run(retry_rig_failures=True).dispatched == 8
+    report = second.report()
+
+    assert report.totals["completed_trials"] == 8
+    assert report.totals["retried_trials"] == 8
+    # The superseded failures are still in the log; nothing was edited away.
+    rows = second.outcomes.load()
+    assert len(rows.superseded) == 8
+    assert all(row.attempt == 0 for row in rows.superseded)
+    assert all(row.attempt == 1 and row.supersedes for row in rows.rows)
+    assert any("re-dispatched after a rig failure" in note for note in report.claim.notes)
+    assert report.claim.allowed, report.claim.blockers
+
+
+def test_only_the_rigs_failures_are_retryable(tmp_path, rig):
+    from synth_optimizers.experiment.models import RETRYABLE_FAILURE_CLASSES
+
+    _, _, spec_path = rig
+    root = tmp_path / "exp"
+    spec = load_spec(spec_path)
+    runner = ExperimentRunner(spec, adapter_for(spec, FakeExecutor()), root)
+    runner.run(limit=1)
+    row = runner.outcomes.load().rows[0]
+
+    # A completed trial is never re-dispatched, whatever the flag says.
+    assert not row.retryable
+    from dataclasses import replace
+
+    assert replace(row, status="failed", failure_class="rig").retryable
+    assert replace(row, status="failed", failure_class="infra").retryable
+    # The thing under test, and the ceilings that may *be* the arm difference,
+    # stay sealed: retrying them would be selecting for the result you wanted.
+    assert not replace(row, status="failed", failure_class="policy").retryable
+    assert not replace(row, status="failed", failure_class="budget").retryable
+    assert not replace(row, status="timeout", failure_class="timeout").retryable
+    assert RETRYABLE_FAILURE_CLASSES == frozenset({"rig", "infra"})
+
+
+def test_two_rows_for_one_attempt_are_still_a_contradiction(tmp_path, rig):
+    _, _, spec_path = rig
+    root = tmp_path / "exp"
+    runner, _, _ = run_experiment(spec_path, root, FakeExecutor())
+    duplicate = runner.outcomes.load().rows[0].to_json()
+    duplicate["metrics"] = {"reward": 99.0}
+    with open(runner.outcomes.path, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(duplicate) + "\n")
+
+    reloaded = runner.outcomes.load()
+    assert len(reloaded.conflicts) == 1
+    assert reloaded.superseded == ()
+    assert not runner.report().claim.allowed

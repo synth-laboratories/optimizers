@@ -13,7 +13,8 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 
-from .episode import build_run_request, parse_episode, program_for_task
+from .ascope_harvest import harvest_episode_dir
+from .episode import build_run_request, parse_episode, program_for_task, TERMINAL_STATUSES
 from .fixtures import all_tasks, by_task_id, fork_cursor
 from .optimizer_client import OptimizerClient
 from .scoring import score_episode
@@ -67,6 +68,7 @@ _ARM_PASSTHROUGH_FIELDS = (
     "allow_unverified_model",
     "codex_home",
     "proposer_timeout_seconds",
+    "proposer_stall_seconds",
     "model_context_window",
     "model_auto_compact_token_limit",
     "label",
@@ -124,11 +126,11 @@ def _reward_combine(episode: dict[str, Any]) -> dict[str, Any]:
         "exploration_weight": float(reward.get("exploration_weight", 1.0)),
         "exploitation_weight": float(reward.get("exploitation_weight", 1.0)),
         "eval_uplift_weight": float(reward.get("eval_uplift_weight", 1.0)),
-        "confidence_weight": float(reward.get("confidence_weight", 0.0)),
-        "time_weight": float(reward.get("time_weight", 0.0)),
-        "cost_weight": float(reward.get("cost_weight", 0.0)),
-        "milestones_weight": float(reward.get("milestones_weight", 0.0)),
-        "rubrics_weight": float(reward.get("rubrics_weight", 0.0)),
+        "confidence_weight": float(reward.get("confidence_weight", 1.0 if reward.get("confidence") else 0.0)),
+        "time_weight": float(reward.get("time_weight", 1.0 if reward.get("time") else 0.0)),
+        "cost_weight": float(reward.get("cost_weight", 1.0 if reward.get("cost") else 0.0)),
+        "milestones_weight": float(reward.get("milestones_weight", 1.0 if reward.get("milestones") else 0.0)),
+        "rubrics_weight": float(reward.get("rubrics_weight", 1.0 if reward.get("rubrics") else 0.0)),
     }
 
 
@@ -182,6 +184,7 @@ def _score_record(record: dict[str, Any]) -> dict[str, Any]:
             "episode": record.get("episode") or {},
             "arm": record.get("arm") or {},
             "downstream": record.get("downstream") or {},
+            "output_dir": record.get("output_dir"),
         },
     )
     skip_heldout = bool((record.get("episode") or {}).get("skip_heldout"))
@@ -213,6 +216,13 @@ def _score_record(record: dict[str, Any]) -> dict[str, Any]:
     record["reward_details"] = scored
     record["completed_at"] = _now()
     record["updated_at"] = _now()
+    return _attach_ascope(record)
+
+
+def _attach_ascope(record: dict[str, Any]) -> dict[str, Any]:
+    root = record.get("output_dir")
+    if root:
+        record["ascope"] = harvest_episode_dir(root)
     return record
 
 
@@ -289,7 +299,7 @@ async def _ingest_terminal(record: dict[str, Any], finished: dict[str, Any]) -> 
             "refusing a reward from a non-succeeded run"
         )
         record["updated_at"] = _now()
-        return record
+        return _attach_ascope(record)
     return _score_record(record)
 
 
@@ -341,13 +351,26 @@ async def _run_live_episode(rollout_id: str) -> None:
     if record is None:
         return
     try:
-        STORE.put_rollout(await _execute_live(record))
+        if record.get("optimizer_run_id"):
+            finished = await _wait_existing(record)
+        else:
+            finished = await _execute_live(record)
+        STORE.put_rollout(finished)
     except Exception as exc:  # pragma: no cover - live path
         record["status"] = "failed"
         record["success_status"] = "failed"
         record["error"] = str(exc)
         record["updated_at"] = _now()
         STORE.put_rollout(record)
+
+
+@app.on_event("startup")
+def _resume_in_flight_rollouts() -> None:
+    if not OPTIMIZER.live:
+        return
+    for record in STORE.list_rollouts():
+        if record.get("status") == "running" and record.get("optimizer_run_id"):
+            _spawn_live_episode(str(record["rollout_id"]))
 
 
 def _new_rollout(
@@ -681,10 +704,22 @@ async def rollout(request: Request) -> Any:
 @app.get("/rollouts/{rollout_id}")
 @app.get("/rollouts/{rollout_id}/state")
 @app.get("/rollouts/{rollout_id}/summary")
-def rollout_get(rollout_id: str) -> dict[str, Any]:
+async def rollout_get(rollout_id: str) -> dict[str, Any]:
     record = STORE.get_rollout(rollout_id)
     if record is None:
         raise HTTPException(status_code=404, detail="rollout not found")
+    if (
+        record.get("status") == "running"
+        and OPTIMIZER.live
+        and record.get("optimizer_run_id")
+    ):
+        try:
+            finished = await OPTIMIZER.aget_run(str(record["optimizer_run_id"])) or {}
+            if str(finished.get("status") or "") in TERMINAL_STATUSES:
+                record = await _ingest_terminal(record, finished)
+                STORE.put_rollout(record)
+        except Exception:
+            record = STORE.get_rollout(rollout_id) or record
     return _public_record(record)
 
 

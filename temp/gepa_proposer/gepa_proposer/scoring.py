@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Mapping
 
 from .pricing import episode_cost_usd
 
 DEFAULT_EXPLORATION_REDUCE = "mean"
+
+
+def _flag_weight(raw: Mapping[str, Any], include_key: str, weight_key: str) -> float:
+    if weight_key in raw and raw[weight_key] is not None:
+        return float(raw[weight_key])
+    return 1.0 if raw.get(include_key) else 0.0
 
 
 def _combine_settings(combine: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -27,11 +35,11 @@ def _combine_settings(combine: Mapping[str, Any] | None) -> dict[str, Any]:
         "include_cost": bool(raw.get("include_cost", False)),
         "include_milestones": bool(raw.get("include_milestones", False)),
         "include_rubrics": bool(raw.get("include_rubrics", False)),
-        "confidence_weight": float(raw.get("confidence_weight", 0.0)),
-        "time_weight": float(raw.get("time_weight", 0.0)),
-        "cost_weight": float(raw.get("cost_weight", 0.0)),
-        "milestones_weight": float(raw.get("milestones_weight", 0.0)),
-        "rubrics_weight": float(raw.get("rubrics_weight", 0.0)),
+        "confidence_weight": _flag_weight(raw, "include_confidence", "confidence_weight"),
+        "time_weight": _flag_weight(raw, "include_time", "time_weight"),
+        "cost_weight": _flag_weight(raw, "include_cost", "cost_weight"),
+        "milestones_weight": _flag_weight(raw, "include_milestones", "milestones_weight"),
+        "rubrics_weight": _flag_weight(raw, "include_rubrics", "rubrics_weight"),
     }
 
 
@@ -222,6 +230,74 @@ def _mean_rubric(candidates: list[dict[str, Any]]) -> float | None:
     return sum(values) / len(values)
 
 
+_SEVERITY_SCORE = {
+    "none": 1.0,
+    "low": 0.75,
+    "medium": 0.5,
+    "high": 0.25,
+    "critical": 0.0,
+}
+
+
+def _jesterky_annotation_rows(context: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    root = (context or {}).get("output_dir")
+    if not root:
+        return []
+    states = sorted(
+        Path(str(root)).glob("**/proposer_workspaces/generation_*/state/jesterky_trace_annotations.jsonl")
+    )
+    if not states:
+        return []
+    rows: list[dict[str, Any]] = []
+    try:
+        text = states[-1].read_text(encoding="utf-8")
+    except OSError:
+        return []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def _jesterky_confidence(rows: list[dict[str, Any]]) -> float | None:
+    if not rows:
+        return None
+    bad = 0
+    for row in rows:
+        severity = str(row.get("severity") or "").strip().lower()
+        if row.get("blocker") or severity in {"high", "critical"}:
+            bad += 1
+    return 1.0 - (bad / len(rows))
+
+
+def _jesterky_rubric(rows: list[dict[str, Any]]) -> float | None:
+    if not rows:
+        return None
+    scores: list[float] = []
+    for row in rows:
+        raw = row.get("reward")
+        try:
+            reward = None if raw is None else float(raw)
+        except (TypeError, ValueError):
+            reward = None
+        if reward is not None and reward != 0.0:
+            scores.append(reward)
+            continue
+        severity = str(row.get("severity") or "none").strip().lower()
+        scores.append(_SEVERITY_SCORE.get(severity, 0.5))
+    return sum(scores) / len(scores)
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
 def _optional_terms(
     settings: Mapping[str, Any],
     *,
@@ -238,6 +314,8 @@ def _optional_terms(
 
     if settings["include_confidence"]:
         value = _mean_confidence(episode_candidates)
+        if value is None:
+            value = _jesterky_confidence(_jesterky_annotation_rows(ctx))
         if value is None and missing_fail:
             raise ValueError("confidence evidence missing and combine.missing='fail'")
         extras["confidence"] = 0.0 if value is None else value
@@ -276,6 +354,8 @@ def _optional_terms(
 
     if settings["include_rubrics"]:
         value = _mean_rubric(episode_candidates)
+        if value is None:
+            value = _jesterky_rubric(_jesterky_annotation_rows(ctx))
         if value is None and missing_fail:
             raise ValueError("rubric evidence missing and combine.missing='fail'")
         extras["rubrics"] = 0.0 if value is None else value

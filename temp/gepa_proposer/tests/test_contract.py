@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import copy
+import json
 import time
 from pathlib import Path
 from typing import Any
@@ -9,7 +11,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from gepa_proposer import app as app_mod
-from gepa_proposer.episode import build_run_request, parse_episode
+from gepa_proposer.optimizer_client import OptimizerClient
+from gepa_proposer.episode import build_run_request, parse_episode, program_for_task
 from gepa_proposer.fixtures import by_task_id
 from gepa_proposer.scoring import score_episode
 from gepa_proposer.store import JsonStore
@@ -172,6 +175,40 @@ def test_pause_resume_survives_process_restart(tmp_path: Path) -> None:
     resumed = c2.post(f"/rollouts/{started['rollout_id']}/resume").json()
     assert resumed["status"] == "running"
     assert resumed["paused"] is False
+
+
+def test_get_ingests_terminal_gepa_run_after_proposer_restart(tmp_path: Path) -> None:
+    class TerminalFake(FakeOptimizer):
+        async def aget_run(self, run_id: str) -> dict[str, Any]:
+            return {"run_id": run_id, "status": "succeeded"}
+
+    fake = TerminalFake()
+    c = client(tmp_path, optimizer=fake)
+    spec = by_task_id("train:1")
+    cursor = copy.deepcopy(spec["cursor"])
+    app_mod.STORE.put_rollout(
+        {
+            "rollout_id": "r-live",
+            "task_id": "train:1",
+            "run_id": "episode-r-live",
+            "status": "running",
+            "success_status": "running",
+            "arm": {"model": "gpt-5.6-luna", "reasoning_effort": "low"},
+            "episode": {"proposer_rounds": 1, "skip_heldout": False},
+            "inner_url": "http://127.0.0.1:8765",
+            "downstream": spec.get("downstream"),
+            "pre_fork_cursor": copy.deepcopy(cursor),
+            "cursor": cursor,
+            "optimizer_run_id": "opt-ingested",
+            "created_at": "2026-08-20T00:00:00Z",
+            "updated_at": "2026-08-20T00:00:00Z",
+            "paused": False,
+        }
+    )
+    got = c.get("/rollouts/r-live").json()
+    assert got["status"] == "completed"
+    assert got["reward"] is not None
+    assert got["optimizer_status"] == "succeeded"
 
 
 def test_checkpoint_and_resume_async(tmp_path: Path) -> None:
@@ -894,6 +931,116 @@ def test_optional_reward_terms_use_cursor_evidence() -> None:
     )
 
 
+def test_jesterky_annotations_fill_confidence_and_rubrics(tmp_path: Path) -> None:
+    state = (
+        tmp_path
+        / "gepa_abc"
+        / "proposer_workspaces"
+        / "generation_000"
+        / "state"
+    )
+    state.mkdir(parents=True)
+    (state / "jesterky_trace_annotations.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"severity": "medium", "blocker": False, "reward": 0.0}),
+                json.dumps({"severity": "high", "blocker": False, "reward": 0.0}),
+                json.dumps({"severity": "none", "blocker": False, "reward": 0.0}),
+            ]
+        )
+        + "\n"
+    )
+    scored = score_episode(
+        pre_fork=[
+            {
+                "candidate_id": "parent",
+                "train_scores": [{"example_id": "train:0", "reward": 0.4}],
+                "heldout_reward": 0.5,
+            }
+        ],
+        episode_candidates=[
+            {
+                "candidate_id": "child",
+                "train_scores": [{"example_id": "train:0", "reward": 0.7}],
+                "heldout_reward": 0.8,
+            }
+        ],
+        post_candidates=[
+            {
+                "candidate_id": "parent",
+                "train_scores": [{"example_id": "train:0", "reward": 0.4}],
+                "heldout_reward": 0.5,
+            },
+            {
+                "candidate_id": "child",
+                "train_scores": [{"example_id": "train:0", "reward": 0.7}],
+                "heldout_reward": 0.8,
+            },
+        ],
+        best_candidate_id="child",
+        combine={
+            "include_confidence": True,
+            "include_rubrics": True,
+        },
+        context={"output_dir": str(tmp_path)},
+    )
+    extras = scored["optional_terms"]
+    assert extras["confidence"] == pytest.approx(1.0 - 1 / 3)
+    assert extras["rubrics"] == pytest.approx((0.5 + 0.25 + 1.0) / 3)
+    assert extras["confidence"] != 0.0
+    assert extras["rubrics"] != 0.0
+
+
+def test_missing_fail_rejects_absent_confidence_and_accepts_jesterky(tmp_path: Path) -> None:
+    base = {
+        "pre_fork": [
+            {
+                "candidate_id": "parent",
+                "train_scores": [{"example_id": "train:0", "reward": 0.4}],
+                "heldout_reward": 0.5,
+            }
+        ],
+        "episode_candidates": [
+            {
+                "candidate_id": "child",
+                "train_scores": [{"example_id": "train:0", "reward": 0.7}],
+                "heldout_reward": 0.8,
+            }
+        ],
+        "post_candidates": [
+            {
+                "candidate_id": "parent",
+                "train_scores": [{"example_id": "train:0", "reward": 0.4}],
+                "heldout_reward": 0.5,
+            },
+            {
+                "candidate_id": "child",
+                "train_scores": [{"example_id": "train:0", "reward": 0.7}],
+                "heldout_reward": 0.8,
+            },
+        ],
+        "best_candidate_id": "child",
+    }
+    with pytest.raises(ValueError, match="confidence evidence missing"):
+        score_episode(
+            **base,
+            combine={"include_confidence": True, "missing": "fail"},
+            context={"output_dir": str(tmp_path)},
+        )
+    state = tmp_path / "gepa_abc" / "proposer_workspaces" / "generation_000" / "state"
+    state.mkdir(parents=True)
+    (state / "jesterky_trace_annotations.jsonl").write_text(
+        json.dumps({"severity": "low", "blocker": False, "reward": 0.0}) + "\n"
+    )
+    scored = score_episode(
+        **base,
+        combine={"include_confidence": True, "include_rubrics": True, "missing": "fail"},
+        context={"output_dir": str(tmp_path)},
+    )
+    assert scored["optional_terms"]["confidence"] == pytest.approx(1.0)
+    assert scored["optional_terms"]["rubrics"] == pytest.approx(0.75)
+
+
 def test_zero_cost_usd_with_tokens_is_priced_not_free() -> None:
     scored = score_episode(
         pre_fork=[
@@ -1083,6 +1230,8 @@ def test_schema_repair_and_jesterky_bulk_reach_the_gepa_wire() -> None:
     )
     assert body["advanced"]["proposer_io"]["schema_repair_rounds"] == 1
     assert body["advanced"]["jesterky_workflow"]["bulk"] is True
+    assert body["advanced"]["jesterky_workflow"]["enabled"] is True
+    assert body["advanced"]["jesterky_workflow"]["fail_closed"] is False
     assert body["advanced"]["operator"]["scratchpad"]["enabled"] is True
     assert body["advanced"]["operator"]["manderqueue"]["fail_closed"] is False
     parsed = parse_episode(
@@ -1097,3 +1246,240 @@ def test_schema_repair_and_jesterky_bulk_reach_the_gepa_wire() -> None:
     assert parsed["schema_repair_rounds"] == 2
     assert parsed["jesterky_bulk"] is True
 
+
+def test_jesterky_enabled_without_bulk_survives_parse_episode() -> None:
+    spec = by_task_id("train:1")
+    parsed = parse_episode(
+        {
+            "episode": {
+                "proposer_rounds": 1,
+                "skip_heldout": False,
+                "jesterky": True,
+                "jesterky_bulk": False,
+                "jesterky_workflow": {
+                    "enabled": True,
+                    "bulk": False,
+                    "fail_closed": False,
+                    "command": "/tmp/jesterky",
+                },
+            }
+        }
+    )
+    assert parsed["jesterky"] is True
+    assert parsed["jesterky_bulk"] is False
+    body = build_run_request(
+        spec=spec,
+        cursor=spec["cursor"],
+        arm={"model": "gpt-5.6-luna", "reasoning_effort": "low"},
+        episode=parsed,
+        container_url="http://127.0.0.1:8765",
+        run_id="ascope-jesterky-cap",
+    )
+    assert body["advanced"]["jesterky_workflow"]["enabled"] is True
+    assert body["advanced"]["jesterky_workflow"]["bulk"] is False
+    assert body["advanced"]["jesterky_workflow"]["command"] == "/tmp/jesterky"
+
+
+def test_ascope_mcp_and_code_lever_reach_the_gepa_wire() -> None:
+    tau = by_task_id("tau2:1")
+    body = build_run_request(
+        spec=tau,
+        cursor=tau["cursor"],
+        arm={"model": "gpt-5.6-luna", "reasoning_effort": "low"},
+        episode={
+            "proposer_rounds": 1,
+            "skip_heldout": False,
+            "jesterky": True,
+            "operator": {
+                "levers": {"prompt": True, "code": True, "harness": True},
+                "mcp_agent": {
+                    "enabled": True,
+                    "command": "npx -y @modelcontextprotocol/server-filesystem .",
+                    "server": "workspace_fs",
+                },
+            },
+        },
+        container_url="http://127.0.0.1:8774",
+        run_id="ascope-mcp",
+    )
+    mcp = body["advanced"]["operator"]["mcp_agent"]
+    assert mcp["enabled"] is True
+    assert "npx" in mcp["command"]
+    assert mcp["server"] == "workspace_fs"
+    assert body["advanced"]["jesterky_workflow"]["enabled"] is True
+    program = program_for_task(tau)
+    assert program["target_modules"][0]["candidate_field"] == "domain_policy"
+
+
+def test_manderqueue_stub_serves_operator_guidance() -> None:
+    import socket
+    import threading
+    from urllib.request import urlopen
+
+    from gepa_proposer.mq_stub import serve
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = int(sock.getsockname()[1])
+    server = serve("127.0.0.1", port, thread_id="gepa-ascope", message="prefer generalization")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        health = json.loads(urlopen(f"http://127.0.0.1:{port}/health", timeout=2).read())
+        assert health["ok"] is True
+        messages = json.loads(
+            urlopen(f"http://127.0.0.1:{port}/v1/threads/gepa-ascope/messages", timeout=2).read()
+        )
+        assert messages[0]["body"] == "prefer generalization"
+        assert "heldout" not in messages[0]["body"].lower()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_ascope_harvest_reads_operator_workspace(tmp_path: Path) -> None:
+    from gepa_proposer.ascope_harvest import harvest_episode_dir
+
+    state = (
+        tmp_path
+        / "gepa_abc"
+        / "proposer_workspaces"
+        / "generation_000"
+        / "state"
+    )
+    state.mkdir(parents=True)
+    workspace = state.parent
+    (state / "scratchpad.md").write_text("# GEPA shared scratchpad\n")
+    (state / "guidance.md").write_text("# Operator guidance\n\n- prefer generalization\n")
+    (state / "hypotheses.json").write_text(
+        json.dumps({"schema_version": "gepa_hypotheses.v1", "open": [{"id": "h1"}], "retired": []})
+    )
+    (state / "manderqueue_inbox.json").write_text(
+        json.dumps(
+            {
+                "ok": True,
+                "base_url": "http://127.0.0.1:9",
+                "messages": [{"body": "prefer generalization"}],
+            }
+        )
+    )
+    (state / "mcp_agent.json").write_text(
+        json.dumps({"enabled": True, "server": "workspace_fs"})
+    )
+    (state / "operator.json").write_text(
+        json.dumps({"levers": {"prompt": True, "code": True}, "control": {"pause": True}})
+    )
+    (workspace / ".codex_home").mkdir()
+    (workspace / ".codex_home" / "config.toml").write_text("[mcp_servers.workspace_fs]\ncommand = \"npx\"\n")
+    (workspace / "jesterky_workflow_receipt.json").write_text(
+        json.dumps({"enabled": True, "annotated": 2})
+    )
+    (state / "jesterky_proposer_context.md").write_text("# jesterky themes\n")
+    (state / "jesterky_theme_registry.json").write_text("[]")
+    (state / "jesterky_trace_annotations.jsonl").write_text("{}\n")
+    (tmp_path / "candidate_registry.json").write_text(
+        json.dumps(
+            [
+                {
+                    "candidate_id": "gepa_new",
+                    "payload": {"domain_policy": "AUTH then CANCEL"},
+                    "lever_bundle": {"mutated_lever_ids": ["domain_policy"]},
+                }
+            ]
+        )
+    )
+    harvested = harvest_episode_dir(tmp_path)
+    assert harvested["ok"] is True
+    assert harvested["scratchpad"] is True
+    assert harvested["guidance_has_messages"] is True
+    assert harvested["hypotheses_open"] == 1
+    assert harvested["manderqueue_messages"] == 1
+    assert harvested["mcp_in_codex_config"] is True
+    assert harvested["jesterky_annotated"] == 2
+    assert harvested["jesterky_context"] is True
+    assert harvested["jesterky_themes"] is True
+    assert harvested["jesterky_annotations"] is True
+    assert harvested["mutated_lever_ids"] == ["domain_policy"]
+    assert harvested["payload_fields"] == ["domain_policy"]
+    assert harvested["code_lever_mutated"] is True
+
+
+def test_manderqueue_base_url_reaches_the_gepa_wire() -> None:
+    spec = by_task_id("train:1")
+    body = build_run_request(
+        spec=spec,
+        cursor=spec["cursor"],
+        arm={"model": "gpt-5.6-luna", "reasoning_effort": "low"},
+        episode={
+            "proposer_rounds": 1,
+            "skip_heldout": False,
+            "operator": {
+                "manderqueue": {
+                    "enabled": True,
+                    "fail_closed": False,
+                    "base_url": "http://127.0.0.1:18765",
+                    "thread_id": "gepa-ascope",
+                }
+            },
+        },
+        container_url="http://127.0.0.1:8765",
+        run_id="ascope-mq",
+    )
+    mq = body["advanced"]["operator"]["manderqueue"]
+    assert mq["base_url"] == "http://127.0.0.1:18765"
+    assert mq["thread_id"] == "gepa-ascope"
+
+
+def test_openrouter_arm_raises_jsonrpc_stall_budget(monkeypatch: Any) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    spec = by_task_id("train:1")
+    body = build_run_request(
+        spec=spec,
+        cursor=spec["cursor"],
+        arm={
+            "provider": "openrouter",
+            "model": "nvidia/nemotron-3.5-lightning",
+            "allow_unverified_model": True,
+            "model_context_window": 1000000,
+        },
+        episode={"proposer_rounds": 1, "skip_heldout": False},
+        container_url="http://127.0.0.1:8765",
+        run_id="ascope-stall",
+    )
+    io = body["advanced"]["proposer_io"]
+    assert io["timeout_seconds"] == 600
+    assert io["message_stall_timeout_seconds"] >= 300
+
+
+def test_run_poll_retries_transient_sqlite_lock(monkeypatch: Any) -> None:
+    client = OptimizerClient(base_url="http://unused.test")
+    responses: list[Any] = [
+        RuntimeError(
+            'GET /runs/run-1 -> 500: {"error":{"message":'
+            '"sqlite error: database is locked"}}'
+        ),
+        {"status": "completed"},
+    ]
+
+    def fake_get_run(_run_id: str) -> dict[str, Any]:
+        response = responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    monkeypatch.setattr(client, "get_run", fake_get_run)
+    result = client.wait_until_terminal("run-1", timeout_seconds=1, poll_seconds=0)
+    assert result["status"] == "completed"
+
+
+def test_async_run_poll_does_not_hide_unrelated_server_error(monkeypatch: Any) -> None:
+    client = OptimizerClient(base_url="http://unused.test")
+
+    async def fake_get_run(_run_id: str) -> dict[str, Any]:
+        raise RuntimeError("GET /runs/run-1 -> 500: unrelated failure")
+
+    monkeypatch.setattr(client, "aget_run", fake_get_run)
+    with pytest.raises(RuntimeError, match="unrelated failure"):
+        asyncio.run(
+            client.await_until_terminal("run-1", timeout_seconds=1, poll_seconds=0)
+        )

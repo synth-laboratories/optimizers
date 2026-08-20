@@ -1239,11 +1239,16 @@ struct GepaRunContext {
     /// Worker threads that execute leased lane jobs off the driver tick. `None`
     /// for `sync_serial` and for any async plan with
     /// `pipeline.background_execution = false`, which keeps the pre-2026-08-19
-    /// inline behaviour.
+    /// inline behaviour. Service ticks park this on the process-global map
+    /// keyed by `run_id` so the pool survives `advance_gepa_config_once`.
     lane_executor: Option<lane_executor::LaneExecutorPool>,
     /// Measured propose/rollout wall-clock overlap. This is the number that
     /// decides whether FlashEvolve is earning its name on a workload.
     lane_overlap: lane_executor::LaneOverlapTracker,
+    /// First-tick bootstrap events (`gepa.run.started`, container/taskset
+    /// loads). Service ticks reopen context every step; re-emitting these
+    /// fills the event feed without advancing the run.
+    emit_bootstrap_events: bool,
     container_process: Option<ManagedContainerProcess>,
     client: Option<ContainerClient>,
     program: Option<PromptProgram>,
@@ -2323,13 +2328,15 @@ fn open_gepa_run_context(
         .latest_checkpoint(&config.run.run_id, GEPA_CURSOR_CHECKPOINT_KIND)?
         .is_some();
     let registry = RunRegistry::new(&paths.run_registry_path);
-    registry.append(&RunRegistryEntry::started(
-        &paths,
-        &config,
-        cache_mode,
-        &cache_namespace,
-    ))?;
-    append_global_gepa_run_index(&paths, &config, options.owning_service_url.as_deref())?;
+    if !is_resumed_run {
+        registry.append(&RunRegistryEntry::started(
+            &paths,
+            &config,
+            cache_mode,
+            &cache_namespace,
+        ))?;
+        append_global_gepa_run_index(&paths, &config, options.owning_service_url.as_deref())?;
+    }
     // Hard-limit gate: every emit checks the budget and refuses the
     // write when usage is at or above the hard floor, so the jsonl
     // never partial-appends under ENOSPC pressure. `with_disk_budget`
@@ -2343,36 +2350,44 @@ fn open_gepa_run_context(
     .with_optimizer_context(&config.run.run_id, "gepa")
     .with_disk_budget(disk_budget.clone());
     let mut state_machine = OptimizerStateMachine::new(config.run.run_id.clone());
-    transition_run(
-        &workspace,
-        &mut events,
-        &mut state_machine,
-        Some(&transitions),
-        OptimizerRunState::Initializing,
-        OptimizerTransitionTrigger::RunStarted,
-        "GEPA run initializing",
-        json!({
-            "run_id": config.run.run_id,
-            "proposer_model": &config.proposer.model,
-            "policy_model": &config.policy.model,
-            "policy_provider": &config.policy.provider,
-            "train_split": &config.taskset.train_split,
-            "heldout_split": &config.taskset.heldout_split,
-            "train_ids": &config.taskset.train_ids,
-            "heldout_ids": &config.taskset.heldout_ids,
-        }),
-    )?;
-    events.emit(
-        "gepa.run.started",
-        "GEPA run started",
-        json!({
-            "run_id": config.run.run_id,
-            "container_url": config.container.url,
-            "run_registry_path": paths.run_registry_path,
-            "state": state_machine.state().as_str(),
-        }),
-    )?;
+    let emit_bootstrap_events = !is_resumed_run;
+    if emit_bootstrap_events {
+        transition_run(
+            &workspace,
+            &mut events,
+            &mut state_machine,
+            Some(&transitions),
+            OptimizerRunState::Initializing,
+            OptimizerTransitionTrigger::RunStarted,
+            "GEPA run initializing",
+            json!({
+                "run_id": config.run.run_id,
+                "proposer_model": &config.proposer.model,
+                "policy_model": &config.policy.model,
+                "policy_provider": &config.policy.provider,
+                "train_split": &config.taskset.train_split,
+                "heldout_split": &config.taskset.heldout_split,
+                "train_ids": &config.taskset.train_ids,
+                "heldout_ids": &config.taskset.heldout_ids,
+            }),
+        )?;
+        events.emit(
+            "gepa.run.started",
+            "GEPA run started",
+            json!({
+                "run_id": config.run.run_id,
+                "container_url": config.container.url,
+                "run_registry_path": paths.run_registry_path,
+                "state": state_machine.state().as_str(),
+            }),
+        )?;
+    }
     let cache = RequestCache::open(&cache_path, cache_mode)?;
+    let parked = lane_executor::take_parked_lane_runtime(&config.run.run_id);
+    let (lane_executor, lane_overlap) = match parked {
+        Some(parked) => (Some(parked.executor), parked.overlap),
+        None => (None, lane_executor::LaneOverlapTracker::new()),
+    };
     Ok(GepaRunContext {
         paths,
         workspace,
@@ -2385,8 +2400,9 @@ fn open_gepa_run_context(
         config,
         cache_mode,
         cache_namespace,
-        lane_executor: None,
-        lane_overlap: lane_executor::LaneOverlapTracker::new(),
+        lane_executor,
+        lane_overlap,
+        emit_bootstrap_events,
         container_process: None,
         client: None,
         program: None,
@@ -2428,7 +2444,8 @@ fn ensure_container_inputs(context: &mut GepaRunContext) -> Result<GepaContainer
             metadata: Map::new(),
         }),
     )?;
-    context.events.emit(
+    emit_bootstrap_event(
+        context,
         "container.contract.verified",
         "Container advertised GEPA contract",
         serde_json::to_value(&metadata)?,
@@ -2454,14 +2471,16 @@ fn ensure_container_inputs(context: &mut GepaRunContext) -> Result<GepaContainer
             program
                 .metadata
                 .insert("task_info".to_string(), task_info.clone());
-            context.events.emit(
+            emit_bootstrap_event(
+                context,
                 "container.task_info.loaded",
                 "Container task info loaded",
                 task_info,
             )?;
         }
         Err(error) => {
-            context.events.emit(
+            emit_bootstrap_event(
+                context,
                 "container.task_info.missing",
                 "Container task info route was unavailable; proposer will infer task from program and rollouts",
                 json!({"error": error.to_string()}),
@@ -2498,7 +2517,8 @@ fn ensure_container_inputs(context: &mut GepaRunContext) -> Result<GepaContainer
                 metadata: Map::new(),
             },
         ))?;
-    context.events.emit(
+    emit_bootstrap_event(
+        context,
         "container.program.loaded",
         "Prompt program loaded",
         json!({
@@ -2609,7 +2629,8 @@ fn ensure_container_inputs(context: &mut GepaRunContext) -> Result<GepaContainer
             taskset_metadata: &taskset_value,
         },
     )?;
-    context.events.emit(
+    emit_bootstrap_event(
+        context,
         "taskset.tasks.loaded",
         "Taskset tasks loaded",
         json!({
@@ -2630,7 +2651,8 @@ fn ensure_container_inputs(context: &mut GepaRunContext) -> Result<GepaContainer
     context
         .workspace
         .record_objective_set(&context.config.run.run_id, &objective_set)?;
-    context.events.emit(
+    emit_bootstrap_event(
+        context,
         "objective_set.declared",
         "Objective set declared",
         json!({
@@ -2641,10 +2663,12 @@ fn ensure_container_inputs(context: &mut GepaRunContext) -> Result<GepaContainer
             "objectives": objective_set.objectives.clone(),
         }),
     )?;
-    if matches!(
-        context.state_machine.state(),
-        OptimizerRunState::Initializing | OptimizerRunState::Restoring
-    ) {
+    if context.emit_bootstrap_events
+        && matches!(
+            context.state_machine.state(),
+            OptimizerRunState::Initializing | OptimizerRunState::Restoring
+        )
+    {
         transition_run(
             &context.workspace,
             &mut context.events,
@@ -2688,6 +2712,7 @@ fn initialize_or_restore_cursor(workspace: &WorkspaceStore, run_id: &str) -> Res
 fn restore_gepa_run_state(context: &mut GepaRunContext) -> Result<GepaRunState> {
     let cursor = initialize_or_restore_cursor(&context.workspace, &context.config.run.run_id)?;
     restore_state_machine_from_cursor(context, &cursor)?;
+    ensure_resumed_state_machine_allows_progress(context, cursor.phase.clone())?;
     let mut candidates: Vec<CandidateRecord> = cursor
         .candidates
         .as_array()
@@ -2797,21 +2822,113 @@ fn restore_state_machine_from_cursor(
     Ok(())
 }
 
+/// Service ticks rebuild `GepaRunContext` with a fresh `Created` machine.
+/// Skipping bootstrap events used to also skip `RunStarted`/`ContainerReady`,
+/// so finalize saw `created -> completed` and failed a run that already had
+/// heldout evidence.
+fn ensure_resumed_state_machine_allows_progress(
+    context: &mut GepaRunContext,
+    phase: GepaCursorPhase,
+) -> Result<()> {
+    if context.state_machine.state().is_terminal() {
+        return Ok(());
+    }
+    if matches!(context.state_machine.state(), OptimizerRunState::Created) {
+        transition_run(
+            &context.workspace,
+            &mut context.events,
+            &mut context.state_machine,
+            Some(&context.transitions),
+            OptimizerRunState::Initializing,
+            OptimizerTransitionTrigger::RunStarted,
+            "GEPA run initializing",
+            json!({
+                "resumed": true,
+                "phase": phase.as_str(),
+            }),
+        )?;
+    }
+    if matches!(phase, GepaCursorPhase::Initializing) {
+        return Ok(());
+    }
+    if matches!(
+        context.state_machine.state(),
+        OptimizerRunState::Initializing | OptimizerRunState::Restoring
+    ) {
+        transition_run(
+            &context.workspace,
+            &mut context.events,
+            &mut context.state_machine,
+            Some(&context.transitions),
+            OptimizerRunState::Ready,
+            OptimizerTransitionTrigger::ContainerReady,
+            "Container, program, and taskset ready",
+            json!({
+                "resumed": true,
+                "phase": phase.as_str(),
+            }),
+        )?;
+    }
+    Ok(())
+}
+
+fn cursor_has_hydrated_container_inputs(state: &GepaRunState) -> bool {
+    !state.cursor.program.is_null()
+        && !state.cursor.objective_set.is_null()
+        && state
+            .cursor
+            .train_rows
+            .as_array()
+            .is_some_and(|rows| !rows.is_empty())
+        && state
+            .cursor
+            .rollout_task_id
+            .as_ref()
+            .is_some_and(|id| !id.is_empty())
+}
+
+fn attach_container_client(context: &mut GepaRunContext) -> Result<()> {
+    if context.client.is_some() {
+        return Ok(());
+    }
+    let container_url = context
+        .config
+        .container
+        .url
+        .clone()
+        .ok_or_else(|| OptimizerError::Config("container.url is required".to_string()))?;
+    let client = ContainerClient::with_headers_and_bearer_env(
+        container_url,
+        context.config.container.headers.clone(),
+        context.config.container.auth_bearer_env.as_deref(),
+    )?;
+    context.client = Some(client);
+    Ok(())
+}
+
 fn ensure_step_resources(
     context: &mut GepaRunContext,
     state: &GepaRunState,
 ) -> Result<GepaStepResources> {
     if context.client.is_none() {
-        let inputs = ensure_container_inputs(context)?;
-        context.container_process = inputs._container_process;
-        context.client = Some(inputs.client);
-        context.program = Some(inputs.program);
-        context.objective_set = Some(inputs.objective_set);
-        context.train_rows = inputs.train_rows;
-        context.minibatch_rows = inputs.minibatch_rows;
-        context.reflection_rows = inputs.reflection_rows;
-        context.heldout_rows = inputs.heldout_rows;
-        context.rollout_task_id = Some(inputs.rollout_task_id);
+        // Service ticks reopen context. Reloading /metadata + /taskset on every
+        // tick (including during proposer, which does not need the inner
+        // container) can knock the inner HTTP server over. After the cursor has
+        // program/taskset, attach a client without bootstrapping.
+        if !context.emit_bootstrap_events && cursor_has_hydrated_container_inputs(state) {
+            attach_container_client(context)?;
+        } else {
+            let inputs = ensure_container_inputs(context)?;
+            context.container_process = inputs._container_process;
+            context.client = Some(inputs.client);
+            context.program = Some(inputs.program);
+            context.objective_set = Some(inputs.objective_set);
+            context.train_rows = inputs.train_rows;
+            context.minibatch_rows = inputs.minibatch_rows;
+            context.reflection_rows = inputs.reflection_rows;
+            context.heldout_rows = inputs.heldout_rows;
+            context.rollout_task_id = Some(inputs.rollout_task_id);
+        }
     }
     if !state.cursor.program.is_null() {
         context.program = Some(serde_json::from_value(state.cursor.program.clone())?);
@@ -2922,7 +3039,16 @@ fn persist_gepa_run_state(
     state.cursor.heldout_rows = serde_json::to_value(&resources.heldout_rows)?;
     state.cursor.program = serde_json::to_value(&resources.program)?;
     state.cursor.objective_set = serde_json::to_value(&resources.objective_set)?;
-    state.cursor.state_history = serde_json::to_value(&context.state_machine.history)?;
+    let history_value = serde_json::to_value(&context.state_machine.history)?;
+    let keep_existing_history = context.state_machine.history.is_empty()
+        && state
+            .cursor
+            .state_history
+            .as_array()
+            .is_some_and(|rows| !rows.is_empty());
+    if !keep_existing_history {
+        state.cursor.state_history = history_value;
+    }
     let mut metadata = metadata_with_pipeline_state(context, state, metadata)?;
     crate::episode::copy_episode_into(&mut metadata, &state.cursor);
     if matches!(
@@ -3171,7 +3297,44 @@ pub(crate) fn advance_gepa_config_once(
 ) -> Result<GepaAdvanceOutcome> {
     let mut context = open_gepa_run_context(config, &options)?;
     let mut state = restore_gepa_run_state(&mut context)?;
-    advance_gepa_once(&mut context, &mut state, mode, &options)
+    let outcome = advance_gepa_once(&mut context, &mut state, mode, &options);
+    let terminal = outcome.as_ref().map(|value| value.terminal).unwrap_or(false);
+    park_or_shutdown_lane_runtime(&mut context, terminal);
+    outcome
+}
+
+fn park_or_shutdown_lane_runtime(context: &mut GepaRunContext, terminal: bool) {
+    let run_id = context.config.run.run_id.clone();
+    if terminal {
+        if let Some(mut pool) = context.lane_executor.take() {
+            pool.shutdown();
+        }
+        lane_executor::shutdown_parked_lane_runtime(&run_id);
+        return;
+    }
+    let Some(executor) = context.lane_executor.take() else {
+        return;
+    };
+    let overlap = std::mem::replace(
+        &mut context.lane_overlap,
+        lane_executor::LaneOverlapTracker::new(),
+    );
+    lane_executor::park_lane_runtime(
+        run_id,
+        lane_executor::ParkedLaneRuntime { executor, overlap },
+    );
+}
+
+fn emit_bootstrap_event(
+    context: &mut GepaRunContext,
+    event_type: &str,
+    message: &str,
+    payload: Value,
+) -> Result<()> {
+    if !context.emit_bootstrap_events {
+        return Ok(());
+    }
+    context.events.emit(event_type, message, payload)
 }
 
 fn advance_gepa_once(
@@ -3698,6 +3861,11 @@ fn consume_async_lane_work(
             .optimizer_job(&context.config.run.run_id, &job_id)?;
         match job.status {
             OptimizerJobStatus::Completed => {
+                if !job_has_foldable_runtime_outcome(&job) {
+                    // Lane worker marks Completed before the driver writes
+                    // runtime_outcome. Another service worker can see that gap.
+                    continue;
+                }
                 restore_async_partial_as_active(state, lease.partial_id.as_deref())?;
                 if lease.lane == "propose" {
                     state.cursor.pipeline_state.parent_pool_version =
@@ -7292,6 +7460,16 @@ fn advance_pending_runtime_job(
             )
         }
         OptimizerJobStatus::Completed => {
+            if !job_has_foldable_runtime_outcome(&job) {
+                return Ok(GepaAdvanceOutcome {
+                    action: planner::GepaTickAction::Noop,
+                    terminal: false,
+                    result: None,
+                    message: format!(
+                        "lane job {job_id} is terminal without runtime_outcome; waiting to fold"
+                    ),
+                });
+            }
             consume_completed_runtime_job(context, state, resources, job)
         }
         OptimizerJobStatus::Failed
@@ -7490,14 +7668,7 @@ fn fold_completed_runtime_job_execution(
         let rollout_count = runtime_rollout_success_count(&outcome);
         record_adaptive_rollout_success(context, state, plan, rollout_count)?;
     }
-    let stored = stored_runtime_outcome(&outcome)?;
-    let mut updated_job = context
-        .workspace
-        .optimizer_job(&context.config.run.run_id, job_id)?;
-    updated_job
-        .payload
-        .insert("runtime_outcome".to_string(), serde_json::to_value(stored)?);
-    context.workspace.record_optimizer_job(&updated_job)?;
+    attach_runtime_outcome_to_job(&context.workspace, &context.config.run.run_id, job_id, &outcome)?;
     if let Some(active) = state.active_evaluation.as_mut() {
         active.planned_job_id = Some(job_id.to_string());
     }
@@ -7519,6 +7690,21 @@ fn fold_completed_runtime_job_execution(
         result: None,
         message: "executed GEPA runtime job".to_string(),
     })
+}
+
+pub(crate) fn attach_runtime_outcome_to_job(
+    workspace: &WorkspaceStore,
+    run_id: &str,
+    job_id: &str,
+    outcome: &runtime::RuntimeEffectOutcome,
+) -> Result<()> {
+    let stored = stored_runtime_outcome(outcome)?;
+    let mut updated_job = workspace.optimizer_job(run_id, job_id)?;
+    updated_job
+        .payload
+        .insert("runtime_outcome".to_string(), serde_json::to_value(stored)?);
+    workspace.record_optimizer_job(&updated_job)?;
+    Ok(())
 }
 
 fn stored_runtime_outcome(outcome: &runtime::RuntimeEffectOutcome) -> Result<StoredRuntimeOutcome> {
@@ -7963,6 +8149,10 @@ fn runtime_outcome_from_job(job: &OptimizerJob) -> Result<StoredRuntimeOutcome> 
         ))
     })?;
     serde_json::from_value(value).map_err(OptimizerError::from)
+}
+
+fn job_has_foldable_runtime_outcome(job: &OptimizerJob) -> bool {
+    job.payload.get("runtime_outcome").is_some()
 }
 
 fn advance_initializing(
@@ -13699,6 +13889,7 @@ fn finalize_completed_gepa_run(
             metadata,
         },
     )?;
+    ensure_resumed_state_machine_allows_progress(context, GepaCursorPhase::Finalizing)?;
     if !context.state_machine.state().is_terminal() {
         transition_run(
             &context.workspace,

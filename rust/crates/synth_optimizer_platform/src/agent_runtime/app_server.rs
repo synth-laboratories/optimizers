@@ -248,6 +248,9 @@ impl CodexAppServerClient {
                     ));
                 }
             };
+            if self.auto_resolve_mcp_elicitation(&message)? {
+                continue;
+            }
             if message.get("id").and_then(Value::as_u64) == Some(id)
                 && message.get("method").is_none()
             {
@@ -261,6 +264,25 @@ impl CodexAppServerClient {
             }
             deferred.push(message);
         }
+    }
+
+    /// Unattended GEPA cannot pop an MCP elicitation UI. Auto-accept so
+    /// `npx @modelcontextprotocol/server-filesystem` tool calls resume instead of
+    /// stalling until `codex app-server timed out waiting for response`.
+    fn auto_resolve_mcp_elicitation(&mut self, message: &Value) -> Result<bool> {
+        if message.get("method").and_then(Value::as_str) != Some("mcpServer/elicitation/request")
+        {
+            return Ok(false);
+        }
+        let Some(id) = message.get("id") else {
+            return Ok(false);
+        };
+        self.send(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": { "action": "accept" }
+        }))?;
+        Ok(true)
     }
 
     pub fn wait_for_turn_started(
@@ -291,6 +313,9 @@ impl CodexAppServerClient {
                     ));
                 }
             };
+            if self.auto_resolve_mcp_elicitation(&message)? {
+                continue;
+            }
             if message.get("id").and_then(Value::as_u64) == Some(request_id)
                 && message.get("method").is_none()
             {
@@ -344,6 +369,9 @@ impl CodexAppServerClient {
                     ));
                 }
             };
+            if self.auto_resolve_mcp_elicitation(&message)? {
+                continue;
+            }
             let method = message
                 .get("method")
                 .and_then(Value::as_str)

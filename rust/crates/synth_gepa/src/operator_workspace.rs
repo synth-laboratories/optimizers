@@ -12,7 +12,8 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 use synth_optimizer_platform::{
-    GepaOperatorConfig, ManderqueueConfig, OptimizerError, Result, SynthOptimizerConfig,
+    GepaOperatorConfig, LeverSurfaceConfig, ManderqueueConfig, OptimizerError, Result,
+    SynthOptimizerConfig,
 };
 
 pub fn prepare_operator_workspace(
@@ -107,6 +108,26 @@ pub fn operator_workspace_rule(operator: &GepaOperatorConfig) -> String {
     lines.join("\n")
 }
 
+/// Prompt / code / harness class for a candidate payload field.
+pub fn lever_class(field: &str) -> &'static str {
+    match field.trim().to_ascii_lowercase().as_str() {
+        "domain_policy" | "code" | "python" | "patch" | "source" | "script" => "code",
+        "harness" | "env" | "tools" | "container" | "env_config" | "container_config" => "harness",
+        _ => "prompt",
+    }
+}
+
+pub fn retain_target_modules_for_levers(
+    modules: &mut Vec<String>,
+    levers: &LeverSurfaceConfig,
+) {
+    modules.retain(|field| match lever_class(field) {
+        "code" => levers.code,
+        "harness" => levers.harness,
+        _ => levers.prompt,
+    });
+}
+
 pub fn harvest_operator_workspace(workspace_dir: &Path) -> Result<Value> {
     let state_dir = workspace_dir.join("state");
     let hypotheses = read_json_if_exists(&state_dir.join("hypotheses.json"))?;
@@ -184,8 +205,11 @@ fn sync_manderqueue_inbox(
             })
         }
     };
-    write_json(&state_dir.join("manderqueue_inbox.json"), &snapshot)?;
-    let guidance = guidance_markdown(&snapshot);
+    write_json(
+        &state_dir.join("manderqueue_inbox.json"),
+        &redact_json_split_leaks(&snapshot),
+    )?;
+    let guidance = redact_split_leak_terms(&guidance_markdown(&snapshot));
     let path = state_dir.join("guidance.md");
     fs::write(&path, guidance).map_err(|source| OptimizerError::io(&path, source))?;
     Ok(())
@@ -256,6 +280,48 @@ fn fetch_manderqueue_messages(mq: &ManderqueueConfig, run_id: &str) -> Result<Va
         "run_id": run_id,
         "messages": messages,
     }))
+}
+
+const SPLIT_LEAK_TERMS: &[&str] = &[
+    "heldout_",
+    "heldout",
+    "val_score",
+    "pareto_eval",
+    "pareto_front",
+    "win_counts",
+    "candidate_selector",
+    "algorithm_read_model",
+    "gepa_sidecar",
+    "frontier_cells",
+];
+
+fn redact_split_leak_terms(text: &str) -> String {
+    let mut out = text.to_string();
+    for term in SPLIT_LEAK_TERMS {
+        loop {
+            let lower = out.to_ascii_lowercase();
+            let Some(at) = lower.find(term) else {
+                break;
+            };
+            out.replace_range(at..at + term.len(), "[redacted]");
+        }
+    }
+    out
+}
+
+fn redact_json_split_leaks(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let redacted = map
+                .iter()
+                .map(|(key, child)| (key.clone(), redact_json_split_leaks(child)))
+                .collect();
+            Value::Object(redacted)
+        }
+        Value::Array(items) => Value::Array(items.iter().map(redact_json_split_leaks).collect()),
+        Value::String(text) => Value::String(redact_split_leak_terms(text)),
+        other => other.clone(),
+    }
 }
 
 fn guidance_markdown(snapshot: &Value) -> String {
@@ -378,5 +444,45 @@ mod tests {
         assert_eq!(harvested["guidance_exists"], true);
         assert_eq!(harvested["manderqueue_inbox"]["ok"], true);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn levers_keep_prompt_and_drop_code_when_code_disabled() {
+        let mut modules = vec![
+            "stage2_system".to_string(),
+            "domain_policy".to_string(),
+            "harness".to_string(),
+        ];
+        retain_target_modules_for_levers(
+            &mut modules,
+            &LeverSurfaceConfig {
+                prompt: true,
+                code: false,
+                harness: false,
+            },
+        );
+        assert_eq!(modules, vec!["stage2_system".to_string()]);
+        let mut code_only = vec!["domain_policy".to_string(), "stage2_system".to_string()];
+        retain_target_modules_for_levers(
+            &mut code_only,
+            &LeverSurfaceConfig {
+                prompt: false,
+                code: true,
+                harness: false,
+            },
+        );
+        assert_eq!(code_only, vec!["domain_policy".to_string()]);
+    }
+
+    #[test]
+    fn operator_guidance_redacts_heldout_leak_terms() {
+        let raw = "Prefer heldout-stable prompt edits. Do not overfit the minibatch.";
+        let redacted = redact_split_leak_terms(raw);
+        assert!(!redacted.to_ascii_lowercase().contains("heldout"));
+        assert!(redacted.contains("[redacted]"));
+        let json = redact_json_split_leaks(&json!({
+            "messages": [{"body": "heldout split labels"}]
+        }));
+        assert_eq!(json["messages"][0]["body"], "[redacted] split labels");
     }
 }

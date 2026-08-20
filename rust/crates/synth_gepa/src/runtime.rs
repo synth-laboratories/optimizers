@@ -439,6 +439,7 @@ impl<'a> GepaRuntimeExecutor<'a> {
                 metadata,
             },
         )?;
+        crate::attach_runtime_outcome_to_job(self.workspace, run_id, &claimed.job_id, &outcome)?;
         ensure_job_lease(self.workspace, run_id, &claimed.job_id, &lease_id)?;
         Ok(outcome)
     }

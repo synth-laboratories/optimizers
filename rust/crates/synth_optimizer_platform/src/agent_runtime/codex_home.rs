@@ -318,18 +318,32 @@ fn append_mcp_servers(codex_home: &Path, mcp: &McpAgentConfig) -> Result<()> {
         String::new()
     };
     let header = format!("[mcp_servers.{server}]");
-    if body.contains(&header) {
-        return Ok(());
+    if !body.contains(&header) {
+        let mut parts = command.split_whitespace();
+        let cmd = parts.next().unwrap_or(server);
+        let args: Vec<String> = parts.map(|part| format!("{part:?}")).collect();
+        body.push('\n');
+        body.push_str(&header);
+        body.push('\n');
+        body.push_str(&format!("command = {cmd:?}\n"));
+        body.push_str(&format!("args = [{}]\n", args.join(", ")));
+        write_text(&config_path, &body)?;
     }
-    let mut parts = command.split_whitespace();
-    let cmd = parts.next().unwrap_or(server);
-    let args: Vec<String> = parts.map(|part| format!("{part:?}")).collect();
-    body.push('\n');
-    body.push_str(&header);
-    body.push('\n');
-    body.push_str(&format!("command = {cmd:?}\n"));
-    body.push_str(&format!("args = [{}]\n", args.join(", ")));
-    write_text(&config_path, &body)
+    if let Some(state_dir) = codex_home.parent().map(|parent| parent.join("state")) {
+        if state_dir.is_dir() {
+            let receipt = state_dir.join("mcp_codex_receipt.json");
+            let payload = serde_json::json!({
+                "schema_version": "gepa_mcp_codex_receipt.v1",
+                "mcp_in_codex_config": true,
+                "server": server,
+                "command": command,
+                "config_path": config_path.display().to_string(),
+            });
+            fs::write(&receipt, serde_json::to_vec_pretty(&payload)?)
+                .map_err(|source| OptimizerError::io(&receipt, source))?;
+        }
+    }
+    Ok(())
 }
 
 fn write_text(path: &Path, text: &str) -> Result<()> {

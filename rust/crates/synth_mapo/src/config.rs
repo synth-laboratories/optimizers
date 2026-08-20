@@ -230,12 +230,22 @@ impl MapoConfig {
                     .to_string(),
             ));
         }
-        if !matches!(
-            self.mapo.proposer_mode.as_str(),
-            "deterministic_grid" | "external"
-        ) {
+        if self.mapo.proposer_mode == "deterministic_grid" {
             return Err(OptimizerError::Config(
-                "mapo.proposer_mode must be deterministic_grid or external".to_string(),
+                "mapo.proposer_mode = \"deterministic_grid\" was removed: it never read a rollout, \
+                 so it replayed the same hand-written protocols regardless of evidence. \
+                 Use \"codex_app_server\" and configure [proposer]."
+                    .to_string(),
+            ));
+        }
+        if self.mapo.proposer_mode != "codex_app_server" {
+            return Err(OptimizerError::Config(
+                "mapo.proposer_mode must be codex_app_server".to_string(),
+            ));
+        }
+        if self.proposer.backend != "codex_app_server" {
+            return Err(OptimizerError::Config(
+                "mapo requires proposer.backend = \"codex_app_server\"".to_string(),
             ));
         }
         if !matches!(
@@ -490,7 +500,7 @@ impl Default for MapoAlgorithmConfig {
 }
 
 fn default_proposer_mode() -> String {
-    "deterministic_grid".to_string()
+    "codex_app_server".to_string()
 }
 
 fn default_max_generations() -> usize {

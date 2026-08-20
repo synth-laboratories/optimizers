@@ -14,7 +14,7 @@ use crate::executor::{
     execute_candidate_branch_rollouts, execute_candidate_rollouts, execute_candidate_task_rollouts,
     rollout_request,
 };
-use crate::proposer::propose_candidates;
+use crate::proposer::{propose_candidates, MapoProposerInput};
 use crate::review::build_mapo_review_rows;
 use crate::scoring::{mapo_score_better, MapoHeldoutComparison, MapoScore};
 
@@ -34,6 +34,7 @@ pub struct MapoRunResult {
     pub baseline_heldout_rollouts: Vec<MapoRolloutRecord>,
     pub heldout_rollouts: Vec<MapoRolloutRecord>,
     pub heldout_comparison: Option<MapoHeldoutComparison>,
+    pub proposer_receipts: Vec<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub debrief_evidence: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -100,6 +101,7 @@ fn execute_mapo_with_options_inner(
     let mut heldout_rollouts = Vec::new();
     let mut heldout_comparison = None;
     let mut preview_requests = Vec::new();
+    let mut proposer_receipts: Vec<Value> = Vec::new();
 
     let container_url = config
         .container
@@ -152,9 +154,48 @@ fn execute_mapo_with_options_inner(
             container_url,
             config.mapo.container_connect_timeout_seconds,
         )?;
+        // Evaluate the seed before the first proposal. The grid proposer ignored
+        // evidence, so it did not matter that generation 1 ran before any
+        // rollout existed; a proposer that reads rollouts would have been handed
+        // an empty workspace and asked to diagnose a team it had never seen.
+        {
+            let records = execute_candidate_rollouts(
+                &client,
+                &config,
+                &champion,
+                "train",
+                "g0_seed",
+                &config.taskset.train_seeds,
+                config.mapo.rollouts_per_candidate,
+            )?;
+            champion.train_score = Some(MapoScore::from_rollouts(&records));
+            train_rollouts.extend(records);
+            candidates.clear();
+            candidates.push(champion.clone());
+        }
+
         for generation in 1..=config.mapo.max_generations {
-            let mut generation_candidates =
-                propose_candidates(&champion, generation, config.mapo.proposals_per_generation);
+            let proposal = propose_candidates(MapoProposerInput {
+                config: &config,
+                parent: &champion,
+                candidates: &candidates,
+                train_rollouts: &train_rollouts,
+                branch_checkpoints: &branch_checkpoints,
+                generation,
+                workspace_dir: run_dir
+                    .join("proposer_workspaces")
+                    .join(format!("generation_{generation:03}")),
+            })?;
+            proposer_receipts.push(proposal.receipt);
+            write_json_pretty(
+                &artifact_dir.join("mapo_proposer_receipts.json"),
+                &json!({
+                    "schema_version": "mapo_proposer_receipts.v1",
+                    "run_id": &config.run.run_id,
+                    "receipts": &proposer_receipts,
+                }),
+            )?;
+            let mut generation_candidates = proposal.candidates;
             generation_candidates.push(champion.clone());
             let mut evaluated_generation = Vec::new();
             for (candidate_index, candidate) in generation_candidates.into_iter().enumerate() {
@@ -431,6 +472,7 @@ fn execute_mapo_with_options_inner(
         baseline_heldout_rollouts,
         heldout_rollouts,
         heldout_comparison,
+        proposer_receipts,
         debrief_evidence,
         campaign_manifest_receipt,
         rollout_request_preview,

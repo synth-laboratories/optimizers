@@ -107,12 +107,14 @@ class RunSettingsTomlSection(BaseModel):
     run_id: str = "gepa_sdk_run"
     output_dir: str | Path = "runs"
     seed: int = 0
+    correlation: dict[str, Any] | None = None
 
     def to_domain(self) -> "RunSettings":
         return RunSettings(
             run_id=self.run_id,
             output_dir=self.output_dir,
             seed=self.seed,
+            correlation=dict(self.correlation) if self.correlation else None,
         )
 
 
@@ -618,13 +620,22 @@ class RunSettings:
     run_id: str = "gepa_sdk_run"
     output_dir: str | Path = "runs"
     seed: int = 0
+    #: `synth.correlation.v1`, set only when an experiment dispatched this run.
+    #: Carried verbatim so the manifest and run registry can be joined back to
+    #: the trial; nothing in this process reads it.
+    correlation: dict[str, Any] | None = None
 
     def to_toml(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "run_id": self.run_id,
             "output_dir": str(self.output_dir),
             "seed": int(self.seed),
         }
+        if self.correlation is not None:
+            # Absent rather than empty: a run nobody dispatched must not grow a
+            # correlation key that later reads as a join to nothing.
+            payload["correlation"] = dict(self.correlation)
+        return payload
 
 
 @dataclass(slots=True)

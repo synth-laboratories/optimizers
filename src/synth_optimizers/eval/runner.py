@@ -43,6 +43,7 @@ from .models import (
     ContainerResult,
     EvalContractError,
     PolicyCandidate,
+    SeedLedger,
     SelectionDecision,
     TrialKey,
     TrialRecord,
@@ -73,6 +74,8 @@ class WorkerManifest:
     home: Path
     candidate_set_path: Path
     session_ref: str | None
+    correlation: dict[str, Any] | None = None
+    plan_override: dict[str, Any] | None = None
 
     @classmethod
     def load(cls, path: Path) -> WorkerManifest:
@@ -85,12 +88,20 @@ class WorkerManifest:
         for key in ("run_id", "recipe_id", "home", "candidate_set_path"):
             if not isinstance(payload.get(key), str) or not payload[key].strip():
                 raise EvalContractError(f"worker manifest requires {key}")
+        correlation = payload.get("correlation")
+        if correlation is not None and not isinstance(correlation, dict):
+            raise EvalContractError("worker manifest correlation must be an object")
+        override = payload.get("plan_override")
+        if override is not None and not isinstance(override, dict):
+            raise EvalContractError("worker manifest plan_override must be an object")
         return cls(
             run_id=payload["run_id"],
             recipe_id=payload["recipe_id"],
             home=Path(payload["home"]).expanduser(),
             candidate_set_path=Path(payload["candidate_set_path"]).expanduser(),
             session_ref=payload.get("session_ref"),
+            correlation=correlation,
+            plan_override=override,
         )
 
 
@@ -237,6 +248,128 @@ class EvalRunner:
         self._parallelism = min(
             self.recipe.limits.max_parallel_trials, self.home.config.max_concurrent_trials
         )
+        (
+            self._candidate_ids,
+            self._screening_seeds,
+            self._confirmation_seeds,
+            self._model_efforts,
+        ) = self._narrow()
+        self._baseline_id = (
+            self.candidate_set.baseline_id
+            if self.candidate_set.baseline_id in self._candidate_ids
+            else None
+        )
+
+    # -------------------------------------------------------------- narrowing
+
+    def _narrow(self) -> tuple[list[str], tuple[int, ...], tuple[int, ...], dict[str, str]]:
+        """Apply an app-supplied override, which may only ever *narrow*.
+
+        An experiment needs to run one candidate against one seed, but it must
+        not be able to introduce a seed, a model, or an effort the trusted recipe
+        never declared. Every branch here is a subset check for that reason: the
+        recipe stays the only source of what a container may be asked to do, and
+        the caller only gets to choose among it.
+        """
+
+        declared_ids = [candidate.id for candidate in self.candidate_set.candidates]
+        override = self.manifest.plan_override or {}
+        accepted = {
+            "candidate_ids",
+            "seeds",
+            "screening_seeds",
+            "confirmation_seeds",
+            "model_efforts",
+        }
+        unknown = sorted(set(override) - accepted)
+        if unknown:
+            raise EvalContractError(f"plan_override does not accept {unknown}")
+        if "seeds" in override and (
+            "screening_seeds" in override or "confirmation_seeds" in override
+        ):
+            raise EvalContractError(
+                "plan_override.seeds selects from the whole declared schedule; it cannot be "
+                "combined with per-stage seed narrowing"
+            )
+
+        candidate_ids = declared_ids
+        raw_ids = override.get("candidate_ids")
+        if raw_ids is not None:
+            if not isinstance(raw_ids, Sequence) or isinstance(raw_ids, str) or not raw_ids:
+                raise EvalContractError("plan_override.candidate_ids must be a non-empty list")
+            missing = sorted(set(raw_ids) - set(declared_ids))
+            if missing:
+                raise EvalContractError(
+                    f"plan_override.candidate_ids names candidates that are not in the staged "
+                    f"set: {missing}"
+                )
+            candidate_ids = [item for item in declared_ids if item in set(raw_ids)]
+
+        def seeds(field_name: str, declared: tuple[int, ...]) -> tuple[int, ...]:
+            raw = override.get(field_name)
+            if raw is None:
+                return declared
+            if not isinstance(raw, Sequence) or isinstance(raw, str):
+                raise EvalContractError(f"plan_override.{field_name} must be a list")
+            extra = sorted(set(raw) - set(declared))
+            if extra:
+                raise EvalContractError(
+                    f"plan_override.{field_name} asks for seeds {extra}, which recipe "
+                    f"{self.recipe.id} does not declare; widen the recipe, not the run"
+                )
+            return tuple(seed for seed in declared if seed in set(raw))
+
+        if "seeds" in override:
+            # One pass over a chosen subset of the whole declared schedule. The
+            # screen/confirm split exists to keep an eliminated candidate from
+            # being confirmed on the seeds that eliminated it; a caller running a
+            # single seed with no elimination has nothing for that split to
+            # protect, and the sealed manifest records exactly what was chosen.
+            declared = (*self.recipe.screening_seeds, *self.recipe.confirmation_seeds)
+            screening = seeds("seeds", declared)
+            confirmation: tuple[int, ...] = ()
+        else:
+            screening = seeds("screening_seeds", self.recipe.screening_seeds)
+            confirmation = seeds("confirmation_seeds", self.recipe.confirmation_seeds)
+        if not screening:
+            raise EvalContractError("plan_override left no seeds to run")
+
+        efforts: dict[str, str] = {}
+        raw_efforts = override.get("model_efforts") or {}
+        if not isinstance(raw_efforts, dict):
+            raise EvalContractError("plan_override.model_efforts must be an object")
+        routes = {model.id: model for model in self.recipe.models}
+        for model_id, effort in sorted(raw_efforts.items()):
+            route = routes.get(model_id)
+            if route is None:
+                raise EvalContractError(
+                    f"plan_override.model_efforts names model {model_id!r}, which recipe "
+                    f"{self.recipe.id} does not route"
+                )
+            if effort not in route.efforts:
+                raise EvalContractError(
+                    f"model {model_id} does not declare effort {effort!r}; "
+                    f"declared: {list(route.efforts)}"
+                )
+            efforts[model_id] = effort
+        return candidate_ids, screening, confirmation, efforts
+
+    def _narrowed_models(self) -> list[dict[str, Any]]:
+        """Recipe routes with any selected effort collapsed to a single choice.
+
+        Narrowing the allowlist to one value is how effort becomes a treatment
+        without the container gaining a new input: it still reads the same field
+        it always read, and it now has exactly one option.
+        """
+
+        models = []
+        for model in self.recipe.models:
+            payload = model.to_json()
+            selected = self._model_efforts.get(model.id)
+            if selected is not None:
+                payload["efforts"] = [selected]
+            models.append(payload)
+        return models
 
     # ---------------------------------------------------------------- inputs
 
@@ -282,7 +415,12 @@ class EvalRunner:
         """
 
         path = self.run_dir / "input_manifest.json"
-        ledger = self.recipe.seed_ledger(sealed_at=_now())
+        ledger = SeedLedger(
+            screening=self._screening_seeds,
+            confirmation=self._confirmation_seeds,
+            scenarios=self.recipe.scenarios,
+            sealed_at=_now(),
+        )
         manifest = {
             "schema_version": RUN_MANIFEST_SCHEMA,
             "run_id": self.manifest.run_id,
@@ -308,12 +446,19 @@ class EvalRunner:
                         "label": candidate.label,
                         "kind": candidate.kind,
                         "digest": candidate.artifact_digest,
-                        "is_baseline": candidate.id == self.candidate_set.baseline_id,
+                        "is_baseline": candidate.id == self._baseline_id,
+                        "in_run": candidate.id in self._candidate_ids,
                     }
                     for candidate in self.candidate_set.candidates
                 ],
             },
             "seed_ledger": ledger.to_json(),
+            "experiment": {
+                "correlation": self.manifest.correlation,
+                "plan_override": self.manifest.plan_override,
+                "candidate_ids": list(self._candidate_ids),
+                "model_efforts": dict(self._model_efforts),
+            },
             "selection": self.recipe.selection.to_json(),
             "limits": self.recipe.limits.to_json(),
             "runtime": {
@@ -326,8 +471,10 @@ class EvalRunner:
         }
         if path.is_file():
             existing = json.loads(path.read_text(encoding="utf-8"))
-            for field_name in ("recipe", "candidate_set"):
-                if digest_of(existing.get(field_name)) != digest_of(manifest[field_name]):
+            for field_name in ("recipe", "candidate_set", "seed_ledger", "experiment"):
+                if digest_of(_resume_identity(existing, field_name)) != digest_of(
+                    _resume_identity(manifest, field_name)
+                ):
                     raise EvalContractError(
                         f"run {self.manifest.run_id} was sealed with a different "
                         f"{field_name}; start a new run instead of mutating a sealed one"
@@ -387,7 +534,8 @@ class EvalRunner:
                     "timeout_seconds": self.recipe.limits.timeout_seconds,
                     "max_output_bytes": self.recipe.limits.max_output_bytes,
                 },
-                "models": [model.to_json() for model in self.recipe.models],
+                "models": self._narrowed_models(),
+                "correlation": self.manifest.correlation,
                 "budget": self.recipe.budget.to_json() if self.recipe.budget else None,
                 "output": {
                     "result_path": "/output/result.json",
@@ -681,7 +829,7 @@ class EvalRunner:
         candidate_ids: Sequence[str],
         eliminations: dict[str, str] | None = None,
     ) -> list[CandidateScorecard]:
-        baseline_id = self.candidate_set.baseline_id
+        baseline_id = self._baseline_id
         baseline_records = [record for record in records if record.key.candidate_id == baseline_id]
         cards = []
         for candidate_id in candidate_ids:
@@ -738,7 +886,7 @@ class EvalRunner:
         # A previous attempt may have died holding tokens for this run id.
         reclaimed = self.semaphore.release_run(self.manifest.run_id)
         ledger = manifest["seed_ledger"]
-        all_ids = [candidate.id for candidate in self.candidate_set.candidates]
+        all_ids = list(self._candidate_ids)
         self.events.emit(
             "eval.run.planned",
             recipe_id=self.recipe.id,
@@ -747,10 +895,12 @@ class EvalRunner:
                 {
                     "id": c.id,
                     "label": c.label,
-                    "is_baseline": c.id == self.candidate_set.baseline_id,
+                    "is_baseline": c.id == self._baseline_id,
                 }
                 for c in self.candidate_set.candidates
+                if c.id in self._candidate_ids
             ],
+            correlation=self.manifest.correlation,
             manifest_digest=digest_of(manifest),
             parallelism=self._parallelism,
             global_capacity=self.home.config.max_concurrent_trials,
@@ -767,7 +917,7 @@ class EvalRunner:
             self.recipe.selection,
             screen_cards,
             target=self.recipe.target,
-            baseline_id=self.candidate_set.baseline_id,
+            baseline_id=self._baseline_id,
         )
         if eliminations:
             screen_cards = self._score(
@@ -786,7 +936,7 @@ class EvalRunner:
             self.recipe.selection,
             scorecards=decision_cards,
             records=decision_records,
-            baseline_id=self.candidate_set.baseline_id,
+            baseline_id=self._baseline_id,
             cancelled=self.cancel.cancelled,
         )
         self._seal_outputs(screen_cards, confirm_cards, screening, confirmation, decision)
@@ -826,6 +976,8 @@ class EvalRunner:
                 "run_id": self.manifest.run_id,
                 "recipe_id": self.recipe.id,
                 "candidate_set_id": self.candidate_set.id,
+                "correlation": self.manifest.correlation,
+                "image_reference": self._image_reference,
                 "selection": decision.to_json(),
                 "trials": [
                     {
@@ -856,6 +1008,19 @@ class EvalRunner:
                 "sealed_at": _now(),
             },
         )
+
+
+def _resume_identity(manifest: dict[str, Any], field_name: str) -> Any:
+    """The part of a sealed field that a resume must find unchanged.
+
+    `sealed_at` is when the seeds were written down, not which seeds they are.
+    Comparing it would make every resume look like a mutated run.
+    """
+
+    value = manifest.get(field_name)
+    if field_name == "seed_ledger" and isinstance(value, dict):
+        return {key: item for key, item in value.items() if key != "sealed_at"}
+    return value
 
 
 def _directory_bytes(path: Path) -> int:

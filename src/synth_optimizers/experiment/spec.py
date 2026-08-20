@@ -91,6 +91,24 @@ class BudgetSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class ExecutionSpec:
+    """How many trials may be in flight at once.
+
+    Serial dispatch is the default because it makes the planned order the
+    executed order. Raising this is safe for a *paired* design -- both arms of a
+    block meet the same machine at the same moment, which removes temporal drift
+    rather than adding it -- but it does put arms in contention for CPU and
+    provider quota, so the reducer keeps measuring the order that actually
+    happened rather than trusting this number.
+    """
+
+    max_parallel_trials: int
+
+    def to_json(self) -> dict[str, Any]:
+        return {"max_parallel_trials": self.max_parallel_trials}
+
+
+@dataclass(frozen=True, slots=True)
 class IsolationSpec:
     cache_namespace: str
     container: str
@@ -110,6 +128,7 @@ class ExperimentSpec:
     fixed: dict[str, Any]
     budget: BudgetSpec
     isolation: IsolationSpec
+    execution: ExecutionSpec = field(default_factory=lambda: ExecutionSpec(1))
     executor_options: dict[str, Any] = field(default_factory=dict)
     source: str | None = None
 
@@ -136,6 +155,7 @@ class ExperimentSpec:
             "fixed": self.fixed,
             "budget": self.budget.to_json(),
             "isolation": self.isolation.to_json(),
+            "execution": self.execution.to_json(),
             "executor_options": self.executor_options,
         }
 
@@ -171,6 +191,7 @@ def parse_spec(payload: Any, *, source: str | None = None) -> ExperimentSpec:
         "fixed",
         "budget",
         "isolation",
+        "execution",
         "executor_options",
     }
     unknown = sorted(set(data) - known)
@@ -198,6 +219,7 @@ def parse_spec(payload: Any, *, source: str | None = None) -> ExperimentSpec:
         fixed=_object(data.get("fixed", {}), context="fixed"),
         budget=_budget(data.get("budget", {})),
         isolation=_isolation(data.get("isolation", {})),
+        execution=_execution(data.get("execution", {})),
         executor_options=_object(data.get("executor_options", {}), context="executor_options"),
         source=source,
     )
@@ -323,6 +345,14 @@ def _budget(value: Any) -> BudgetSpec:
     )
 
 
+def _execution(value: Any) -> ExecutionSpec:
+    data = _object(value, context="execution")
+    parallel = data.get("max_parallel_trials", 1)
+    if not isinstance(parallel, int) or isinstance(parallel, bool) or parallel < 1:
+        raise ExperimentContractError("execution.max_parallel_trials must be a positive integer")
+    return ExecutionSpec(max_parallel_trials=parallel)
+
+
 def _isolation(value: Any) -> IsolationSpec:
     data = _object(value, context="isolation")
     cache = data.get("cache_namespace", "per_trial")
@@ -342,6 +372,7 @@ __all__ = [
     "BlockSpec",
     "BudgetSpec",
     "DesignSpec",
+    "ExecutionSpec",
     "ExperimentSpec",
     "IsolationSpec",
     "load_spec",

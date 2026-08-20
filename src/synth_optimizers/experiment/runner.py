@@ -10,9 +10,11 @@ and it is why the recorded dispatch/start/finish times mean something.
 from __future__ import annotations
 
 import json
+import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -37,6 +39,18 @@ REPORT_FILE = "report.json"
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+@dataclass
+class _DispatchState:
+    """Shared across dispatch threads; every field is guarded by `lock`."""
+
+    spent: float
+    started: float
+    stopped: str | None = None
+    dispatched: int = 0
+    halted: bool = False
+    lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,19 +162,61 @@ class ExperimentRunner:
         )
         spent = self._spent()
         started = time.monotonic()
-        dispatched = 0
         stopped: str | None = None
-        for trial in pending:
-            if limit is not None and dispatched >= limit:
-                stopped = f"stopped after the requested {limit} trial(s)"
-                break
+        if limit is not None:
+            pending = pending[:limit]
+            stopped = f"stopped after the requested {limit} trial(s)"
+
+        parallel = max(1, int(plan.execution.get("max_parallel_trials", 1)))
+        state = _DispatchState(spent=spent, started=started, stopped=stopped)
+
+        if parallel == 1:
+            for trial in pending:
+                if not self._dispatch(plan, trial, held, state):
+                    break
+        else:
+            # Bounded fan-out, still submitted in planned order. Both arms of a
+            # block meet the same machine at the same moment, which removes
+            # temporal drift rather than adding it -- and the reducer keeps
+            # measuring the order that actually happened either way.
+            with ThreadPoolExecutor(max_workers=parallel) as pool:
+                futures = [
+                    pool.submit(self._dispatch, plan, trial, held, state) for trial in pending
+                ]
+                for future in futures:
+                    future.result()
+
+        summary = RunSummary(
+            dispatched=state.dispatched,
+            sealed=len(self.outcomes.sealed_trial_ids()),
+            skipped=skipped,
+            stopped_reason=state.stopped,
+        )
+        self._emit("experiment.run.terminal", **summary.to_json())
+        return summary
+
+    def _dispatch(
+        self,
+        plan: ExperimentPlan,
+        trial: Any,
+        held: dict[str, TrialOutcome],
+        state: _DispatchState,
+    ) -> bool:
+        """Run one trial. Returns False when the run should stop dispatching."""
+
+        with state.lock:
+            if state.halted:
+                return False
             if (self.root / CANCEL_SENTINEL).exists():
-                stopped = "cancelled by sentinel"
-                break
-            budget_stop = self._budget_exceeded(spent, started, dispatched)
+                state.stopped = "cancelled by sentinel"
+                state.halted = True
+                return False
+            budget_stop = self._budget_exceeded(state.spent, state.started, state.dispatched)
             if budget_stop:
-                stopped = budget_stop
-                break
+                state.stopped = budget_stop
+                state.halted = True
+                return False
+        if True:
             arm = plan.arm(trial.arm_id)
             correlation = plan.correlation_for(trial)
             dispatched_at = _now()
@@ -207,9 +263,10 @@ class ExperimentRunner:
                     supersedes=digest_of(previous.to_json()),
                 )
             self.outcomes.append(outcome)
-            dispatched += 1
-            if isinstance(outcome.usage.get("cost_usd"), (int, float)):
-                spent += float(outcome.usage["cost_usd"])
+            with state.lock:
+                state.dispatched += 1
+                if isinstance(outcome.usage.get("cost_usd"), (int, float)):
+                    state.spent += float(outcome.usage["cost_usd"])
             self._emit(
                 "experiment.trial.terminal",
                 trial_id=trial.trial_id,
@@ -217,14 +274,7 @@ class ExperimentRunner:
                 failure_class=outcome.failure_class,
                 metrics=outcome.metrics,
             )
-        summary = RunSummary(
-            dispatched=dispatched,
-            sealed=len(self.outcomes.sealed_trial_ids()),
-            skipped=skipped,
-            stopped_reason=stopped,
-        )
-        self._emit("experiment.run.terminal", **summary.to_json())
-        return summary
+        return True
 
     def _spent(self) -> float:
         total = 0.0

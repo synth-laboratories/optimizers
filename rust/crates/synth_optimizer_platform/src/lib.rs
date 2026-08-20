@@ -38,6 +38,7 @@ pub mod sft_compat;
 pub mod state_machine;
 pub mod stopper;
 pub mod storage_maintenance;
+pub mod trace_evidence_v5;
 pub mod usage;
 pub mod workspace;
 
@@ -182,6 +183,12 @@ pub use storage_maintenance::{
     inspect_workspace_storage_health, write_run_storage_report, RunStorageInspectionInput,
     RunStorageMaintenanceInput, StorageHealthThresholds, StorageMaintenanceProfile,
     WorkspaceStorageHealthInput,
+};
+pub use trace_evidence_v5::{
+    build_jesterky_evidence_bundle, canonical_json, content_digest_for, jesterky_v4_projection,
+    load_sealed_trace_v5, write_evidence_bundle_v5, SealedTraceV5,
+    TraceEvidenceBundleV5Materialization, TRACE_EVIDENCE_BUNDLE_V5_SCHEMA_VERSION,
+    TRACE_V5_SCHEMA_VERSION,
 };
 pub use usage::{UsageLedgerInput, UsageLedgerRecord};
 pub use workspace::{

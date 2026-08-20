@@ -1234,7 +1234,7 @@ fn workspace_readme(input: &CodexProposerInput<'_>) -> String {
             .unwrap_or("");
     let operator_rule = crate::operator_workspace::operator_workspace_rule(&input.config.gepa.operator);
     let jesterky_section = if input.config.jesterky_workflow.enabled {
-        "13. REQUIRED: `state/jesterky_proposer_context.md`, `state/jesterky_theme_registry.json`, and `state/jesterky_trace_annotations.jsonl` for jesterky annotate themes.\n14. If present, `state/jesterky_manifest_summary.json`, `state/jesterky_trace_rows.json`, `state/jesterky_optimizer_triples.json`, and `state/jesterky_evidence_refs.json` for jesterky process-tree evidence."
+        "13. REQUIRED: `state/jesterky_proposer_context.md`, `state/jesterky_theme_registry.json`, `state/jesterky_trace_annotations.jsonl`, and `state/jesterky_trace_evidence_bundles.v5.json`. Use only applied annotations that are indexed by an immutable Trace V5 digest; they are proposer context, not heldout or selection authority.\n14. If present, `state/jesterky_manifest_summary.json`, `state/jesterky_trace_rows.json`, `state/jesterky_optimizer_triples.json`, and `state/jesterky_evidence_refs.json` for jesterky process-tree evidence."
     } else {
         "13. If present, `state/jesterky_manifest_summary.json`, `state/jesterky_trace_rows.json`, `state/jesterky_optimizer_triples.json`, and `state/jesterky_evidence_refs.json` for jesterky process-tree evidence."
     };
@@ -1325,7 +1325,8 @@ Write `proposal/manifest.json` as strict JSON using this schema:
       "state/jesterky_manifest_summary.json",
       "state/jesterky_trace_rows.json",
       "state/jesterky_optimizer_triples.json",
-      "state/jesterky_evidence_refs.json"
+      "state/jesterky_evidence_refs.json",
+      "state/jesterky_trace_evidence_bundles.v5.json"
     ],
     "candidate_comparison": "Short summary of the parent prompt and the reflection evidence it should address.",
     "failure_patterns": ["Observed failure pattern grounded in losing rollout examples."],
@@ -1356,7 +1357,7 @@ Write `proposal/manifest.json` as strict JSON using this schema:
 
 Rules:
 
-- Read `prompting_best_practices.md`, `state/proposer_metadata.json`, `state/proposer_readme.json`, `state/run_context.json`, `state/task_info.json`, `state/program_contract.json`, `state/proposer_failure_summary.json`, `state/proposer_repair_hints.json`, `state/proposer_examples.json`, `state/reflective_frames.json`, `state/parent_payload.json`, `state/reflector_input.json`, and `state/proposal_request.json`. If present, also read the `state/jesterky_*` files before proposing from jesterky process evidence.
+- Read `prompting_best_practices.md`, `state/proposer_metadata.json`, `state/proposer_readme.json`, `state/run_context.json`, `state/task_info.json`, `state/program_contract.json`, `state/proposer_failure_summary.json`, `state/proposer_repair_hints.json`, `state/proposer_examples.json`, `state/reflective_frames.json`, `state/parent_payload.json`, `state/reflector_input.json`, and `state/proposal_request.json`. If present, also read the `state/jesterky_*` files before proposing; only use Jesterky annotations indexed by `state/jesterky_trace_evidence_bundles.v5.json` as descriptive proposer context.
 - Preserve the exact top-level and evidence field names from the JSON schema. In particular, use `evidence.reviewed_files` and `evidence.example_ids_used`; do not rename them to `files_reviewed`, `example_ids`, or any other alias.
 - Use shell/Python/JQ inspection to summarize the workspace before writing the manifest. Do not jump straight to editing `proposal/manifest.json`.
 - Minimum review workflow: inspect `state/proposer_metadata.json`, inspect `state/task_info.json`, inspect reflection wins/losses and trace refs, inspect parent payload, then write the manifest.
@@ -2130,6 +2131,10 @@ fn proposer_readme_read_model() -> Value {
             {
                 "path": "state/jesterky_evidence_refs.json",
                 "use": "Optional. Jesterky process addrs and artifact refs that can be cited in proposal evidence."
+            },
+            {
+                "path": "state/jesterky_trace_evidence_bundles.v5.json",
+                "use": "Optional. Immutable Trace V5 → evidence-bundle index. Use applied annotations only as descriptive proposer context; never treat them as heldout, reward, or selection authority."
             },
             {
                 "path": "state/parent_payload.json",

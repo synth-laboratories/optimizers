@@ -1,19 +1,22 @@
 //! Optional jesterky trace-annotate hook for GEPA proposer generations.
 //!
-//! When `jesterky_workflow.enabled` is true, export visible rollouts to
-//! synth_rollout_trace_v4 files, run `jesterky`, and materialize wall-safe
-//! `state/jesterky_*` artifacts into the proposer workspace before the live
-//! proposer turn. When disabled, force absence of those files.
+//! When `jesterky_workflow.enabled` is true, select new sealed Trace V5 inputs,
+//! create explicitly lossy V4 transport projections for Jesterky, and attach
+//! its descriptive output to immutable V5 evidence bundles before the next
+//! proposer turn.  When disabled, force absence of those artifacts.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write as IoWrite;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 use synth_optimizer_platform::{
-    JesterkyWorkflowConfig, OptimizerError, Result, SynthOptimizerConfig,
+    build_jesterky_evidence_bundle, content_digest_for, jesterky_v4_projection,
+    load_sealed_trace_v5, write_evidence_bundle_v5, JesterkyWorkflowConfig, OptimizerError, Result,
+    SealedTraceV5, SynthOptimizerConfig,
 };
 
 pub const JESTERKY_THEME_REGISTRY_FILE: &str = "jesterky_theme_registry.json";
@@ -22,6 +25,7 @@ pub const JESTERKY_PROPOSER_CONTEXT_FILE: &str = "jesterky_proposer_context.md";
 pub const JESTERKY_ANNOTATE_MANIFEST_FILE: &str = "jesterky_gepa_annotate.manifest.json";
 pub const JESTERKY_RECEIPT_FILE: &str = "jesterky_workflow_receipt.json";
 pub const JESTERKY_RECEIPTS_JSONL: &str = "jesterky_workflow_receipts.jsonl";
+pub const JESTERKY_EVIDENCE_BUNDLE_INDEX_FILE: &str = "jesterky_trace_evidence_bundles.v5.json";
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct JesterkyWorkflowReceipt {
@@ -37,6 +41,28 @@ pub struct JesterkyWorkflowReceipt {
     pub model: Option<String>,
     pub trace_dir: String,
     pub elapsed_ms: u64,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub provider: String,
+    #[serde(default)]
+    pub config_digest: String,
+    #[serde(default)]
+    pub spec_digest: String,
+    #[serde(default)]
+    pub trace_digests: Vec<String>,
+    #[serde(default)]
+    pub evidence_bundle_paths: Vec<String>,
+    #[serde(default)]
+    pub evidence_bundle_digests: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+struct PreparedTrace {
+    trace: SealedTraceV5,
+    projection_digest: String,
 }
 
 /// Remove any prior jesterky artifacts so Arm A cannot accidentally pick them up.
@@ -51,6 +77,7 @@ pub fn clear_jesterky_workspace_artifacts(workspace_dir: &Path) -> Result<()> {
         "jesterky_optimizer_triples.json",
         "jesterky_evidence_refs.json",
         "jesterky_read_model.json",
+        JESTERKY_EVIDENCE_BUNDLE_INDEX_FILE,
     ] {
         let path = state_dir.join(name);
         if path.exists() {
@@ -66,6 +93,10 @@ pub fn clear_jesterky_workspace_artifacts(workspace_dir: &Path) -> Result<()> {
     let traces = workspace_dir.join("jesterky_traces");
     if traces.exists() {
         fs::remove_dir_all(&traces).map_err(|source| OptimizerError::io(&traces, source))?;
+    }
+    let bundles = state_dir.join("trace_evidence_v5");
+    if bundles.exists() {
+        fs::remove_dir_all(&bundles).map_err(|source| OptimizerError::io(&bundles, source))?;
     }
     Ok(())
 }
@@ -109,6 +140,14 @@ pub fn prepare_jesterky_workflow_for_generation(
                     model: wf.model.clone(),
                     trace_dir: String::new(),
                     elapsed_ms: started.elapsed().as_millis() as u64,
+                    status: "failed_open".to_string(),
+                    reason: Some(err.to_string()),
+                    provider: wf.provider.clone(),
+                    config_digest: workflow_config_digest(wf),
+                    spec_digest: String::new(),
+                    trace_digests: Vec::new(),
+                    evidence_bundle_paths: Vec::new(),
+                    evidence_bundle_digests: Vec::new(),
                 };
                 write_receipt(workspace_dir, &receipt)?;
                 append_run_receipt(workspace_dir, &receipt)?;
@@ -123,8 +162,9 @@ pub fn jesterky_workspace_rule(enabled: bool) -> Option<&'static str> {
         Some(
             "jesterky_workflow.enabled=true for this run: BEFORE proposing, read \
              state/jesterky_proposer_context.md, state/jesterky_theme_registry.json, and \
-             state/jesterky_trace_annotations.jsonl. Use those themes and annotations as \
-             wall-safe evidence. Cite theme names / trace_ids. Do not invent \
+             state/jesterky_trace_annotations.jsonl, and \
+             state/jesterky_trace_evidence_bundles.v5.json. Use only applied V5 bundle \
+             annotations as wall-safe evidence. Cite theme names / trace_ids. Do not invent \
              evaluation-split labels or selection scores.",
         )
     } else {
@@ -143,8 +183,10 @@ fn run_enabled_jesterky_workflow(
     fs::create_dir_all(&state_dir).map_err(|source| OptimizerError::io(&state_dir, source))?;
     let trace_dir = workspace_dir.join("jesterky_traces");
     fs::create_dir_all(&trace_dir).map_err(|source| OptimizerError::io(&trace_dir, source))?;
-    let exported = export_gepa_rollouts_to_v4(rollouts, &trace_dir, wf.bulk)?;
-    if exported == 0 {
+    let config_digest = workflow_config_digest(wf);
+    let seen = annotated_trace_digests(workspace_dir);
+    let prepared = export_sealed_v5_rollouts(rollouts, &trace_dir, wf.max_targets, &seen)?;
+    if prepared.is_empty() {
         let empty_registry = json!({
             "optimizer": "gepa",
             "themes": [],
@@ -167,12 +209,23 @@ fn run_enabled_jesterky_workflow(
             model: wf.model.clone(),
             trace_dir: trace_dir.display().to_string(),
             elapsed_ms: 0,
+            status: "skipped".to_string(),
+            reason: Some(
+                "no new sealed Trace V5 evidence matched the annotation policy".to_string(),
+            ),
+            provider: wf.provider.clone(),
+            config_digest,
+            spec_digest: String::new(),
+            trace_digests: Vec::new(),
+            evidence_bundle_paths: Vec::new(),
+            evidence_bundle_digests: Vec::new(),
         });
     }
 
     let manifest_path = workspace_dir.join(JESTERKY_ANNOTATE_MANIFEST_FILE);
     let command = resolve_jesterky_command(wf);
     let spec = resolve_spec_path(wf)?;
+    let spec_digest = sha256_file(&spec)?;
     let args_json = json!({
         "trace_dir": trace_dir.display().to_string(),
         "artifact_dir": state_dir.display().to_string(),
@@ -217,17 +270,28 @@ fn run_enabled_jesterky_workflow(
         )));
     }
 
-    let (theme_count, annotated, blockers) =
+    let (theme_count, annotated, blockers, theme_registry) =
         materialize_jesterky_artifacts_from_manifest(&manifest_path, &state_dir)?;
-    if exported > 0 && (annotated == 0 || theme_count == 0) {
+    if !prepared.is_empty() && (annotated == 0 || theme_count == 0) {
         return Err(OptimizerError::Config(format!(
-            "jesterky workflow produced empty annotate signal after exporting {exported} \
+            "jesterky workflow produced empty annotate signal after exporting {} \
              traces (theme_count={theme_count}, annotated={annotated}, blockers={blockers}, \
              manifest={}). Refusing to continue with hollow state/jesterky_* artifacts; fix \
              gepa_trace_annotate extraction/output or disable jesterky_workflow.",
+            prepared.len(),
             manifest_path.display()
         )));
     }
+    let manifest_digest = sha256_file(&manifest_path)?;
+    let (bundle_paths, bundle_digests) = materialize_v5_evidence_bundles(
+        &prepared,
+        &theme_registry,
+        wf,
+        &config_digest,
+        &spec_digest,
+        &manifest_digest,
+        &state_dir,
+    )?;
 
     Ok(JesterkyWorkflowReceipt {
         enabled: true,
@@ -242,6 +306,17 @@ fn run_enabled_jesterky_workflow(
         model: wf.model.clone(),
         trace_dir: trace_dir.display().to_string(),
         elapsed_ms: 0,
+        status: "completed".to_string(),
+        reason: None,
+        provider: wf.provider.clone(),
+        config_digest,
+        spec_digest,
+        trace_digests: prepared
+            .into_iter()
+            .map(|item| item.trace.content_digest)
+            .collect(),
+        evidence_bundle_paths: bundle_paths,
+        evidence_bundle_digests: bundle_digests,
     })
 }
 
@@ -330,15 +405,15 @@ fn run_command_with_timeout(
     })
 }
 
-/// Keep annotate latency bounded: gen0 typically has 4 train frames; later
-/// generations accumulate many visible frames and Codex annotate can exceed
-/// the workflow timeout. Prefer lowest-reward / failed frames first.
-const MAX_JESTERKY_EXPORT_TRACES: usize = 6;
-
-fn export_gepa_rollouts_to_v4(rollouts: &Value, trace_dir: &Path, bulk: bool) -> Result<usize> {
+fn export_sealed_v5_rollouts(
+    rollouts: &Value,
+    trace_dir: &Path,
+    max_targets: usize,
+    seen_digests: &BTreeSet<String>,
+) -> Result<Vec<PreparedTrace>> {
     let rows = match rollouts.as_array() {
         Some(rows) => rows,
-        None => return Ok(0),
+        None => return Ok(Vec::new()),
     };
     let mut ranked: Vec<(usize, &Value)> = rows.iter().enumerate().collect();
     ranked.sort_by(|(left_idx, left), (right_idx, right)| {
@@ -363,109 +438,162 @@ fn export_gepa_rollouts_to_v4(rollouts: &Value, trace_dir: &Path, bulk: bool) ->
             })
             .then_with(|| right_idx.cmp(left_idx))
     });
-    let selected = ranked
-        .into_iter()
-        .take(if bulk {
-            usize::MAX
-        } else {
-            MAX_JESTERKY_EXPORT_TRACES
-        })
-        .collect::<Vec<_>>();
-    let mut written = 0usize;
+    let selected = ranked.into_iter().collect::<Vec<_>>();
+    let mut prepared = Vec::new();
+    let mut selected_digests = BTreeSet::new();
     for (idx, row) in selected {
-        let candidate_id = row
-            .get("candidate_id")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown");
-        let task_id = row
-            .get("task_id")
-            .or_else(|| row.get("example_id"))
-            .and_then(Value::as_str)
-            .unwrap_or("unknown");
-        let reward = row.get("reward").and_then(Value::as_f64).unwrap_or(0.0);
-        let status = row
-            .get("status")
-            .and_then(Value::as_str)
-            .unwrap_or("completed");
-        let rollout_id = format!("gepa-{candidate_id}-{task_id}-{idx:04}");
-        let span_id = format!("{rollout_id}-span-0001");
-        let summary = row.get("summary").cloned().unwrap_or(Value::Null);
-        let outcome = row.get("outcome").cloned().unwrap_or(Value::Null);
-        let failure = row.get("failure").cloned().unwrap_or(Value::Null);
-        let mut metadata = Map::new();
-        metadata.insert("source".to_string(), json!("gepa_jesterky_workflow_export"));
-        metadata.insert("candidate_id".to_string(), json!(candidate_id));
-        metadata.insert("task_id".to_string(), json!(task_id));
-        if let Some(stage) = row.get("evaluation_stage") {
-            metadata.insert("evaluation_stage".to_string(), stage.clone());
+        if prepared.len() >= max_targets {
+            break;
         }
-
-        let trace = json!({
-            "schema_version": "synth_rollout_trace_v4",
-            "trace_schema_version": 4,
-            "rollout_id": rollout_id,
-            "trace_correlation_id": rollout_id,
-            "status": status,
-            "spans": [{
-                "span_id": span_id,
-                "call_index": 1,
-                "run_id": rollout_id,
-                "request": {
-                    "messages": [
-                        {"role": "system", "content": "GEPA Craftax search evidence"},
-                        {"role": "user", "content": format!("task={task_id}; candidate={candidate_id}")}
-                    ],
-                    "provider_hint": "openai_compat"
-                },
-                "response": {
-                    "message": {
-                        "role": "assistant",
-                        "content": serde_json::to_string(&json!({
-                            "reward": reward,
-                            "summary": summary,
-                            "outcome": outcome,
-                            "failure": failure,
-                            "expected": row.get("expected"),
-                            "prediction": row.get("prediction"),
-                            "text": row.get("text"),
-                            "rationale_text": row.get("rationale_text"),
-                        }))?
-                    },
-                    "usage": row.get("usage").cloned().unwrap_or(json!({}))
-                },
-                "metrics": {"reward_total": reward},
-                "metadata": {"candidate_id": candidate_id, "task_id": task_id}
-            }],
-            "events": [{
-                "type": "lm_call",
-                "sequence_index": 1,
-                "span_id": span_id,
-                "metadata": {"candidate_id": candidate_id}
-            }],
-            "span_count": 1,
-            "summary": {
-                "task_id": task_id,
-                "outcome_reward": reward,
-                "reward": reward,
-                "candidate_id": candidate_id,
-                "expected": row.get("expected"),
-                "prediction": row.get("prediction"),
-            },
-            "metadata": metadata,
-        });
-        let safe_id = sanitize_filename(&rollout_id);
+        let Some(path) = trace_v5_path(row) else {
+            continue;
+        };
+        let trace = load_sealed_trace_v5(&path)?;
+        if seen_digests.contains(&trace.content_digest)
+            || !selected_digests.insert(trace.content_digest.clone())
+        {
+            continue;
+        }
+        let projection = jesterky_v4_projection(&trace, row);
+        let projection_digest = content_digest_for(&projection);
+        let safe_id = sanitize_filename(&format!("{}-{idx:04}", trace.trace_id));
         let path = trace_dir.join(format!("{safe_id}.v4.json"));
-        let text = serde_json::to_string_pretty(&trace)?;
+        let text = serde_json::to_string_pretty(&projection)?;
         fs::write(&path, text).map_err(|source| OptimizerError::io(&path, source))?;
-        written += 1;
+        prepared.push(PreparedTrace {
+            trace,
+            projection_digest,
+        });
     }
-    Ok(written)
+    Ok(prepared)
+}
+
+fn trace_v5_path(row: &Value) -> Option<PathBuf> {
+    row.get("trace_v5_path")
+        .and_then(Value::as_str)
+        .or_else(|| row.pointer("/trace_v5/path").and_then(Value::as_str))
+        .or_else(|| {
+            row.pointer("/trace_v5/document_path")
+                .and_then(Value::as_str)
+        })
+        .filter(|path| !path.trim().is_empty())
+        .map(PathBuf::from)
+}
+
+fn annotated_trace_digests(workspace_dir: &Path) -> BTreeSet<String> {
+    let Some(run_dir) = workspace_dir.parent().and_then(|path| path.parent()) else {
+        return BTreeSet::new();
+    };
+    let path = run_dir.join(JESTERKY_RECEIPTS_JSONL);
+    let Ok(text) = fs::read_to_string(path) else {
+        return BTreeSet::new();
+    };
+    text.lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|receipt| receipt.get("status").and_then(Value::as_str) == Some("completed"))
+        .flat_map(|receipt| {
+            receipt
+                .get("trace_digests")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+        })
+        .filter_map(|digest| digest.as_str().map(str::to_string))
+        .collect()
+}
+
+fn workflow_config_digest(config: &JesterkyWorkflowConfig) -> String {
+    content_digest_for(&serde_json::to_value(config).unwrap_or(Value::Null))
+}
+
+fn sha256_file(path: &Path) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    let bytes = fs::read(path).map_err(|source| OptimizerError::io(path, source))?;
+    Ok(format!("sha256:{:x}", Sha256::digest(bytes)))
+}
+
+fn materialize_v5_evidence_bundles(
+    prepared: &[PreparedTrace],
+    theme_registry: &Value,
+    config: &JesterkyWorkflowConfig,
+    config_digest: &str,
+    spec_digest: &str,
+    manifest_digest: &str,
+    state_dir: &Path,
+) -> Result<(Vec<String>, Vec<String>)> {
+    let scans = theme_registry
+        .get("traces")
+        .or_else(|| theme_registry.get("theme_matrix"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let scan_by_trace = scans
+        .into_iter()
+        .filter_map(|scan| {
+            let trace_id = scan.get("trace_id").and_then(Value::as_str)?.to_string();
+            Some((trace_id, scan))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let bundle_dir = state_dir.join("trace_evidence_v5");
+    fs::create_dir_all(&bundle_dir).map_err(|source| OptimizerError::io(&bundle_dir, source))?;
+    let now = rfc3339_now()?;
+    let mut paths = Vec::new();
+    let mut digests = Vec::new();
+    let mut index = Vec::new();
+    for item in prepared {
+        let scan = scan_by_trace.get(&item.trace.trace_id);
+        let bundle = build_jesterky_evidence_bundle(
+            &item.trace,
+            scan,
+            config,
+            config_digest,
+            spec_digest,
+            &item.projection_digest,
+            &now,
+            &now,
+            manifest_digest,
+            if scan.is_some() {
+                "completed"
+            } else {
+                "abstained"
+            },
+            scan.is_none()
+                .then_some("Jesterky manifest omitted this projected trace"),
+        );
+        let stored = write_evidence_bundle_v5(&bundle_dir, &bundle)?;
+        paths.push(stored.path.display().to_string());
+        digests.push(stored.content_digest.clone());
+        index.push(json!({
+            "trace_id": item.trace.trace_id,
+            "trace_digest": item.trace.content_digest,
+            "bundle_path": stored.path,
+            "bundle_digest": stored.content_digest,
+        }));
+    }
+    let index_path = state_dir.join(JESTERKY_EVIDENCE_BUNDLE_INDEX_FILE);
+    fs::write(
+        &index_path,
+        serde_json::to_string_pretty(&json!({
+            "schema_version": "synth_gepa.jesterky_evidence_bundle_index.v1",
+            "bundles": index,
+        }))?,
+    )
+    .map_err(|source| OptimizerError::io(&index_path, source))?;
+    Ok((paths, digests))
+}
+
+fn rfc3339_now() -> Result<String> {
+    time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .map_err(|error| {
+            OptimizerError::Config(format!("format annotation receipt timestamp: {error}"))
+        })
 }
 
 fn materialize_jesterky_artifacts_from_manifest(
     manifest_path: &Path,
     state_dir: &Path,
-) -> Result<(usize, usize, usize)> {
+) -> Result<(usize, usize, usize, Value)> {
     let text = fs::read_to_string(manifest_path)
         .map_err(|source| OptimizerError::io(manifest_path, source))?;
     let manifest: Value = serde_json::from_str(&text).map_err(|source| {
@@ -537,7 +665,7 @@ fn materialize_jesterky_artifacts_from_manifest(
     fs::write(&annotations_path, lines)
         .map_err(|source| OptimizerError::io(&annotations_path, source))?;
 
-    Ok((theme_count, annotated, blockers))
+    Ok((theme_count, annotated, blockers, theme_registry))
 }
 
 fn write_theme_artifacts(
@@ -695,5 +823,60 @@ fn truncate_for_error(text: &str) -> String {
         text.to_string()
     } else {
         format!("{}…", &text[..MAX])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_path(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "synth-gepa-jesterky-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    #[test]
+    fn selects_only_new_sealed_v5_traces_and_writes_a_transport_projection() {
+        let dir = temp_path("projection");
+        fs::create_dir_all(&dir).unwrap();
+        let trace_path = dir.join("source.v5.json");
+        let mut trace = json!({
+            "schema_version": "synth.trace.v5",
+            "trace_id": "trace_a",
+            "events": []
+        });
+        trace["content_digest"] = json!(content_digest_for(&trace));
+        fs::write(&trace_path, serde_json::to_string(&trace).unwrap()).unwrap();
+        let rows = json!([
+            {"trace_v5_path": trace_path, "candidate_id": "a", "reward": 0.0},
+            {"trace_v5_path": trace_path, "candidate_id": "b", "reward": 1.0}
+        ]);
+        let trace_dir = dir.join("transport");
+        fs::create_dir_all(&trace_dir).unwrap();
+        let prepared = export_sealed_v5_rollouts(&rows, &trace_dir, 6, &BTreeSet::new()).unwrap();
+        assert_eq!(
+            prepared.len(),
+            1,
+            "duplicate trace digests must be deduplicated"
+        );
+        let projected = fs::read_to_string(trace_dir.join("trace_a-0001.v4.json"))
+            .or_else(|_| fs::read_to_string(trace_dir.join("trace_a-0000.v4.json")))
+            .unwrap();
+        let projection: Value = serde_json::from_str(&projected).unwrap();
+        assert_eq!(
+            projection.pointer("/metadata/source_trace_ref/content_digest"),
+            trace.get("content_digest")
+        );
+        let seen = BTreeSet::from([trace["content_digest"].as_str().unwrap().to_string()]);
+        assert!(export_sealed_v5_rollouts(&rows, &trace_dir, 6, &seen)
+            .unwrap()
+            .is_empty());
+        let _ = fs::remove_dir_all(dir);
     }
 }

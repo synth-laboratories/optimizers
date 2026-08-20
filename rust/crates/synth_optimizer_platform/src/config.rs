@@ -324,13 +324,27 @@ pub struct JesterkyWorkflowConfig {
     pub command: String,
     /// jesterky `--actor` (fake|codex).
     pub actor: String,
-    /// Optional annotate actor model (`--model`).
+    /// Pinned annotate actor model (`--model`) required when enabled.
     pub model: Option<String>,
+    /// Provider identity retained in the V5 annotator definition and receipt.
+    pub provider: String,
     pub concurrency: usize,
     pub timeout_seconds: u64,
+    /// A bounded, per-generation annotation target budget. This is deliberately
+    /// independent of the number of rollout rows that happen to be visible.
+    pub max_targets: usize,
+    /// Run only after a new sealed trace digest arrives and before the next
+    /// proposer turn. This is a contract string rather than an open-ended mode.
+    pub cadence: String,
+    /// V5 evidence bundles are keyed by immutable trace digests, so this must
+    /// stay enabled for any released workflow.
+    pub deduplicate_by_trace_digest: bool,
+    /// Explicit ceiling retained in the receipt. The Jesterky runner must
+    /// account for actual spend before this becomes a release-default path.
+    pub max_spend_usd: Option<f64>,
     /// When true, annotate/export failures fail the proposer turn.
     pub fail_closed: bool,
-    /// When true, annotate every exported rollout instead of the default cap of 6.
+    /// Legacy unbounded mode. Rejected when enabled; use `max_targets`.
     #[serde(default)]
     pub bulk: bool,
 }
@@ -343,8 +357,13 @@ impl Default for JesterkyWorkflowConfig {
             command: default_jesterky_workflow_command(),
             actor: default_jesterky_workflow_actor(),
             model: None,
+            provider: default_jesterky_workflow_provider(),
             concurrency: default_jesterky_workflow_concurrency(),
             timeout_seconds: default_jesterky_workflow_timeout_seconds(),
+            max_targets: default_jesterky_workflow_max_targets(),
+            cadence: default_jesterky_workflow_cadence(),
+            deduplicate_by_trace_digest: true,
+            max_spend_usd: None,
             fail_closed: true,
             bulk: false,
         }
@@ -363,12 +382,24 @@ fn default_jesterky_workflow_actor() -> String {
     "codex".to_string()
 }
 
+fn default_jesterky_workflow_provider() -> String {
+    "openai".to_string()
+}
+
 fn default_jesterky_workflow_concurrency() -> usize {
     4
 }
 
 fn default_jesterky_workflow_timeout_seconds() -> u64 {
     600
+}
+
+fn default_jesterky_workflow_max_targets() -> usize {
+    6
+}
+
+fn default_jesterky_workflow_cadence() -> String {
+    "new_sealed_rollouts_before_next_proposer".to_string()
 }
 
 impl SynthOptimizerConfig {
@@ -2593,6 +2624,53 @@ fn validate_jesterky_workflow_config(config: &JesterkyWorkflowConfig) -> Result<
             "jesterky_workflow.timeout_seconds must be > 0 when enabled".to_string(),
         ));
     }
+    if config
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .is_none()
+    {
+        return Err(OptimizerError::Config(
+            "jesterky_workflow.model must pin an annotator model when enabled".to_string(),
+        ));
+    }
+    if config.provider.trim().is_empty() {
+        return Err(OptimizerError::Config(
+            "jesterky_workflow.provider must pin an annotator provider when enabled".to_string(),
+        ));
+    }
+    if config.max_targets == 0 || config.max_targets > 64 {
+        return Err(OptimizerError::Config(
+            "jesterky_workflow.max_targets must be between 1 and 64 when enabled".to_string(),
+        ));
+    }
+    if config.bulk {
+        return Err(OptimizerError::Config(
+            "jesterky_workflow.bulk is incompatible with the bounded V5 annotation policy; set max_targets instead".to_string(),
+        ));
+    }
+    if config.cadence != "new_sealed_rollouts_before_next_proposer" {
+        return Err(OptimizerError::Config(
+            "jesterky_workflow.cadence must be new_sealed_rollouts_before_next_proposer"
+                .to_string(),
+        ));
+    }
+    if !config.deduplicate_by_trace_digest {
+        return Err(OptimizerError::Config(
+            "jesterky_workflow.deduplicate_by_trace_digest must be true when enabled".to_string(),
+        ));
+    }
+    let Some(max_spend_usd) = config.max_spend_usd else {
+        return Err(OptimizerError::Config(
+            "jesterky_workflow.max_spend_usd must pin a positive annotation spend ceiling when enabled".to_string(),
+        ));
+    };
+    if !max_spend_usd.is_finite() || max_spend_usd <= 0.0 {
+        return Err(OptimizerError::Config(
+            "jesterky_workflow.max_spend_usd must be finite and positive".to_string(),
+        ));
+    }
     Ok(())
 }
 
@@ -3035,12 +3113,7 @@ fn validate_gepa_episode_config(config: &GepaEpisodeConfig) -> Result<()> {
 
 fn validate_gepa_operator_config(config: &GepaOperatorConfig) -> Result<()> {
     if config.manderqueue.enabled {
-        let url = config
-            .manderqueue
-            .base_url
-            .as_deref()
-            .unwrap_or("")
-            .trim();
+        let url = config.manderqueue.base_url.as_deref().unwrap_or("").trim();
         if url.is_empty() && config.manderqueue.fail_closed {
             return Err(OptimizerError::Config(
                 "gepa.operator.manderqueue.base_url is required when enabled and fail_closed"
@@ -3069,11 +3142,7 @@ fn validate_gepa_operator_config(config: &GepaOperatorConfig) -> Result<()> {
             "gepa.operator.reward.missing must be zero or fail".to_string(),
         ));
     }
-    let reduce = config
-        .reward
-        .exploration_reduce
-        .trim()
-        .to_ascii_lowercase();
+    let reduce = config.reward.exploration_reduce.trim().to_ascii_lowercase();
     if reduce != "mean" && reduce != "sum" {
         return Err(OptimizerError::Config(
             "gepa.operator.reward.exploration_reduce must be mean or sum".to_string(),
@@ -3209,6 +3278,21 @@ fn validate_gepa_pipeline_config(config: &GepaPipelineConfig) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn jesterky_v5_policy_requires_pinned_identity_and_budget() {
+        let mut workflow = JesterkyWorkflowConfig {
+            enabled: true,
+            ..JesterkyWorkflowConfig::default()
+        };
+        assert!(validate_jesterky_workflow_config(&workflow).is_err());
+        workflow.model = Some("gpt-5.6-luna".to_string());
+        workflow.max_spend_usd = Some(1.0);
+        validate_jesterky_workflow_config(&workflow)
+            .expect("a bounded, pinned V5 annotation policy should validate");
+        workflow.deduplicate_by_trace_digest = false;
+        assert!(validate_jesterky_workflow_config(&workflow).is_err());
+    }
 
     #[test]
     fn flash_evolve_accepts_reflective_speculative_and_adaptive_stage_workers() {

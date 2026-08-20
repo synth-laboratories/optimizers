@@ -380,6 +380,20 @@ struct ServiceJesterkyWorkflowConfig {
     #[serde(default)]
     model: Option<String>,
     #[serde(default)]
+    provider: Option<String>,
+    #[serde(default)]
+    concurrency: Option<usize>,
+    #[serde(default)]
+    timeout_seconds: Option<u64>,
+    #[serde(default)]
+    max_targets: Option<usize>,
+    #[serde(default)]
+    cadence: Option<String>,
+    #[serde(default)]
+    deduplicate_by_trace_digest: Option<bool>,
+    #[serde(default)]
+    max_spend_usd: Option<f64>,
+    #[serde(default)]
     fail_closed: Option<bool>,
 }
 
@@ -3850,6 +3864,37 @@ fn apply_advanced_config(
         }
         if let Some(model) = wf.model.clone() {
             config.jesterky_workflow.model = Some(model);
+        }
+        if let Some(provider) = wf
+            .provider
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            config.jesterky_workflow.provider = provider.to_string();
+        }
+        if let Some(concurrency) = wf.concurrency {
+            config.jesterky_workflow.concurrency = concurrency;
+        }
+        if let Some(timeout_seconds) = wf.timeout_seconds {
+            config.jesterky_workflow.timeout_seconds = timeout_seconds;
+        }
+        if let Some(max_targets) = wf.max_targets {
+            config.jesterky_workflow.max_targets = max_targets;
+        }
+        if let Some(cadence) = wf
+            .cadence
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            config.jesterky_workflow.cadence = cadence.to_string();
+        }
+        if let Some(deduplicate) = wf.deduplicate_by_trace_digest {
+            config.jesterky_workflow.deduplicate_by_trace_digest = deduplicate;
+        }
+        if let Some(max_spend_usd) = wf.max_spend_usd {
+            config.jesterky_workflow.max_spend_usd = Some(max_spend_usd);
         }
         if let Some(fail_closed) = wf.fail_closed {
             config.jesterky_workflow.fail_closed = fail_closed;

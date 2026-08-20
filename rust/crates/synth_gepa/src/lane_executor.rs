@@ -23,7 +23,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -128,6 +128,42 @@ pub(crate) fn runtime_lane_job_runner_factory(
             client: resources.client.clone(),
         }) as Box<dyn LaneJobRunner>)
     })
+}
+
+/// In-flight pool parked across GEPA *service* ticks.
+///
+/// `advance_gepa_config_once` opens a fresh `GepaRunContext` every tick, so
+/// without this map the lane executor (and its completion channel) dies at the
+/// end of the tick that dispatched the job. The worker still marks the job
+/// `Completed` in sqlite; the next tick then either invariant-aborts (no
+/// `runtime_outcome`) or livelocks waiting for a fold that can never arrive.
+pub(crate) struct ParkedLaneRuntime {
+    pub executor: LaneExecutorPool,
+    pub overlap: LaneOverlapTracker,
+}
+
+fn parked_lane_runtimes() -> &'static Mutex<BTreeMap<String, ParkedLaneRuntime>> {
+    static PARKED: OnceLock<Mutex<BTreeMap<String, ParkedLaneRuntime>>> = OnceLock::new();
+    PARKED.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+pub(crate) fn take_parked_lane_runtime(run_id: &str) -> Option<ParkedLaneRuntime> {
+    parked_lane_runtimes().lock().ok()?.remove(run_id)
+}
+
+pub(crate) fn park_lane_runtime(run_id: String, parked: ParkedLaneRuntime) {
+    let Ok(mut map) = parked_lane_runtimes().lock() else {
+        return;
+    };
+    if let Some(mut previous) = map.insert(run_id, parked) {
+        previous.executor.shutdown();
+    }
+}
+
+pub(crate) fn shutdown_parked_lane_runtime(run_id: &str) {
+    if let Some(mut parked) = take_parked_lane_runtime(run_id) {
+        parked.executor.shutdown();
+    }
 }
 
 /// A dispatched job the driver is still waiting on.
@@ -623,6 +659,37 @@ mod tests {
         assert!(pool.try_take_completion().is_some());
         assert!(pool.dispatch(request("b", "rollout")).unwrap());
         pool.shutdown();
+    }
+
+    #[test]
+    fn parked_runtime_keeps_in_flight_jobs_across_take() {
+        let concurrent = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let factory: LaneJobRunnerFactory = {
+            let concurrent = Arc::clone(&concurrent);
+            let peak = Arc::clone(&peak);
+            Arc::new(move |_index| {
+                Ok(Box::new(SleepRunner {
+                    sleep: Duration::from_millis(200),
+                    concurrent: Arc::clone(&concurrent),
+                    peak: Arc::clone(&peak),
+                }) as Box<dyn LaneJobRunner>)
+            })
+        };
+        let mut pool = LaneExecutorPool::new(2, factory);
+        assert!(pool.dispatch(request("parked-job", "rollout")).unwrap());
+        park_lane_runtime(
+            "run-park-test".to_string(),
+            ParkedLaneRuntime {
+                executor: pool,
+                overlap: LaneOverlapTracker::new(),
+            },
+        );
+        let mut parked = take_parked_lane_runtime("run-park-test").expect("parked pool");
+        assert_eq!(parked.executor.in_flight_count(), 1);
+        assert!(parked.executor.await_completion(Duration::from_secs(5)));
+        assert!(parked.executor.try_take_completion().is_some());
+        parked.executor.shutdown();
     }
 
     #[test]

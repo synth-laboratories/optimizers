@@ -10,6 +10,19 @@ import httpx
 from .episode import TERMINAL_STATUSES
 
 
+def _is_transient_poll_error(exc: RuntimeError) -> bool:
+    """Return whether a run-status read can safely be retried.
+
+    The GEPA service and its worker briefly contend on sqlite while a lane is
+    folding results.  A status read can therefore see SQLITE_BUSY even though
+    the run itself is healthy.  Keep this deliberately narrow: mutation
+    requests and unrelated 5xx responses must still fail immediately.
+    """
+
+    message = str(exc).lower()
+    return "get /runs/" in message and "sqlite error: database is locked" in message
+
+
 class OptimizerClient:
     """Talks to the GEPA service: create/fork, poll, pause, pin, export."""
 
@@ -71,7 +84,13 @@ class OptimizerClient:
         deadline = time.monotonic() + timeout_seconds
         latest: dict[str, Any] = {}
         while time.monotonic() < deadline:
-            latest = self.get_run(run_id) or {}
+            try:
+                latest = self.get_run(run_id) or {}
+            except RuntimeError as exc:
+                if not _is_transient_poll_error(exc):
+                    raise
+                time.sleep(poll_seconds)
+                continue
             status = str(latest.get("status") or "")
             if status in TERMINAL_STATUSES:
                 return latest
@@ -84,7 +103,13 @@ class OptimizerClient:
         deadline = time.monotonic() + timeout_seconds
         latest: dict[str, Any] = {}
         while time.monotonic() < deadline:
-            latest = await self.aget_run(run_id) or {}
+            try:
+                latest = await self.aget_run(run_id) or {}
+            except RuntimeError as exc:
+                if not _is_transient_poll_error(exc):
+                    raise
+                await asyncio.sleep(poll_seconds)
+                continue
             status = str(latest.get("status") or "")
             if status in TERMINAL_STATUSES:
                 return latest

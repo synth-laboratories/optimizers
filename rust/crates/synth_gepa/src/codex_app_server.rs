@@ -1159,7 +1159,10 @@ fn assert_proposer_workspace_no_leaks(workspace_dir: &Path) -> Result<()> {
         };
         // Annotate sidecars are wall-safe theme summaries; skip term scan so
         // theme text cannot trip the heldout/frontier leak detector.
-        if relative.contains("jesterky_") {
+        if relative.contains("jesterky_")
+            || relative.ends_with("guidance.md")
+            || relative.ends_with("manderqueue_inbox.json")
+        {
             continue;
         }
         let path = workspace_dir.join(relative);
@@ -2076,17 +2079,29 @@ fn proposer_metadata_read_model(
             "max_cost_usd": input.config.gepa.max_cost_usd,
         },
         "task_pool_counts": task_pool_counts(input),
-        "read_first": [
-            "state/proposer_metadata.json",
-            "state/task_info.json",
-            "state/proposer_failure_summary.json",
-            "state/proposer_repair_hints.json",
-            "state/proposer_examples.json",
-            "state/parent_payload.json",
-            "state/reflective_frames.json",
-            "state/reflector_input.json"
-        ],
+        "read_first": proposer_read_first(input.config.jesterky_workflow.enabled),
     })
+}
+
+fn proposer_read_first(jesterky_enabled: bool) -> Vec<&'static str> {
+    let mut files = vec![
+        "state/proposer_metadata.json",
+        "state/task_info.json",
+        "state/proposer_failure_summary.json",
+        "state/proposer_repair_hints.json",
+        "state/proposer_examples.json",
+        "state/parent_payload.json",
+        "state/reflective_frames.json",
+        "state/reflector_input.json",
+    ];
+    if jesterky_enabled {
+        files.extend([
+            "state/jesterky_proposer_context.md",
+            "state/jesterky_theme_registry.json",
+            "state/jesterky_trace_annotations.jsonl",
+        ]);
+    }
+    files
 }
 
 fn proposer_readme_read_model() -> Value {
@@ -2117,6 +2132,18 @@ fn proposer_readme_read_model() -> Value {
             {
                 "path": "state/proposer_examples.json",
                 "use": "All flat reflection evidence rows with text, expected, prediction, reward, trace refs, and usage."
+            },
+            {
+                "path": "state/jesterky_proposer_context.md",
+                "use": "Required when jesterky_workflow.enabled. Wall-safe annotate themes, blocker counts, and rewrite hints. Cite theme names in the proposal evidence."
+            },
+            {
+                "path": "state/jesterky_theme_registry.json",
+                "use": "Required when jesterky_workflow.enabled. Structured theme registry from gepa_trace_annotate."
+            },
+            {
+                "path": "state/jesterky_trace_annotations.jsonl",
+                "use": "Required when jesterky_workflow.enabled. Per-trace annotate rows with theme_tags, severity, and trace_id."
             },
             {
                 "path": "state/jesterky_manifest_summary.json",

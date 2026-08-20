@@ -35,6 +35,17 @@ class JsonStore:
                 return None
             return json.loads(path.read_text())
 
+    def list_rollouts(self) -> list[dict[str, Any]]:
+        with self._lock:
+            paths = sorted((self.root / "rollouts").glob("*.json"))
+            records: list[dict[str, Any]] = []
+            for path in paths:
+                try:
+                    records.append(json.loads(path.read_text()))
+                except json.JSONDecodeError:
+                    continue
+            return records
+
     def put_checkpoint(self, record: dict[str, Any]) -> None:
         path = self._checkpoint_path(str(record["checkpoint_id"]))
         payload = json.dumps(record, indent=2, sort_keys=True)

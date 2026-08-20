@@ -340,6 +340,8 @@ struct ServicePipelineConfig {
     speculative_alpha: Option<f64>,
     #[serde(default)]
     adaptive_stage_workers: Option<bool>,
+    #[serde(default)]
+    adaptive_rollout_concurrency: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -358,6 +360,8 @@ struct ServiceTimeoutsConfig {
 struct ServiceProposerIoConfig {
     #[serde(default)]
     timeout_seconds: Option<u64>,
+    #[serde(default)]
+    message_stall_timeout_seconds: Option<u64>,
     #[serde(default)]
     codex_home: Option<String>,
     #[serde(default)]
@@ -3393,6 +3397,15 @@ fn run_request_to_optimizer_config(
         // Fall back to all mutable fields if target_modules didn't resolve to any.
         config.candidate.target_modules = mutable_fields.into_iter().collect();
     }
+    crate::operator_workspace::retain_target_modules_for_levers(
+        &mut config.candidate.target_modules,
+        &config.gepa.operator.levers,
+    );
+    if config.candidate.target_modules.is_empty() {
+        return Err(OptimizerError::Config(
+            "operator.levers filtered out every mutable candidate field".to_string(),
+        ));
+    }
     if config.seed_candidate.is_empty() {
         config.seed_candidate = program.seed_candidate.fields.clone();
     }
@@ -3789,6 +3802,9 @@ fn apply_advanced_config(
         if let Some(value) = pipeline.adaptive_stage_workers {
             config.gepa.pipeline.adaptive_stage_workers.enabled = value;
         }
+        if let Some(value) = pipeline.adaptive_rollout_concurrency {
+            config.gepa.pipeline.adaptive_rollout_concurrency.enabled = value;
+        }
     }
     if let Some(timeouts) = advanced.timeouts.as_ref() {
         if let Some(value) = timeouts.rollout_seconds {
@@ -3819,6 +3835,10 @@ fn apply_advanced_config(
         if let Some(value) = proposer_io.timeout_seconds {
             require_positive_u64("advanced.proposer_io.timeout_seconds", value)?;
             config.proposer.timeout_seconds = value;
+        }
+        if let Some(value) = proposer_io.message_stall_timeout_seconds {
+            require_positive_u64("advanced.proposer_io.message_stall_timeout_seconds", value)?;
+            config.proposer.message_stall_timeout_seconds = value;
         }
         if let Some(path) = proposer_io
             .codex_home

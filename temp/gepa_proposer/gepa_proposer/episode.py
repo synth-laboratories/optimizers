@@ -78,7 +78,9 @@ def parse_episode(payload: dict[str, Any] | None) -> dict[str, Any]:
         "rollout_workers",
         "cache_namespace",
         "schema_repair_rounds",
+        "jesterky",
         "jesterky_bulk",
+        "jesterky_workflow",
     ):
         if episode.get(key) is not None:
             parsed[key] = episode[key]
@@ -259,7 +261,23 @@ def proposer_io_spec(arm: dict[str, Any], episode: dict[str, Any]) -> dict[str, 
         or os.environ.get("GEPA_PROPOSER_IO_TIMEOUT_SECONDS")
         or DEFAULT_PROPOSER_IO_TIMEOUT_SECONDS
     )
+    stall = (
+        arm.get("proposer_stall_seconds")
+        or episode.get("proposer_stall_seconds")
+        or os.environ.get("GEPA_PROPOSER_STALL_SECONDS")
+    )
+    if stall is None and (arm.get("provider") or "").lower() == "openrouter":
+        # OpenRouter/Codex can sit 120s+ between item events on large reflections;
+        # the default 120s stall killed nvidia/nemotron-3.5-lightning mid-turn.
+        timeout = max(int(timeout), 600)
+        stall = max(int(timeout), 300)
+    elif stall is None:
+        # gpt-5.6-luna medium died the same way: 120s stall after item/completed
+        # while the turn was still open (parallel_20260820145733 med r2).
+        stall = max(300, int(timeout))
     spec: dict[str, Any] = {"timeout_seconds": int(timeout)}
+    if stall is not None:
+        spec["message_stall_timeout_seconds"] = int(stall)
     # Parallel arms sharing one codex_home race on the models cache; proposer_io
     # carries a per-run override the wire already accepts.
     codex_home = arm.get("codex_home") or episode.get("codex_home")
@@ -284,6 +302,24 @@ def build_run_request(
     output_dir: str | None = None,
 ) -> dict[str, Any]:
     pools = pools_from_cursor(cursor)
+    pipeline_mode = _pipeline_mode(episode.get("pipeline_mode") or "sync_serial")
+    pipeline: dict[str, Any] = {
+        "mode": pipeline_mode,
+        "proposals_per_generation": int(
+            episode.get("proposals_per_generation")
+            or os.environ.get("GEPA_PROPOSER_PROPOSALS")
+            or 6
+        ),
+        "rollout_workers": int(
+            episode.get("rollout_workers")
+            or os.environ.get("GEPA_PROPOSER_ROLLOUT_WORKERS")
+            or (8 if pipeline_mode == "flash_evolve" else 30)
+        ),
+    }
+    if pipeline_mode == "flash_evolve":
+        # Two inner Banking77 containers cannot absorb the adaptive climb to
+        # 60+ concurrent rollouts; that trips the infra circuit breaker on heldout.
+        pipeline["adaptive_rollout_concurrency"] = False
     body: dict[str, Any] = {
         "container_url": container_url,
         "policy": inner_policy_spec(spec.get("downstream") if isinstance(spec.get("downstream"), dict) else None),
@@ -295,17 +331,7 @@ def build_run_request(
         "task_pools": pools,
         "stop_conditions": [stop_condition(episode)],
         "advanced": {
-            "pipeline": {
-                "mode": _pipeline_mode(episode.get("pipeline_mode") or "sync_serial"),
-                "proposals_per_generation": int(
-                    episode.get("proposals_per_generation")
-                    or os.environ.get("GEPA_PROPOSER_PROPOSALS")
-                    or 6
-                ),
-                "rollout_workers": int(
-                    episode.get("rollout_workers") or os.environ.get("GEPA_PROPOSER_ROLLOUT_WORKERS") or 30
-                ),
-            },
+            "pipeline": pipeline,
             "budgets": {
                 "max_train_rollouts": DEFAULT_TRAIN_ROLLOUT_HEADROOM,
                 "max_heldout_rollouts": max(
@@ -329,8 +355,23 @@ def build_run_request(
     operator = episode.get("operator")
     if isinstance(operator, dict) and operator:
         body["advanced"]["operator"] = operator
-    if episode.get("jesterky_bulk") is not None:
-        body["advanced"]["jesterky_workflow"] = {"bulk": bool(episode["jesterky_bulk"])}
+        mcp = operator.get("mcp_agent") if isinstance(operator.get("mcp_agent"), dict) else {}
+        if mcp.get("enabled"):
+            body["advanced"]["operator"]["mcp_agent"] = {
+                "enabled": True,
+                "command": mcp.get("command")
+                or "npx -y @modelcontextprotocol/server-filesystem .",
+                "server": mcp.get("server") or "workspace_fs",
+            }
+    jesterky = {
+        "enabled": bool(episode.get("jesterky") or episode.get("jesterky_bulk")),
+        "bulk": bool(episode.get("jesterky_bulk")),
+        "fail_closed": False,
+    }
+    if episode.get("jesterky_workflow") and isinstance(episode.get("jesterky_workflow"), dict):
+        jesterky.update(episode["jesterky_workflow"])
+    if jesterky["enabled"] or episode.get("jesterky_bulk") is not None:
+        body["advanced"]["jesterky_workflow"] = jesterky
     return body
 
 

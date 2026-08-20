@@ -15,6 +15,10 @@ from pathlib import Path
 from typing import Any
 from urllib.request import Request, urlopen
 
+from gepa_proposer.ascope_harvest import harvest_episode_dir
+from gepa_proposer.episode import build_run_request
+from gepa_proposer.fixtures import by_task_id
+
 HERE = Path(__file__).resolve().parent
 OPTIMIZERS = HERE.parents[1]
 COOKBOOKS = OPTIMIZERS.parent / "synth-cookbooks-public" / "cookbooks" / "optimizers" / "gepa"
@@ -43,6 +47,23 @@ def port_open(host: str, port: int) -> bool:
         return sock.connect_ex((host, port)) == 0
 
 
+def pick_free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def jesterky_command() -> str | None:
+    candidates = [
+        Path("/Users/joshuapurtell/Documents/GitHub/jesterky/target/release/jesterky"),
+        Path.home() / ".cargo" / "bin" / "jesterky",
+    ]
+    for path in candidates:
+        if path.is_file() and os.access(path, os.X_OK):
+            return str(path)
+    return None
+
+
 def wait_http(url: str, *, timeout: float = 60.0) -> None:
     deadline = time.time() + timeout
     last = None
@@ -61,7 +82,66 @@ def post_json(url: str, body: dict[str, Any], *, timeout: float = 30.0) -> dict[
     payload = json.dumps(body).encode()
     request = Request(url, data=payload, method="POST", headers={"Content-Type": "application/json"})
     with urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read().decode())
+        raw = response.read().decode()
+        return json.loads(raw) if raw else {}
+
+
+def prove_operator_control(
+    *,
+    service_url: str,
+    records: list[dict[str, Any]],
+    episode: dict[str, Any],
+) -> dict[str, Any]:
+    """Fork + pause a completed GEPA episode so ascope control is live-proven."""
+    parent = next(
+        (
+            row
+            for row in records
+            if row.get("status") == "completed" and row.get("optimizer_run_id")
+        ),
+        None,
+    )
+    if parent is None:
+        return {"ok": False, "error": "no completed parent run to fork"}
+    spec = by_task_id(str(parent.get("task_id") or "train:1"))
+    body = build_run_request(
+        spec=spec,
+        cursor=spec["cursor"],
+        arm=parent.get("arm") or {},
+        episode={**episode, "proposer_rounds": 1, "skip_heldout": True, "jesterky": False, "jesterky_bulk": False},
+        container_url=str(parent.get("inner_url") or ""),
+        run_id=f"fork-{str(parent.get('optimizer_run_id'))[-8:]}",
+    )
+    body.pop("fixture", None)
+    body["fork_from"] = {"run_id": parent["optimizer_run_id"]}
+    try:
+        created = post_json(f"{service_url.rstrip('/')}/runs", body, timeout=60.0)
+    except Exception as exc:
+        return {"ok": False, "error": f"fork_from failed: {exc}"}
+    child = str(created.get("run_id") or created.get("id") or "")
+    if not child:
+        return {"ok": False, "error": "fork created no run_id", "created": created}
+    try:
+        paused = post_json(
+            f"{service_url.rstrip('/')}/runs/{child}/pause",
+            {"timeout_seconds": 120},
+            timeout=60.0,
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "parent": parent["optimizer_run_id"],
+            "child": child,
+            "created_status": created.get("status"),
+            "error": f"pause failed: {exc}",
+        }
+    return {
+        "ok": str(paused.get("status") or "") == "paused",
+        "parent": parent["optimizer_run_id"],
+        "child": child,
+        "created_status": created.get("status"),
+        "paused_status": paused.get("status"),
+    }
 
 
 def get_json(url: str, *, timeout: float = 30.0) -> dict[str, Any]:
@@ -81,6 +161,49 @@ def spawn(cmd: list[str], *, cwd: Path, env: dict[str, str], log_path: Path) -> 
         stderr=subprocess.STDOUT,
         text=True,
     )
+
+
+def inner_family(task_id: str) -> str:
+    if task_id.startswith("tau2:"):
+        return "tau2"
+    return "banking77"
+
+
+def ensure_tau2(
+    port: int, env: dict[str, str], logs: Path, *, allow_reuse: bool
+) -> subprocess.Popen[str] | None:
+    if port_open("127.0.0.1", port):
+        if not allow_reuse:
+            raise SystemExit(
+                f"port {port} is already serving; refusing to reuse an inner container "
+                f"this driver did not start. Kill it, pick a free port, or pass --allow-reused-inner."
+            )
+        print(f"tau2 already on {port} (reuse forced)", flush=True)
+        return None
+    python = HERE / "tau2_container" / ".venv" / "bin" / "python"
+    if not python.is_file():
+        raise SystemExit(f"missing {python}; run uv sync in temp/gepa_proposer/tau2_container")
+    return spawn(
+        [
+            str(python),
+            "synth_service_app.py",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+        ],
+        cwd=HERE / "tau2_container",
+        env=env,
+        log_path=logs / f"tau2_{port}.log",
+    )
+
+
+def ensure_inner(
+    family: str, port: int, env: dict[str, str], logs: Path, *, allow_reuse: bool
+) -> subprocess.Popen[str] | None:
+    if family == "tau2":
+        return ensure_tau2(port, env, logs, allow_reuse=allow_reuse)
+    return ensure_banking77(port, env, logs, allow_reuse=allow_reuse)
 
 
 BANKING77_RUNTIME_ENV = {
@@ -163,14 +286,27 @@ def main() -> int:
         action="store_true",
         help="Enable v0.7 operator surfaces on each episode (scratchpad, hypotheses, MQ inbox, reward extras, schema repair).",
     )
+    parser.add_argument(
+        "--serial-arms",
+        action="store_true",
+        help="Run arms one at a time (all replicates of arm A, then arm B). Avoids OpenRouter 429 while luna is proposing.",
+    )
+    parser.add_argument(
+        "--pipeline-mode",
+        default="sync_serial",
+        help="GEPA pipeline mode: sync_serial, flash_evolve/combee, or async_pipelined.",
+    )
     args = parser.parse_args()
 
     load_env_file(ENV_FILE)
     # Logs only. Does not disable usage/cost accounting.
     os.environ["SYNTH_OPTIMIZERS_VL_PROJECT"] = "0"
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    # Seconds-only stamps let independently launched replays share proposer
+    # state and overwrite luna_low_vs_med.json.  The PID also protects the
+    # (unlikely) case where two processes format the same microsecond.
+    stamp = f'{datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")}_{os.getpid()}'
     logs = HERE / "generated" / f"parallel_{stamp}"
-    logs.mkdir(parents=True, exist_ok=True)
+    logs.mkdir(parents=True, exist_ok=False)
     env = dict(os.environ)
 
     if not args.skip_build:
@@ -214,18 +350,18 @@ def main() -> int:
         ]
 
     inner_ports = [int(item) for item in args.inner_ports.split(",") if item.strip()]
-    if len(inner_ports) < len(arms):
-        # GEPA exclusive-locks one container_url per run; sharing one inner across
-        # parallel arms is a container_exclusive_conflict, not a slowdown.
+    family = inner_family(args.task_id)
+    needed = 1 if args.serial_arms else len(arms)
+    if len(inner_ports) < needed:
         raise SystemExit(
-            f"{len(arms)} arms need {len(arms)} inner ports; got {len(inner_ports)} "
-            f"({args.inner_ports}). Pass --inner-ports with one port per arm."
+            f"{'serial arms need 1 inner port' if args.serial_arms else f'{len(arms)} parallel arms need {len(arms)} inner ports'}; "
+            f"got {len(inner_ports)} ({args.inner_ports})."
         )
     children: list[subprocess.Popen[str]] = []
     try:
         for port in inner_ports:
-            child = ensure_banking77(
-                port, env, logs, allow_reuse=args.allow_reused_inner
+            child = ensure_inner(
+                family, port, env, logs, allow_reuse=args.allow_reused_inner
             )
             if child is not None:
                 children.append(child)
@@ -240,8 +376,11 @@ def main() -> int:
         )
         env["SYNTH_OPTIMIZERS_DISK_BUDGET_PATH"] = str(logs / "gepa-runs")
         (logs / "gepa-runs").mkdir(parents=True, exist_ok=True)
+        jesterky_bin = jesterky_command() if args.ascope else None
+        if jesterky_bin:
+            env["STACK_JESTERKY_COMMAND"] = jesterky_bin
 
-        service_db = Path("/tmp") / f"gepa-banking77-{stamp}.sqlite"
+        service_db = Path("/tmp") / f"gepa-{family}-{stamp}.sqlite"
         if not port_open("127.0.0.1", args.service_port):
             children.append(
                 spawn(
@@ -265,12 +404,20 @@ def main() -> int:
 
         proposer_env = dict(env)
         proposer_env["GEPA_SERVICE_URL"] = f"http://127.0.0.1:{args.service_port}"
-        proposer_env["BANKING77_URLS"] = ",".join(f"http://127.0.0.1:{port}" for port in inner_ports)
-        proposer_env["BANKING77_URL"] = f"http://127.0.0.1:{inner_ports[0]}"
+        inner_urls = ",".join(f"http://127.0.0.1:{port}" for port in inner_ports)
+        if family == "tau2":
+            proposer_env["TAU2_URLS"] = inner_urls
+            proposer_env["TAU2_URL"] = f"http://127.0.0.1:{inner_ports[0]}"
+        else:
+            proposer_env["BANKING77_URLS"] = inner_urls
+            proposer_env["BANKING77_URL"] = f"http://127.0.0.1:{inner_ports[0]}"
+            proposer_env["BANKING77_POLICY_TIMEOUT_SECONDS"] = "60"
         proposer_env["GEPA_PROPOSER_STATE_DIR"] = str(logs / "proposer-state")
-        proposer_env["BANKING77_POLICY_TIMEOUT_SECONDS"] = "60"
         proposer_env["GEPA_PROPOSER_AUTH_MODE"] = "chatgpt"
         proposer_env["GEPA_PROPOSER_WAIT_HEADROOM_SECONDS"] = "90"
+        proposer_env["GEPA_PROPOSER_STALL_SECONDS"] = os.environ.get(
+            "GEPA_PROPOSER_STALL_SECONDS"
+        ) or "300"
         proposer_env["SYNTH_OPTIMIZERS_VL_PROJECT"] = "0"
         proposer_env["GEPA_PROPOSER_OUTPUT_DIR"] = str(logs / "gepa-runs")
         if not port_open("127.0.0.1", args.proposer_port):
@@ -298,15 +445,59 @@ def main() -> int:
             "skip_heldout": False,
             "max_wall_seconds": args.max_wall_seconds,
             "max_spend_usd": args.max_spend_usd,
+            "pipeline_mode": args.pipeline_mode,
         }
         if args.ascope:
+            mq_port = pick_free_port()
+            children.append(
+                spawn(
+                    [
+                        str(PROPOSER_PY if PROPOSER_PY.exists() else sys.executable),
+                        "-m",
+                        "gepa_proposer.mq_stub",
+                        "--port",
+                        str(mq_port),
+                        "--thread-id",
+                        "gepa-ascope",
+                    ],
+                    cwd=HERE,
+                    env=env,
+                    log_path=logs / "manderqueue_stub.log",
+                )
+            )
+            wait_http(f"http://127.0.0.1:{mq_port}/health")
             episode["schema_repair_rounds"] = 1
+            episode["jesterky"] = True
+            # Cap 6 traces (engine default). Bulk annotates the whole minibatch
+            # with gpt-5.5-high and blocks the proposer for the 600s workflow budget.
+            episode["jesterky_bulk"] = False
+            if jesterky_bin:
+                episode["jesterky_workflow"] = {
+                    "enabled": True,
+                    "bulk": False,
+                    "fail_closed": False,
+                    "command": jesterky_bin,
+                    "spec": "/Users/joshuapurtell/Documents/GitHub/jesterky/examples/gepa_trace_annotate.json",
+                    # gpt-5.5-high on 6 traces previously hit the 600s fail-open
+                    # and 429'd the OpenRouter arm. Luna is the eval proposer.
+                    "model": "gpt-5.6-luna",
+                }
             episode["operator"] = {
                 "scratchpad": {"enabled": True},
                 "hypotheses": {"enabled": True},
-                "manderqueue": {"enabled": True, "fail_closed": False},
+                "manderqueue": {
+                    "enabled": True,
+                    "fail_closed": False,
+                    "base_url": f"http://127.0.0.1:{mq_port}",
+                    "thread_id": "gepa-ascope",
+                },
                 "control": {"pause": True, "restart": True, "branch": True},
                 "levers": {"prompt": True, "code": True, "harness": True},
+                "mcp_agent": {
+                    "enabled": True,
+                    "command": "npx -y @modelcontextprotocol/server-filesystem .",
+                    "server": "workspace_fs",
+                },
                 "reward": {
                     "exploration_reduce": "mean",
                     "missing": "zero",
@@ -319,31 +510,10 @@ def main() -> int:
             }
 
         all_records: list[dict[str, Any]] = []
-        for replicate in range(args.replicates):
-            started = []
-            for arm in arms:
-                label = arm.get("label") or f"{arm.get('model')}:{arm.get('reasoning_effort')}"
-                policy = {k: v for k, v in arm.items() if k != "label"}
-                started.append(
-                    post_json(
-                        f"{base}/rollout",
-                        {
-                            "task_id": args.task_id,
-                            "submission_mode": "async",
-                            "policy": policy,
-                            "episode": episode,
-                        },
-                    )
-                )
-                print(
-                    json.dumps(
-                        {"started": label, "replicate": replicate, **started[-1]}
-                    ),
-                    flush=True,
-                )
 
+        def wait_started(started: list[dict[str, Any]], *, replicate: int) -> list[dict[str, Any]]:
             deadline = time.time() + float(args.max_wall_seconds) + 180.0
-            records = []
+            records: list[dict[str, Any]] = []
             while time.time() < deadline:
                 records = [get_json(f"{base}/rollouts/{row['rollout_id']}") for row in started]
                 statuses = [row.get("status") for row in records]
@@ -358,18 +528,65 @@ def main() -> int:
                 if all(status in {"completed", "failed", "cancelled"} for status in statuses):
                     break
                 time.sleep(10)
-            all_records.extend(records)
+            return records
+
+        def start_arm(arm: dict[str, Any], *, replicate: int) -> dict[str, Any]:
+            label = arm.get("label") or f"{arm.get('model')}:{arm.get('reasoning_effort')}"
+            policy = {k: v for k, v in arm.items() if k != "label"}
+            started = post_json(
+                f"{base}/rollout",
+                {
+                    "task_id": args.task_id,
+                    "submission_mode": "async",
+                    "policy": policy,
+                    "episode": episode,
+                },
+            )
+            print(json.dumps({"started": label, "replicate": replicate, **started}), flush=True)
+            started["_label"] = label
+            started["_replicate"] = replicate
+            return started
+
+        if args.serial_arms:
+            for arm_index, arm in enumerate(arms):
+                for replicate in range(args.replicates):
+                    started = start_arm(arm, replicate=replicate)
+                    records = wait_started([started], replicate=replicate)
+                    for record in records:
+                        record["_label"] = started["_label"]
+                        record["_replicate"] = replicate
+                        record["_arm_index"] = arm_index
+                    all_records.extend(records)
+        else:
+            for replicate in range(args.replicates):
+                started = [start_arm(arm, replicate=replicate) for arm in arms]
+                records = wait_started(started, replicate=replicate)
+                for index, record in enumerate(records):
+                    record["_label"] = started[index]["_label"]
+                    record["_replicate"] = replicate
+                    record["_arm_index"] = index
+                all_records.extend(records)
+
+        control = {"ok": False, "error": "ascope off"}
+        if args.ascope:
+            control = prove_operator_control(
+                service_url=f"http://127.0.0.1:{args.service_port}",
+                records=all_records,
+                episode=episode,
+            )
+            print(json.dumps({"operator_control": control}), flush=True)
 
         comparison = {
             "task_id": args.task_id,
             "proposer_rounds": args.proposer_rounds,
             "replicates": args.replicates,
             "ascope": args.ascope,
+            "operator_control": control,
             "stamp": stamp,
             "arms": [
                 {
-                    "label": arms[index % len(arms)].get("label"),
-                    "replicate": index // len(arms),
+                    "label": record.get("_label") or arms[index % len(arms)].get("label"),
+                    "replicate": record.get("_replicate", index // len(arms)),
                     "model": record.get("arm", {}).get("model"),
                     "provider": record.get("arm", {}).get("provider"),
                     "effort": record.get("arm", {}).get("reasoning_effort"),
@@ -390,6 +607,11 @@ def main() -> int:
                     ),
                     "exploration_reduce": (record.get("reward_details") or {}).get(
                         "exploration_reduce"
+                    ),
+                    "ascope": record.get("ascope")
+                    or harvest_episode_dir(
+                        record.get("output_dir")
+                        or (logs / "gepa-runs" / str(record.get("run_id") or ""))
                     ),
                     "reward_details": {
                         "train_exploration": (record.get("reward_details") or {}).get(

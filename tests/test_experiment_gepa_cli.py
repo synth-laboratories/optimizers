@@ -347,3 +347,99 @@ def _has_null(value):
     if isinstance(value, list):
         return any(_has_null(item) for item in value)
     return False
+
+
+#: Trimmed from a real sealed manifest
+#: (`banking77_gepa_async_t50_mb20_h100_735a9c29`, 2026-08-19). The shapes that
+#: matter: a successful run carries no `status` key at all, and `usage` reports
+#: `rollout_calls`, not `rollouts`.
+REAL_MANIFEST = {
+    "best_candidate": {
+        "candidate_id": "gepa_34c37b4ade9d",
+        "heldout_reward": 0.56,
+        "train_reward": 0.53,
+        "minibatch_reward": 0.575,
+        "acceptance_score": 0.575,
+        "parent_id": "gepa_1c284a9e221e",
+        "source": "proposal",
+        "status": "accepted",
+        "train_scores": [0.5, 0.6],
+        "payload": {"stage2_system": "..."},
+    },
+    "cost_usd": 0.0,
+    "usage": {
+        "completion_tokens": 5935,
+        "prompt_tokens": 929884,
+        "proposer_calls": 2,
+        "rollout_calls": 1280,
+        "total_tokens": 935819,
+    },
+    "manifest_path": "/tmp/x/result_manifest.json",
+    "state_history": [],
+}
+
+
+def test_metrics_come_from_what_the_manifest_actually_carries():
+    """A hardcoded key list is how a declared metric silently reduces to nothing.
+
+    GEPA reports `rollout_calls`; a spec asking for `rollouts` produced an empty
+    comparison with no error anywhere. Lifting every numeric scalar the manifest
+    carries removes the whole class of failure.
+    """
+
+    from synth_optimizers.experiment.adapters.gepa_cli import _metrics_from_manifest
+
+    metrics = _metrics_from_manifest(REAL_MANIFEST)
+
+    assert metrics["heldout_reward"] == 0.56
+    assert metrics["rollout_calls"] == 1280.0
+    assert metrics["proposer_calls"] == 2.0
+    assert metrics["completion_tokens"] == 5935.0
+    assert metrics["cost_usd"] == 0.0
+    # Non-scalars are skipped rather than coerced.
+    assert "train_scores" not in metrics
+    assert "payload" not in metrics
+    assert "candidate_id" not in metrics
+    assert all(isinstance(value, float) for value in metrics.values())
+
+
+def test_a_real_success_manifest_has_no_status_key(rig, tmp_path):
+    """Terminal state comes from the evidence, not from a field that may be absent."""
+
+    _, spec_path = rig
+    spec = load_spec(spec_path)
+    adapter = adapter_for(spec)
+    assert "status" not in REAL_MANIFEST
+
+    plan = compile_plan(spec, adapter)
+    trial = plan.trials[0]
+    correlation = plan.correlation_for(trial)
+
+    manifest = dict(REAL_MANIFEST, correlation=correlation.to_json())
+    run_dir = Path(trial.trial_derived["output_dir"]) / trial.trial_derived["run_id"]
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "result_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (Path(trial.trial_derived["config_path"])).parent.mkdir(parents=True, exist_ok=True)
+    (Path(trial.trial_derived["config_path"])).write_text("", encoding="utf-8")
+
+    from synth_optimizers.experiment.adapters.base import TrialContext
+
+    outcome = adapter._seal(
+        TrialContext(
+            spec=spec,
+            plan=plan,
+            trial=trial,
+            treatment=dict(plan.arm(trial.arm_id).treatment),
+            fixed=dict(plan.fixed),
+            correlation=correlation,
+            workspace=tmp_path / "ws",
+            dispatched_at="2026-08-20T00:00:00+00:00",
+        ),
+        config_path=Path(trial.trial_derived["config_path"]),
+        trial=dict(trial.trial_derived),
+        failure=None,
+        started_at="2026-08-20T00:00:00+00:00",
+        finished_at="2026-08-20T00:10:00+00:00",
+    )
+    assert outcome.status == "completed"
+    assert outcome.metrics["heldout_reward"] == 0.56

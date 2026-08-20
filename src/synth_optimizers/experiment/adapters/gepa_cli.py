@@ -18,6 +18,7 @@ the engine would reject is a plan-time error rather than a wasted generation.
 from __future__ import annotations
 
 import json
+import re
 import tomllib
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -88,7 +89,27 @@ ABLATABLE_FACTORS: tuple[AblatableFactor, ...] = (
 
 #: Sections the experiment layer owns per trial. A spec that names one of these
 #: as a factor would make an arm difference indistinguishable from bookkeeping.
-RESERVED_PATHS = ("run.run_id", "run.output_dir", "run.seed", "run.correlation", "cache.namespace")
+RESERVED_PATHS = (
+    "run.run_id",
+    "run.output_dir",
+    "run.seed",
+    "run.correlation",
+    "cache.namespace",
+    "container.url",
+)
+
+
+_PORT_TOKEN = re.compile(r"(?<![0-9])3[0-9]{4}(?![0-9])")
+
+
+def _report(item: Any, port: int) -> Any:
+    """Rewrite any port literal in a container launch argument.
+
+    The base config names one port in both the URL and the command that binds
+    it; a trial that only moved the URL would talk to nothing.
+    """
+
+    return _PORT_TOKEN.sub(str(port), item) if isinstance(item, str) else item
 
 
 def _now() -> str:
@@ -127,7 +148,9 @@ class GepaCliAdapter:
         base: Path | str,
         output_dir: Path | str | None = None,
         runner: Callable[[Path], Any] | None = None,
+        port_base: int = 34500,
     ) -> None:
+        self.port_base = int(port_base)
         self.base_path = Path(base).expanduser().resolve()
         if not self.base_path.is_file():
             raise ExperimentContractError(f"no GEPA config at {self.base_path}")
@@ -142,7 +165,7 @@ class GepaCliAdapter:
     @classmethod
     def from_spec(cls, spec: ExperimentSpec, **overrides: Any) -> GepaCliAdapter:
         options: dict[str, Any] = {"base": spec.base, **spec.executor_options, **overrides}
-        unknown = sorted(set(options) - {"base", "output_dir", "runner"})
+        unknown = sorted(set(options) - {"base", "output_dir", "runner", "port_base"})
         if unknown:
             raise ExperimentContractError(f"executor_options does not accept {unknown}")
         return cls(**options)
@@ -271,10 +294,15 @@ class GepaCliAdapter:
         trial_id: str,
     ) -> dict[str, Any]:
         run_id = f"gepa_{trial_id}"
+        # A port per trial. Trials that may run concurrently cannot share the
+        # base config's single container socket, and a collision would present
+        # as one arm mysteriously scoring the other arm's rollouts.
+        port = self.port_base + (int(trial_id[1:9], 16) % 20000)
         return {
             "run_id": run_id,
             "cache_namespace": run_id,
             "seed": int(block_id.split(":", 1)[1]),
+            "container_port": port,
             "output_dir": str(self.output_dir / trial_id),
             "config_path": str(self.output_dir / trial_id / "config.toml"),
         }
@@ -293,6 +321,15 @@ class GepaCliAdapter:
         for path, value in sorted({**spec.fixed, **treatment}.items()):
             _set(document, path, value)
         if trial is not None:
+            port = trial.get("container_port")
+            if port is not None:
+                _set(document, "container.url", f"http://127.0.0.1:{port}")
+                command = _get(document, "container.command") or []
+                _set(
+                    document,
+                    "container.command",
+                    [_report(item, port) for item in command],
+                )
             _set(document, "run.run_id", trial["run_id"])
             _set(document, "run.output_dir", trial["output_dir"])
             _set(document, "run.seed", trial["seed"])

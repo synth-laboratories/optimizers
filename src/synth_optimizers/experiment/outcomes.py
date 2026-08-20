@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -59,6 +60,7 @@ class OutcomeSet:
 class OutcomeLog:
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
+        self._lock = threading.Lock()
 
     def append(self, outcome: TrialOutcome) -> None:
         payload = outcome.to_json()
@@ -67,7 +69,7 @@ class OutcomeLog:
         # O_APPEND on a single line under the pipe buffer keeps concurrent
         # adapters from interleaving mid-record; the runner also serialises
         # writes, and this is the belt to that pair of braces.
-        with open(self.path, "a", encoding="utf-8") as handle:
+        with self._lock, open(self.path, "a", encoding="utf-8") as handle:
             handle.write(line + "\n")
             handle.flush()
             os.fsync(handle.fileno())

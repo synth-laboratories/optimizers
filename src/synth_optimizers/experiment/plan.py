@@ -51,6 +51,7 @@ class ExperimentPlan:
     blocks: dict[str, Any]
     budget: dict[str, Any]
     isolation: dict[str, Any]
+    execution: dict[str, Any]
     factor_catalog: dict[str, Any]
     fixed: dict[str, Any]
     provenance: dict[str, Any]
@@ -80,6 +81,7 @@ class ExperimentPlan:
             "blocks": self.blocks,
             "budget": self.budget,
             "isolation": self.isolation,
+            "execution": self.execution,
             "factor_catalog": self.factor_catalog,
             "fixed": self.fixed,
             "provenance": self.provenance,
@@ -117,6 +119,7 @@ class ExperimentPlan:
             blocks=value["blocks"],
             budget=value["budget"],
             isolation=value["isolation"],
+            execution=value.get("execution", {"max_parallel_trials": 1}),
             factor_catalog=value["factor_catalog"],
             fixed=value["fixed"],
             provenance=value["provenance"],
@@ -221,6 +224,7 @@ def compile_plan(
         blocks={**spec.blocks.to_json(), "ids": list(block_ids)},
         budget=spec.budget.to_json(),
         isolation=spec.isolation.to_json(),
+        execution=spec.execution.to_json(),
         factor_catalog=catalog.to_json(),
         fixed=fixed,
         provenance=dict(adapter.provenance(spec)),

@@ -253,7 +253,11 @@ class GepaCliAdapter:
         """GEPA reports rewards and costs; a cost or a duration improves downward."""
 
         lowered = metric_id.lower()
-        if any(token in lowered for token in ("cost", "usd", "wall", "seconds", "latency")):
+        resource = ("cost", "usd", "wall", "seconds", "latency", "tokens", "calls")
+        if any(token in lowered for token in resource):
+            # Resource metrics improve downward. For a reasoning-effort ablation
+            # "the harder-thinking arm spent more" is the expected finding, not a
+            # regression -- the direction only fixes the sign convention.
             return "minimize"
         return "maximize"
 
@@ -453,30 +457,38 @@ class GepaCliAdapter:
             )
 
 
+def _numeric(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
 def _metrics_from_manifest(manifest: dict[str, Any]) -> dict[str, float]:
     """Lift GEPA's terminal scalars into a flat metric map.
 
-    Only what GEPA itself sealed. `train_exploitation` and `eval_uplift` are
-    metrics of the separate GEPA-as-container proposer experiment and are not
-    invented here for a run that never reported them.
+    Every numeric scalar `best_candidate` and `usage` actually carry, rather
+    than a hand-written list of key names. A hardcoded list is how a declared
+    secondary metric silently reduces to nothing: GEPA's usage block reports
+    `rollout_calls`, not `rollouts`, and a spec asking for the latter would have
+    produced an empty comparison with no error anywhere.
+
+    Only what GEPA itself sealed. `train_exploitation` and `eval_uplift` belong
+    to the separate GEPA-as-container proposer experiment and are not invented
+    here for a run that never reported them.
     """
 
     metrics: dict[str, float] = {}
-    best = manifest.get("best_candidate")
-    if isinstance(best, dict):
-        for key in ("heldout_reward", "train_reward", "minibatch_reward"):
-            value = best.get(key)
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                metrics[key] = float(value)
-    cost = manifest.get("cost_usd")
-    if isinstance(cost, (int, float)) and not isinstance(cost, bool):
-        metrics["cost_usd"] = float(cost)
-    usage = manifest.get("usage")
-    if isinstance(usage, dict):
-        for key in ("rollouts", "total_tokens", "wall_time_seconds"):
-            value = usage.get(key)
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                metrics[key] = float(value)
+    for section in ("best_candidate", "usage"):
+        block = manifest.get(section)
+        if not isinstance(block, dict):
+            continue
+        for key, value in block.items():
+            number = _numeric(value)
+            if number is not None:
+                metrics[key] = number
+    cost = _numeric(manifest.get("cost_usd"))
+    if cost is not None:
+        metrics["cost_usd"] = cost
     return metrics
 
 

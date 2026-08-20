@@ -8,6 +8,7 @@ use serde_json::{Map, Value};
 
 use crate::agent_runtime::{validate_execution_mode_compat, ExecutionSubstrate};
 use crate::configured_limits::validate_gepa_limit_config;
+use crate::correlation::CorrelationEnvelope;
 use crate::disk_budget::DiskBudgetConfig;
 use crate::error::{OptimizerError, Result};
 
@@ -825,6 +826,10 @@ pub struct RunConfig {
     pub output_dir: PathBuf,
     #[serde(default)]
     pub seed: u64,
+    /// Set when an experiment dispatched this run. The service still mints
+    /// `run_id` itself; this only records which trial asked for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation: Option<CorrelationEnvelope>,
 }
 
 impl Default for RunConfig {
@@ -833,6 +838,7 @@ impl Default for RunConfig {
             run_id: default_run_id(),
             output_dir: default_output_dir(),
             seed: 0,
+            correlation: None,
         }
     }
 }

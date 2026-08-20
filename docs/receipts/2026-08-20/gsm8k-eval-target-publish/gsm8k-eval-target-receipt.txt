@@ -1,0 +1,6 @@
+image=ghcr.io/synth-laboratories/workshop-gsm8k-eval-target
+tag=v0.7-gsm8k-740312ad-containers-9916cd74
+dataset_revision=740312add88f781978c0658806c59bc2815b9866
+containers_source_commit=9916cd7479c1029d7dd9091db43f52af1cdf484e
+architectures=linux/amd64,linux/arm64
+digest=sha256:1954fb48382590744643a6716a897234eed8a65899297d72a1313e54c7c7ab5d

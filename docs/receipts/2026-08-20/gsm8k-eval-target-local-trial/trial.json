@@ -1,0 +1,5 @@
+{"schema_version": "eval.trial.v1", "run_id": "local-proof", "trial_id": "gsm8k-test-101-base", "stage": "screen", "seed": 101, "scenario": "gsm8k-test",
+ "candidate": {"id": "base", "label": "mlx-local-base", "kind": "mlx-lora.v1", "digest": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd", "entrypoint": null},
+ "policy_snapshot_id": "snap_f5cd812adb69462cbe007a8946340e2e",
+ "models": [{"id": "mlx-local-base", "route": "http://host.docker.internal:8791/v1/chat/completions", "secret": "SYNTH_MLX_RL_TOKEN", "efforts": []}],
+ "budget": {"max_llm_calls": 40, "max_usd": 0.01}, "limits": {"timeout_seconds": 1800, "max_output_bytes": 268435456}}

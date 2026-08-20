@@ -1,0 +1,9 @@
+# Operator-pinned image digests for catalog recipes. A pin may only supply the
+# digest of the image the catalog already names: it cannot change the image,
+# the command, the mounts, the limits, or the selection rule.
+#
+# [pins."eval.fixture.policy-smoke.v1"]
+# image_digest = "sha256:..."
+
+[pins."eval.mlx.local-policy.smoke.v1"]
+image_digest = "sha256:a454cd9e80c775703f1cbcd4ead294ffe53e9420c69cb244f9304e648ad4935e"

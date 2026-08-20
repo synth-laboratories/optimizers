@@ -258,11 +258,15 @@ def test_local_recipe_is_shaped_for_a_host_proxy():
     assert recipe.secrets == ("SYNTH_MLX_RL_TOKEN",)
 
 
-def test_local_recipe_is_honestly_unavailable_until_pinned():
+def test_local_recipe_is_pinned_to_the_published_gsm8k_target():
+    """Pinned to the digest the publish workflow recorded; a tag is never enough."""
     recipe = get_recipe(MLX_RECIPE)
-    assert not recipe.available and recipe.unavailable_reason
-    with pytest.raises(EvalContractError):
-        _ = recipe.pinned_reference
+    assert recipe.image == "ghcr.io/synth-laboratories/workshop-gsm8k-eval-target"
+    assert recipe.image_digest == (
+        "sha256:1954fb48382590744643a6716a897234eed8a65899297d72a1313e54c7c7ab5d"
+    )
+    assert recipe.available and recipe.unavailable_reason is None
+    assert recipe.pinned_reference == f"{recipe.image}@{recipe.image_digest}"
 
 
 # ----------------------------------------------- O4 snapshot registration

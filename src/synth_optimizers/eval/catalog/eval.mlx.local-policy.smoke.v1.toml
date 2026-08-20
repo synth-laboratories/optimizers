@@ -16,9 +16,12 @@
 # actually bounds a run on this lane; the dollar cap is kept only because the
 # schema requires a positive one, and it should never be the binding limit.
 #
-# Unavailable until the GSM8K eval target is published and pinned: no
-# `image_digest` is set, so `EvalRecipe.available` is false and the runner
-# refuses to start rather than running whatever the tag points at today.
+# The target is pinned by the digest the publish-gsm8k-eval-target workflow
+# recorded (run 32403202526, tag v0.7-gsm8k-740312ad-containers-9916cd74):
+# openai/gsm8k main @ 740312add88f781978c0658806c59bc2815b9866, world module
+# vendored from containers 9916cd7479c1029d7dd9091db43f52af1cdf484e. The
+# dataset pin and split digests travel inside the image (dataset.json in every
+# trial's output) and on the containers target's /metadata.
 
 [recipe]
 id = "eval.mlx.local-policy.smoke.v1"
@@ -27,8 +30,9 @@ description = "Score a local MLX base model and its LoRA checkpoints on GSM8K, r
 task = "gsm8k"
 policy_kind = "mlx-lora.v1"
 image = "ghcr.io/synth-laboratories/workshop-gsm8k-eval-target"
+image_digest = "sha256:1954fb48382590744643a6716a897234eed8a65899297d72a1313e54c7c7ab5d"
 prerequisites = [
-    "Published gsm8k-eval-target image pinned by digest",
+    "gsm8k-eval-target image pulled locally by digest (docker pull ghcr.io/synth-laboratories/workshop-gsm8k-eval-target@sha256:1954fb48…)",
     "synth-mlx-rl serving the base model and accepting policy snapshot registration",
     "SYNTH_MLX_RL_TOKEN in the eval home's secrets.toml",
 ]

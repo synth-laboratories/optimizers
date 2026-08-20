@@ -1,0 +1,64 @@
+{
+  "home": "<scratch>/eval-home-a",
+  "containerRuntime": "docker",
+  "containerRuntimePath": "/opt/homebrew/bin/docker",
+  "containerRuntimeAvailable": true,
+  "maxConcurrentTrials": 2,
+  "semaphore": {
+    "capacity": 2,
+    "leased": 0,
+    "available": 2,
+    "leases": []
+  },
+  "recipes": [
+    {
+      "id": "eval.craftax.code-policy.smoke.v1",
+      "available": false,
+      "reason": "target image ghcr.io/synth-laboratories/workshop-craftax-eval-target is not present locally; pull or build it first",
+      "image": "ghcr.io/synth-laboratories/workshop-craftax-eval-target",
+      "imageDigest": "sha256:02b076f89f858e9041beea1400cd870fcf40c79792cc088e26faab85714fb04e",
+      "resolvedReference": null
+    },
+    {
+      "id": "eval.craftax.llm-policy.smoke.v1",
+      "available": false,
+      "reason": "target image ghcr.io/synth-laboratories/workshop-craftax-eval-target is not present locally; pull or build it first",
+      "image": "ghcr.io/synth-laboratories/workshop-craftax-eval-target",
+      "imageDigest": "sha256:02b076f89f858e9041beea1400cd870fcf40c79792cc088e26faab85714fb04e",
+      "resolvedReference": null
+    },
+    {
+      "id": "eval.fixture.policy-smoke.v1",
+      "available": false,
+      "reason": "target image is not published and pinned yet",
+      "image": "synth-eval-fixture-target",
+      "imageDigest": null,
+      "resolvedReference": null
+    },
+    {
+      "id": "eval.gamebench.craftax-code-policy.confirm.v1",
+      "available": false,
+      "reason": "target image is not published and pinned yet",
+      "image": "gamebench-harbor-eval-target",
+      "imageDigest": null,
+      "resolvedReference": null
+    },
+    {
+      "id": "eval.gamebench.llm-policy.confirm.v1",
+      "available": false,
+      "reason": "target image is not published and pinned yet",
+      "image": "gamebench-harbor-eval-target",
+      "imageDigest": null,
+      "resolvedReference": null
+    },
+    {
+      "id": "eval.mlx.local-policy.smoke.v1",
+      "available": false,
+      "reason": "target image ghcr.io/synth-laboratories/workshop-gsm8k-eval-target is not present locally; pull or build it first",
+      "image": "ghcr.io/synth-laboratories/workshop-gsm8k-eval-target",
+      "imageDigest": "sha256:1954fb48382590744643a6716a897234eed8a65899297d72a1313e54c7c7ab5d",
+      "resolvedReference": null
+    }
+  ],
+  "ready": false
+}

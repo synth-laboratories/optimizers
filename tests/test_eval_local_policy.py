@@ -197,7 +197,6 @@ def test_staging_addresses_an_adapter_by_its_bytes(tmp_path):
     home = make_home(tmp_path)
     write_adapter(tmp_path / "src" / "base", adapter=False)
     write_adapter(tmp_path / "src" / "ckpt20", weights=b"weights-20")
-    write_adapter(tmp_path / "src" / "ckpt20-again", weights=b"weights-20")
     write_adapter(tmp_path / "src" / "final", weights=b"weights-40")
     candidate_set = stage_candidate_set(
         home,
@@ -212,18 +211,37 @@ def test_staging_addresses_an_adapter_by_its_bytes(tmp_path):
             for label, name in [
                 ("base", "base"),
                 ("ckpt20", "ckpt20"),
-                ("ckpt20-copy", "ckpt20-again"),
                 ("final", "final"),
             ]
         ],
     )
     digests = {c.label: c.artifact_digest for c in candidate_set.candidates}
-    # Identical bytes collide; different adapters do not.
-    assert digests["ckpt20"] == digests["ckpt20-copy"]
+    # Different adapter bytes do not collide.
     assert len({digests["base"], digests["ckpt20"], digests["final"]}) == 3
     baseline = candidate_set.baseline
     assert baseline is not None and baseline.label == "base"
     assert baseline.metadata["mlx_lora"]["adapter"] is False
+
+
+def test_staging_the_same_content_is_idempotent(tmp_path):
+    home = make_home(tmp_path)
+    source = write_adapter(tmp_path / "src" / "ckpt", weights=b"weights-20")
+    inputs = [
+        CandidateSource(
+            label="ckpt",
+            path=source,
+            entrypoint="policy.json",
+            kind=MLX_LORA_POLICY_KIND,
+        )
+    ]
+
+    first = stage_candidate_set(home, inputs)
+    second = stage_candidate_set(home, inputs)
+
+    assert second.id == first.id
+    assert second.candidates[0].id == first.candidates[0].id
+    assert second.candidates[0].artifact_digest == first.candidates[0].artifact_digest
+    assert len(list(home.candidates_dir.glob("policy_set_*"))) == 1
 
 
 def test_staging_refuses_a_malformed_adapter(tmp_path):
@@ -469,3 +487,97 @@ def test_the_default_path_registers_nothing(tmp_path):
     assert trials
     for path in trials:
         assert json.loads(path.read_text(encoding="utf-8"))["policy_snapshot_id"] is None
+
+
+def test_mlx_registrar_posts_a_stable_snapshot_id(tmp_path):
+    from synth_optimizers.eval.mlx_registrar import (
+        MlxHttpPolicySnapshotRegistrar,
+        snapshot_id_for_digest,
+    )
+
+    digest = "sha256:" + "ab" * 32
+    assert snapshot_id_for_digest(digest) == "snap_" + "ab" * 32
+    calls: list[tuple[str, dict]] = []
+
+    def poster(url, payload, headers, timeout):
+        calls.append((url, payload))
+        return {"policy_snapshot_id": payload["snapshot_id"]}
+
+    registrar = MlxHttpPolicySnapshotRegistrar(
+        "http://127.0.0.1:8787", token="run-local-bearer", poster=poster
+    )
+    policy_dir = tmp_path / "candidate"
+    policy_dir.mkdir()
+    first = registrar.register(
+        candidate_id="policy_1", artifact_digest=digest, policy_dir=policy_dir
+    )
+    second = registrar.register(
+        candidate_id="policy_1", artifact_digest=digest, policy_dir=policy_dir
+    )
+    assert first == second == snapshot_id_for_digest(digest)
+    assert len(calls) == 1
+    assert calls[0][0].endswith("/v1/synth/policies/register")
+    assert calls[0][1]["policy_dir"] == str(policy_dir)
+
+
+def test_registrar_for_manifest_is_mlx_only(tmp_path):
+    from synth_optimizers.eval.mlx_registrar import registrar_for_manifest
+
+    home = make_home(tmp_path)
+    write_adapter(tmp_path / "src" / "final")
+    candidate_set = stage_candidate_set(
+        home,
+        [
+            CandidateSource(
+                label="final",
+                path=tmp_path / "src" / "final",
+                entrypoint="policy.json",
+                kind=MLX_LORA_POLICY_KIND,
+            )
+        ],
+    )
+    mlx_manifest = tmp_path / "mlx.json"
+    mlx_manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": "eval.worker-manifest.v1",
+                "run_id": "run_mlx_reg",
+                "recipe_id": MLX_RECIPE,
+                "home": str(home.root),
+                "candidate_set_path": str(
+                    home.candidates_dir / candidate_set.id / "candidate_set.json"
+                ),
+                "mlx_inference_url": "http://127.0.0.1:9999",
+            }
+        ),
+        encoding="utf-8",
+    )
+    registrar = registrar_for_manifest(mlx_manifest)
+    assert registrar is not None
+    assert registrar.base_url == "http://127.0.0.1:9999"
+
+    fixture_home = make_home(tmp_path / "fixture")
+    fixture_home.write_pin(FIXTURE_RECIPE, PINNED)
+    source = tmp_path / "fixture-src"
+    source.mkdir()
+    (source / "policy.py").write_text("class Policy:\n    pass\n", encoding="utf-8")
+    fixture_set = stage_candidate_set(
+        fixture_home,
+        [CandidateSource(label="only", path=source, entrypoint="policy:Policy")],
+    )
+    fixture_manifest = tmp_path / "fixture.json"
+    fixture_manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": "eval.worker-manifest.v1",
+                "run_id": "run_fix",
+                "recipe_id": FIXTURE_RECIPE,
+                "home": str(fixture_home.root),
+                "candidate_set_path": str(
+                    fixture_home.candidates_dir / fixture_set.id / "candidate_set.json"
+                ),
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert registrar_for_manifest(fixture_manifest) is None

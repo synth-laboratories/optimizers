@@ -84,7 +84,14 @@ def dispatch(args: argparse.Namespace) -> int:
     if command == "stage":
         return _stage(args)
     if command == "worker":
-        return run_worker(Path(args.manifest), stream=sys.stdout)
+        from .mlx_registrar import registrar_for_manifest
+
+        manifest_path = Path(args.manifest)
+        return run_worker(
+            manifest_path,
+            stream=sys.stdout,
+            policy_registrar=registrar_for_manifest(manifest_path),
+        )
     if command == "cancel":
         found = request_cancel(Path(args.home), args.run_id)
         if not found:

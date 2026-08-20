@@ -75,6 +75,7 @@ class WorkerManifest:
     home: Path
     candidate_set_path: Path
     session_ref: str | None
+    mlx_inference_url: str | None = None
 
     @classmethod
     def load(cls, path: Path) -> WorkerManifest:
@@ -87,12 +88,16 @@ class WorkerManifest:
         for key in ("run_id", "recipe_id", "home", "candidate_set_path"):
             if not isinstance(payload.get(key), str) or not payload[key].strip():
                 raise EvalContractError(f"worker manifest requires {key}")
+        mlx_url = payload.get("mlx_inference_url")
+        if mlx_url is not None and (not isinstance(mlx_url, str) or not mlx_url.strip()):
+            raise EvalContractError("worker manifest mlx_inference_url must be a string")
         return cls(
             run_id=payload["run_id"],
             recipe_id=payload["recipe_id"],
             home=Path(payload["home"]).expanduser(),
             candidate_set_path=Path(payload["candidate_set_path"]).expanduser(),
             session_ref=payload.get("session_ref"),
+            mlx_inference_url=mlx_url.strip() if isinstance(mlx_url, str) else None,
         )
 
 
@@ -331,6 +336,7 @@ class EvalRunner:
                 "digest": digest_of(self.recipe.to_json()),
                 "image": self.recipe.image,
                 "image_digest": self.recipe.image_digest,
+                "resolved_reference": self._image_reference,
                 "target_manifest": self.recipe.target.to_json(),
                 "target_manifest_digest": digest_of(self.recipe.target.to_json()),
             },
@@ -345,6 +351,8 @@ class EvalRunner:
                         "label": candidate.label,
                         "kind": candidate.kind,
                         "digest": candidate.artifact_digest,
+                        "artifact_uri": candidate.artifact_uri,
+                        "path": str(self.candidate_set.artifact_path(candidate)),
                         "is_baseline": candidate.id == self.candidate_set.baseline_id,
                     }
                     for candidate in self.candidate_set.candidates
@@ -890,13 +898,21 @@ class EvalRunner:
             },
         )
         write_json(self.run_dir / "selection.json", decision.to_json())
+        input_manifest = json.loads(
+            (self.run_dir / "input_manifest.json").read_text(encoding="utf-8")
+        )
         write_json(
             self.run_dir / "result_manifest.json",
             {
-                "schema_version": "eval.result-manifest.v1",
+                "schema_version": "eval.result-manifest.v2",
                 "run_id": self.manifest.run_id,
                 "recipe_id": self.recipe.id,
                 "candidate_set_id": self.candidate_set.id,
+                "recipe": input_manifest["recipe"],
+                "candidate_set": input_manifest["candidate_set"],
+                "seed_ledger": input_manifest["seed_ledger"],
+                "runtime": input_manifest["runtime"],
+                "home": str(self.home.root),
                 "selection": decision.to_json(),
                 "trials": [
                     {
@@ -908,6 +924,7 @@ class EvalRunner:
                         "status": record.status,
                         "benchmark_status": record.benchmark_status,
                         "valid": record.valid,
+                        "policy_snapshot_id": _trial_policy_snapshot_id(record),
                         "evidence": str(Path(record.evidence_dir) / "job_result.json"),
                     }
                     for record in [*screening, *confirmation]
@@ -927,6 +944,15 @@ class EvalRunner:
                 "sealed_at": _now(),
             },
         )
+
+
+def _trial_policy_snapshot_id(record: TrialRecord) -> str | None:
+    path = Path(record.evidence_dir) / "job_result.json"
+    try:
+        value = json.loads(path.read_text(encoding="utf-8")).get("policy_snapshot_id")
+    except (OSError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, str) and value else None
 
 
 def _directory_bytes(path: Path) -> int:

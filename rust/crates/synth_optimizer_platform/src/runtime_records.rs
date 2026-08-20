@@ -310,7 +310,6 @@ impl ContainerContractSnapshotRecord {
     pub fn from_input(input: ContainerContractSnapshotInput<'_>) -> Self {
         let capability_hash = stable_value_hash(input.metadata_response);
         let identity = json!({
-            "run_id": input.run_id,
             "container_url": input.container_url,
             "contract_kind": input.contract_kind,
             "contract_version": input.contract_version,
@@ -337,7 +336,6 @@ impl PromptProgramSnapshotRecord {
     pub fn from_input(input: PromptProgramSnapshotInput<'_>) -> Self {
         let program_hash = stable_value_hash(input.program);
         let identity = json!({
-            "run_id": input.run_id,
             "program_id": input.program_id,
             "program_hash": program_hash,
             "target_modules": input.target_modules,
@@ -363,7 +361,6 @@ impl TasksetSnapshotRecord {
         let tasks = Value::Array(input.tasks.to_vec());
         let tasks_hash = stable_value_hash(&tasks);
         let identity = json!({
-            "run_id": input.run_id,
             "taskset_id": input.taskset_id,
             "split": input.split,
             "task_ids": input.task_ids,
@@ -513,4 +510,60 @@ fn now_rfc3339() -> String {
     OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
+}
+
+#[cfg(test)]
+mod snapshot_identity_tests {
+    use super::*;
+
+    #[test]
+    fn content_snapshots_are_stable_across_runs() {
+        let metadata_response = json!({"contract": "v1", "capabilities": ["rollout"]});
+        let program = json!({"prompt": "solve carefully"});
+        let tasks = vec![json!({"id": "task-1", "input": "2+2"})];
+        let task_ids = vec!["task-1".to_string()];
+        let target_modules = vec!["system".to_string()];
+        let filters = json!({"split": "train"});
+
+        let build = |run_id: &str| {
+            let contract =
+                ContainerContractSnapshotRecord::from_input(ContainerContractSnapshotInput {
+                    run_id,
+                    container_url: "http://container.test",
+                    contract_kind: "synth",
+                    contract_version: "v1",
+                    validation_status: "valid",
+                    metadata_response: &metadata_response,
+                    health_response: None,
+                    metadata: Map::new(),
+                });
+            let prompt = PromptProgramSnapshotRecord::from_input(PromptProgramSnapshotInput {
+                run_id,
+                program_id: "program-1",
+                target_modules: &target_modules,
+                mutable_field_ids: vec!["system".to_string()],
+                validation_status: "valid",
+                program: &program,
+                metadata: Map::new(),
+            });
+            let taskset = TasksetSnapshotRecord::from_input(TasksetSnapshotInput {
+                run_id,
+                taskset_id: "tasks-1",
+                split: "train",
+                task_ids: &task_ids,
+                filters: &filters,
+                tasks: &tasks,
+                taskset_metadata: Value::Null,
+                tasks_metadata: Value::Null,
+                metadata: Map::new(),
+            });
+            (
+                contract.contract_snapshot_id,
+                prompt.program_snapshot_id,
+                taskset.taskset_snapshot_id,
+            )
+        };
+
+        assert_eq!(build("run-a"), build("run-b"));
+    }
 }

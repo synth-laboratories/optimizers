@@ -35,6 +35,10 @@ max_concurrent_trials = 2
 
 # Seconds a semaphore lease survives without a heartbeat before it is reclaimed.
 lease_ttl_seconds = 120
+
+# Loopback synth-mlx-rl origin used to register mlx-lora.v1 policy snapshots.
+# Must stay on this machine. Workshop overwrites this with the sidecar's port.
+mlx_inference_url = "http://127.0.0.1:8787"
 """
 
 DEFAULT_SECRETS_TOML = """\
@@ -61,6 +65,7 @@ class RuntimeConfig:
     container_runtime: str
     max_concurrent_trials: int
     lease_ttl_seconds: int
+    mlx_inference_url: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,6 +205,12 @@ def _load_runtime(path: Path) -> RuntimeConfig:
     ttl = payload.get("lease_ttl_seconds", 120)
     if not isinstance(ttl, int) or isinstance(ttl, bool) or ttl < 5:
         raise EvalContractError(f"{path}: lease_ttl_seconds must be an integer >= 5")
+    mlx_url = payload.get("mlx_inference_url", "http://127.0.0.1:8787")
+    if not isinstance(mlx_url, str) or not mlx_url.strip():
+        raise EvalContractError(f"{path}: mlx_inference_url must be a local http origin")
     return RuntimeConfig(
-        container_runtime=runtime, max_concurrent_trials=concurrency, lease_ttl_seconds=ttl
+        container_runtime=runtime,
+        max_concurrent_trials=concurrency,
+        lease_ttl_seconds=ttl,
+        mlx_inference_url=mlx_url.strip(),
     )

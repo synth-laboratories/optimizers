@@ -14,6 +14,8 @@ from __future__ import annotations
 import shutil
 import stat
 import uuid
+import hashlib
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -56,11 +58,10 @@ def stage_candidate_set(
     if len(baselines) > 1:
         raise EvalContractError("a candidate set may designate at most one baseline")
 
-    set_id = set_id or f"policy_set_{uuid.uuid4().hex[:12]}"
-    root = home.candidates_dir / set_id
-    if root.exists():
-        raise EvalContractError(f"candidate set {set_id} already exists and is immutable")
-    artifacts = root / "artifacts"
+    requested_set_id = set_id
+    staging_root = home.candidates_dir / f".staging_{uuid.uuid4().hex}"
+    root = staging_root
+    artifacts = staging_root / "artifacts"
     artifacts.mkdir(parents=True)
 
     candidates: list[PolicyCandidate] = []
@@ -87,9 +88,13 @@ def stage_candidate_set(
             shutil.rmtree(staged)  # identical bytes already staged
         else:
             staged.rename(final)
-            _freeze(final)
+        candidate_identity = {
+            "artifact_digest": digest,
+            "entrypoint": source.entrypoint,
+            "kind": source.kind,
+        }
         candidate = PolicyCandidate(
-            id=f"policy_{uuid.uuid4().hex[:12]}",
+            id=f"policy_{_canonical_digest(candidate_identity)[:16]}",
             label=source.label,
             kind=source.kind,
             artifact_uri=f"local-artifact://sha256/{digest.split(':', 1)[1]}",
@@ -101,6 +106,35 @@ def stage_candidate_set(
         if source.is_baseline:
             baseline_id = candidate.id
 
+    ids = [candidate.id for candidate in candidates]
+    if len(set(ids)) != len(ids):
+        shutil.rmtree(staging_root)
+        raise EvalContractError("candidate content must be unique inside a set")
+
+    set_identity = {
+        "baseline_id": baseline_id,
+        "candidates": sorted(ids),
+    }
+    set_id = requested_set_id or f"policy_set_{_canonical_digest(set_identity)[:16]}"
+    root = home.candidates_dir / set_id
+
+    if root.exists():
+        shutil.rmtree(staging_root)
+        if requested_set_id is not None:
+            raise EvalContractError(f"candidate set {set_id} already exists and is immutable")
+        existing = CandidateSet.load(root / "candidate_set.json")
+        existing_identity = {
+            "baseline_id": existing.baseline_id,
+            "candidates": sorted(candidate.id for candidate in existing.candidates),
+        }
+        if existing_identity != set_identity:
+            raise EvalContractError(f"candidate set {set_id} digest collision")
+        return existing
+
+    staging_root.rename(root)
+    for artifact in (root / "artifacts").iterdir():
+        _freeze(artifact)
+
     candidate_set = CandidateSet(
         id=set_id,
         candidates=tuple(candidates),
@@ -110,6 +144,11 @@ def stage_candidate_set(
     )
     write_json(root / "candidate_set.json", candidate_set.to_json())
     return candidate_set
+
+
+def _canonical_digest(value: Any) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _freeze(root: Path) -> None:

@@ -284,6 +284,16 @@ def test_full_run_scores_every_candidate_and_promotes_the_winner(tmp_path):
 
     # Every candidate x seed x scenario has its own terminal record.
     result_manifest = json.loads((run_dir / "result_manifest.json").read_text(encoding="utf-8"))
+    assert result_manifest["schema_version"] == "eval.result-manifest.v2"
+    assert result_manifest["recipe"]["digest"].startswith("sha256:")
+    assert result_manifest["recipe"]["resolved_reference"]
+    assert result_manifest["candidate_set"]["digest"].startswith("sha256:")
+    assert result_manifest["candidate_set"]["candidates"][0]["artifact_uri"].startswith(
+        "local-artifact://sha256/"
+    )
+    assert result_manifest["seed_ledger"]
+    assert result_manifest["runtime"]
+    assert result_manifest["home"] == str(home.root)
     # 3 candidates x 2 screening seeds, then baseline + the one survivor x 2 confirmation seeds
     assert len(result_manifest["trials"]) == 3 * 2 + 2 * 2
     for trial in result_manifest["trials"]:
@@ -417,7 +427,7 @@ def test_sealed_run_refuses_a_different_candidate_set(tmp_path):
     manifest = write_manifest(home, tmp_path, first_set, "run_sealed")
     EvalRunner(WorkerManifest.load(manifest), executor=FakeExecutor()).execute()
 
-    second_set = stage(home, tmp_path / "b")
+    second_set = stage(home, tmp_path / "b", labels=("baseline", "champion", "challenger"))
     manifest = write_manifest(home, tmp_path, second_set, "run_sealed")
     runner = EvalRunner(WorkerManifest.load(manifest), executor=FakeExecutor())
     assert runner.execute() == 1

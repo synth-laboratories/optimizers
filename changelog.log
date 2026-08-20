@@ -1,5 +1,9 @@
 # synth-optimizers changelog
 
+## 2026-08-20
+
+* Prepared `0.2.15` from the plain v0.7 release lineage; the experimental optimizer layer remains opt-in and is not included in this package cut.
+
 ## 2026-08-16
 
 * Prepared `0.2.12.dev20260816` with the authenticated Workshop capability and status handshake routes required to start the GEPA sidecar end to end.

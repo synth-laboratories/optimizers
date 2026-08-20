@@ -150,7 +150,12 @@ def _render_plan(plan: Any) -> str:
         )
     lines.append(f"  blocks        {len(plan.blocks['ids'])} x {plan.blocks['replicates']}")
     lines.append(f"  trials        {len(plan.trials)}")
-    lines.append(f"  image         {plan.provenance.get('image_digest') or 'UNPINNED'}")
+    # Each executor pins something different: an image digest, a config digest,
+    # a wheel. Show what this one actually recorded rather than one executor's
+    # vocabulary applied to every other.
+    for key, value in sorted(plan.provenance.items()):
+        if key.endswith("_digest") or key in ("image", "image_digest"):
+            lines.append(f"  {key:<13} {value or 'UNPINNED'}")
     return "\n".join(lines)
 
 

@@ -208,6 +208,23 @@ image, or the staged candidate set has moved since the first dispatch, the
 digests disagree and the command refuses rather than quietly comparing two
 different measurements.
 
+`resume --retry-rig-failures` re-dispatches trials whose sealed failure was
+the **rig's**, not the arm's. A crashed container says nothing about a
+treatment, so re-running it is not cherry-picking — but only `rig` and `infra`
+qualify. A `policy` failure is the thing under test, and a `budget` or `timeout`
+failure may itself *be* the arm difference; retrying either would be selecting
+for the result you wanted.
+
+A retry appends a new row with `attempt = N+1` and the digest of the row it
+supersedes. Nothing is edited away: the superseded rows stay in the log,
+`retried_trials` appears in the report totals, and the claim verdict carries a
+note naming them — a rig that needed three attempts is a fact about the
+comparison. Two rows for the *same* attempt remain a contradiction, not a retry.
+
+Each retry also runs under its own executor identity (`…_r1`). Every executor
+here resumes its own work from a sealed record, so re-dispatching under the
+original id would replay the failure the retry exists to clear.
+
 `aa` runs the baseline against itself on the first three blocks. It is an
 **identity and isolation smoke test** — a non-zero delta there is a shared
 cache, a warm container, or a leaked seed — and it never yields a headline. It

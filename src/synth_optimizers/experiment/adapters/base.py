@@ -35,6 +35,10 @@ class TrialContext:
     correlation: CorrelationEnvelope
     workspace: Path
     dispatched_at: str
+    #: 0 for the first dispatch. An adapter must give a retry its own execution
+    #: identity: every executor here resumes its own work from a sealed record,
+    #: so reusing the identity would replay the failure instead of re-running it.
+    attempt: int = 0
 
 
 class ExecutorAdapter(Protocol):

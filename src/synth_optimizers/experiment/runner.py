@@ -12,14 +12,14 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .adapters.base import TrialContext
 from .analysis import ExperimentReport, reduce_experiment
-from .models import ExperimentContractError, TrialOutcome
+from .models import ExperimentContractError, TrialOutcome, digest_of
 from .outcomes import OutcomeLog
 from .plan import ExperimentPlan, assert_only_treatment_differs, compile_plan
 from .spec import ExperimentSpec
@@ -108,15 +108,35 @@ class ExperimentRunner:
 
     # --------------------------------------------------------------- dispatch
 
-    def run(self, *, limit: int | None = None) -> RunSummary:
+    def run(self, *, limit: int | None = None, retry_rig_failures: bool = False) -> RunSummary:
+        """Dispatch pending trials in the planned order.
+
+        `retry_rig_failures` re-dispatches trials whose sealed failure was the
+        rig's, not the arm's. A crashed container says nothing about a treatment,
+        so re-running it is not cherry-picking -- but the superseded row stays in
+        the log and the report counts every retry, because a rig that needed
+        three attempts is itself a fact about the comparison.
+        """
+
         plan = self.prepare()
-        sealed = self.outcomes.sealed_trial_ids()
+        held = self.outcomes.load().by_trial()
+        retryable = {
+            trial_id
+            for trial_id, outcome in held.items()
+            if retry_rig_failures and outcome.retryable
+        }
         pending = [
             trial
             for trial in sorted(plan.trials, key=lambda item: item.dispatch_index)
-            if trial.trial_id not in sealed
+            if trial.trial_id not in held or trial.trial_id in retryable
         ]
         skipped = len(plan.trials) - len(pending)
+        if retryable:
+            self._emit(
+                "experiment.retry.planned",
+                trials=sorted(retryable),
+                reason="sealed rig failure",
+            )
         self._emit(
             "experiment.run.planned",
             experiment_id=plan.experiment_id,
@@ -164,6 +184,8 @@ class ExperimentRunner:
                 block_id=trial.block_id,
                 dispatch_index=trial.dispatch_index,
             )
+            previous = held.get(trial.trial_id)
+            attempt = previous.attempt + 1 if previous is not None else 0
             context = TrialContext(
                 spec=self.spec,
                 plan=plan,
@@ -173,10 +195,17 @@ class ExperimentRunner:
                 correlation=correlation,
                 workspace=self.root / "trials" / trial.trial_id,
                 dispatched_at=dispatched_at,
+                attempt=attempt,
             )
             context.workspace.mkdir(parents=True, exist_ok=True)
             outcome = self.adapter.run_trial(context)
             _assert_matches(outcome, trial.trial_id, correlation.digest)
+            if previous is not None:
+                outcome = replace(
+                    outcome,
+                    attempt=attempt,
+                    supersedes=digest_of(previous.to_json()),
+                )
             self.outcomes.append(outcome)
             dispatched += 1
             if isinstance(outcome.usage.get("cost_usd"), (int, float)):

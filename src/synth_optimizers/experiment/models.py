@@ -45,6 +45,14 @@ FAILURE_CLASSES = (
     "unknown",
 )
 
+#: The only failures a retry may re-dispatch.
+#:
+#: A crashed container or a dropped connection says nothing about the arm, so
+#: re-running it is not cherry-picking.  A `policy` failure is the thing under
+#: test, and a `budget` or `timeout` failure may itself be the arm difference --
+#: retrying either would be selecting for the result you wanted.
+RETRYABLE_FAILURE_CLASSES = frozenset({"rig", "infra"})
+
 #: v0.7 missingness policies.  There is no imputation option, on purpose.
 MISSING_POLICIES = ("fail", "pairwise_complete")
 
@@ -442,6 +450,11 @@ class TrialOutcome:
     dispatched_at: str | None
     started_at: str | None
     finished_at: str | None
+    #: 0 for the first dispatch.  A retry appends a new row rather than editing
+    #: the one it replaces, so what was retried stays legible forever.
+    attempt: int = 0
+    #: Digest of the row this one supersedes, when it is a retry.
+    supersedes: str | None = None
 
     def __post_init__(self) -> None:
         if self.status not in TRIAL_OUTCOME_STATUSES:
@@ -461,6 +474,12 @@ class TrialOutcome:
         """Whether this row may contribute a number to an arm aggregate."""
 
         return self.status == "completed"
+
+    @property
+    def retryable(self) -> bool:
+        """A rig failure says nothing about the arm, so re-running it is honest."""
+
+        return not self.counted and self.failure_class in RETRYABLE_FAILURE_CLASSES
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -484,6 +503,8 @@ class TrialOutcome:
             "dispatched_at": self.dispatched_at,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
+            "attempt": self.attempt,
+            "supersedes": self.supersedes,
         }
 
     @classmethod
@@ -518,6 +539,8 @@ class TrialOutcome:
             dispatched_at=data.get("dispatched_at"),
             started_at=data.get("started_at"),
             finished_at=data.get("finished_at"),
+            attempt=_non_negative_int(data.get("attempt", 0), field_name="attempt"),
+            supersedes=data.get("supersedes"),
         )
 
 
@@ -548,6 +571,7 @@ __all__ = [
     "FACTOR_CATALOG_SCHEMA",
     "FAILURE_CLASSES",
     "MISSING_POLICIES",
+    "RETRYABLE_FAILURE_CLASSES",
     "TRIAL_OUTCOME_SCHEMA",
     "TRIAL_OUTCOME_STATUSES",
     "AblatableFactor",

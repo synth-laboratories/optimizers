@@ -240,7 +240,7 @@ class EvalRuntimeAdapter:
         recipe = self.recipe(spec)
         candidate = self._candidate(spec, context.treatment)
         seed = int(trial.trial_derived["seed"])
-        run_id = str(trial.trial_derived["run_id"])
+        run_id = _attempt_run_id(trial.trial_derived["run_id"], context.attempt)
         efforts = {
             path.split(".", 2)[1]: value
             for path, value in {**context.fixed, **context.treatment}.items()
@@ -326,7 +326,8 @@ class EvalRuntimeAdapter:
             receipt = digest_of(payload)
             image_reference = payload.get("image_reference")
         infra = {
-            "cache_namespace": context.trial.trial_derived["cache_namespace"],
+            "cache_namespace": run_id,
+            "attempt": context.attempt,
             "container_runtime": self.home.config.container_runtime,
             "image_reference": image_reference,
             "evidence_dir": str(run_dir),
@@ -478,6 +479,17 @@ def _terminal_error(run_dir: Path) -> str | None:
     except (json.JSONDecodeError, OSError):
         return None
     return reason
+
+
+def _attempt_run_id(base: Any, attempt: int) -> str:
+    """A retry runs in its own directory.
+
+    The eval runner treats an existing `job_result.json` as terminal and
+    replays it, so re-dispatching under the same run id would return the very
+    failure the retry exists to clear.
+    """
+
+    return str(base) if attempt == 0 else f"{base}_r{attempt}"
 
 
 def _classify(records: list[TrialRecord]) -> tuple[str, str | None, str | None]:

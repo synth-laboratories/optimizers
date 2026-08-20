@@ -481,6 +481,86 @@ def test_a_target_that_promises_a_trace_and_omits_it_is_incomplete_evidence(tmp_
     assert selection["status"] == "invalid_evidence"
 
 
+def test_annotation_policy_seals_v5_trial_evidence_without_affecting_selection(
+    tmp_path, monkeypatch
+):
+    """Jesterky is descriptive evidence, never a second scoring authority."""
+
+    from synth_containers.tracing.validation.rehydrate import (
+        evidence_bundle_from_payload,
+        rehydrate_trace,
+    )
+    from synth_containers.tracing.validation.validator import validate
+    from synth_optimizers.eval.annotations import EvalAnnotationProjector
+
+    calls = 0
+
+    def fake_jesterky(self, projection_dir, manifest_path):
+        nonlocal calls
+        calls += 1
+        traces = [
+            json.loads(path.read_text(encoding="utf-8"))["trace_correlation_id"]
+            for path in sorted(projection_dir.glob("*.json"))
+        ]
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "theme_registry": {
+                        "themes": [{"theme": "policy-action-loop", "count": len(traces)}],
+                        "traces": [
+                            {
+                                "trace_id": trace_id,
+                                "theme_tags": ["policy-action-loop"],
+                                "blocker": False,
+                                "severity": "low",
+                            }
+                            for trace_id in traces
+                        ],
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(EvalAnnotationProjector, "_run_jesterky", fake_jesterky)
+    home = make_home(tmp_path)
+    candidate_set = stage(home, tmp_path)
+    manifest = write_manifest(home, tmp_path, candidate_set, "run_v5_annotations")
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["annotation_policy"] = {
+        "schema_version": "eval.annotation-policy.v1",
+        "enabled": True,
+        "actor": "fake",
+        "max_targets": 2,
+        "max_spend_usd": 1.0,
+    }
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert EvalRunner(WorkerManifest.load(manifest), executor=FakeExecutor()).execute() == 0
+    run_dir = home.run_dir("run_v5_annotations")
+    result = json.loads((run_dir / "result_manifest.json").read_text(encoding="utf-8"))
+    assert result["selection"]["status"] == "promoted"
+    assert result["annotations"]["status"] == "completed"
+    assert result["annotations"]["annotated"] == 2
+    sealed_input = json.loads((run_dir / "input_manifest.json").read_text(encoding="utf-8"))
+    assert sealed_input["annotation_policy"]["max_targets"] == 2
+
+    bundles = result["annotations"]["evidence_bundle_paths"]
+    assert len(bundles) == 2
+    for bundle_path in bundles:
+        bundle = evidence_bundle_from_payload(json.loads(Path(bundle_path).read_text()))
+        trace_path = run_dir / "trace_v5" / f"{bundle.trace_ref.trace_id}.v5.json"
+        trace = rehydrate_trace(json.loads(trace_path.read_text()))
+        receipt = validate(trace, bundle)
+        assert receipt.valid, [finding.code for finding in receipt.findings]
+
+    # A resume sees the already sealed matrix, not a fresh annotation cadence.
+    assert EvalRunner(WorkerManifest.load(manifest), executor=FakeExecutor()).execute() == 0
+    resumed = json.loads((run_dir / "result_manifest.json").read_text(encoding="utf-8"))
+    assert resumed["annotations"]["status"] == "skipped"
+    assert calls == 1
+
+
 def test_pausing_holds_the_matrix_and_resuming_finishes_it(tmp_path):
     home = make_home(tmp_path)
     candidate_set = stage(home, tmp_path)

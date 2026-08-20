@@ -29,6 +29,7 @@ from .executor import (
     TrialExecutor,
     TrialRunRequest,
 )
+from .annotations import AnnotationPolicy, AnnotationReceipt, EvalAnnotationProjector
 from .home import EvalHome
 from .models import (
     CANDIDATE_SET_SCHEMA,
@@ -75,6 +76,7 @@ class WorkerManifest:
     home: Path
     candidate_set_path: Path
     session_ref: str | None
+    annotation_policy: AnnotationPolicy = AnnotationPolicy()
 
     @classmethod
     def load(cls, path: Path) -> WorkerManifest:
@@ -93,6 +95,7 @@ class WorkerManifest:
             home=Path(payload["home"]).expanduser(),
             candidate_set_path=Path(payload["candidate_set_path"]).expanduser(),
             session_ref=payload.get("session_ref"),
+            annotation_policy=AnnotationPolicy.from_mapping(payload.get("annotation_policy")),
         )
 
 
@@ -359,11 +362,18 @@ class EvalRunner:
                 "run_parallelism": self._parallelism,
                 "network": self.recipe.target.network,
             },
+            "annotation_policy": self.manifest.annotation_policy.to_json(),
             "created_at": _now(),
         }
         if path.is_file():
             existing = json.loads(path.read_text(encoding="utf-8"))
-            for field_name in ("recipe", "candidate_set"):
+            for field_name in ("recipe", "candidate_set", "annotation_policy"):
+                # Runs sealed before annotation policy existed are implicitly
+                # disabled.  They can resume safely, but cannot be retrofitted
+                # with an enabled policy after their trial matrix has started.
+                if field_name == "annotation_policy" and field_name not in existing:
+                    if not self.manifest.annotation_policy.enabled:
+                        continue
                 if digest_of(existing.get(field_name)) != digest_of(manifest[field_name]):
                     raise EvalContractError(
                         f"run {self.manifest.run_id} was sealed with a different "
@@ -851,6 +861,12 @@ class EvalRunner:
             confirmation = self._run_stage("confirm", survivors, ledger["confirmation"])
             confirm_cards = self._score("confirm", confirmation, candidate_ids=survivors)
 
+        annotation_receipt = EvalAnnotationProjector(
+            policy=self.manifest.annotation_policy,
+            run_id=self.manifest.run_id,
+            run_dir=self.run_dir,
+        ).project([*screening, *confirmation])
+
         decision_records = confirmation or screening
         decision_cards = confirm_cards or screen_cards
         decision = decide(
@@ -860,7 +876,14 @@ class EvalRunner:
             baseline_id=self.candidate_set.baseline_id,
             cancelled=self.cancel.cancelled,
         )
-        self._seal_outputs(screen_cards, confirm_cards, screening, confirmation, decision)
+        self._seal_outputs(
+            screen_cards,
+            confirm_cards,
+            screening,
+            confirmation,
+            decision,
+            annotation_receipt,
+        )
         self.events.emit("eval.selection.completed", selection=decision.to_json())
         status = "cancelled" if self.cancel.cancelled else "completed"
         self.events.emit(
@@ -879,6 +902,7 @@ class EvalRunner:
         screening: Sequence[TrialRecord],
         confirmation: Sequence[TrialRecord],
         decision: SelectionDecision,
+        annotation_receipt: AnnotationReceipt,
     ) -> None:
         write_json(
             self.run_dir / "scorecards.json",
@@ -898,6 +922,7 @@ class EvalRunner:
                 "recipe_id": self.recipe.id,
                 "candidate_set_id": self.candidate_set.id,
                 "selection": decision.to_json(),
+                "annotations": annotation_receipt.to_json(),
                 "trials": [
                     {
                         "trial_id": record.trial_id,

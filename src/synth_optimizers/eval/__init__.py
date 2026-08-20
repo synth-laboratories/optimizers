@@ -23,6 +23,7 @@ from .executor import (
     TrialExecutor,
     TrialRunRequest,
 )
+from .annotations import AnnotationPolicy, AnnotationReceipt, EvalAnnotationProjector
 from .home import EvalHome, RuntimeConfig
 from .models import (
     BENCHMARK_STATUSES,
@@ -76,6 +77,8 @@ from .semaphore import Lease, SemaphoreTimeout, TrialSemaphore
 
 __all__ = [
     "BENCHMARK_STATUSES",
+    "AnnotationPolicy",
+    "AnnotationReceipt",
     "CANDIDATE_SET_SCHEMA",
     "CONTAINER_RESULT_SCHEMA",
     "CONTAINER_STATUSES",
@@ -99,6 +102,7 @@ __all__ = [
     "ContainerResult",
     "ContainerRuntimeError",
     "EvalContractError",
+    "EvalAnnotationProjector",
     "EvalHome",
     "EvalRecipe",
     "EvalRunner",

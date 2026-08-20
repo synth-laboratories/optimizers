@@ -278,7 +278,7 @@ pub fn build_jesterky_evidence_bundle(
     seal(&mut definition);
     let target = trace_selector(trace, Some("jesterky.v4-projection"));
     let scan = scan.cloned().unwrap_or_else(|| json!({}));
-    let labels = scan
+    let scan_labels = scan
         .get("theme_tags")
         .and_then(Value::as_array)
         .map(|items| {
@@ -289,7 +289,41 @@ pub fn build_jesterky_evidence_bundle(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let applied = status == "completed" && !labels.is_empty();
+    let scan_reports_unavailable_source = scan
+        .get("blocker")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || scan_labels
+            .iter()
+            .any(|label| label == "trace_access_blocked" || label == "annotation_blocked");
+    let applied = status == "completed" && !scan_labels.is_empty() && !scan_reports_unavailable_source;
+    let annotation_status = if applied { "applied" } else { "abstained" };
+    let abstention_reason = if applied {
+        Value::Null
+    } else {
+        json!(error.unwrap_or(if scan_reports_unavailable_source {
+            "Jesterky reported that the trace source was unavailable to the annotator"
+        } else {
+            "Jesterky returned no usable descriptive labels"
+        }))
+    };
+    let labels = if applied {
+        vec!["theme".to_string()]
+    } else {
+        Vec::new()
+    };
+    let payload = if applied {
+        json!({
+            "theme_tags": scan_labels,
+            "severity": scan.get("severity").cloned().unwrap_or(Value::Null),
+            "blocker": scan.get("blocker").cloned().unwrap_or(Value::Null),
+            "failure_modes": scan.get("failure_modes").cloned().unwrap_or_else(|| json!([])),
+            "reusable_rules": scan.get("reusable_rules").cloned().unwrap_or_else(|| json!([])),
+            "prompt_harness_notes": scan.get("prompt_harness_notes").cloned().unwrap_or(Value::Null),
+        })
+    } else {
+        json!({})
+    };
     let mut annotation = json!({
         "annotation_id": format!("ann_{}", short_hash(&format!("{}:{}:{}", trace.content_digest, config_digest, manifest_digest))),
         "annotator_id": definition["annotator_id"],
@@ -302,22 +336,19 @@ pub fn build_jesterky_evidence_bundle(
         "producer": producer,
         "created_at": ended_at,
         "grounding": if applied { "summary_only" } else { "source_unavailable" },
-        "payload": {
-            "severity": scan.get("severity").cloned().unwrap_or(Value::Null),
-            "blocker": scan.get("blocker").cloned().unwrap_or(Value::Null),
-            "failure_modes": scan.get("failure_modes").cloned().unwrap_or_else(|| json!([])),
-            "reusable_rules": scan.get("reusable_rules").cloned().unwrap_or_else(|| json!([])),
-            "prompt_harness_notes": scan.get("prompt_harness_notes").cloned().unwrap_or(Value::Null),
-        },
+        "payload": payload,
         "confidence": scan.get("confidence").cloned().unwrap_or(Value::Null),
         "rationale": "Derived from the Jesterky V4 transport projection of the sealed source trace; descriptive proposer context only.",
-        "evidence": [trace_selector(trace, Some("jesterky.v4-projection"))],
+        "evidence": if applied { json!([trace_selector(trace, Some("jesterky.v4-projection"))]) } else { json!([]) },
         "visibility": "private",
         "inspected_projection": "jesterky.v4-projection",
-        "status": if applied { "applied" } else { "abstained" },
+        "revision": 1,
+        "status": annotation_status,
         "review_state": "unreviewed",
-        "abstention_reason": if applied { Value::Null } else { json!(error.unwrap_or("Jesterky returned no usable descriptive labels")) },
-        "inspection": {"source":"projection", "trace_body_read":false, "projection_id":"jesterky.v4-projection", "projection_digest":projection_digest},
+        "abstention_reason": abstention_reason,
+        "inspection": {"source":"projection", "trace_body_read":false, "projection_id":"jesterky.v4-projection", "projection_digest":projection_digest, "projection_manifest_digest":manifest_digest, "losses": []},
+        "annotator_execution_trace_id": format!("jesterky_manifest_{}", short_hash(manifest_digest)),
+        "annotator_execution_trace_digest": manifest_digest,
         "schema_version": ANNOTATION_V1_SCHEMA_VERSION,
     });
     seal(&mut annotation);

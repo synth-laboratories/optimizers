@@ -63,6 +63,7 @@ pub struct JesterkyWorkflowReceipt {
 struct PreparedTrace {
     trace: SealedTraceV5,
     projection_digest: String,
+    projection_trace_id: String,
 }
 
 /// Remove any prior jesterky artifacts so Arm A cannot accidentally pick them up.
@@ -243,6 +244,10 @@ fn run_enabled_jesterky_workflow(
         .arg(&args_json)
         .arg("--out")
         .arg(&manifest_path)
+        // The generated V4 transport projection is an input to the Codex actor,
+        // so make its run-local workspace the actor's readable sandbox root.
+        .arg("--cd")
+        .arg(workspace_dir)
         .arg("--run-id")
         .arg(format!(
             "gepa-{}-g{:03}-jesterky",
@@ -456,13 +461,14 @@ fn export_sealed_v5_rollouts(
         }
         let projection = jesterky_v4_projection(&trace, row);
         let projection_digest = content_digest_for(&projection);
-        let safe_id = sanitize_filename(&format!("{}-{idx:04}", trace.trace_id));
-        let path = trace_dir.join(format!("{safe_id}.v4.json"));
+        let projection_trace_id = sanitize_filename(&format!("{}-{idx:04}", trace.trace_id));
+        let path = trace_dir.join(format!("{projection_trace_id}.v4.json"));
         let text = serde_json::to_string_pretty(&projection)?;
         fs::write(&path, text).map_err(|source| OptimizerError::io(&path, source))?;
         prepared.push(PreparedTrace {
             trace,
             projection_digest,
+            projection_trace_id,
         });
     }
     Ok(prepared)
@@ -541,7 +547,7 @@ fn materialize_v5_evidence_bundles(
     let mut digests = Vec::new();
     let mut index = Vec::new();
     for item in prepared {
-        let scan = scan_by_trace.get(&item.trace.trace_id);
+        let scan = scan_by_trace.get(&item.projection_trace_id);
         let bundle = build_jesterky_evidence_bundle(
             &item.trace,
             scan,
@@ -932,5 +938,78 @@ mod tests {
         assert!(workspace.join(JESTERKY_ANNOTATE_MANIFEST_FILE).is_file());
         assert!(!workspace.join("state/trace_evidence_v5").exists());
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    #[ignore = "requires a real Craftax V4 rollout and ChatGPT-authenticated Jesterky"]
+    fn local_codex_actor_materializes_v5_evidence_for_craftax() {
+        let command = std::env::var("JESTERKY_LOCAL_BIN")
+            .expect("set JESTERKY_LOCAL_BIN to the local jesterky executable");
+        let spec = std::env::var("JESTERKY_GEPA_SPEC")
+            .expect("set JESTERKY_GEPA_SPEC to examples/gepa_trace_annotate.json");
+        let source_v4 = PathBuf::from(
+            std::env::var("CRAFTAX_TRACE_V4")
+                .expect("set CRAFTAX_TRACE_V4 to a completed Craftax V4 rollout"),
+        );
+        let dir = PathBuf::from(
+            std::env::var("CRAFTAX_V5_ACCEPTANCE_DIR")
+                .expect("set CRAFTAX_V5_ACCEPTANCE_DIR to retain the acceptance evidence"),
+        );
+        fs::create_dir_all(&dir).unwrap();
+        let workspace = dir.join("proposer_workspaces/generation_001");
+        fs::create_dir_all(&workspace).unwrap();
+        let source: Value = serde_json::from_str(&fs::read_to_string(&source_v4).unwrap()).unwrap();
+        let trace = synth_optimizer_platform::seal_gepa_rollout_trace_v5(
+            "craftax_jesterky_v5_acceptance",
+            "craftax_sensor_frame_001",
+            &source,
+            &source["metadata"],
+        )
+        .unwrap();
+        let trace_path = dir.join("craftax.source.v5.json");
+        fs::write(&trace_path, serde_json::to_string_pretty(&trace).unwrap()).unwrap();
+        let mut config = SynthOptimizerConfig::default();
+        config.run.run_id = "craftax_jesterky_v5_acceptance".to_string();
+        config.jesterky_workflow.enabled = true;
+        config.jesterky_workflow.command = command;
+        config.jesterky_workflow.spec = spec;
+        config.jesterky_workflow.actor = "codex".to_string();
+        config.jesterky_workflow.model = Some("gpt-5.5".to_string());
+        config.jesterky_workflow.provider = "chatgpt".to_string();
+        config.jesterky_workflow.max_targets = 1;
+        config.jesterky_workflow.max_spend_usd = Some(1.0);
+        let receipt = prepare_jesterky_workflow_for_generation(
+            &config,
+            &json!([{
+                "trace_v5_path": trace_path,
+                "candidate_id": source.pointer("/summary/candidate_id"),
+                "task_id": source.pointer("/summary/task_id"),
+                "reward": source.pointer("/summary/reward"),
+                "status": source.get("status")
+            }]),
+            &workspace,
+            1,
+        )
+        .unwrap()
+        .expect("enabled workflow returns a receipt");
+        assert_eq!(receipt.status, "completed");
+        assert_eq!(
+            receipt.trace_digests,
+            vec![trace["content_digest"].as_str().unwrap().to_string()]
+        );
+        assert_eq!(receipt.evidence_bundle_paths.len(), 1);
+        assert!(Path::new(&receipt.manifest_path).is_file());
+        let bundle: Value = serde_json::from_str(
+            &fs::read_to_string(&receipt.evidence_bundle_paths[0]).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(bundle["schema_version"], "synth.trace-evidence-bundle.v5");
+        assert_eq!(bundle["trace_ref"]["content_digest"], trace["content_digest"]);
+        assert_eq!(bundle["reward_records"], json!([]));
+        assert_eq!(bundle["benchmark_verdicts"], json!([]));
+        assert!(workspace
+            .join("state")
+            .join(JESTERKY_EVIDENCE_BUNDLE_INDEX_FILE)
+            .is_file());
     }
 }

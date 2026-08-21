@@ -325,12 +325,12 @@ where
     Err(last_error.expect("retry loop recorded no error"))
 }
 
+/// Default container HTTP timeout. A constant, not an env knob: the timeout a
+/// run executes under has to be the one its sealed config recorded.
+pub const DEFAULT_CONTAINER_HTTP_TIMEOUT_SECONDS: f64 = 120.0;
+
 fn default_container_timeout_seconds() -> f64 {
-    env::var("SYNTH_OPTIMIZERS_CONTAINER_HTTP_TIMEOUT_SECONDS")
-        .ok()
-        .and_then(|value| value.trim().parse::<f64>().ok())
-        .filter(|value| value.is_finite() && *value > 0.0)
-        .unwrap_or(120.0)
+    DEFAULT_CONTAINER_HTTP_TIMEOUT_SECONDS
 }
 
 fn container_http_timeout_seconds(value: f64) -> Result<f64> {

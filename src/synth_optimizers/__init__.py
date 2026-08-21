@@ -168,6 +168,9 @@ from .future_algorithms import (
     FutureHostedAlgorithmSlug,
 )
 from .o11y import (
+    EVAL_WORKER_EVENT_FEED,
+    EVENT_VOCABULARY_SCHEMA,
+    PYTHON_EVENT_TYPES,
     LiveProgress,
     RegistryRecord,
     RunBoard,
@@ -175,6 +178,8 @@ from .o11y import (
     RunState,
     RunStatus,
     RunUsage,
+    event_vocabulary_path,
+    load_event_vocabulary,
     project_run_events,
 )
 from .observability import (
@@ -383,6 +388,9 @@ __all__ = [
     "ProposerError",
     "ProposerConfig",
     "ProposerPromptConfig",
+    "EVAL_WORKER_EVENT_FEED",
+    "EVENT_VOCABULARY_SCHEMA",
+    "PYTHON_EVENT_TYPES",
     "RegistryRecord",
     "RunBoard",
     "RunFailedError",
@@ -394,6 +402,8 @@ __all__ = [
     "RunUsage",
     "banking77_eval_policy_ref",
     "gepa_proposer_policy_ref",
+    "event_vocabulary_path",
+    "load_event_vocabulary",
     "optimizer_event_log_id",
     "policy_ref",
     "proposer_delta_payload",

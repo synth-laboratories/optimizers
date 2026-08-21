@@ -396,145 +396,10 @@ impl SynthOptimizerConfig {
         let path = path.as_ref();
         let text = fs::read_to_string(path).map_err(|source| OptimizerError::io(path, source))?;
         let mut config: Self = toml::from_str(&text)?;
-        config.apply_env_overrides()?;
         config.resolve_relative_paths(path.parent().unwrap_or_else(|| Path::new(".")));
         config.resolve_runtime_targets()?;
         config.validate()?;
         Ok(config)
-    }
-
-    fn apply_env_overrides(&mut self) -> Result<()> {
-        if let Some(run_id) =
-            read_env_override(&["SYNTH_OPTIMIZERS_RUN_ID", "GEPA_PLATFORM_RUN_ID"])
-        {
-            self.run.run_id = run_id;
-        }
-        if let Some(output_dir) =
-            read_env_override(&["SYNTH_OPTIMIZERS_OUTPUT_DIR", "GEPA_PLATFORM_OUTPUT_DIR"])
-        {
-            self.run.output_dir = PathBuf::from(output_dir);
-        }
-        if let Some(cache_namespace) = read_env_override(&[
-            "SYNTH_OPTIMIZERS_CACHE_NAMESPACE",
-            "GEPA_PLATFORM_CACHE_NAMESPACE",
-        ]) {
-            self.cache.namespace = Some(cache_namespace);
-        }
-        if let Some(cache_path) =
-            read_env_override(&["SYNTH_OPTIMIZERS_CACHE_PATH", "GEPA_PLATFORM_CACHE_PATH"])
-        {
-            self.cache.path = Some(PathBuf::from(cache_path));
-        }
-        if let Some(cache_mode) =
-            read_env_override(&["SYNTH_OPTIMIZERS_CACHE_MODE", "GEPA_PLATFORM_CACHE_MODE"])
-        {
-            self.cache.mode = parse_cache_mode_override(&cache_mode)?;
-        }
-        if let Some(proposer_backend) = read_env_override(&[
-            "SYNTH_OPTIMIZERS_PROPOSER_BACKEND",
-            "GEPA_PLATFORM_PROPOSER_BACKEND",
-        ]) {
-            self.proposer.backend = proposer_backend;
-        }
-        if let Some(execution_mode) = read_env_override(&[
-            "SYNTH_OPTIMIZERS_PROPOSER_EXECUTION_MODE",
-            "GEPA_PLATFORM_PROPOSER_EXECUTION_MODE",
-        ]) {
-            self.proposer.execution_mode = execution_mode.trim().to_ascii_lowercase();
-        }
-        if let Some(model) = read_env_override(&[
-            "SYNTH_OPTIMIZERS_PROPOSER_MODEL",
-            "GEPA_PLATFORM_PROPOSER_MODEL",
-        ]) {
-            self.proposer.model = Some(model.trim().to_string());
-        }
-        if let Some(reasoning_effort) = read_env_override(&[
-            "SYNTH_OPTIMIZERS_PROPOSER_REASONING_EFFORT",
-            "GEPA_PLATFORM_PROPOSER_REASONING_EFFORT",
-        ]) {
-            self.proposer.reasoning_effort = Some(normalize_enum_value(&reasoning_effort));
-        }
-        if let Some(service_tier) = read_env_override(&[
-            "SYNTH_OPTIMIZERS_PROPOSER_SERVICE_TIER",
-            "GEPA_PLATFORM_PROPOSER_SERVICE_TIER",
-        ]) {
-            self.proposer.service_tier = normalize_proposer_service_tier(&service_tier);
-        }
-        if let Some(auth_mode) = read_env_override(&[
-            "SYNTH_OPTIMIZERS_PROPOSER_AUTH_MODE",
-            "GEPA_PLATFORM_PROPOSER_AUTH_MODE",
-        ]) {
-            self.proposer.auth_mode = proposer_auth_mode_normalized(&auth_mode);
-            if proposer_uses_chatgpt_auth(&self.proposer.auth_mode) {
-                self.proposer.api_key_env = None;
-            }
-        }
-        if let Some(codex_home) = read_env_override(&[
-            "SYNTH_OPTIMIZERS_PROPOSER_CODEX_HOME",
-            "GEPA_PLATFORM_PROPOSER_CODEX_HOME",
-        ]) {
-            self.proposer.codex_home = Some(PathBuf::from(codex_home));
-        }
-        if let Some(rollout_submission_mode) =
-            read_env_override(&["SYNTH_OPTIMIZERS_ROLLOUT_SUBMISSION_MODE"])
-        {
-            self.gepa.rollout_submission_mode = rollout_submission_mode.trim().to_ascii_lowercase();
-        }
-        if let Some(poll_interval_ms) =
-            read_env_override(&["SYNTH_OPTIMIZERS_ROLLOUT_POLL_INTERVAL_MS"])
-        {
-            self.gepa.rollout_poll_interval_ms = parse_u64_override(
-                "SYNTH_OPTIMIZERS_ROLLOUT_POLL_INTERVAL_MS",
-                &poll_interval_ms,
-            )?;
-        }
-        if let Some(timeout_seconds) =
-            read_env_override(&["SYNTH_OPTIMIZERS_ROLLOUT_ASYNC_TIMEOUT_SECONDS"])
-        {
-            self.gepa.rollout_async_timeout_seconds = parse_u64_override(
-                "SYNTH_OPTIMIZERS_ROLLOUT_ASYNC_TIMEOUT_SECONDS",
-                &timeout_seconds,
-            )?;
-        }
-        if let Some(pipeline_mode) = read_env_override(&["SYNTH_OPTIMIZERS_GEPA_PIPELINE_MODE"]) {
-            self.gepa.pipeline.mode = Some(parse_gepa_pipeline_mode_override(&pipeline_mode)?);
-        }
-        if let Some(staleness_policy) =
-            read_env_override(&["SYNTH_OPTIMIZERS_GEPA_STALENESS_POLICY"])
-        {
-            self.gepa.pipeline.staleness_policy =
-                parse_gepa_staleness_policy_override(&staleness_policy)?;
-        }
-        if let Some(rollout_chunk_size) =
-            read_env_override(&["SYNTH_OPTIMIZERS_GEPA_ROLLOUT_CHUNK_SIZE"])
-        {
-            self.gepa.rollout_chunk_size = Some(parse_usize_override(
-                "SYNTH_OPTIMIZERS_GEPA_ROLLOUT_CHUNK_SIZE",
-                &rollout_chunk_size,
-            )?);
-        }
-        if let Some(raw) =
-            read_env_override(&["SYNTH_OPTIMIZERS_GEPA_ROLLOUT_FAILURE_RATE_TOLERANCE"])
-        {
-            self.gepa.rollout_failure_rate_tolerance =
-                parse_f64_override("SYNTH_OPTIMIZERS_GEPA_ROLLOUT_FAILURE_RATE_TOLERANCE", &raw)?;
-        }
-        if let Some(raw) = read_env_override(&["SYNTH_OPTIMIZERS_DISK_BUDGET_ENABLED"]) {
-            self.disk_budget.enabled =
-                parse_bool_override("SYNTH_OPTIMIZERS_DISK_BUDGET_ENABLED", &raw)?;
-        }
-        if let Some(raw) = read_env_override(&["SYNTH_OPTIMIZERS_DISK_BUDGET_SOFT_LIMIT_GB"]) {
-            self.disk_budget.soft_limit_gb =
-                parse_f64_override("SYNTH_OPTIMIZERS_DISK_BUDGET_SOFT_LIMIT_GB", &raw)?;
-        }
-        if let Some(raw) = read_env_override(&["SYNTH_OPTIMIZERS_DISK_BUDGET_HARD_LIMIT_GB"]) {
-            self.disk_budget.hard_limit_gb =
-                parse_f64_override("SYNTH_OPTIMIZERS_DISK_BUDGET_HARD_LIMIT_GB", &raw)?;
-        }
-        if let Some(raw) = read_env_override(&["SYNTH_OPTIMIZERS_DISK_BUDGET_PATH"]) {
-            self.disk_budget.path = Some(PathBuf::from(raw));
-        }
-        Ok(())
     }
 
     fn resolve_relative_paths(&mut self, base_dir: &Path) {
@@ -555,6 +420,13 @@ impl SynthOptimizerConfig {
             self.cache.path = Some(absolutize(base_dir, path));
         }
         resolve_command_path_args(base_dir, &mut self.proposer.command);
+        // The spec is resolved here, against the TOML's own directory, so no
+        // later stage has to guess at a developer checkout layout.
+        let spec = self.jesterky_workflow.spec.trim();
+        if !spec.is_empty() {
+            self.jesterky_workflow.spec =
+                absolutize(base_dir, Path::new(spec)).display().to_string();
+        }
     }
 
     pub fn resolve_runtime_targets(&mut self) -> Result<()> {
@@ -2235,25 +2107,15 @@ fn reject_path_segment(field: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+/// The one backend URL name. Seven aliases used to be tried in order, so the
+/// backend a run talked to depended on which of them a shell happened to carry.
+pub const BACKEND_BASE_URL_ENV: &str = "SYNTH_BACKEND_URL";
+
 fn resolve_backend_base_url_from_env() -> Option<String> {
-    for name in [
-        "SYNTH_BACKEND_URL_OVERRIDE",
-        "SYNTH_BACKEND_URL",
-        "SYNTH_API_URL",
-        "DEV_SYNTH_BACKEND_URL",
-        "DEV_BACKEND_URL",
-        "PROD_SYNTH_BACKEND_URL",
-        "PROD_BACKEND_URL",
-        "BACKEND_URL",
-    ] {
-        if let Ok(value) = env::var(name) {
-            let value = value.trim().to_string();
-            if !value.is_empty() {
-                return Some(value);
-            }
-        }
-    }
-    None
+    env::var(BACKEND_BASE_URL_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn normalize_backend_base_url(raw: &str) -> String {
@@ -2465,14 +2327,6 @@ fn validate_policy_config(config: &PolicyConfig) -> Result<()> {
 
 fn normalize_enum_value(value: &str) -> String {
     value.trim().to_ascii_lowercase().replace('-', "_")
-}
-
-fn normalize_proposer_service_tier(value: &str) -> Option<String> {
-    match normalize_enum_value(value).as_str() {
-        "" | "default" | "normal" | "standard" => None,
-        "fast" => Some("fast".to_string()),
-        _ => Some(value.trim().to_string()),
-    }
 }
 
 fn validate_proposer_prompt_config(config: &ProposerPromptConfig) -> Result<()> {
@@ -2788,76 +2642,6 @@ fn validate_gepa_objective_direction(name: &str, direction: &str) -> Result<()> 
     }
 }
 
-fn read_env_override(names: &[&str]) -> Option<String> {
-    names.iter().find_map(|name| {
-        env::var(name)
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-    })
-}
-
-fn parse_cache_mode_override(raw_mode: &str) -> Result<CacheConfigMode> {
-    match raw_mode.trim().to_ascii_lowercase().as_str() {
-        "off" => Ok(CacheConfigMode::Off),
-        "readwrite" => Ok(CacheConfigMode::Readwrite),
-        "readonly" => Ok(CacheConfigMode::Readonly),
-        _ => Err(OptimizerError::Config(format!(
-            "unknown cache mode override: {raw_mode}"
-        ))),
-    }
-}
-
-fn parse_u64_override(name: &str, raw_value: &str) -> Result<u64> {
-    raw_value.trim().parse::<u64>().map_err(|source| {
-        OptimizerError::Config(format!("invalid {name} override {raw_value:?}: {source}"))
-    })
-}
-
-fn parse_usize_override(name: &str, raw_value: &str) -> Result<usize> {
-    raw_value.trim().parse::<usize>().map_err(|source| {
-        OptimizerError::Config(format!("invalid {name} override {raw_value:?}: {source}"))
-    })
-}
-
-fn parse_f64_override(name: &str, raw_value: &str) -> Result<f64> {
-    raw_value.trim().parse::<f64>().map_err(|source| {
-        OptimizerError::Config(format!("invalid {name} override {raw_value:?}: {source}"))
-    })
-}
-
-fn parse_bool_override(name: &str, raw_value: &str) -> Result<bool> {
-    match raw_value.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "on" | "y" => Ok(true),
-        "0" | "false" | "no" | "off" | "n" | "" => Ok(false),
-        other => Err(OptimizerError::Config(format!(
-            "invalid {name} override {other:?}: expected one of 0/1/true/false/yes/no/on/off"
-        ))),
-    }
-}
-
-fn parse_gepa_pipeline_mode_override(raw_mode: &str) -> Result<GepaPipelineMode> {
-    match raw_mode.trim().to_ascii_lowercase().as_str() {
-        "sync_serial" | "sync" | "serial" => Ok(GepaPipelineMode::SyncSerial),
-        "async_pipelined" | "async" | "pipelined" => Ok(GepaPipelineMode::AsyncPipelined),
-        "flash_evolve" | "flashevolve" | "flash" => Ok(GepaPipelineMode::FlashEvolve),
-        _ => Err(OptimizerError::Config(format!(
-            "unknown GEPA pipeline mode override: {raw_mode}"
-        ))),
-    }
-}
-
-fn parse_gepa_staleness_policy_override(raw_policy: &str) -> Result<GepaStalenessPolicy> {
-    match raw_policy.trim().to_ascii_lowercase().as_str() {
-        "full" | "full_async" => Ok(GepaStalenessPolicy::Full),
-        "guarded" => Ok(GepaStalenessPolicy::Guarded),
-        "reflective" => Ok(GepaStalenessPolicy::Reflective),
-        _ => Err(OptimizerError::Config(format!(
-            "unknown GEPA staleness policy override: {raw_policy}"
-        ))),
-    }
-}
-
 fn validate_gepa_pipeline_config(config: &GepaPipelineConfig) -> Result<()> {
     match (config.resolved_mode(), config.staleness_policy) {
         (GepaPipelineMode::SyncSerial, GepaStalenessPolicy::Full) => {}
@@ -3166,5 +2950,220 @@ subject_content_digest = "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdc
         pipeline.workers.rollout = 10;
         validate_gepa_search_pipeline_contract(10, &pipeline).expect("async 10 is valid");
         assert_eq!(pipeline.max_in_flight_candidates, 10);
+    }
+}
+
+/// P0-4 lock. The loaded config is what the TOML says, whatever the process
+/// environment carries.
+#[cfg(test)]
+mod env_authority {
+    use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    /// `set_var` is process-global; these tests must not interleave.
+    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    const MINIMAL_TOML: &str = r#"
+[run]
+run_id = "gepa_from_toml"
+output_dir = "runs/from_toml"
+
+[container]
+url = "http://127.0.0.1:8099"
+
+[taskset]
+train_ids = ["t1"]
+heldout_ids = ["t2"]
+
+[candidate]
+target_modules = ["classify"]
+
+[gepa.task_pools]
+pareto = ["t1"]
+minibatch = ["t1"]
+reflection = ["t1"]
+heldout = ["t2"]
+
+[policy]
+proxy_mode = "proxy_only"
+
+[proposer]
+model = "model-from-toml"
+reasoning_effort = "low"
+
+[cache]
+namespace = "namespace-from-toml"
+
+[jesterky_workflow]
+spec = "specs/from_toml.yaml"
+"#;
+
+    fn write_config(dir: &Path) -> PathBuf {
+        let path = dir.join("gepa.toml");
+        fs::write(&path, MINIMAL_TOML).expect("write config");
+        path
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "synth-optimizers-config-{name}-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    #[test]
+    fn env_cannot_override_the_loaded_config() {
+        let _guard = env_guard();
+        let dir = temp_dir("env-override");
+        let path = write_config(&dir);
+
+        // Every one of these used to change the run. None of them may now.
+        let overrides = [
+            ("SYNTH_OPTIMIZERS_PROPOSER_MODEL", "model-from-env"),
+            ("GEPA_PLATFORM_PROPOSER_MODEL", "model-from-env-alias"),
+            ("SYNTH_OPTIMIZERS_RUN_ID", "run-from-env"),
+            ("SYNTH_OPTIMIZERS_CACHE_NAMESPACE", "namespace-from-env"),
+            ("SYNTH_OPTIMIZERS_OUTPUT_DIR", "/tmp/output-from-env"),
+            ("SYNTH_OPTIMIZERS_PROPOSER_REASONING_EFFORT", "high"),
+        ];
+        for (name, value) in overrides {
+            std::env::set_var(name, value);
+        }
+
+        let config = SynthOptimizerConfig::from_toml_file(&path).expect("load config");
+
+        for (name, _) in overrides {
+            std::env::remove_var(name);
+        }
+
+        assert_eq!(config.proposer.model.as_deref(), Some("model-from-toml"));
+        assert_eq!(config.run.run_id, "gepa_from_toml");
+        assert_eq!(
+            config.cache.namespace.as_deref(),
+            Some("namespace-from-toml")
+        );
+        assert_eq!(config.proposer.reasoning_effort.as_deref(), Some("low"));
+        assert!(
+            config.run.output_dir.starts_with(&dir),
+            "output_dir came from the TOML, resolved against its own directory: {}",
+            config.run.output_dir.display()
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn jesterky_spec_resolves_against_the_config_directory() {
+        let dir = temp_dir("jesterky-spec");
+        let path = write_config(&dir);
+        let config = SynthOptimizerConfig::from_toml_file(&path).expect("load config");
+        assert_eq!(
+            PathBuf::from(&config.jesterky_workflow.spec),
+            dir.join("specs/from_toml.yaml"),
+            "spec must be absolute against the TOML directory, never a developer checkout"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn only_one_backend_url_name_is_read() {
+        let _guard = env_guard();
+        let aliases = [
+            "SYNTH_BACKEND_URL_OVERRIDE",
+            "SYNTH_API_URL",
+            "DEV_SYNTH_BACKEND_URL",
+            "DEV_BACKEND_URL",
+            "PROD_SYNTH_BACKEND_URL",
+            "PROD_BACKEND_URL",
+            "BACKEND_URL",
+        ];
+        let previous = std::env::var(BACKEND_BASE_URL_ENV).ok();
+        std::env::remove_var(BACKEND_BASE_URL_ENV);
+        for alias in aliases {
+            std::env::set_var(alias, "https://alias.invalid");
+        }
+        assert_eq!(resolve_backend_base_url_from_env(), None);
+
+        std::env::set_var(BACKEND_BASE_URL_ENV, "https://backend.invalid");
+        assert_eq!(
+            resolve_backend_base_url_from_env().as_deref(),
+            Some("https://backend.invalid")
+        );
+
+        for alias in aliases {
+            std::env::remove_var(alias);
+        }
+        match previous {
+            Some(value) => std::env::set_var(BACKEND_BASE_URL_ENV, value),
+            None => std::env::remove_var(BACKEND_BASE_URL_ENV),
+        }
+    }
+
+    /// The deleted override layer must not come back by any name.
+    #[test]
+    fn no_env_override_helper_survives_in_the_workspace() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("repo root")
+            .join("rust");
+        let mut offenders = Vec::new();
+        let mut stack = vec![root];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    if path.file_name().is_some_and(|name| name == "target") {
+                        continue;
+                    }
+                    stack.push(path);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    let text = fs::read_to_string(&path).unwrap_or_default();
+                    // Split so this file is not its own offender.
+                    if text.contains(concat!("read_env", "_override")) {
+                        offenders.push(path.display().to_string());
+                    }
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "the env-override helper is deleted; a run's config is sealed at \
+             admission: {offenders:?}"
+        );
+    }
+
+    /// Production `config.rs` may read at most two variables. It reads one: the
+    /// single backend URL name. `GEPA_HOME` and the Workshop instance id are
+    /// read elsewhere. Test code below the `#[cfg(test)]` line is not counted;
+    /// the needle is split so this file is not its own offender.
+    #[test]
+    fn config_reads_at_most_two_env_vars() {
+        let source =
+            fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/config.rs"))
+                .expect("read config.rs");
+        let production = source
+            .split_once("\n#[cfg(test)]")
+            .map(|(before, _)| before)
+            .unwrap_or(&source);
+        let needle = concat!("env::", "var");
+        let reads = production
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .filter(|line| line.contains(needle))
+            .count();
+        assert!(
+            reads <= 2,
+            "config.rs reads {reads} environment variables in production code; the cap is 2"
+        );
     }
 }

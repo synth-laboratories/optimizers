@@ -2,8 +2,9 @@
 # run means "the rig and the three policies produced valid evidence", not "a
 # winner was found".
 #
-# Published from GameBench 1b27362954cc903db76a3d2c3ed5c9bb80301de1 for
-# linux/amd64 and linux/arm64. The worker always executes the immutable digest.
+# Build locally from the pinned GameBench checkout with
+# docker/craftax-eval-target/build.sh. The worker executes the immutable local
+# image id pinned in the eval home; publishing to a registry is not required.
 
 [recipe]
 id = "eval.craftax.code-policy.smoke.v1"
@@ -11,10 +12,9 @@ title = "Craftax code-policy smoke"
 description = "Score staged Craftax code policies on one pinned world, report only."
 task = "craftax"
 policy_kind = "python-code.craftax-choose-actions.v1"
-image = "ghcr.io/synth-laboratories/workshop-craftax-eval-target"
-image_digest = "sha256:02b076f89f858e9041beea1400cd870fcf40c79792cc088e26faab85714fb04e"
+image = "craftax-eval-target"
 prerequisites = [
-    "Published craftax-eval-target image pinned by digest",
+    "Locally built native-Rust craftax-eval-target image pinned by image id",
     "OCI runtime available to the Desktop app",
 ]
 scenarios = ["craftax-default-48x48"]

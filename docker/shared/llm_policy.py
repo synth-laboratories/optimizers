@@ -121,7 +121,15 @@ def _complete(messages: list[dict[str, str]]) -> tuple[str, dict[str, int]]:
             body.pop("temperature", None)
             payload = _post(body, timeout)
         else:
-            raise RuntimeError(f"policy_route_error {error.code}: {detail[:400]}") from error
+            if error.code in {401, 403}:
+                code = "provider_auth_rejected"
+            elif error.code == 429:
+                code = "provider_rate_limited"
+            elif error.code >= 500:
+                code = "provider_unavailable"
+            else:
+                code = f"policy_route_error_{error.code}"
+            raise RuntimeError(f"{code}: {detail[:400]}") from error
     usage = payload.get("usage") or {}
     details = usage.get("prompt_tokens_details") or {}
     text = ""

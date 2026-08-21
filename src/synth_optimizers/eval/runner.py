@@ -78,6 +78,9 @@ class WorkerManifest:
     session_ref: str | None
     correlation: dict[str, Any] | None = None
     plan_override: dict[str, Any] | None = None
+    credential_mode: str | None = None
+    inference_url: str | None = None
+    provider_routes: dict[str, Any] | None = None
 
     @classmethod
     def load(cls, path: Path) -> WorkerManifest:
@@ -96,6 +99,27 @@ class WorkerManifest:
         override = payload.get("plan_override")
         if override is not None and not isinstance(override, dict):
             raise EvalContractError("worker manifest plan_override must be an object")
+        routes = payload.get("provider_routes")
+        if routes is not None and not isinstance(routes, dict):
+            raise EvalContractError("worker manifest provider_routes must be an object")
+        credential_mode = payload.get("credential_mode")
+        if credential_mode is not None:
+            credential_mode = str(credential_mode).strip()
+        inference_url = payload.get("inference_url")
+        if inference_url is not None:
+            inference_url = str(inference_url).strip()
+        if credential_mode in {"workshop_proxy", "proxy"}:
+            if not inference_url and isinstance(routes, dict):
+                inference_url = str(routes.get("openai_base") or "").strip() or None
+            if not inference_url:
+                raise EvalContractError(
+                    "worker manifest inference_url is required when credential_mode=workshop_proxy"
+                )
+            lowered = (inference_url or "").lower()
+            if "api.openai.com" in lowered or "127.0.0.1" in lowered or "localhost" in lowered:
+                raise EvalContractError(
+                    "worker manifest inference_url must be the Workshop container proxy route"
+                )
         return cls(
             run_id=payload["run_id"],
             recipe_id=payload["recipe_id"],
@@ -104,7 +128,24 @@ class WorkerManifest:
             session_ref=payload.get("session_ref"),
             correlation=correlation,
             plan_override=override,
+            credential_mode=credential_mode,
+            inference_url=inference_url,
+            provider_routes=routes,
         )
+
+    @property
+    def workshop_proxy(self) -> bool:
+        return (self.credential_mode or "").strip().lower() in {"workshop_proxy", "proxy"}
+
+    def extra_hosts(self) -> list[str]:
+        hosts = [
+            str(item)
+            for item in ((self.provider_routes or {}).get("extra_hosts") or [])
+            if str(item).strip()
+        ]
+        if self.workshop_proxy and not hosts:
+            return ["host.docker.internal:host-gateway"]
+        return hosts
 
 
 class EventEmitter:
@@ -617,13 +658,32 @@ class EvalRunner:
         return input_dir
 
     def _secrets(self) -> dict[str, str]:
-        """Resolved once per run, from names the recipe declared and nothing else."""
+        """Resolved once per run. A Workshop lease supplies a sentinel, never a real key."""
 
         if self._resolved_secrets is None:
-            self._resolved_secrets = {
-                name: self.home.resolve_secret(name, declared=self.recipe.secrets)
-                for name in self.recipe.secrets
-            }
+            if self.manifest.workshop_proxy:
+                routes = self.manifest.provider_routes or {}
+                inference = self.manifest.inference_url or str(routes.get("openai_base") or "")
+                completions = str(routes.get("openai") or "") or f"{inference.rstrip('/')}/chat/completions"
+                sentinel = str(routes.get("api_key_sentinel") or "workshop-proxy")
+                secrets: dict[str, str] = {
+                    "OPENAI_API_KEY": sentinel,
+                    "OPENAI_BASE_URL": inference,
+                    "WORKSHOP_OPENAI_BASE_URL": inference,
+                    "WORKSHOP_OPENAI_ROUTE": completions,
+                    "EVAL_LLM_ROUTE": completions,
+                    "WORKSHOP_CREDENTIAL_MODE": "workshop_proxy",
+                }
+                for name in self.recipe.secrets:
+                    if name == "OPENAI_API_KEY":
+                        continue
+                    secrets[name] = self.home.resolve_secret(name, declared=self.recipe.secrets)
+                self._resolved_secrets = secrets
+            else:
+                self._resolved_secrets = {
+                    name: self.home.resolve_secret(name, declared=self.recipe.secrets)
+                    for name in self.recipe.secrets
+                }
         return self._resolved_secrets
 
     def _run_trial(self, key: TrialKey) -> TrialRecord:
@@ -679,6 +739,8 @@ class EvalRunner:
                     limits=self.recipe.limits,
                     network=self.recipe.target.network,
                     secrets=self._secrets(),
+                    extra_hosts=self.manifest.extra_hosts(),
+                    workshop_proxy=self.manifest.workshop_proxy,
                 ),
                 on_event=lambda payload: self.events.emit(
                     "eval.trial.event", trial_id=key.trial_id, container_event=payload

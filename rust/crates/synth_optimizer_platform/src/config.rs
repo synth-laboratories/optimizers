@@ -61,7 +61,7 @@ fn default_policy_proxy_mode() -> String {
 }
 
 fn default_policy_credential_mode() -> String {
-    "byok".to_string()
+    "workshop_proxy".to_string()
 }
 
 fn default_proposer_backend() -> String {
@@ -2404,21 +2404,49 @@ fn validate_policy_config(config: &PolicyConfig) -> Result<()> {
         )));
     }
     let credential_mode = normalize_enum_value(&config.credential_mode);
-    if !matches!(credential_mode.as_str(), "byok" | "proxy") {
+    if !matches!(
+        credential_mode.as_str(),
+        "workshop_proxy" | "proxy" | "byok"
+    ) {
         return Err(OptimizerError::Config(format!(
-            "policy.credential_mode must be byok or proxy; got {:?}",
+            "policy.credential_mode must be workshop_proxy, proxy, or byok; got {:?}",
             config.credential_mode
         )));
     }
-    if credential_mode == "proxy"
+    let managed = std::env::var("WORKSHOP_CAPABILITY")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .is_some()
+        || std::env::var("WORKSHOP_CREDENTIAL_MODE")
+            .ok()
+            .map(|value| normalize_enum_value(&value) == "workshop_proxy")
+            .unwrap_or(false);
+    if managed && credential_mode == "byok" {
+        return Err(OptimizerError::Config(
+            "managed Workshop recipes cannot select policy.credential_mode=byok".to_string(),
+        ));
+    }
+    if matches!(credential_mode.as_str(), "workshop_proxy" | "proxy")
         && config
             .inference_url
             .as_deref()
             .is_none_or(|value| value.trim().is_empty())
     {
         return Err(OptimizerError::Config(
-            "policy.inference_url must be set when policy.credential_mode is proxy".to_string(),
+            "policy.inference_url must be set when policy.credential_mode is workshop_proxy"
+                .to_string(),
         ));
+    }
+    if matches!(credential_mode.as_str(), "workshop_proxy" | "proxy") {
+        if let Some(url) = config.inference_url.as_deref() {
+            let lower = url.to_ascii_lowercase();
+            if lower.contains("api.openai.com") {
+                return Err(OptimizerError::Config(
+                    "policy.inference_url must be the Workshop proxy, not api.openai.com"
+                        .to_string(),
+                ));
+            }
+        }
     }
     for key in config.config.keys() {
         let normalized = normalize_enum_value(key);

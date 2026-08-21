@@ -8,34 +8,67 @@ import importlib
 from importlib.metadata import PackageNotFoundError, version as distribution_version
 from typing import Any
 
-from ._synth_optimizers import (
-    BudgetExceededError,
-    CacheCorruptError,
-    CacheFullError,
-    CacheMissError,
-    CancelledError,
-    ConfigError,
-    ContainerContractError,
-    EventCompareError,
-    GepaRunResult,
-    InvariantError,
-    OptimizerDiskBudgetError,
-    OptimizerHttpError,
-    OptimizerIoError,
-    OptimizerJsonError,
-    OptimizerSqliteError,
-    OptimizerTomlDecodeError,
-    ProposerError,
-    RunFailedError,
-    StateTransitionError,
-    SynthOptimizerError,
-    __version__ as _native_version,
-    events_compare,
-    events_replay,
-    gepa_compact_run_storage,
-    gepa_delete_run_storage,
-    gepa_serve,
+_NATIVE_EXPORTS = (
+    "BudgetExceededError",
+    "CacheCorruptError",
+    "CacheFullError",
+    "CacheMissError",
+    "CancelledError",
+    "ConfigError",
+    "ContainerContractError",
+    "EventCompareError",
+    "GepaRunResult",
+    "InvariantError",
+    "OptimizerDiskBudgetError",
+    "OptimizerHttpError",
+    "OptimizerIoError",
+    "OptimizerJsonError",
+    "OptimizerSqliteError",
+    "OptimizerTomlDecodeError",
+    "ProposerError",
+    "RunFailedError",
+    "StateTransitionError",
+    "SynthOptimizerError",
+    "events_compare",
+    "events_replay",
+    "gepa_compact_run_storage",
+    "gepa_delete_run_storage",
+    "gepa_serve",
 )
+
+try:
+    from ._synth_optimizers import (
+        BudgetExceededError,
+        CacheCorruptError,
+        CacheFullError,
+        CacheMissError,
+        CancelledError,
+        ConfigError,
+        ContainerContractError,
+        EventCompareError,
+        GepaRunResult,
+        InvariantError,
+        OptimizerDiskBudgetError,
+        OptimizerHttpError,
+        OptimizerIoError,
+        OptimizerJsonError,
+        OptimizerSqliteError,
+        OptimizerTomlDecodeError,
+        ProposerError,
+        RunFailedError,
+        StateTransitionError,
+        SynthOptimizerError,
+        __version__ as _native_version,
+        events_compare,
+        events_replay,
+        gepa_compact_run_storage,
+        gepa_delete_run_storage,
+        gepa_serve,
+    )
+    _NATIVE_IMPORT_ERROR: BaseException | None = None
+except ImportError as exc:  # native module is optional for pure-Python tests
+    _NATIVE_IMPORT_ERROR = exc
+    _native_version = "0.0.0"
 
 try:
     __version__ = distribution_version("synth-optimizers")
@@ -203,6 +236,11 @@ _GEPA_EXPORTS = {
 
 
 def __getattr__(name: str) -> Any:
+    if name in _NATIVE_EXPORTS and _NATIVE_IMPORT_ERROR is not None:
+        raise ImportError(
+            "synth_optimizers native module is not built; run `maturin develop` "
+            f"in rust/ to use {name}. Original error: {_NATIVE_IMPORT_ERROR}"
+        ) from _NATIVE_IMPORT_ERROR
     if name not in _GEPA_EXPORTS:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     try:

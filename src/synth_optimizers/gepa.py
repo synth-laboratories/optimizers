@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from synth_containers import ContainerConnection, PromptProgram
 
 from ._synth_optimizers import GepaRun as _NativeGepaRun
@@ -291,6 +291,17 @@ class PolicyTomlSection(BaseModel):
     proxy_mode: str = "proxy_only"
     credential_mode: str = "byok"
     config: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def reject_managed_byok(self) -> "PolicyTomlSection":
+        managed = bool(os.environ.get("WORKSHOP_CAPABILITY", "").strip()) or (
+            os.environ.get("WORKSHOP_CREDENTIAL_MODE", "").strip().lower() == "workshop_proxy"
+        )
+        if managed and str(self.credential_mode).strip().lower() == "byok":
+            raise ValueError(
+                "managed_byok_rejected: managed Workshop recipes cannot select credential_mode=byok"
+            )
+        return self
 
     def to_domain(self) -> "PolicyConfig | None":
         if not self.enabled:

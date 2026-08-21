@@ -75,7 +75,9 @@ def _llm_policy(trial: dict[str, Any], input_dir: Path, work: Path) -> tuple[Pat
 
     usage_path = work / "usage.jsonl"
     env = {
-        "EVAL_LLM_ROUTE": route["route"],
+        "EVAL_LLM_ROUTE": os.environ.get("EVAL_LLM_ROUTE")
+        or os.environ.get("WORKSHOP_OPENAI_ROUTE")
+        or route["route"],
         "EVAL_LLM_MODEL": model_id,
         "EVAL_LLM_EFFORT": effort,
         "EVAL_LLM_SECRET_NAME": route["secret"],
@@ -89,6 +91,20 @@ def _llm_policy(trial: dict[str, Any], input_dir: Path, work: Path) -> tuple[Pat
         "EVAL_LLM_USD_PER_1M_CACHED_INPUT": str(route["usd_per_1m_cached_input"]),
         "EVAL_LLM_USAGE_PATH": str(usage_path),
     }
+    if os.environ.get("WORKSHOP_CREDENTIAL_MODE", "").strip().lower() in {
+        "workshop_proxy",
+        "proxy",
+    } or os.environ.get("WORKSHOP_OPENAI_ROUTE", "").strip():
+        env["EVAL_LLM_ROUTE"] = (
+            os.environ.get("EVAL_LLM_ROUTE")
+            or os.environ.get("WORKSHOP_OPENAI_ROUTE")
+            or ""
+        ).strip()
+        if not env["EVAL_LLM_ROUTE"] or "api.openai.com" in env["EVAL_LLM_ROUTE"]:
+            raise CandidateError(
+                "workshop_proxy requires EVAL_LLM_ROUTE / WORKSHOP_OPENAI_ROUTE "
+                "to be the Workshop proxy, not the recipe OpenAI URL"
+            )
     if not os.environ.get(route["secret"], "").strip():
         raise CandidateError(
             f"{route['secret']} is not present in the trial container; the recipe "

@@ -38,6 +38,8 @@ class TrialRunRequest:
     limits: TrialLimits
     network: str
     secrets: Mapping[str, str] = field(default_factory=dict)
+    extra_hosts: tuple[str, ...] | list[str] = field(default_factory=tuple)
+    workshop_proxy: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,7 +169,11 @@ class OciTrialExecutor:
             f"type=bind,source={request.output_dir},target=/output",
         ]
         for name, value in request.secrets.items():
+            if request.workshop_proxy and name == "WORKSHOP_CAPABILITY":
+                continue
             argv.extend(["--env", f"{name}={value}"])
+        for mapping in request.extra_hosts:
+            argv.extend(["--add-host", str(mapping)])
         argv.append(request.image_reference)
 
         stderr_path = request.output_dir / "container.stderr.log"

@@ -3248,7 +3248,28 @@ fn apply_policy_credentials(
     config: &mut SynthOptimizerConfig,
     credentials: &ServiceCredentials,
 ) -> Result<()> {
+    let workshop_inference = std::env::var("WORKSHOP_OPENAI_BASE_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            std::env::var("WORKSHOP_INFERENCE_URL")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        });
+    let managed = std::env::var("WORKSHOP_CAPABILITY")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .is_some()
+        || workshop_inference.is_some();
     match normalize_key(&credentials.resolver).as_str() {
+        "env" if managed => {
+            config.policy.credential_mode = "workshop_proxy".to_string();
+            config.policy.api_key_env = Some("OPENAI_API_KEY".to_string());
+            if let Some(url) = workshop_inference {
+                config.policy.inference_url = Some(url);
+            }
+            Ok(())
+        }
         "env" => {
             let env_var = required_env_var(credentials, "policy.credentials.env_var")?;
             config.policy.credential_mode = "byok".to_string();
@@ -3259,10 +3280,14 @@ fn apply_policy_credentials(
                 .insert("credential_env_var".to_string(), json!(env_var));
             Ok(())
         }
-        "broker" => Err(OptimizerError::Config(
-            "credentials.resolver=broker is reserved but not implemented in GEPA service v1"
-                .to_string(),
-        )),
+        "broker" => {
+            config.policy.credential_mode = "workshop_proxy".to_string();
+            config.policy.api_key_env = Some("OPENAI_API_KEY".to_string());
+            if let Some(url) = workshop_inference {
+                config.policy.inference_url = Some(url);
+            }
+            Ok(())
+        }
         resolver => Err(OptimizerError::Config(format!(
             "credentials.resolver must be env or broker; got {resolver:?}"
         ))),

@@ -36,7 +36,8 @@ use crate::{
 #[path = "service_ownership.rs"]
 mod service_ownership;
 use service_ownership::{
-    acquire_service_ownership, owned_heartbeat_payload, refresh_owned_heartbeat, service_id_for,
+    acquire_service_ownership, owned_heartbeat_payload, process_identity_payload,
+    refresh_owned_heartbeat, service_id_for,
 };
 
 const DEFAULT_SERVICE_WORKER_COUNT: usize = 10;
@@ -1464,9 +1465,12 @@ fn route_request(request: HttpRequest, runtime: GepaServiceRuntime) -> HttpRespo
     let segments = path_segments(path);
     let config = &runtime.config;
     match (request.method.as_str(), segments.as_slice()) {
-        ("GET", ["health"]) => json_response(200, &json!({"status": "ok"})),
+        ("GET", ["health"]) => json_response(
+            200,
+            &json!({"status": "ok", "process": process_identity_payload(config)}),
+        ),
         ("GET", ["v1", "optimizer", "capabilities"]) | ("GET", ["v1", "optimizer", "status"]) => {
-            json_response(200, &optimizer_capabilities_payload())
+            json_response(200, &optimizer_capabilities_payload(config))
         }
         ("GET", ["whoami"]) => json_response(
             200,
@@ -1557,9 +1561,12 @@ fn route_request(request: HttpRequest, runtime: GepaServiceRuntime) -> HttpRespo
     }
 }
 
-fn optimizer_capabilities_payload() -> Value {
+fn optimizer_capabilities_payload(config: &GepaServiceConfig) -> Value {
     json!({
         "status": "ok",
+        // Workshop verifies this is the child it spawned before trusting the
+        // rest of the handshake (ownership protocol 2, P1-1).
+        "process": process_identity_payload(config),
         "algorithms": ["gepa"],
         "recipes": [
             "gepa.banking77.smoke.v1",
@@ -5922,7 +5929,17 @@ mod tests {
 
     #[test]
     fn workshop_capability_handshake_is_complete() {
-        let capabilities = optimizer_capabilities_payload();
+        let config = GepaServiceConfig {
+            workshop_instance_id: Some("workshop-test:1".to_string()),
+            ..GepaServiceConfig::new(scratch_path("capabilities"), "127.0.0.1:0")
+        };
+        let capabilities = optimizer_capabilities_payload(&config);
+        let process = &capabilities["process"];
+        assert_eq!(process["pid"], std::process::id());
+        assert_eq!(process["ownership_protocol"], service_ownership::OWNERSHIP_PROTOCOL);
+        assert_eq!(process["instance_id"], "workshop-test:1");
+        assert!(process["start_identity"].is_string());
+        assert!(process["exe_digest"].as_str().unwrap().starts_with("sha256:"));
         for field in ["algorithms", "recipes", "compatibleTemplateIds"] {
             let values = capabilities[field].as_array().unwrap();
             assert!(!values.is_empty());

@@ -168,9 +168,15 @@ pub(crate) fn run_deepseek_chat_proposer(input: CodexProposerInput<'_>) -> Resul
                 "gpt-4.1-mini",
                 false,
             ),
+            "openrouter" => (
+                "https://openrouter.ai/api/v1",
+                "OPENROUTER_API_KEY",
+                "openai/gpt-5.6-luna",
+                false,
+            ),
             other => {
                 return Err(OptimizerError::Config(format!(
-                    "chat-completions proposer backend requires proposer.provider = \"deepseek\", \"nvidia\", or \"openai\"; got {other:?}"
+                    "chat-completions proposer backend requires proposer.provider = \"deepseek\", \"nvidia\", \"openai\", or \"openrouter\"; got {other:?}"
                 )))
             }
         };
@@ -578,6 +584,14 @@ fn normalize_proposer_usage(config: &SynthOptimizerConfig, model: &str, usage: V
     }
     if provider.eq_ignore_ascii_case("openrouter") && model_lower == OPENROUTER_GROK43_MODEL {
         return normalize_openrouter_grok43_usage(model, usage_map);
+    }
+    if provider.eq_ignore_ascii_case("openrouter") {
+        usage_map.insert(
+            "provider".to_string(),
+            Value::String("openrouter".to_string()),
+        );
+        usage_map.insert("model".to_string(), Value::String(model.to_string()));
+        return Value::Object(usage_map);
     }
     if provider.eq_ignore_ascii_case("deepseek") || model_lower.contains("deepseek") {
         usage_map.insert(

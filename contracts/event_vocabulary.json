@@ -1,0 +1,548 @@
+{
+  "schema_version": "optimizer_event_vocabulary.v1",
+  "description": "Event type strings the optimizers package can emit. Sorted union of the Rust feeds declared in observability.rs and the Python eval worker feed. A name absent here has no producer.",
+  "feeds": {
+    "optimizer_event.v1": "Per-run canonical spool (events.optimizer.jsonl), Rust.",
+    "service_run_events.v1": "GET /runs/{id}/events projection, Rust.",
+    "eval.worker-event.v1": "synth_optimizers.eval worker feed, Python."
+  },
+  "event_types": [
+    {
+      "event_type": "candidate.accepted",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1",
+        "service_run_events.v1"
+      ]
+    },
+    {
+      "event_type": "candidate.deferred",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "candidate.duplicate_skipped",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "candidate.evaluated",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "candidate.full_train_evaluated",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "candidate.leakage_detected",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "candidate.minibatch_evaluated",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "candidate.registered",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "candidate.rejected",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1",
+        "service_run_events.v1"
+      ]
+    },
+    {
+      "event_type": "candidate.scored",
+      "emitter": "rust",
+      "feeds": [
+        "service_run_events.v1"
+      ]
+    },
+    {
+      "event_type": "container.contract.verified",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "container.program.loaded",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "container.task_info.loaded",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "container.task_info.missing",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "eval.candidate.eliminated",
+      "emitter": "python",
+      "feeds": [
+        "eval.worker-event.v1"
+      ]
+    },
+    {
+      "event_type": "eval.candidate.scored",
+      "emitter": "python",
+      "feeds": [
+        "eval.worker-event.v1"
+      ]
+    },
+    {
+      "event_type": "eval.run.paused",
+      "emitter": "python",
+      "feeds": [
+        "eval.worker-event.v1"
+      ]
+    },
+    {
+      "event_type": "eval.run.planned",
+      "emitter": "python",
+      "feeds": [
+        "eval.worker-event.v1"
+      ]
+    },
+    {
+      "event_type": "eval.run.resumed",
+      "emitter": "python",
+      "feeds": [
+        "eval.worker-event.v1"
+      ]
+    },
+    {
+      "event_type": "eval.run.terminal",
+      "emitter": "python",
+      "feeds": [
+        "eval.worker-event.v1"
+      ]
+    },
+    {
+      "event_type": "eval.seed_ledger.sealed",
+      "emitter": "python",
+      "feeds": [
+        "eval.worker-event.v1"
+      ]
+    },
+    {
+      "event_type": "eval.selection.completed",
+      "emitter": "python",
+      "feeds": [
+        "eval.worker-event.v1"
+      ]
+    },
+    {
+      "event_type": "eval.trial.event",
+      "emitter": "python",
+      "feeds": [
+        "eval.worker-event.v1"
+      ]
+    },
+    {
+      "event_type": "eval.trial.evidence_incomplete",
+      "emitter": "python",
+      "feeds": [
+        "eval.worker-event.v1"
+      ]
+    },
+    {
+      "event_type": "eval.trial.queued",
+      "emitter": "python",
+      "feeds": [
+        "eval.worker-event.v1"
+      ]
+    },
+    {
+      "event_type": "eval.trial.started",
+      "emitter": "python",
+      "feeds": [
+        "eval.worker-event.v1"
+      ]
+    },
+    {
+      "event_type": "eval.trial.terminal",
+      "emitter": "python",
+      "feeds": [
+        "eval.worker-event.v1"
+      ]
+    },
+    {
+      "event_type": "frontier.snapshot",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "frontier.updated",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1",
+        "service_run_events.v1"
+      ]
+    },
+    {
+      "event_type": "generation.started",
+      "emitter": "rust",
+      "feeds": [
+        "service_run_events.v1"
+      ]
+    },
+    {
+      "event_type": "gepa.run.cancelled",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "gepa.run.failed",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "gepa.run.finished",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "gepa.run.started",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "gepa.stop",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "heldout.blocked",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "heldout.completed",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1",
+        "service_run_events.v1"
+      ]
+    },
+    {
+      "event_type": "heldout.partial",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "heldout.skipped",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "heldout.started",
+      "emitter": "rust",
+      "feeds": [
+        "service_run_events.v1"
+      ]
+    },
+    {
+      "event_type": "objective_set.declared",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "optimizer.candidate_evaluation.allocated",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "optimizer.candidate_evaluation.attempt.failed",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "optimizer.child_rollout.attached",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "optimizer.evaluation.coverage.updated",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "optimizer.evaluation_result.received",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "optimizer.limit.estimate_updated",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "optimizer.rollout_queue.updated",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "optimizer.state.transitioned",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "parent_minibatch_reference.completed",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "pipeline.speculative_release.enqueued",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "pipeline.speculative_tail.discarded",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "pipeline.stage_workers.adjusted",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "pipeline.stale_item.discarded",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "pipeline.stale_item.patched",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "pipeline.stale_item.reviewed",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "proposer.completed",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1",
+        "service_run_events.v1"
+      ]
+    },
+    {
+      "event_type": "proposer.delta",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "proposer.started",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "rollout.attempt.failed",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "rollout.chunk.finished",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "rollout.chunk.started",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "rollout.circuit_breaker.tripped",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "rollout.concurrency.adjusted",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "rollout.failure_rate.updated",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "rollout.outcome.duplicate_ignored",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "rollout.stale_skipped",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "run.status_changed",
+      "emitter": "rust",
+      "feeds": [
+        "service_run_events.v1"
+      ]
+    },
+    {
+      "event_type": "run.terminal",
+      "emitter": "rust",
+      "feeds": [
+        "service_run_events.v1"
+      ]
+    },
+    {
+      "event_type": "runtime.job.completed",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "runtime.throughput.warning",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "score_chart.written",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "storage.snapshot.recorded",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "taskset.tasks.loaded",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    },
+    {
+      "event_type": "usage.tick",
+      "emitter": "rust",
+      "feeds": [
+        "service_run_events.v1"
+      ]
+    },
+    {
+      "event_type": "workspace.persisted",
+      "emitter": "rust",
+      "feeds": [
+        "optimizer_event.v1"
+      ]
+    }
+  ]
+}

@@ -19,6 +19,7 @@ banking77 = [
 ]
 dev = [
     "maturin>=1.7.0",
+    "pytest>=8.0.0",
     "ruff>=0.6.0",
     "ty>=0.0.32",
 ]
@@ -26,6 +27,7 @@ dev = [
 [dependency-groups]
 dev = [
     "maturin>=1.7.0",
+    "pytest>=8.0.0",
     "ruff>=0.6.0",
     "ty>=0.0.32",
 ]

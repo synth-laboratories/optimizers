@@ -591,6 +591,17 @@ fn normalize_proposer_usage(config: &SynthOptimizerConfig, model: &str, usage: V
             Value::String("openrouter".to_string()),
         );
         usage_map.insert("model".to_string(), Value::String(model.to_string()));
+        if reported_cost.is_none() {
+            if let Some(cost) = usage_f64_from_map(&usage_map, "cost")
+                .filter(|value| value.is_finite() && *value >= 0.0)
+            {
+                usage_map.insert("cost_usd".to_string(), json!(cost));
+                usage_map.insert(
+                    "cost_source".to_string(),
+                    Value::String("openrouter_provider_billed".to_string()),
+                );
+            }
+        }
         return Value::Object(usage_map);
     }
     if provider.eq_ignore_ascii_case("deepseek") || model_lower.contains("deepseek") {

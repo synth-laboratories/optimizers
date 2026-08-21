@@ -1411,6 +1411,10 @@ class HostedOptimizerClient:
             ) from exc
         except urllib.error.URLError as exc:
             raise HostedOptimizerError(f"hosted optimizer request failed: {exc}") from exc
+        except TimeoutError as exc:
+            raise HostedOptimizerError(
+                f"{context} timed out after {timeout:g} seconds"
+            ) from exc
         if not text:
             if not allow_empty:
                 raise HostedOptimizerError(f"{context} was empty")

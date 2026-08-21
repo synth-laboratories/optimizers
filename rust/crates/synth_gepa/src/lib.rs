@@ -10565,7 +10565,10 @@ fn consume_failed_runtime_job(
     };
     let runtime_failure = job
         .payload
-        .pointer("/runtime_outcome/failures/0/failure")
+        .get("runtime_outcome")
+        .and_then(|value| value.get("failures"))
+        .and_then(|value| value.get(0))
+        .and_then(|value| value.get("failure"))
         .cloned();
     let error_summary = job
         .payload

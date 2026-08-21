@@ -151,6 +151,28 @@ container is the isolation boundary, and the target wrapper — not the sweep, a
 not the candidate — publishes `/output` after the sweep exits. That is why the
 Craftax smoke recipe is report-only.
 
+## Pinning a published target without a new package cut
+
+The catalog ships `image_digest` for the targets that were published when the
+package was cut. An operator can make a recipe `ready` on an existing install
+by pinning the digest in the eval home — the pin may only supply the digest of
+the image the catalog already names; it cannot change the image, the command,
+the mounts, the limits, or the selection rule (`home.py:write_pin`).
+
+```bash
+# GSM8K (eval.mlx.local-policy.smoke.v1): the published digest comes from the
+# publish-gsm8k-eval-target workflow's receipt artifact.
+docker pull ghcr.io/synth-laboratories/workshop-gsm8k-eval-target@sha256:<digest>
+synth-optimizers eval pin --home ~/eval \
+    --recipe eval.mlx.local-policy.smoke.v1 --digest sha256:<digest>
+synth-optimizers eval doctor --home ~/eval --json   # recipe -> "available": true
+```
+
+`doctor` resolves the pin against the local image store (`RepoDigests` for a
+pulled image, the image id for a locally built one), so a pin whose image is
+not present locally stays `unavailable` with the reason spelled out; nothing
+is pulled on the operator's behalf.
+
 ## Adding a benchmark
 
 Publish a container conforming to `eval.target.v1`, pin it by digest in an

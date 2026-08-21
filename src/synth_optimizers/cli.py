@@ -2223,8 +2223,10 @@ def build_parser() -> argparse.ArgumentParser:
     gepa_runs_delete.add_argument("--json", action="store_true")
 
     from .eval.commands import register as register_eval
+    from .experiment.commands import register as register_experiment
 
     register_eval(subcommands)
+    register_experiment(subcommands)
 
     events = subcommands.add_parser("events")
     events_subcommands = events.add_subparsers(dest="events_command", required=True)
@@ -2246,6 +2248,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         try:
             return dispatch_eval(args)
         except EvalContractError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+    if args.command == "experiment":
+        from .experiment.commands import dispatch as dispatch_experiment
+        from .experiment.models import ExperimentContractError
+
+        try:
+            return dispatch_experiment(args)
+        except ExperimentContractError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
     if args.command == "gepa" and args.gepa_command == "run":

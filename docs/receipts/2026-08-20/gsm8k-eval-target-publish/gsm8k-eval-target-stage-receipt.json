@@ -1,0 +1,19 @@
+{
+  "dataset": "openai/gsm8k",
+  "config": "main",
+  "revision": "740312add88f781978c0658806c59bc2815b9866",
+  "splits": {
+    "train": {
+      "hf_split": "train",
+      "rows": 7473,
+      "digest": "sha256:dca449882e67a1e7716b5da453650a7b16588a1f2d1a0d82394a43d75ea7e9ca"
+    },
+    "heldout": {
+      "hf_split": "test",
+      "rows": 1319,
+      "digest": "sha256:32c548f08195e19e33408b844dd7be6aa4bcae457d957bc05909ff4bd4a00595"
+    }
+  },
+  "shuffle_seed": 20260820,
+  "world_module": "/home/runner/work/optimizers/optimizers/containers-source/src/synth_containers/platform/gsm8k_world.py"
+}

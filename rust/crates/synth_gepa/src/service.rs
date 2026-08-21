@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha1::{Digest as Sha1Digest, Sha1};
 use sha2::{Digest as Sha2Digest, Sha256};
+use synth_optimizer_platform::correlation::CorrelationEnvelope;
 use synth_optimizer_platform::{
     compact_run_storage, delete_run_storage, fold_reported_cost, inspect_run_storage,
     inspect_workspace_storage_health, optimizer_event_feed_path_for, ArtifactPaths, CacheMode,
@@ -180,6 +181,12 @@ struct GepaServiceRunRequest {
     campaign_id: Option<String>,
     #[serde(default)]
     supersedes_request_id: Option<String>,
+    /// Set when an experiment dispatched this run.
+    ///
+    /// The service still mints `run_id` itself and reports it back; the caller
+    /// supplies only the trial identity, which is the half it actually owns.
+    #[serde(default)]
+    correlation: Option<CorrelationEnvelope>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1769,6 +1776,12 @@ fn create_run(
     }
     // Contract handshake FIRST: fetch the program (version-check + ingest), then
     // build the config from it so target_modules/seed_candidate are populated.
+    if let Some(correlation) = run_request.correlation.as_ref() {
+        // Before the contract handshake and before any run record exists: a
+        // malformed envelope refused here costs nothing, and refused later
+        // costs a run.
+        correlation.validate()?;
+    }
     let program = verify_container_contract(&run_request.container_url)?;
     let optimizer_config = run_request_to_optimizer_config(&run_request, &program)?;
     let request = store.submit_run_config_with_identity(
@@ -1783,6 +1796,7 @@ fn create_run(
             "idempotency_key": idempotency_key,
             "campaign_id": run_request.campaign_id,
             "supersedes_request_id": run_request.supersedes_request_id,
+            "correlation": run_request.correlation,
         })),
         idempotency_key.as_deref(),
         Some(&request_body_sha256),
@@ -3011,6 +3025,9 @@ fn run_request_to_optimizer_config(
         &request.taskset.heldout_ids,
     )?;
     let mut config = SynthOptimizerConfig::default();
+    // `run_id` stays whatever the service minted in `Default`; only the trial
+    // identity comes from the caller.
+    config.run.correlation = request.correlation.clone();
     if let Some(output_dir) = request
         .output_dir
         .as_deref()
@@ -3665,6 +3682,13 @@ fn project_run(store: &WorkspaceStore, request: &WorkspaceRunRequestStatus) -> R
         "candidate_count": candidate_count,
         "checkpoint_sequence": cursor.as_ref().map(|cursor| cursor.checkpoint_sequence),
         "config": project_run_config(&config, request.manual_step),
+        // Echoed so a caller can confirm the service accepted the trial identity
+        // it sent, and learn the run id it minted, in the same response.
+        "correlation": config
+            .run
+            .correlation
+            .as_ref()
+            .and_then(|envelope| serde_json::to_value(envelope).ok()),
         "submitted_at": request.submitted_at,
         "started_at": request.started_at,
         "finished_at": request.finished_at,
@@ -5810,6 +5834,65 @@ mod tests {
     fn scratch_path(name: &str) -> PathBuf {
         let suffix = now_millis();
         std::env::temp_dir().join(format!("synth_gepa_service_{name}_{suffix}.jsonl"))
+    }
+
+    fn correlation_json() -> Value {
+        json!({
+            "schema_version": "synth.correlation.v1",
+            "experiment_id": "luna-effort-v1",
+            "arm_id": "arm_6edf53cf5835",
+            "block_id": "seed:104",
+            "replicate": 0,
+            "trial_id": "t676b09f94e51e2f3",
+            "plan_digest": format!("sha256:{}", "ab".repeat(32)),
+            "subject": {
+                "subject_kind": "proposer-policy",
+                "subject_id": "gpt-5.6-luna@low",
+                "subject_content_digest": format!("sha256:{}", "cd".repeat(32)),
+            },
+        })
+    }
+
+    #[test]
+    fn a_run_request_accepts_a_correlation_envelope_but_never_a_run_id() {
+        let envelope: CorrelationEnvelope =
+            serde_json::from_value(correlation_json()).expect("envelope parses");
+        envelope.validate().expect("valid");
+
+        // The caller owns the trial identity and nothing else: a `run_id`
+        // anywhere in the envelope is refused rather than honoured, because the
+        // service is the only thing allowed to name a run.
+        let mut smuggled = correlation_json();
+        smuggled
+            .as_object_mut()
+            .unwrap()
+            .insert("run_id".into(), json!("gepa_caller_chosen"));
+        assert!(serde_json::from_value::<CorrelationEnvelope>(smuggled).is_err());
+    }
+
+    #[test]
+    fn correlation_reaches_the_run_config_without_displacing_the_minted_run_id() {
+        let mut config = SynthOptimizerConfig::default();
+        let minted = config.run.run_id.clone();
+        config.run.correlation =
+            Some(serde_json::from_value(correlation_json()).expect("envelope parses"));
+
+        assert_eq!(config.run.run_id, minted);
+        let encoded = serde_json::to_value(&config.run).expect("config serialises");
+        assert_eq!(
+            encoded["correlation"]["trial_id"],
+            json!("t676b09f94e51e2f3")
+        );
+        assert_eq!(encoded["run_id"], json!(minted));
+    }
+
+    #[test]
+    fn an_ordinary_run_config_carries_no_correlation_key_at_all() {
+        // An empty `correlation` on a run nobody dispatched would later read as
+        // a join to nothing.
+        let config = SynthOptimizerConfig::default();
+        let encoded = serde_json::to_value(&config.run).expect("config serialises");
+        assert!(encoded.get("correlation").is_none());
     }
 
     #[test]

@@ -10887,6 +10887,14 @@ fn terminalize_gepa_run_state(
         "cache_profile_path": context.paths.cache_profile_path.display().to_string(),
         "workspace_db_path": context.paths.workspace_db_path.display().to_string(),
     });
+    if let (Some(manifest), Some(correlation)) = (
+        failure_manifest.as_object_mut(),
+        correlation_value(&context.config),
+    ) {
+        // A failed trial still has to join to its arm; dropping the envelope
+        // here would turn a recorded failure into an unattributable one.
+        manifest.insert("correlation".to_string(), correlation);
+    }
     if let (Some(manifest), Some(selection)) =
         (failure_manifest.as_object_mut(), selection.as_object())
     {
@@ -14156,6 +14164,7 @@ fn finalize_completed_gepa_run(
         cost_usd: reported_cost,
         usage: usage_value,
         state_history,
+        correlation: correlation_value(&context.config),
         ..Default::default()
     };
     apply_identities_to_run_result(
@@ -14240,6 +14249,19 @@ fn finalize_completed_gepa_run(
         result: Some(result),
         message: "GEPA run completed".to_string(),
     })
+}
+
+/// The trial envelope, as JSON, for a manifest that is about to be sealed.
+///
+/// Returns `None` for an ordinary run. A run nobody dispatched from an
+/// experiment must not grow an empty `correlation` key that later reads as a
+/// join to nothing.
+fn correlation_value(config: &SynthOptimizerConfig) -> Option<Value> {
+    config
+        .run
+        .correlation
+        .as_ref()
+        .and_then(|envelope| serde_json::to_value(envelope).ok())
 }
 
 fn stopped_by_value(config: &SynthOptimizerConfig, state: &GepaRunState) -> Value {
@@ -16788,6 +16810,7 @@ fn execute_gepa_monolithic_with_options(
         cost_usd: reported_cost,
         usage: usage_value,
         state_history,
+        correlation: correlation_value(&config),
         ..Default::default()
     };
     apply_identities_to_run_result(

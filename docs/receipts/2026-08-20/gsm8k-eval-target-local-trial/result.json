@@ -1,0 +1,76 @@
+{
+  "schema_version": "eval.container-result.v1",
+  "trial_id": "gsm8k-test-101-base",
+  "status": "evaluated",
+  "benchmark_status": "failed",
+  "metrics": {
+    "accuracy": 0.0
+  },
+  "gates": [
+    {
+      "id": "policy_loaded",
+      "passed": true
+    },
+    {
+      "id": "snapshot_pinned",
+      "passed": true
+    },
+    {
+      "id": "verifier_completed",
+      "passed": true
+    }
+  ],
+  "usage": {
+    "rollouts": 1,
+    "wall_time_ms": 6898,
+    "cost_usd": 0.0,
+    "calls": 1,
+    "prompt_tokens": 143,
+    "completion_tokens": 304,
+    "llm_seconds": 6.833
+  },
+  "artifacts": [
+    {
+      "role": "trace",
+      "path": "trace.jsonl"
+    },
+    {
+      "role": "events",
+      "path": "events.jsonl"
+    },
+    {
+      "role": "dataset",
+      "path": "dataset.json"
+    }
+  ],
+  "evidence": {
+    "dataset": {
+      "dataset": "openai/gsm8k",
+      "config": "main",
+      "revision": "740312add88f781978c0658806c59bc2815b9866",
+      "splits": {
+        "train": {
+          "hf_split": "train",
+          "rows": 7473,
+          "digest": "sha256:dca449882e67a1e7716b5da453650a7b16588a1f2d1a0d82394a43d75ea7e9ca"
+        },
+        "heldout": {
+          "hf_split": "test",
+          "rows": 1319,
+          "digest": "sha256:32c548f08195e19e33408b844dd7be6aa4bcae457d957bc05909ff4bd4a00595"
+        }
+      },
+      "shuffle_seed": 20260820
+    },
+    "scenario": "gsm8k-test",
+    "seed": 101,
+    "policy_snapshot_id": "snap_f5cd812adb69462cbe007a8946340e2e",
+    "route_id": "mlx-local-base",
+    "proxy_request_ids": [
+      "prid_2b84f301ab9a4a96a0b050d1276794ef"
+    ],
+    "served_policy_snapshot_id": "snap_f5cd812adb69462cbe007a8946340e2e",
+    "parse_mode": "exact",
+    "format_compliant": true
+  }
+}

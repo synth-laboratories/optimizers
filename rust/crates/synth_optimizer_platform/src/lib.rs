@@ -7,6 +7,7 @@ pub mod checkpoints;
 pub mod config;
 pub mod configured_limits;
 pub mod container_contract;
+pub mod correlation;
 pub mod data_models;
 pub mod disk_budget;
 pub mod error;

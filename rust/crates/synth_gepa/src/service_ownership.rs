@@ -5,7 +5,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use fs2::FileExt;
@@ -31,6 +31,7 @@ pub struct ServiceOwnershipGuard {
     heartbeat_path: PathBuf,
     pid: u32,
     stop: Arc<AtomicBool>,
+    writer: Mutex<Option<JoinHandle<()>>>,
     service_url: Arc<Mutex<String>>,
     pub adopted_crash: Option<Value>,
 }
@@ -44,15 +45,28 @@ impl ServiceOwnershipGuard {
         &self.lock_path
     }
 
+    /// Stop the heartbeat writer and wait for it to exit, so a test that
+    /// rewrites the heartbeat afterwards cannot race a write already in
+    /// flight. Production drops never join: the thread exits on its own
+    /// after its current sleep.
     #[cfg(test)]
     pub fn stop_heartbeat_writer(&self) {
         self.stop.store(true, Ordering::Relaxed);
+        let handle = self.writer.lock().ok().and_then(|mut writer| writer.take());
+        if let Some(handle) = handle {
+            let _ = handle.join();
+        }
     }
 }
 
 impl Drop for ServiceOwnershipGuard {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        // Detach, never join: the writer exits on its own after its current
+        // sleep, and a drop must not wait a heartbeat interval for it.
+        if let Ok(writer) = self.writer.get_mut() {
+            drop(writer.take());
+        }
         if !heartbeat_pid_matches(&self.heartbeat_path, self.pid) {
             if let Some(lock) = self.lock.take() {
                 let _ = lock.unlock();
@@ -164,7 +178,7 @@ fn start_owned_guard(
     let thread_url = service_url.clone();
     let thread_started_at = started_at;
     let thread_stop = stop.clone();
-    thread::spawn(move || {
+    let writer = thread::spawn(move || {
         while !thread_stop.load(Ordering::Relaxed) {
             let url = thread_url
                 .lock()
@@ -180,6 +194,7 @@ fn start_owned_guard(
         heartbeat_path,
         pid,
         stop,
+        writer: Mutex::new(Some(writer)),
         service_url,
         adopted_crash,
     })
@@ -606,6 +621,7 @@ mod tests {
             .unwrap()
             .expect("owner heartbeat");
         stolen["pid"] = json!(1);
+        guard.stop_heartbeat_writer();
         fs::write(&heartbeat_path, serde_json::to_vec_pretty(&stolen).unwrap()).unwrap();
         drop(guard);
         assert!(

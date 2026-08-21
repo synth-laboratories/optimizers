@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build the Craftax eval target from a pinned gamebench checkout and print the
-# digest to pin:
+# Build the native-Rust Craftax eval target from a pinned GameBench checkout
+# and print the local immutable image id to pin. No registry is required:
 #
 #   ./build.sh [gamebench-checkout]
 #   synth-optimizers eval pin --home <eval home> \

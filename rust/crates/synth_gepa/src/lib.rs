@@ -7059,6 +7059,18 @@ fn advance_pending_runtime_job(
                         .workspace
                         .optimizer_job(&context.config.run.run_id, job_id)
                     {
+                        // The service worker may win the claim race and finish
+                        // while the inline runner is attempting the same job.
+                        // A completed job is success with a persisted outcome,
+                        // not a terminal failure from the inline claim error.
+                        if matches!(updated_job.status, OptimizerJobStatus::Completed) {
+                            return consume_completed_runtime_job(
+                                context,
+                                state,
+                                resources,
+                                updated_job,
+                            );
+                        }
                         if matches!(updated_job.status, OptimizerJobStatus::RetryScheduled) {
                             persist_gepa_run_state(
                                 context,

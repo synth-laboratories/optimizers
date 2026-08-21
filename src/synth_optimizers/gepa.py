@@ -223,6 +223,7 @@ class ProposerTomlSection(BaseModel):
     api_family: str = "chat_completions"
     base_url: str | None = None
     model: str | None = "gpt-5.4-mini"
+    allow_unverified_model: bool = False
     reasoning_effort: str | None = "medium"
     service_tier: str | None = None
     auth_mode: str = "api_key"
@@ -257,6 +258,7 @@ class ProposerTomlSection(BaseModel):
             api_family=self.api_family,
             base_url=self.base_url,
             model=self.model,
+            allow_unverified_model=self.allow_unverified_model,
             reasoning_effort=self.reasoning_effort,
             service_tier=self.service_tier,
             auth_mode=self.auth_mode,
@@ -879,6 +881,7 @@ class ProposerConfig:
     api_family: str = "chat_completions"
     base_url: str | None = None
     model: str | None = "gpt-5.4-mini"
+    allow_unverified_model: bool = False
     reasoning_effort: str | None = "medium"
     service_tier: str | None = None
     auth_mode: str = "api_key"
@@ -931,6 +934,7 @@ class ProposerConfig:
                 "api_family": self.api_family,
                 "base_url": self.base_url,
                 "model": self.model,
+                "allow_unverified_model": bool(self.allow_unverified_model),
                 "reasoning_effort": self.reasoning_effort,
                 "service_tier": self.service_tier,
                 "auth_mode": self.auth_mode,

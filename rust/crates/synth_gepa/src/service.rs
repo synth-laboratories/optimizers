@@ -37,6 +37,9 @@ mod service_ownership;
 use service_ownership::{
     acquire_service_ownership, owned_heartbeat_payload, refresh_owned_heartbeat, service_id_for,
 };
+#[path = "training_sidecar.rs"]
+mod training_sidecar;
+use training_sidecar::TrainingSidecar;
 
 const DEFAULT_SERVICE_WORKER_COUNT: usize = 10;
 const MIN_CONCURRENT_GEPA_WORKERS: usize = 2;
@@ -82,6 +85,7 @@ struct GepaServiceRuntime {
     scheduler: ServiceSchedulerSignal,
     service_url: String,
     started_at: String,
+    training: TrainingSidecar,
 }
 
 #[derive(Clone)]
@@ -399,11 +403,13 @@ pub fn run_gepa_service(mut config: GepaServiceConfig) -> Result<()> {
     refresh_owned_heartbeat(&ownership, &config, &service_url, &started_at)?;
     start_service_workers(&config, scheduler.clone(), service_url.clone());
     let _ownership = ownership;
+    let training = TrainingSidecar::new(&config.db_path);
     let runtime = GepaServiceRuntime {
         config,
         scheduler,
         service_url,
         started_at,
+        training,
     };
     for stream in listener.incoming() {
         match stream {
@@ -1456,10 +1462,29 @@ fn route_request(request: HttpRequest, runtime: GepaServiceRuntime) -> HttpRespo
     let (path, query) = split_path_query(&request.path);
     let segments = path_segments(path);
     let config = &runtime.config;
+    let raw_query = request
+        .path
+        .split_once('?')
+        .map(|(_, value)| value)
+        .unwrap_or("");
+    if let Some(response) =
+        runtime
+            .training
+            .route(&request.method, &segments, raw_query, &request.body)
+    {
+        return HttpResponse {
+            status: response.status,
+            content_type: response.content_type,
+            body: response.body,
+        };
+    }
     match (request.method.as_str(), segments.as_slice()) {
         ("GET", ["health"]) => json_response(200, &json!({"status": "ok"})),
         ("GET", ["v1", "optimizer", "capabilities"]) | ("GET", ["v1", "optimizer", "status"]) => {
-            json_response(200, &optimizer_capabilities_payload())
+            json_response(
+                200,
+                &optimizer_capabilities_payload(runtime.training.cispo_supported()),
+            )
         }
         ("GET", ["whoami"]) => json_response(
             200,
@@ -1550,22 +1575,21 @@ fn route_request(request: HttpRequest, runtime: GepaServiceRuntime) -> HttpRespo
     }
 }
 
-fn optimizer_capabilities_payload() -> Value {
+fn optimizer_capabilities_payload(cispo_supported: bool) -> Value {
+    let mut placements = vec![
+        json!("search.gepa.local"),
+        json!("training.sft.local"),
+        json!("training.sft.hosted"),
+    ];
+    if cispo_supported {
+        placements.push(json!("training.cispo.local"));
+    }
     json!({
         "status": "ok",
-        "algorithms": ["gepa"],
-        "recipes": [
-            "gepa.banking77.smoke.v1",
-            "gepa.banking77.luna.v1",
-            "gepa.banking77.sol.v1",
-            "gepa.craftax.smoke.v1"
-        ],
+        "algorithms": ["gepa", "sft", "cispo"],
+        "placements": placements,
         "replay": true,
-        "cancellation": true,
-        "compatibleTemplateIds": [
-            "optimizer.gepa.live.v1",
-            "optimizer.run.v1"
-        ]
+        "cancellation": true
     })
 }
 
@@ -5839,19 +5863,57 @@ mod tests {
 
     #[test]
     fn workshop_capability_handshake_is_complete() {
-        let capabilities = optimizer_capabilities_payload();
-        for field in ["algorithms", "recipes", "compatibleTemplateIds"] {
-            let values = capabilities[field].as_array().unwrap();
-            assert!(!values.is_empty());
-            assert!(values.iter().all(Value::is_string));
-        }
+        let capabilities = optimizer_capabilities_payload(true);
+        assert_eq!(capabilities["algorithms"], json!(["gepa", "sft", "cispo"]));
         assert_eq!(capabilities["replay"], true);
         assert_eq!(capabilities["cancellation"], true);
-        assert!(capabilities["recipes"]
+        assert_eq!(
+            capabilities["placements"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|placement| placement.as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec![
+                "search.gepa.local",
+                "training.sft.local",
+                "training.sft.hosted",
+                "training.cispo.local",
+            ]
+        );
+        assert!(capabilities.get("recipes").is_none());
+        assert!(capabilities.get("compatibleTemplateIds").is_none());
+    }
+
+    #[test]
+    fn hosted_cispo_is_fail_closed_and_local_cispo_needs_backend_support() {
+        let capabilities = optimizer_capabilities_payload(false);
+        let placements = capabilities["placements"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|recipe| recipe == "gepa.banking77.smoke.v1"));
+            .map(|placement| placement.as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert!(!placements.contains(&"training.cispo.local"));
+        assert!(!placements.contains(&"training.cispo.hosted"));
+
+        let sidecar = TrainingSidecar::new(&scratch_path("hosted-cispo"));
+        let response = sidecar
+            .route(
+                "POST",
+                &["v1", "training", "jobs"],
+                "",
+                br#"{
+                    "placement": "training.cispo.hosted",
+                    "recipe_id": "training.cispo.canary",
+                    "config": {}
+                }"#,
+            )
+            .unwrap();
+        assert_eq!(response.status, 422);
+        assert!(String::from_utf8(response.body)
+            .unwrap()
+            .contains("not admitted"));
     }
 
     #[test]

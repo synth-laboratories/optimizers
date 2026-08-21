@@ -174,10 +174,49 @@ def test_typed_builder_materializes_exact_effective_config_and_caps() -> None:
     assert config["requested_training"] == config["effective_training"]
     assert config["rollout"]["task_id"] == "banking77"
     assert config["bounded_run_caps"]["cost_usd"] == 0.10
+    assert config["rollout"]["connection_mode"] == "keep_alive"
     assert config["algorithm_config"]["repository_commits"] == {
         "workshop": "workshop-sha",
         "optimizers": "client-sha",
     }
+
+
+def test_typed_builder_passes_scheduler_knobs_and_explicit_close() -> None:
+    provider = validate_provider_training_capabilities(
+        _provider_capabilities(), model_id="gpt-oss-20b", algorithm="cispo"
+    )
+    rollout = validate_training_capabilities(
+        "http://127.0.0.1:8000",
+        _capabilities(),
+        TrainingRolloutRequirement(task_id="banking77", connection_mode="close"),
+    )
+    config = build_hosted_training_config(
+        HostedTrainingSpec(
+            algorithm="cispo",
+            model_id="gpt-oss-20b",
+            model_revision="2026-08-18",
+            rank=32,
+            requested_training=RequestedTraining(
+                sequence_cap=1024,
+                max_sample_tokens=128,
+                batch_size=2,
+                checkpoint_every_steps=1,
+                total_training_steps=2,
+            ),
+            bounded_run_caps=BoundedTrainingCaps(steps=2, wall_clock_seconds=300, cost_usd=0.10),
+            algorithm_config={"group_size": 2},
+            connection_mode="close",
+            rollout_batch_size=3,
+            groups_per_step=3,
+            max_concurrent=8,
+        ),
+        provider=provider,
+        rollout=rollout,
+    )
+    assert config["rollout"]["connection_mode"] == "close"
+    assert config["algorithm_config"]["rollout_batch_size"] == 3
+    assert config["algorithm_config"]["groups_per_step"] == 3
+    assert config["algorithm_config"]["max_concurrent"] == 8
 
 
 class _Lease:

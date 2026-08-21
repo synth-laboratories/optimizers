@@ -43,6 +43,16 @@ class FakeExecutor:
                 "config_path": "/private/executor/sft.toml",
                 "storage_mode": "local",
             }
+        if method == "POST" and path == "/v1/checkpoints/infer/chat/completions":
+            return {
+                "object": "chat.completion",
+                "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+            }
+        if method == "POST" and path == "/v1/checkpoints/infer/responses":
+            return {
+                "object": "response",
+                "output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}],
+            }
         raise AssertionError((method, path, payload))
 
 
@@ -135,6 +145,65 @@ def test_sft_http_service_hides_executor_behind_public_token(tmp_path) -> None:
         with pytest.raises(urllib.error.HTTPError) as error:
             urllib.request.urlopen(url)
         assert error.value.code == 401
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_sft_service_proxies_openai_family_inference(tmp_path) -> None:
+    executor = FakeExecutor()
+    service = SftService(tmp_path / "sft.sqlite", executor)
+    chat = service.infer_openai(
+        "chat",
+        {
+            "sampler_path": "tinker://ckpt",
+            "run_id": "run",
+            "checkpoint_id": "ckpt",
+            "body": {"messages": [{"role": "user", "content": "hi"}]},
+        },
+    )
+    assert chat["object"] == "chat.completion"
+    responses = service.infer_openai(
+        "responses",
+        {
+            "sampler_path": "tinker://ckpt",
+            "run_id": "run",
+            "checkpoint_id": "ckpt",
+            "body": {"input": "hi"},
+        },
+    )
+    assert responses["object"] == "response"
+    assert [path for _, path, _ in executor.requests] == [
+        "/v1/checkpoints/infer/chat/completions",
+        "/v1/checkpoints/infer/responses",
+    ]
+
+
+def test_sft_http_streams_checkpoint_inference(tmp_path) -> None:
+    service = SftService(tmp_path / "sft.sqlite", FakeExecutor())
+    server = create_sft_http_server(("127.0.0.1", 0), service, service_token="public-token")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/v1/checkpoints/infer/chat/completions"
+        request = urllib.request.Request(
+            url,
+            method="POST",
+            data=json.dumps(
+                {
+                    "sampler_path": "tinker://ckpt",
+                    "run_id": "run",
+                    "checkpoint_id": "ckpt",
+                    "body": {"stream": True, "messages": [{"role": "user", "content": "hi"}]},
+                }
+            ).encode(),
+            headers={"Authorization": "Bearer public-token", "Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(request) as response:
+            assert response.headers.get("Content-Type") == "text/event-stream"
+            body = response.read().decode()
+        assert "chat.completion.chunk" in body
+        assert "data: [DONE]" in body
     finally:
         server.shutdown()
         server.server_close()

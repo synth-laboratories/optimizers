@@ -387,6 +387,21 @@ class SftService:
             self._update_status(run_id, status, _optional_text(remote.get("error")))
             return self.get(run_id)
 
+    def infer_openai(self, family: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Proxy Chat Completions / Responses sampling to the beta executor.
+
+        Catalog inference is not a public-run mutation: identity stays on the
+        checkpoint envelope, and Workshop never sees the Tinker sampler.
+        """
+        if family not in {"chat", "responses"}:
+            raise SftServiceError("family must be chat or responses")
+        path = (
+            "/v1/checkpoints/infer/chat/completions"
+            if family == "chat"
+            else "/v1/checkpoints/infer/responses"
+        )
+        return self.executor.request("POST", path, dict(payload))
+
     def optimizer_events(
         self, run_id: str, *, after_sequence: int = 0, limit: int = 500
     ) -> dict[str, Any]:
@@ -545,6 +560,28 @@ def create_sft_http_server(
                         self._write_artifact(service.artifact(run_id, parts[4]))
                     else:
                         self._write(HTTPStatus.NOT_FOUND, {"error": "not found"})
+                elif self.command == "POST" and parts in (
+                    ["v1", "checkpoints", "infer", "chat", "completions"],
+                    ["v1", "checkpoints", "infer", "responses"],
+                ):
+                    payload = self._body()
+                    family = "chat" if parts[-1] == "completions" else "responses"
+                    body = payload.get("body") if isinstance(payload.get("body"), Mapping) else payload
+                    streamed = _streaming(payload)
+                    if streamed and isinstance(body, dict):
+                        forwarded = dict(payload)
+                        inner = dict(body)
+                        inner.pop("stream", None)
+                        if "body" in forwarded:
+                            forwarded["body"] = inner
+                        else:
+                            forwarded = inner
+                        payload = forwarded
+                    result = service.infer_openai(family, payload)
+                    if streamed:
+                        self._write_sse(_openai_family_sse(family, result))
+                        return
+                    self._write(HTTPStatus.OK, result)
                 else:
                     self._write(HTTPStatus.NOT_FOUND, {"error": "not found"})
             except SftServiceError as exc:
@@ -564,6 +601,14 @@ def create_sft_http_server(
             body = json.dumps(value, sort_keys=True).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _write_sse(self, body: bytes) -> None:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -643,6 +688,114 @@ def _non_empty_text(value: Any, *, field: str) -> str:
 def _optional_text(value: Any) -> str | None:
     text = str(value or "").strip()
     return text or None
+
+
+def _streaming(payload: Mapping[str, Any]) -> bool:
+    if payload.get("stream") is True:
+        return True
+    body = payload.get("body")
+    return isinstance(body, Mapping) and body.get("stream") is True
+
+
+def _openai_family_sse(family: str, payload: Mapping[str, Any]) -> bytes:
+    """Wrap a completed Tinker sample as family-native SSE."""
+
+    if family == "responses":
+        text = ""
+        output = payload.get("output")
+        if isinstance(output, list) and output:
+            content = output[0].get("content") if isinstance(output[0], Mapping) else None
+            if isinstance(content, list) and content and isinstance(content[0], Mapping):
+                text = str(content[0].get("text") or "")
+        response_id = str(payload.get("id") or "resp_hosted")
+        created = payload.get("created_at") or 0
+        model = str(payload.get("model") or "hosted-tinker-checkpoint")
+        message_id = f"msg_{response_id}"
+        skeleton = {
+            "id": response_id,
+            "object": "response",
+            "created_at": created,
+            "model": model,
+            "status": "in_progress",
+        }
+        events = [
+            ("response.created", {"type": "response.created", "response": skeleton}),
+            (
+                "response.output_item.added",
+                {
+                    "type": "response.output_item.added",
+                    "output_index": 0,
+                    "item": {
+                        "type": "message",
+                        "id": message_id,
+                        "role": "assistant",
+                        "status": "in_progress",
+                        "content": [],
+                    },
+                },
+            ),
+        ]
+        if text:
+            events.append(
+                (
+                    "response.output_text.delta",
+                    {
+                        "type": "response.output_text.delta",
+                        "item_id": message_id,
+                        "output_index": 0,
+                        "content_index": 0,
+                        "delta": text,
+                    },
+                )
+            )
+        events.append(
+            (
+                "response.output_text.done",
+                {
+                    "type": "response.output_text.done",
+                    "item_id": message_id,
+                    "output_index": 0,
+                    "content_index": 0,
+                    "text": text,
+                },
+            )
+        )
+        events.append(
+            (
+                "response.completed",
+                {"type": "response.completed", "response": dict(payload)},
+            )
+        )
+        return "".join(
+            f"event: {name}\ndata: {json.dumps(body, separators=(',', ':'))}\n\n"
+            for name, body in events
+        ).encode("utf-8")
+
+    text = ""
+    choices = payload.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], Mapping):
+        message = choices[0].get("message")
+        if isinstance(message, Mapping):
+            text = str(message.get("content") or "")
+    completion_id = str(payload.get("id") or "chatcmpl-hosted")
+    created = payload.get("created") or 0
+    model = str(payload.get("model") or "hosted-tinker-checkpoint")
+    base = {
+        "id": completion_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+    }
+    chunks = [
+        {**base, "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]},
+    ]
+    if text:
+        chunks.append(
+            {**base, "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}]}
+        )
+    chunks.append({**base, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
+    body = "".join(f"data: {json.dumps(chunk, separators=(',', ':'))}\n\n" for chunk in chunks)
+    return f"{body}data: [DONE]\n\n".encode("utf-8")
 
 
 def _now() -> str:

@@ -38,7 +38,7 @@ paths:
       summary: Advertise Workshop optimizer compatibility
       responses:
         '200':
-          description: Optimizer algorithms, recipes, and runtime capabilities.
+          description: Optimizer algorithms, placements, and runtime capabilities.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/OptimizerCapabilities' }
@@ -53,6 +53,74 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/OptimizerCapabilities' }
+
+  /v1/training/jobs:
+    post:
+      operationId: createTrainingJob
+      summary: Admit and start a local or hosted training job
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TrainingJobRequest' }
+      responses:
+        '200': { description: Hosted training job submitted. }
+        '202': { description: Local training job started. }
+        '422': { $ref: '#/components/responses/InvalidConfig' }
+
+  /v1/training/jobs/{job_id}:
+    get:
+      operationId: getTrainingJob
+      summary: Read a training job
+      parameters:
+        - { name: job_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Current training job state. }
+
+  /v1/training/jobs/{job_id}/events:
+    get:
+      operationId: getTrainingJobEvents
+      summary: Read training events
+      parameters:
+        - { name: job_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Training event page. }
+
+  /v1/training/jobs/{job_id}/handoff:
+    get:
+      operationId: getTrainingJobHandoff
+      summary: Read the trained checkpoint handoff
+      parameters:
+        - { name: job_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Checkpoint and inference handoff. }
+
+  /v1/training/jobs/{job_id}/cancel:
+    post:
+      operationId: cancelTrainingJob
+      summary: Cancel a training job
+      parameters:
+        - { name: job_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '202': { description: Cancellation requested. }
+
+  /v1/training/jobs/{job_id}/resume:
+    post:
+      operationId: resumeTrainingJob
+      summary: Resume a training job from its checkpoint
+      parameters:
+        - { name: job_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '202': { description: Resume requested. }
+
+  /v1/training/jobs/{job_id}/chat:
+    post:
+      operationId: chatWithTrainingJob
+      summary: Run chat completion through the local MLX learner
+      parameters:
+        - { name: job_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OpenAI-compatible chat completion. }
 
   # ---------------------------------------------------------------------------
   # Submission + lifecycle
@@ -785,23 +853,30 @@ components:
   schemas:
     OptimizerCapabilities:
       type: object
-      required: [status, algorithms, recipes, replay, cancellation, compatibleTemplateIds]
+      required: [status, algorithms, placements, replay, cancellation]
       properties:
         status: { type: string, const: ok }
         algorithms:
           type: array
           minItems: 1
           items: { type: string }
-        recipes:
+        placements:
           type: array
           minItems: 1
           items: { type: string }
         replay: { type: boolean }
         cancellation: { type: boolean }
-        compatibleTemplateIds:
-          type: array
-          minItems: 1
-          items: { type: string }
+
+    TrainingJobRequest:
+      type: object
+      required: [placement, recipe_id, config]
+      properties:
+        placement:
+          type: string
+          enum: [training.sft.local, training.sft.hosted, training.cispo.local]
+        recipe_id: { type: string, minLength: 1 }
+        job_id: { type: string, minLength: 1 }
+        config: { type: object, additionalProperties: true }
 
     # ---- Enums -------------------------------------------------------------
     RunStatus:

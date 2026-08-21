@@ -1100,7 +1100,7 @@ class HostedOptimizerClient:
         requirement = TrainingRolloutRequirement(
             task_id=task_id,
             min_concurrency=min_concurrency,
-            connection_mode="close",
+            connection_mode="keep_alive",
         )
         preflight = preflight_training_container(local_base_url, requirement)
         lease = self.open_synth_tunnel(

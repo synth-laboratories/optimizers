@@ -77,6 +77,10 @@ class HostedTrainingSpec:
     repository_commits: Mapping[str, str] = field(default_factory=dict)
     maximum_policy_lag: int = 1
     environment_hold_seconds: int = 300
+    connection_mode: str = "keep_alive"
+    rollout_batch_size: int | None = None
+    groups_per_step: int | None = None
+    max_concurrent: int | None = None
 
 
 def build_hosted_training_config(
@@ -99,18 +103,43 @@ def build_hosted_training_config(
         or spec.rank < 1
         or spec.maximum_policy_lag < 0
         or spec.environment_hold_seconds < 1
+        or spec.connection_mode not in {"close", "keep_alive"}
+        or (
+            spec.rollout_batch_size is not None
+            and (isinstance(spec.rollout_batch_size, bool) or spec.rollout_batch_size < 1)
+        )
+        or (
+            spec.groups_per_step is not None
+            and (isinstance(spec.groups_per_step, bool) or spec.groups_per_step < 1)
+        )
+        or (
+            spec.max_concurrent is not None
+            and (isinstance(spec.max_concurrent, bool) or spec.max_concurrent < 1)
+        )
+        or (
+            spec.rollout_batch_size is not None
+            and spec.groups_per_step is not None
+            and spec.rollout_batch_size != spec.groups_per_step
+        )
     ):
         raise TrainingClientError("hosted_training_spec_invalid")
     requested = spec.requested_training.to_config_json()
     rollout_config = rollout.rollout_config()
     rollout_config.update(
         {
-            "connection_mode": "close",
+            "connection_mode": spec.connection_mode,
             "maximum_policy_lag": spec.maximum_policy_lag,
             "environment_hold_seconds": spec.environment_hold_seconds,
         }
     )
     algorithm_config = dict(spec.algorithm_config)
+    if spec.rollout_batch_size is not None:
+        algorithm_config.setdefault("rollout_batch_size", spec.rollout_batch_size)
+    if spec.groups_per_step is not None:
+        algorithm_config.setdefault("groups_per_step", spec.groups_per_step)
+        algorithm_config.setdefault("rollout_batch_size", spec.groups_per_step)
+    if spec.max_concurrent is not None:
+        algorithm_config.setdefault("max_concurrent", spec.max_concurrent)
     if spec.repository_commits:
         if "repository_commits" in algorithm_config:
             raise TrainingClientError("hosted_training_repository_commits_ambiguous")
@@ -261,7 +290,7 @@ def reduce_training_lifecycle(
 class TrainingRolloutRequirement:
     task_id: str
     min_concurrency: int = 1
-    connection_mode: str = "close"
+    connection_mode: str = "keep_alive"
     required_operations: frozenset[str] = field(
         default_factory=lambda: frozenset({"rollout", "reward", "heartbeat"})
     )

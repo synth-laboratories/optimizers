@@ -20707,9 +20707,14 @@ fn runtime_effect_retry_policy(kind: &OptimizerJobKind) -> RetryPolicy {
             ],
         },
         OptimizerJobKind::Proposer => RetryPolicy {
-            max_attempts: 2,
-            backoff_seconds: 2,
-            retryable_failure_types: vec!["synth_optimizer_proposer_error".to_string()],
+            // A proposer is a stateful, paid agent turn. Retrying the whole turn
+            // can duplicate side effects and silently exceed the run's wall-clock
+            // budget (for example, two 120s turns inside a 240s smoke). Surface
+            // the first complete failure and let an explicit run-level decision
+            // choose whether to try again.
+            max_attempts: 1,
+            backoff_seconds: 0,
+            retryable_failure_types: vec![],
         },
         _ => RetryPolicy::default(),
     }

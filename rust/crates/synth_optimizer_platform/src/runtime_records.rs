@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use time::OffsetDateTime;
 
-use crate::cache::{stable_json, stable_value_hash};
+use crate::cache::{stable_json, stable_json_hash, stable_value_hash};
 
 pub const RESOLVED_RUN_CONFIG_SCHEMA_VERSION: &str = "resolved_run_config.v1";
 pub const CONTAINER_CONTRACT_SNAPSHOT_SCHEMA_VERSION: &str = "container_contract_snapshot.v1";
@@ -19,6 +19,10 @@ pub struct ResolvedRunConfigRecord {
     pub run_id: String,
     pub algorithm_id: String,
     pub config_hash: String,
+    /// `sha256:<hex>` over the run identity and the resolved config. This is
+    /// what admission sealed; nothing downstream may change it.
+    #[serde(default)]
+    pub resolved_config_digest: String,
     pub cache_mode: String,
     pub cache_namespace: String,
     pub output_dir: String,
@@ -290,12 +294,14 @@ impl ResolvedRunConfigRecord {
             "algorithm_id": input.algorithm_id,
             "config_hash": config_hash,
         });
+        let resolved_config_digest = format!("sha256:{}", stable_json_hash(&identity));
         Self {
             schema_version: RESOLVED_RUN_CONFIG_SCHEMA_VERSION.to_string(),
             resolved_config_id: prefixed_hash_id("resolved_config", &identity),
             run_id: input.run_id.to_string(),
             algorithm_id: input.algorithm_id.to_string(),
             config_hash,
+            resolved_config_digest,
             cache_mode: input.cache_mode.to_string(),
             cache_namespace: input.cache_namespace.to_string(),
             output_dir: input.output_dir.to_string(),

@@ -19,6 +19,9 @@ use synth_optimizer_platform::limits::{
     BudgetReleaseRecord, BudgetReservationInput, BudgetReservationRecord, RunLimitPolicy,
     RuntimeEffectAdmissionInput, RuntimeEffectAdmissionRecord, RuntimeEffectBudgetEstimate,
 };
+use synth_optimizer_platform::observability::{
+    GEPA_RUN_CANCELLED_EVENT_TYPE, GEPA_RUN_FAILED_EVENT_TYPE,
+};
 use synth_optimizer_platform::{
     budget_limit_engine_input, container_child_eval_ref, fold_reported_cost, normalize_event_feed,
     proposer_delta_chunks_from_response, stable_json_hash, task_identity, write_run_storage_report,
@@ -1129,7 +1132,7 @@ struct HeldoutSelectionInput<'a> {
 
 const ROLLOUT_CACHE_PROFILE: &str = "rollout_request";
 const PROPOSER_CACHE_PROFILE: &str = "gepa_proposer";
-const GEPA_ALGORITHM_ID: &str = "synth_gepa.v1";
+pub(crate) const GEPA_ALGORITHM_ID: &str = "synth_gepa.v1";
 
 struct StopperSnapshot<'a> {
     status: &'a str,
@@ -10799,13 +10802,13 @@ fn terminalize_gepa_run_state(
         if matches!(terminal_state, OptimizerRunState::Cancelled) {
             (
                 OptimizerTransitionTrigger::CancelRequested,
-                "gepa.run.cancelled",
+                GEPA_RUN_CANCELLED_EVENT_TYPE,
                 "GEPA run cancelled",
             )
         } else {
             (
                 OptimizerTransitionTrigger::FailureRaised,
-                "gepa.run.failed",
+                GEPA_RUN_FAILED_EVENT_TYPE,
                 "GEPA run failed",
             )
         };
@@ -21871,13 +21874,13 @@ fn fail_gepa_run_and_return<T>(input: FailedGepaRunInput<'_>, error: OptimizerEr
         OptimizerError::Cancelled { .. } => (
             OptimizerRunState::Cancelled,
             OptimizerTransitionTrigger::CancelRequested,
-            "gepa.run.cancelled",
+            GEPA_RUN_CANCELLED_EVENT_TYPE,
             "GEPA run cancelled",
         ),
         _ => (
             OptimizerRunState::Failed,
             OptimizerTransitionTrigger::FailureRaised,
-            "gepa.run.failed",
+            GEPA_RUN_FAILED_EVENT_TYPE,
             "GEPA run failed",
         ),
     };

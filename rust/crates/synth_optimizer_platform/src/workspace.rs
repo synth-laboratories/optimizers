@@ -43,8 +43,8 @@ use crate::resources::{ResourceLeaseRecord, ResourceLeaseRecordInput};
 use crate::rollouts::{RolloutEventRecord, RolloutRecord, SensorRolloutRecords};
 use crate::runtime_records::{
     runtime_record_json, ContainerContractSnapshotRecord, PromptProgramSnapshotRecord,
-    RenderedOptimizerStateInput, RenderedOptimizerStateRecord, ResolvedRunConfigRecord,
-    RunPhaseTimingRecord, RuntimeEffectRecord, TasksetSnapshotRecord,
+    RenderedOptimizerStateInput, RenderedOptimizerStateRecord, ResolvedRunConfigInput,
+    ResolvedRunConfigRecord, RunPhaseTimingRecord, RuntimeEffectRecord, TasksetSnapshotRecord,
 };
 use crate::scores::{
     ObjectiveSetRecord, ObjectiveSpec, ParetoComparisonRecord, ScoreRecord, ScoreVectorRecord,
@@ -1803,12 +1803,13 @@ impl WorkspaceStore {
             r#"
             INSERT INTO resolved_run_configs(
                 run_id, resolved_config_id, algorithm_id, config_hash,
-                cache_mode, cache_namespace, output_dir, config_json,
-                metadata_json, record_json, recorded_at, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, datetime('now'))
+                resolved_config_digest, cache_mode, cache_namespace, output_dir,
+                config_json, metadata_json, record_json, recorded_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, datetime('now'))
             ON CONFLICT(run_id, resolved_config_id) DO UPDATE SET
                 algorithm_id = excluded.algorithm_id,
                 config_hash = excluded.config_hash,
+                resolved_config_digest = excluded.resolved_config_digest,
                 cache_mode = excluded.cache_mode,
                 cache_namespace = excluded.cache_namespace,
                 output_dir = excluded.output_dir,
@@ -1823,6 +1824,7 @@ impl WorkspaceStore {
                 record.resolved_config_id,
                 record.algorithm_id,
                 record.config_hash,
+                record.resolved_config_digest,
                 record.cache_mode,
                 record.cache_namespace,
                 record.output_dir,
@@ -1833,6 +1835,64 @@ impl WorkspaceStore {
             ],
         )?;
         Ok(())
+    }
+
+    /// Seal the config a run was admitted with, before anything can execute.
+    ///
+    /// The digest recorded here is the one the run must still carry when it
+    /// runs: nothing between admission and execution is allowed to change the
+    /// config, which is why the env-override layer is gone.
+    pub fn record_admitted_run_config(
+        &self,
+        config: &SynthOptimizerConfig,
+        algorithm_id: &str,
+        metadata: Map<String, Value>,
+    ) -> Result<String> {
+        let paths = ArtifactPaths::new(&config.run.output_dir, &config.run.run_id);
+        let cache_mode = CacheMode::from(config.cache.mode);
+        let cache_namespace = config
+            .cache
+            .namespace
+            .clone()
+            .unwrap_or_else(|| format!("gepa:{}", config.run.run_id));
+        let config_value = serde_json::to_value(config)?;
+        // The run row has to exist first: resolved_run_configs.run_id is a
+        // foreign key into it. `state` is left alone on conflict.
+        self.record_optimization_run_started(OptimizationRunStartedInput {
+            run_id: &config.run.run_id,
+            state: "created",
+            config: &config_value,
+            cache_mode: cache_mode.as_str(),
+            cache_namespace: &cache_namespace,
+            output_dir: &config.run.output_dir,
+            run_dir: &paths.run_dir,
+            manifest_path: &paths.manifest_path,
+        })?;
+        let record = ResolvedRunConfigRecord::from_input(ResolvedRunConfigInput {
+            run_id: &config.run.run_id,
+            algorithm_id,
+            cache_mode: cache_mode.as_str(),
+            cache_namespace: &cache_namespace,
+            output_dir: &config.run.output_dir.display().to_string(),
+            config: &config_value,
+            metadata,
+        });
+        self.record_resolved_run_config(&record)?;
+        Ok(record.resolved_config_digest)
+    }
+
+    /// The digests `resolved_run_configs` holds for a run, newest first.
+    pub fn resolved_config_digests(&self, run_id: &str) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT resolved_config_digest FROM resolved_run_configs \
+             WHERE run_id = ?1 ORDER BY recorded_at DESC, resolved_config_id",
+        )?;
+        let mut rows = stmt.query(params![run_id])?;
+        let mut digests = Vec::new();
+        while let Some(row) = rows.next()? {
+            digests.push(row.get::<_, String>(0)?);
+        }
+        Ok(digests)
     }
 
     pub fn record_container_contract_snapshot(
@@ -3930,6 +3990,7 @@ impl WorkspaceStore {
                 resolved_config_id TEXT NOT NULL,
                 algorithm_id TEXT NOT NULL,
                 config_hash TEXT NOT NULL,
+                resolved_config_digest TEXT NOT NULL DEFAULT '',
                 cache_mode TEXT NOT NULL,
                 cache_namespace TEXT NOT NULL,
                 output_dir TEXT NOT NULL,
@@ -5103,6 +5164,11 @@ impl WorkspaceStore {
     }
 
     fn ensure_runtime_schema(&self) -> Result<()> {
+        self.ensure_column(
+            "resolved_run_configs",
+            "resolved_config_digest",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
         // v0.2.0 workspaces called this identity `seed`. The v0.2.12
         // backfill used `task_id` before migrating the column, which made the
         // sidecar fail during startup even when the legacy table was empty.
@@ -9993,5 +10059,116 @@ mod terminal_cursor_tests {
         let _ = fs::remove_file(&path);
         let _ = fs::remove_file(path.with_extension("sqlite-wal"));
         let _ = fs::remove_file(path.with_extension("sqlite-shm"));
+    }
+}
+
+/// P0-4 lock. What admission sealed is on disk, in `resolved_run_configs`.
+#[cfg(test)]
+mod admitted_config_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn scratch_store(label: &str) -> (PathBuf, WorkspaceStore) {
+        let path = std::env::temp_dir().join(format!(
+            "synth-admitted-{label}-{}-{}.sqlite",
+            std::process::id(),
+            OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        let store = WorkspaceStore::open(&path).unwrap();
+        (path, store)
+    }
+
+    fn cleanup(path: PathBuf) {
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("sqlite-wal"));
+        let _ = fs::remove_file(path.with_extension("sqlite-shm"));
+    }
+
+    fn config(run_id: &str, proposer_model: &str) -> SynthOptimizerConfig {
+        let mut config = SynthOptimizerConfig::default();
+        config.run.run_id = run_id.to_string();
+        config.run.output_dir = std::env::temp_dir().join(run_id);
+        config.proposer.model = Some(proposer_model.to_string());
+        config
+    }
+
+    #[test]
+    fn admission_records_a_resolved_config_digest() {
+        let (path, store) = scratch_store("digest");
+        let digest = store
+            .record_admitted_run_config(
+                &config("run_admitted", "gpt-5.4-mini"),
+                "synth_gepa.v1",
+                Map::new(),
+            )
+            .expect("record admitted config");
+
+        assert!(
+            digest.starts_with("sha256:") && digest.len() == 7 + 64,
+            "digest is sha256:<64 hex>, got {digest}"
+        );
+        assert_eq!(
+            store.resolved_config_digests("run_admitted").unwrap(),
+            vec![digest.clone()]
+        );
+
+        // Re-admitting the same config is idempotent, not a second row.
+        let again = store
+            .record_admitted_run_config(
+                &config("run_admitted", "gpt-5.4-mini"),
+                "synth_gepa.v1",
+                Map::new(),
+            )
+            .expect("record admitted config again");
+        assert_eq!(again, digest);
+        assert_eq!(
+            store.resolved_config_digests("run_admitted").unwrap().len(),
+            1
+        );
+        cleanup(path);
+    }
+
+    #[test]
+    fn a_different_config_gets_a_different_digest() {
+        let (path, store) = scratch_store("differs");
+        let first = store
+            .record_admitted_run_config(
+                &config("run_a", "gpt-5.4-mini"),
+                "synth_gepa.v1",
+                Map::new(),
+            )
+            .unwrap();
+        let second = store
+            .record_admitted_run_config(
+                &config("run_a", "model-from-env"),
+                "synth_gepa.v1",
+                Map::new(),
+            )
+            .unwrap();
+        assert_ne!(
+            first, second,
+            "the digest has to move when the config moves, or it proves nothing"
+        );
+        cleanup(path);
+    }
+
+    #[test]
+    fn admission_metadata_is_stored_with_the_row() {
+        let (path, store) = scratch_store("metadata");
+        let mut metadata = Map::new();
+        metadata.insert("source".to_string(), json!("gepa_service_admission"));
+        store
+            .record_admitted_run_config(&config("run_meta", "m"), "synth_gepa.v1", metadata)
+            .unwrap();
+        let stored: String = store
+            .conn
+            .query_row(
+                "SELECT metadata_json FROM resolved_run_configs WHERE run_id = ?1",
+                params!["run_meta"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(stored.contains("gepa_service_admission"), "{stored}");
+        cleanup(path);
     }
 }

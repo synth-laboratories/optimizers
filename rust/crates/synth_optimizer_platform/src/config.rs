@@ -1341,9 +1341,12 @@ fn validate_proposer_runtime_substrate_config(proposer: &ProposerConfig) -> Resu
 
 fn validate_chat_completions_proposer_config(proposer: &ProposerConfig) -> Result<()> {
     let provider = proposer.provider.trim().to_ascii_lowercase();
-    if !matches!(provider.as_str(), "deepseek" | "nvidia" | "openai") {
+    if !matches!(
+        provider.as_str(),
+        "deepseek" | "nvidia" | "openai" | "openrouter"
+    ) {
         return Err(OptimizerError::Config(format!(
-            "chat-completions proposer backend requires proposer.provider = \"deepseek\", \"nvidia\", or \"openai\"; got {:?}",
+            "chat-completions proposer backend requires proposer.provider = \"deepseek\", \"nvidia\", \"openai\", or \"openrouter\"; got {:?}",
             proposer.provider
         )));
     }

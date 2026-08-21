@@ -1,7 +1,7 @@
 """Craftax `eval.target.v1` target.
 
 One trial is one candidate code policy on one seed of one pinned Craftax world,
-evaluated in-container against the GameBench symbolic engine (`gold_python`).
+evaluated in-container against the GameBench native Rust engine (`gold_rust`).
 No host substrate and no network: the engine ships inside the image, so
 `network = none` holds and two trials of the same run cannot drift apart
 because something outside the container changed.
@@ -259,7 +259,7 @@ def main() -> int:
             str(work_report),
             "--include-trace",
             "--lane",
-            "python",
+            "rust",
         ],
         cwd=str(TASK_DIR),
         capture_output=True,

@@ -1393,9 +1393,13 @@ fn validate_openrouter_proposer_config(proposer: &ProposerConfig) -> Result<()> 
             VERIFIED_OPENROUTER_MODELS.join(", ")
         )));
     }
-    if proposer.backend != "codex_app_server" {
+    if !matches!(
+        proposer.backend.as_str(),
+        "codex_app_server" | "chat_completions" | "deepseek_chat"
+    ) {
         return Err(OptimizerError::Config(
-            "OpenRouter proposer requires proposer.backend = \"codex_app_server\"".to_string(),
+            "OpenRouter proposer requires proposer.backend = \"codex_app_server\" or \"chat_completions\""
+                .to_string(),
         ));
     }
     let auth_mode = proposer_auth_mode_normalized(&proposer.auth_mode);

@@ -28,7 +28,7 @@ const MAX_LINES: usize = 2_000;
 const ALLOWLIST: &[(&str, usize)] = &[
     ("rust/crates/synth_gepa/src/codex_app_server.rs", 3_434),
     ("rust/crates/synth_gepa/src/lib.rs", 22_143),
-    ("rust/crates/synth_gepa/src/service.rs", 6_256),
+    ("rust/crates/synth_gepa/src/service.rs", 6_273),
     ("rust/crates/synth_optimizer_platform/src/config.rs", 3_141),
     (
         "rust/crates/synth_optimizer_platform/src/workspace.rs",

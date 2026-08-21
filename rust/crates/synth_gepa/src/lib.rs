@@ -1132,7 +1132,7 @@ struct HeldoutSelectionInput<'a> {
 
 const ROLLOUT_CACHE_PROFILE: &str = "rollout_request";
 const PROPOSER_CACHE_PROFILE: &str = "gepa_proposer";
-const GEPA_ALGORITHM_ID: &str = "synth_gepa.v1";
+pub(crate) const GEPA_ALGORITHM_ID: &str = "synth_gepa.v1";
 
 struct StopperSnapshot<'a> {
     status: &'a str,

@@ -10563,10 +10563,32 @@ fn consume_failed_runtime_job(
         ),
         _ => (GepaCursorPhase::Failed, "failed", "GEPA runtime job failed"),
     };
+    let runtime_failure = job
+        .payload
+        .pointer("/runtime_outcome/failures/0/failure")
+        .cloned();
     let error_summary = job
         .payload
         .get("error")
         .cloned()
+        .or_else(|| {
+            runtime_failure.map(|failure| {
+                let message = failure
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("GEPA runtime effect reported a failed outcome");
+                json!({
+                    "error_code": failure
+                        .get("reason_code")
+                        .and_then(Value::as_str)
+                        .unwrap_or("synth_optimizer_failed"),
+                    "message": message,
+                    "failure": failure,
+                    "runtime_job_id": job.job_id,
+                    "runtime_job_status": job.status.as_str(),
+                })
+            })
+        })
         .or_else(|| {
             job.failure.as_ref().map(|failure| {
                 json!({

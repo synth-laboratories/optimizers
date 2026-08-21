@@ -246,37 +246,21 @@ fn run_enabled_jesterky_workflow(
 }
 
 fn resolve_jesterky_command(wf: &JesterkyWorkflowConfig) -> String {
-    if let Ok(env_cmd) = std::env::var("STACK_JESTERKY_COMMAND") {
-        let trimmed = env_cmd.trim();
-        if !trimmed.is_empty() {
-            return trimmed.to_string();
-        }
-    }
     wf.command.trim().to_string()
 }
 
+/// The spec path is already absolute: `SynthOptimizerConfig::resolve_relative_paths`
+/// absolutizes it against the TOML's own directory at load. Nothing here searches
+/// a checkout, a developer home, or the process working directory.
 fn resolve_spec_path(wf: &JesterkyWorkflowConfig) -> Result<PathBuf> {
     let raw = PathBuf::from(wf.spec.trim());
     if raw.is_file() {
         return Ok(raw);
     }
-    let candidates = [
-        PathBuf::from("/Users/joshpurtell/Documents/GitHub/jesterky").join(&raw),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../../jesterky")
-            .join(&raw),
-        std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join(&raw),
-    ];
-    for candidate in candidates {
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
-    }
     Err(OptimizerError::Config(format!(
-        "jesterky_workflow.spec not found: {}",
-        wf.spec
+        "jesterky_workflow.spec not found: {} (paths resolve against the config TOML's \
+         directory; give an absolute path or one relative to it)",
+        raw.display()
     )))
 }
 

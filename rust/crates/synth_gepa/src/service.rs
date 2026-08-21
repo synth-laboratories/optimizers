@@ -31,6 +31,7 @@ use crate::{
     },
     project_gepa_limit_snapshot, record_initial_platform_snapshots, GepaAdvanceMode,
     GepaAdvanceOutcome, GepaCancellationSource, GepaExecutionOptions, GepaRunResult,
+    GEPA_ALGORITHM_ID,
 };
 
 #[path = "service_ownership.rs"]
@@ -1754,12 +1755,58 @@ fn create_run_response(runtime: &GepaServiceRuntime, request: &HttpRequest) -> H
     }
 }
 
+/// Env prefixes that used to reach into a loaded config and change what ran.
+/// The overrides are gone; a service process that still carries one of these is
+/// configured by two authorities, so admission refuses rather than guess which
+/// one the operator meant.
+pub const FORBIDDEN_RUNTIME_ENV_PREFIXES: &[&str] = &["SYNTH_OPTIMIZERS_", "GEPA_PLATFORM_"];
+
+/// Names under a forbidden prefix present in the given environment, sorted.
+fn forbidden_runtime_env_vars_in<I, K>(vars: I) -> Vec<String>
+where
+    I: IntoIterator<Item = K>,
+    K: AsRef<str>,
+{
+    let mut found: Vec<String> = vars
+        .into_iter()
+        .map(|name| name.as_ref().to_string())
+        .filter(|name| {
+            FORBIDDEN_RUNTIME_ENV_PREFIXES
+                .iter()
+                .any(|prefix| name.starts_with(prefix))
+        })
+        .collect();
+    found.sort();
+    found.dedup();
+    found
+}
+
+fn forbidden_runtime_env_vars() -> Vec<String> {
+    forbidden_runtime_env_vars_in(std::env::vars().map(|(name, _)| name))
+}
+
+/// `Err(Config)` — so the HTTP layer answers 422 `invalid_config` — when the
+/// service process env can still override a run's config. Values are never
+/// echoed: the name is what the operator has to remove.
+fn refuse_env_overrides() -> Result<()> {
+    let present = forbidden_runtime_env_vars();
+    if present.is_empty() {
+        return Ok(());
+    }
+    Err(OptimizerError::Config(format!(
+        "invalid_config: the service environment carries run-config overrides \
+         ({}); a run's config is sealed at admission. Unset them and restart the service.",
+        present.join(", ")
+    )))
+}
+
 fn create_run(
     runtime: &GepaServiceRuntime,
     run_request: GepaServiceRunRequest,
     idempotency_key: Option<String>,
     request_body_sha256: String,
 ) -> Result<(u16, Value)> {
+    refuse_env_overrides()?;
     let config = &runtime.config;
     let store = WorkspaceStore::open(&config.db_path)?;
     if let Some(idempotency_key) = idempotency_key.as_deref() {
@@ -1784,6 +1831,20 @@ fn create_run(
     }
     let program = verify_container_contract(&run_request.container_url)?;
     let optimizer_config = run_request_to_optimizer_config(&run_request, &program)?;
+    // Seal the admitted config before the request can be claimed. The digest is
+    // the record that nothing between here and execution changed it.
+    let mut admission_metadata = Map::new();
+    admission_metadata.insert("source".to_string(), json!("gepa_service_admission"));
+    admission_metadata.insert("wire_contract".to_string(), json!("gepa-service-v1"));
+    admission_metadata.insert(
+        "forbidden_env_overrides".to_string(),
+        json!(Vec::<String>::new()),
+    );
+    let resolved_config_digest = store.record_admitted_run_config(
+        &optimizer_config,
+        GEPA_ALGORITHM_ID,
+        admission_metadata,
+    )?;
     let request = store.submit_run_config_with_identity(
         optimizer_config,
         "http:gepa-service-v1",
@@ -1797,6 +1858,7 @@ fn create_run(
             "campaign_id": run_request.campaign_id,
             "supersedes_request_id": run_request.supersedes_request_id,
             "correlation": run_request.correlation,
+            "resolved_config_digest": resolved_config_digest,
         })),
         idempotency_key.as_deref(),
         Some(&request_body_sha256),
@@ -6058,5 +6120,137 @@ mod tests {
         assert_eq!(events[0].kind, "run.status_changed");
         assert_eq!(events[1].kind, "run.terminal");
         let _ = fs::remove_file(path);
+    }
+}
+
+/// P0-4 lock. Admission refuses a service process whose environment can still
+/// change what a run executes, and seals the digest of what it admitted.
+#[cfg(test)]
+mod create_run {
+    use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    /// `set_var` is process-global; these tests must not interleave.
+    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn test_runtime() -> GepaServiceRuntime {
+        let db_path = std::env::temp_dir().join(format!(
+            "synth_gepa_create_run_{}_{}.sqlite",
+            std::process::id(),
+            now_millis()
+        ));
+        GepaServiceRuntime {
+            config: GepaServiceConfig::new(db_path, "127.0.0.1:0"),
+            scheduler: ServiceSchedulerSignal::new(),
+            service_url: "http://127.0.0.1:0".to_string(),
+            started_at: crate::rfc3339_now(),
+        }
+    }
+
+    fn run_request() -> GepaServiceRunRequest {
+        serde_json::from_value(json!({
+            "container_url": "http://127.0.0.1:9/never-reached",
+            "policy": {
+                "provider": "openai",
+                "model": "gpt-4.1-nano",
+                "credentials": {"resolver": "env", "env_var": "OPENAI_API_KEY"},
+            },
+            "proposer": {
+                "provider": "openai",
+                "model": "gpt-5.4-mini",
+                "credentials": {"resolver": "env", "env_var": "OPENAI_API_KEY"},
+            },
+            "taskset": {"train_ids": ["t1"], "heldout_ids": ["t2"]},
+            "task_pools": {
+                "pareto": ["t1"],
+                "minibatch": ["t1"],
+                "reflection": ["t1"],
+                "heldout": ["t2"],
+            },
+        }))
+        .expect("run request parses")
+    }
+
+    #[test]
+    fn forbidden_names_are_exactly_the_two_override_prefixes() {
+        let found = forbidden_runtime_env_vars_in([
+            "SYNTH_OPTIMIZERS_PROPOSER_MODEL",
+            "GEPA_PLATFORM_RUN_ID",
+            "SYNTH_BACKEND_URL",
+            "SYNTH_WORKSHOP_INSTANCE_ID",
+            "GEPA_HOME",
+            "PATH",
+        ]);
+        assert_eq!(
+            found,
+            vec![
+                "GEPA_PLATFORM_RUN_ID".to_string(),
+                "SYNTH_OPTIMIZERS_PROPOSER_MODEL".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn create_run_refuses_a_service_env_that_can_override_the_config() {
+        let _guard = env_guard();
+        std::env::set_var("SYNTH_OPTIMIZERS_PROPOSER_MODEL", "model-from-env");
+        let runtime = test_runtime();
+        let error = create_run(&runtime, run_request(), None, "sha".to_string())
+            .expect_err("admission must refuse");
+        std::env::remove_var("SYNTH_OPTIMIZERS_PROPOSER_MODEL");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("SYNTH_OPTIMIZERS_PROPOSER_MODEL"),
+            "the refusal names the variable to unset: {message}"
+        );
+        let response = optimizer_error_response(error);
+        assert_eq!(response.status, 422);
+        let body: Value = serde_json::from_slice(&response.body).expect("json body");
+        assert_eq!(body["error"]["code"], "invalid_config");
+        assert!(
+            !body["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("model-from-env"),
+            "the value is never echoed back"
+        );
+        assert!(
+            !runtime.config.db_path.exists(),
+            "admission refuses before it opens the workspace"
+        );
+    }
+
+    #[test]
+    fn a_clean_service_env_gets_past_the_guard() {
+        let _guard = env_guard();
+        let stashed: Vec<(String, String)> = std::env::vars()
+            .filter(|(name, _)| {
+                FORBIDDEN_RUNTIME_ENV_PREFIXES
+                    .iter()
+                    .any(|prefix| name.starts_with(prefix))
+            })
+            .collect();
+        for (name, _) in &stashed {
+            std::env::remove_var(name);
+        }
+        let runtime = test_runtime();
+        // The container is unreachable, so this fails — but on the contract
+        // handshake, not on the env guard.
+        let error = create_run(&runtime, run_request(), None, "sha".to_string())
+            .expect_err("the fake container is unreachable");
+        for (name, value) in stashed {
+            std::env::set_var(name, value);
+        }
+        assert!(
+            !error.to_string().contains("run-config overrides"),
+            "a clean environment must not trip the guard: {error}"
+        );
+        std::fs::remove_file(&runtime.config.db_path).ok();
     }
 }

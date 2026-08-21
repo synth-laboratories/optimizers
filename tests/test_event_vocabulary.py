@@ -12,6 +12,7 @@ extension, so the module under test is loaded directly from ``src/``.
 from __future__ import annotations
 
 import ast
+import importlib
 import importlib.util
 import json
 import sys
@@ -23,17 +24,39 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC = REPO_ROOT / "src" / "synth_optimizers"
 
-if "synth_optimizers" not in sys.modules:
-    _pkg = types.ModuleType("synth_optimizers")
-    _pkg.__path__ = [str(SRC)]
-    _pkg.__package__ = "synth_optimizers"
-    sys.modules["synth_optimizers"] = _pkg
 
-_spec = importlib.util.spec_from_file_location("synth_optimizers.o11y", SRC / "o11y.py")
-assert _spec and _spec.loader
-o11y = importlib.util.module_from_spec(_spec)
-sys.modules["synth_optimizers.o11y"] = o11y
-_spec.loader.exec_module(o11y)
+def _load(name: str):
+    """Import ``synth_optimizers.<name>``, native extension or not.
+
+    A built package is used as-is. Without one (`synth_optimizers/__init__.py`
+    imports `._synth_optimizers` at module scope) the module is loaded straight
+    from `src/` under a private package name, so this test stays runnable
+    before a maturin build and never replaces the real package for the rest of
+    the session.
+    """
+
+    try:
+        return importlib.import_module(f"synth_optimizers.{name}")
+    except Exception:
+        pass
+    alias = "_synth_optimizers_src"
+    package = sys.modules.get(alias)
+    if package is None:
+        package = types.ModuleType(alias)
+        package.__path__ = [str(SRC)]
+        package.__package__ = alias
+        package.__version__ = "0.0.0-source-load"
+        sys.modules[alias] = package
+        sys.modules.setdefault(f"{alias}._synth_optimizers", types.ModuleType("native"))
+    spec = importlib.util.spec_from_file_location(f"{alias}.{name}", SRC / f"{name}.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[f"{alias}.{name}"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+o11y = _load("o11y")
 
 
 def _python_emit_sites() -> dict[str, list[str]]:

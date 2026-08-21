@@ -140,24 +140,32 @@ def _require_policy(payload: dict[str, Any]) -> dict[str, Any]:
             detail=f"{TASK_ID} supports rollout.policy.api_family='chat_completions'; got {api_family!r}.",
         )
     credential_mode = _normalize_policy_enum(policy.get("credential_mode"), "byok")
-    if credential_mode in {"proxy_only", "proxy"} and not (
-        str(policy.get("inference_url") or "").strip() or str(policy.get("base_url") or "").strip()
-    ):
-        credential_mode = "byok"
-    if credential_mode not in {"byok", "proxy"}:
+    if credential_mode in {"proxy_only", "proxy", "workshop_proxy"}:
+        raw_base_url = (
+            str(policy.get("inference_url") or "").strip()
+            or str(policy.get("base_url") or "").strip()
+        )
+        if not raw_base_url:
+            raise HTTPException(
+                status_code=422,
+                detail="rollout.policy.inference_url is required when credential_mode is proxied.",
+            )
+        if credential_mode == "proxy_only":
+            credential_mode = "workshop_proxy"
+    if credential_mode not in {"byok", "proxy", "workshop_proxy"}:
         raise HTTPException(
             status_code=422,
             detail=f"unsupported rollout.policy.credential_mode: {credential_mode!r}",
         )
     raw_base_url = (
         str(policy.get("inference_url") or "").strip()
-        if credential_mode == "proxy"
+        if credential_mode in {"proxy", "workshop_proxy"}
         else str(policy.get("base_url") or "").strip()
     )
-    if credential_mode == "proxy" and not raw_base_url:
+    if credential_mode in {"proxy", "workshop_proxy"} and not raw_base_url:
         raise HTTPException(
             status_code=422,
-            detail="rollout.policy.inference_url is required when credential_mode=proxy.",
+            detail="rollout.policy.inference_url is required when credential_mode is proxied.",
         )
     if provider.lower() == "openrouter" and credential_mode == "byok" and not raw_base_url:
         raise HTTPException(
@@ -188,8 +196,8 @@ def _require_policy(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _policy_api_key(policy: dict[str, Any]) -> str:
-    if policy["credential_mode"] == "proxy":
-        return "proxy"
+    if policy["credential_mode"] in {"proxy", "workshop_proxy"}:
+        return os.environ.get("OPENAI_API_KEY", "").strip() or "workshop-proxy"
     env_name = "OPENROUTER_API_KEY" if policy["provider"].lower() == "openrouter" else "OPENAI_API_KEY"
     value = os.environ.get(env_name, "").strip()
     if value:

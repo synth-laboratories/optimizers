@@ -19988,56 +19988,7 @@ fn reported_cost_from_usage_ledger(records: &[UsageLedgerRecord]) -> Option<f64>
 }
 
 #[cfg(test)]
-mod reported_cost_tests {
-    use super::*;
-
-    fn row(id: &str, cost_usd: Option<f64>) -> UsageLedgerRecord {
-        UsageLedgerRecord::from_input(UsageLedgerInput {
-            boundary: "provider",
-            source_type: "call",
-            source_id: id,
-            candidate_id: None,
-            evaluation_stage: None,
-            model: None,
-            provider: None,
-            call_count: 1,
-            usage: json!({}),
-            cost_usd,
-            metadata: Map::new(),
-        })
-    }
-
-    #[test]
-    fn aggregate_is_null_if_any_provider_cost_is_unknown() {
-        assert_eq!(reported_cost_from_usage_ledger(&[]), None);
-        assert_eq!(reported_cost_from_usage_ledger(&[row("a", None)]), None);
-        assert_eq!(
-            reported_cost_from_usage_ledger(&[row("a", Some(0.12)), row("b", None)]),
-            None
-        );
-        assert_eq!(
-            reported_cost_from_usage_ledger(&[row("a", Some(0.0)), row("b", Some(0.12))]),
-            Some(0.12)
-        );
-    }
-
-    #[test]
-    fn configured_cost_budget_stops_on_unknown_receipt() {
-        assert!(!reported_cost_budget_blocked(1.0, 0.0, &[]));
-        assert!(reported_cost_budget_blocked(1.0, 0.0, &[row("a", None)]));
-        assert!(!reported_cost_budget_blocked(
-            1.0,
-            0.12,
-            &[row("a", Some(0.12))]
-        ));
-        assert!(reported_cost_budget_blocked(
-            1.0,
-            1.0,
-            &[row("a", Some(1.0))]
-        ));
-        assert!(!reported_cost_budget_blocked(0.0, 0.0, &[row("a", None)]));
-    }
-}
+mod reported_cost_tests;
 
 fn proposer_usage_record(
     config: &SynthOptimizerConfig,
@@ -20046,6 +19997,17 @@ fn proposer_usage_record(
     outcome: &ProposerOutcome,
 ) -> Result<UsageLedgerRecord> {
     let mut metadata = Map::new();
+    let settled_cost_usd = outcome
+        .reported_cost_usd
+        .or(config.gepa.proposer_estimated_cost_usd);
+    metadata.insert(
+        "cost_source".to_string(),
+        json!(if outcome.reported_cost_usd.is_some() {
+            "provider_reported"
+        } else {
+            "configured_reservation_ceiling"
+        }),
+    );
     metadata.insert("generation".to_string(), json!(generation));
     metadata.insert("proposal_count".to_string(), json!(outcome.proposals.len()));
     metadata.insert(
@@ -20081,7 +20043,7 @@ fn proposer_usage_record(
         provider: Some(&config.proposer.provider),
         call_count: outcome.usage.proposer_calls.max(1),
         usage: serde_json::to_value(&outcome.usage)?,
-        cost_usd: outcome.reported_cost_usd,
+        cost_usd: settled_cost_usd,
         metadata,
     }))
 }
@@ -20753,6 +20715,17 @@ fn record_runtime_effect_completed(
         }
     }
     let mut metadata = input.metadata.clone();
+    let settled_cost_usd = settled_effect_cost(
+        input.status,
+        input.reported_cost_usd,
+        input.reservation.max_cost_usd,
+    );
+    if input.reported_cost_usd.is_none() && settled_cost_usd.is_some() {
+        metadata.insert(
+            "cost_source".to_string(),
+            json!("reserved_ceiling_on_missing_provider_cost"),
+        );
+    }
     if let Some(failure) = input.failure {
         metadata.insert("failure".to_string(), serde_json::to_value(failure)?);
     }
@@ -20780,7 +20753,7 @@ fn record_runtime_effect_completed(
         input.planned,
         &completed,
         input.cost_usd,
-        input.reported_cost_usd,
+        settled_cost_usd,
         input.usage,
         input.rollout_count,
         metadata.clone(),
@@ -20797,7 +20770,7 @@ fn record_runtime_effect_completed(
         run_id: &input.planned.run_id,
         runtime_effect_id: &input.planned.runtime_effect_id,
         budget_reservation_id: &input.reservation.budget_reservation_id,
-        cost_usd: input.reported_cost_usd,
+        cost_usd: settled_cost_usd,
         prompt_tokens: input.usage.prompt_tokens,
         completion_tokens: input.usage.completion_tokens,
         total_tokens: input.usage.total_tokens,
@@ -20834,6 +20807,14 @@ fn record_runtime_effect_completed(
         return Err(budget_exceeded_error(&input.planned.run_id, &breach));
     }
     Ok(())
+}
+
+fn settled_effect_cost(
+    status: &str,
+    reported_cost_usd: Option<f64>,
+    reserved_cost_usd: Option<f64>,
+) -> Option<f64> {
+    reported_cost_usd.or_else(|| (status == "completed").then_some(reserved_cost_usd).flatten())
 }
 
 fn record_run_phase_timing_from_effect(

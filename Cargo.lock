@@ -1306,7 +1306,7 @@ dependencies = [
 
 [[package]]
 name = "synth_gepa"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "base64",
  "fs2",
@@ -1322,7 +1322,7 @@ dependencies = [
 
 [[package]]
 name = "synth_mapo"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "serde",
  "serde_json",
@@ -1334,7 +1334,7 @@ dependencies = [
 
 [[package]]
 name = "synth_marl_promptopt"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "clap",
  "serde",
@@ -1348,7 +1348,7 @@ dependencies = [
 
 [[package]]
 name = "synth_optimizer_platform"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "fs2",
  "libc",
@@ -1365,7 +1365,7 @@ dependencies = [
 
 [[package]]
 name = "synth_optimizers_py"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "pyo3",
  "serde_json",

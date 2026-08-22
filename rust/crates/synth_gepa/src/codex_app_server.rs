@@ -1,20 +1,11 @@
-use std::collections::{BTreeMap, BTreeSet};
-use std::env;
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::{collections::{BTreeMap, BTreeSet}, env, fs, path::{Path, PathBuf}, sync::{Mutex, OnceLock}, time::Duration};
+
+mod openrouter_usage;
 
 use crate::{CandidateRecord, RolloutScore};
 use reqwest::blocking::Client;
 use serde_json::{json, Map, Value};
-use synth_optimizer_platform::{
-    jesterky_workspace_read_model, looks_like_jesterky_manifest,
-    proposer_delta_chunks_from_protocol, proposer_uses_chatgpt_auth, read_jesterky_manifest,
-    record_manifest_validation, run_turn, AgentTurnOutcome, CodexTurnRequest,
-    NanoAgentTurnIdentity, NanoCodexExecution, NanoCodexSessionPool, NanoCodexTurnRequest,
-    OptimizerError, PromptProgram, Result, SynthOptimizerConfig,
-};
+use synth_optimizer_platform::{jesterky_workspace_read_model, looks_like_jesterky_manifest, proposer_delta_chunks_from_protocol, proposer_uses_chatgpt_auth, read_jesterky_manifest, record_manifest_validation, run_turn, AgentTurnOutcome, CodexTurnRequest, NanoAgentTurnIdentity, NanoCodexExecution, NanoCodexSessionPool, NanoCodexTurnRequest, OptimizerError, PromptProgram, Result, SynthOptimizerConfig};
 
 const GEPA_REFLECTIVE_FRAME_SCHEMA_VERSION: &str = "gepa_reflective_frame.v1";
 const CONTAINER_SENSOR_ADAPTER_ID: &str = "synth.container_sensor_frame_adapter";
@@ -168,12 +159,7 @@ pub(crate) fn run_deepseek_chat_proposer(input: CodexProposerInput<'_>) -> Resul
                 "gpt-4.1-mini",
                 false,
             ),
-            "openrouter" => (
-                "https://openrouter.ai/api/v1",
-                "OPENROUTER_API_KEY",
-                "openai/gpt-5.6-luna",
-                false,
-            ),
+            "openrouter" => ("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY", "openai/gpt-5.6-luna", false),
             other => {
                 return Err(OptimizerError::Config(format!(
                     "chat-completions proposer backend requires proposer.provider = \"deepseek\", \"nvidia\", \"openai\", or \"openrouter\"; got {other:?}"
@@ -586,23 +572,7 @@ fn normalize_proposer_usage(config: &SynthOptimizerConfig, model: &str, usage: V
         return normalize_openrouter_grok43_usage(model, usage_map);
     }
     if provider.eq_ignore_ascii_case("openrouter") {
-        usage_map.insert(
-            "provider".to_string(),
-            Value::String("openrouter".to_string()),
-        );
-        usage_map.insert("model".to_string(), Value::String(model.to_string()));
-        if reported_cost.is_none() {
-            if let Some(cost) = usage_f64_from_map(&usage_map, "cost")
-                .filter(|value| value.is_finite() && *value >= 0.0)
-            {
-                usage_map.insert("cost_usd".to_string(), json!(cost));
-                usage_map.insert(
-                    "cost_source".to_string(),
-                    Value::String("openrouter_provider_billed".to_string()),
-                );
-            }
-        }
-        return Value::Object(usage_map);
+        return openrouter_usage::normalize(model, usage_map, reported_cost);
     }
     if provider.eq_ignore_ascii_case("deepseek") || model_lower.contains("deepseek") {
         usage_map.insert(

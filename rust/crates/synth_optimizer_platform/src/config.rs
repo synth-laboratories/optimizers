@@ -420,12 +420,9 @@ impl SynthOptimizerConfig {
             self.cache.path = Some(absolutize(base_dir, path));
         }
         resolve_command_path_args(base_dir, &mut self.proposer.command);
-        // The spec is resolved here, against the TOML's own directory, so no
-        // later stage has to guess at a developer checkout layout.
         let spec = self.jesterky_workflow.spec.trim();
         if !spec.is_empty() {
-            self.jesterky_workflow.spec =
-                absolutize(base_dir, Path::new(spec)).display().to_string();
+            self.jesterky_workflow.spec = absolutize(base_dir, Path::new(spec)).display().to_string();
         }
     }
 
@@ -1341,10 +1338,7 @@ fn validate_proposer_runtime_substrate_config(proposer: &ProposerConfig) -> Resu
 
 fn validate_chat_completions_proposer_config(proposer: &ProposerConfig) -> Result<()> {
     let provider = proposer.provider.trim().to_ascii_lowercase();
-    if !matches!(
-        provider.as_str(),
-        "deepseek" | "nvidia" | "openai" | "openrouter"
-    ) {
+    if !matches!(provider.as_str(), "deepseek" | "nvidia" | "openai" | "openrouter") {
         return Err(OptimizerError::Config(format!(
             "chat-completions proposer backend requires proposer.provider = \"deepseek\", \"nvidia\", \"openai\", or \"openrouter\"; got {:?}",
             proposer.provider
@@ -1393,10 +1387,7 @@ fn validate_openrouter_proposer_config(proposer: &ProposerConfig) -> Result<()> 
             VERIFIED_OPENROUTER_MODELS.join(", ")
         )));
     }
-    if !matches!(
-        proposer.backend.as_str(),
-        "codex_app_server" | "chat_completions" | "deepseek_chat"
-    ) {
+    if !matches!(proposer.backend.as_str(), "codex_app_server" | "chat_completions" | "deepseek_chat") {
         return Err(OptimizerError::Config(
             "OpenRouter proposer requires proposer.backend = \"codex_app_server\" or \"chat_completions\""
                 .to_string(),

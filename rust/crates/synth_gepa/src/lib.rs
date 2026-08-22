@@ -7394,7 +7394,20 @@ fn emit_runtime_job_completed_event(
             fields.insert("proposal_count".to_string(), json!(outcome.proposals.len()));
             fields.insert("backend".to_string(), json!(&outcome.backend));
             fields.insert("cache_hit".to_string(), json!(outcome.cache_hit));
-            fields.insert("cost_usd".to_string(), json!(outcome.reported_cost_usd));
+            fields.insert(
+                "cost_usd".to_string(),
+                json!(outcome
+                    .reported_cost_usd
+                    .or(context.config.gepa.proposer_estimated_cost_usd)),
+            );
+            fields.insert(
+                "cost_source".to_string(),
+                json!(if outcome.reported_cost_usd.is_some() {
+                    "provider_reported"
+                } else {
+                    "configured_reservation_ceiling"
+                }),
+            );
             fields.insert("usage".to_string(), serde_json::to_value(&outcome.usage)?);
             if let Some(cost_source) = outcome
                 .response
@@ -15299,7 +15312,14 @@ fn execute_gepa_monolithic_with_options(
                 "model": config.proposer.model,
                 "provider": config.proposer.provider,
                 "backend": proposer_outcome.backend,
-                "cost_usd": proposer_outcome.reported_cost_usd,
+                "cost_usd": proposer_outcome
+                    .reported_cost_usd
+                    .or(config.gepa.proposer_estimated_cost_usd),
+                "cost_source": if proposer_outcome.reported_cost_usd.is_some() {
+                    "provider_reported"
+                } else {
+                    "configured_reservation_ceiling"
+                },
                 "runtime_substrate": proposer_outcome.runtime_substrate,
                 "workspace": proposer_outcome.workspace,
                 "warning_count": proposer_outcome.evidence_warnings.len(),

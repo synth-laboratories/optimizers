@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://usesynth.ai/contracts/synth.workshop-experiment-fact.v1.schema.json",
+  "title": "synth.workshop-experiment-fact.v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "producer_id", "sequence", "fact_kind", "idempotency_key", "payload", "recorded_at", "digest"],
+  "properties": {
+    "schema_version": {"const": "synth.workshop-experiment-fact.v1"},
+    "producer_id": {"type": "string", "minLength": 1},
+    "sequence": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "fact_kind": {"enum": ["rerun", "fork", "evaluation", "artifact", "trajectory", "lineage_edge"]},
+    "idempotency_key": {"type": "string", "minLength": 1},
+    "payload": {"type": "object"},
+    "recorded_at": {"type": "string", "format": "date-time"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}

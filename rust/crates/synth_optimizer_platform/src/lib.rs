@@ -26,6 +26,7 @@ pub mod limits;
 pub mod observability;
 pub mod operations;
 pub mod process;
+pub mod portable_contracts;
 pub mod projections;
 pub mod prompt_program;
 pub mod registry;

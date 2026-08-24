@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://usesynth.ai/contracts/synth.lineage-edge.v1.schema.json",
+  "title": "synth.lineage-edge.v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "edge_id", "edge_type", "source", "target", "evidence_refs", "recorded_at", "digest"],
+  "properties": {
+    "schema_version": {"const": "synth.lineage-edge.v1"},
+    "edge_id": {"type": "string", "minLength": 1},
+    "edge_type": {"enum": ["forked_from", "rerun_of", "warm_started_from", "produced", "evaluated", "compared_with", "promoted_to", "reproduced_on", "rolled_back_to"]},
+    "source": {"$ref": "#/$defs/endpoint"}, "target": {"$ref": "#/$defs/endpoint"},
+    "evidence_refs": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/evidence"}},
+    "recorded_at": {"type": "string", "format": "date-time"},
+    "digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "endpoint": {"type": "object", "additionalProperties": false, "required": ["kind", "id", "digest"], "properties": {"kind": {"enum": ["experiment", "run", "candidate", "task", "artifact", "evaluation", "trajectory", "deployment"]}, "id": {"type": "string", "minLength": 1}, "digest": {"$ref": "#/$defs/digest"}}},
+    "evidence": {"type": "object", "additionalProperties": false, "required": ["kind", "uri", "digest"], "properties": {"kind": {"type": "string", "minLength": 1}, "uri": {"type": "string", "minLength": 1}, "digest": {"$ref": "#/$defs/digest"}}}
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://usesynth.ai/contracts/synth.candidate.v1.schema.json",
+  "title": "synth.candidate.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "candidate_id", "kind", "content", "task_contract_digest", "digest"],
+  "properties": {
+    "schema_version": {"const": "synth.candidate.v1"},
+    "candidate_id": {"type": "string", "minLength": 1},
+    "kind": {"type": "string", "pattern": "^[a-z][a-z0-9._-]+$"},
+    "content": {"$ref": "#/$defs/content"},
+    "task_contract_digest": {"$ref": "#/$defs/digest"},
+    "producing_run_id": {"type": "string", "minLength": 1},
+    "metadata": {"type": "object"},
+    "digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "content": {
+      "type": "object", "additionalProperties": false,
+      "required": ["digest", "media_type", "size_bytes"],
+      "properties": {
+        "digest": {"$ref": "#/$defs/digest"},
+        "media_type": {"type": "string", "minLength": 1},
+        "size_bytes": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}
+      }
+    }
+  }
+}

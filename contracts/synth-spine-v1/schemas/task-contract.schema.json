@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://usesynth.ai/contracts/synth.task-contract.v1.schema.json",
+  "title": "synth.task-contract.v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "task_id", "family", "revision", "runtime", "datasets", "evaluator", "seed_policy", "capability_requirements", "digest"],
+  "properties": {
+    "schema_version": {"const": "synth.task-contract.v1"},
+    "task_id": {"type": "string", "minLength": 1},
+    "family": {"type": "string", "minLength": 1},
+    "revision": {"type": "string", "minLength": 1},
+    "runtime": {"type": "object", "additionalProperties": false, "required": ["image_digest", "entrypoint"], "properties": {"image_digest": {"$ref": "#/$defs/digest"}, "entrypoint": {"type": "array", "minItems": 1, "items": {"type": "string"}}}},
+    "datasets": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["dataset_id", "digest"], "properties": {"dataset_id": {"type": "string", "minLength": 1}, "digest": {"$ref": "#/$defs/digest"}}}},
+    "evaluator": {"type": "object", "additionalProperties": false, "required": ["evaluator_id", "digest"], "properties": {"evaluator_id": {"type": "string", "minLength": 1}, "digest": {"$ref": "#/$defs/digest"}}},
+    "seed_policy": {"type": "object", "additionalProperties": false, "required": ["kind", "seeds"], "properties": {"kind": {"const": "explicit"}, "seeds": {"type": "array", "uniqueItems": true, "items": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}}}},
+    "capability_requirements": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "metadata": {"type": "object"},
+    "digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}
+}

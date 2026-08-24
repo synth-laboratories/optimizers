@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://usesynth.ai/contracts/synth.evidence-receipt.v1.schema.json",
+  "title": "synth.evidence-receipt.v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "receipt_id", "receipt_kind", "idempotency_key", "candidate_digest", "task_contract_digest", "run_id", "content", "recorded_at", "digest"],
+  "properties": {
+    "schema_version": {"const": "synth.evidence-receipt.v1"},
+    "receipt_id": {"type": "string", "minLength": 1},
+    "receipt_kind": {"enum": ["rerun", "fork", "evaluation", "artifact", "trajectory"]},
+    "idempotency_key": {"type": "string", "minLength": 1},
+    "candidate_digest": {"$ref": "#/$defs/digest"},
+    "task_contract_digest": {"$ref": "#/$defs/digest"},
+    "run_id": {"type": "string", "minLength": 1},
+    "evaluator_id": {"type": "string", "minLength": 1},
+    "seed": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "content": {"$ref": "#/$defs/evidence"},
+    "recorded_at": {"type": "string", "format": "date-time"},
+    "digest": {"$ref": "#/$defs/digest"}
+  },
+  "allOf": [{
+    "if": {"properties": {"receipt_kind": {"const": "evaluation"}}},
+    "then": {"required": ["evaluator_id", "seed"]},
+    "else": {"not": {"anyOf": [{"required": ["evaluator_id"]}, {"required": ["seed"]}]}}
+  }],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "evidence": {"type": "object", "additionalProperties": false, "required": ["kind", "uri", "digest"], "properties": {"kind": {"type": "string", "minLength": 1}, "uri": {"type": "string", "minLength": 1}, "digest": {"$ref": "#/$defs/digest"}}}
+  }
+}

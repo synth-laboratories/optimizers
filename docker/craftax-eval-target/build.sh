@@ -42,15 +42,18 @@ git -C "$gamebench" archive "$shared_commit" tasks/shared \
 git -C "$gamebench" archive "$shared_commit" \
     tasks/craftax-singleplayer/containers/codepolicy/policy_subprocess.py \
     | tar -x -C "$stage/gamebench"
+# The evaluator journal and replay policy evolve independently of the pinned
+# Rust fixture closure. Stage the reviewed current sweep adapter so action
+# transitions and frame cadence match the modern target contract.
+git -C "$gamebench" archive "$shared_commit" \
+    tasks/craftax-singleplayer/scripts/run_policy_sweep.py \
+    | tar -x -C "$stage/gamebench"
 cp "$here/local_mlx_policy_environment.patch" "$stage/"
 git -C "$stage/gamebench" apply "$stage/local_mlx_policy_environment.patch"
-cp "$here/trusted_declarative_policy.patch" "$stage/"
-git -C "$stage/gamebench" apply "$stage/trusted_declarative_policy.patch"
-# Preserve trusted evaluator tracebacks in the target's captured stderr. The
-# upstream sweep intentionally emits only a stable exit-43 receipt; without the
-# traceback Workshop cannot distinguish or repair image/source-closure faults.
-cp "$here/run_policy_sweep_observability.patch" "$stage/"
-git -C "$stage/gamebench" apply "$stage/run_policy_sweep_observability.patch"
+# The staged current sweep already owns trusted-declarative isolation receipts,
+# evaluator tracebacks, detailed rollout events, and replay cadence. Keeping
+# those changes in GameBench avoids an increasingly stale stack of line-based
+# patches at image-build time.
 
 docker build \
     --build-arg "GAMEBENCH_SOURCE_COMMIT=$task_commit" \

@@ -16,6 +16,8 @@ import shutil
 import subprocess
 import threading
 import time
+import urllib.error
+import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -129,6 +131,25 @@ class OciTrialExecutor:
             f"pinned digest {digest}"
         )
 
+    def _published_event_url(self, container: str) -> str | None:
+        """Resolve Docker's loopback-only ephemeral port for the target journal."""
+
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            completed = subprocess.run(  # noqa: S603 - fixed binary and arguments
+                [self.binary, "port", container, "8788/tcp"],
+                capture_output=True,
+                text=True,
+                env=self._env(),
+                check=False,
+            )
+            if completed.returncode == 0 and completed.stdout.strip():
+                endpoint = completed.stdout.strip().splitlines()[0].rsplit(":", 1)[-1]
+                if endpoint.isdigit():
+                    return f"http://127.0.0.1:{endpoint}"
+            time.sleep(0.05)
+        return None
+
     def run(
         self,
         request: TrialRunRequest,
@@ -166,6 +187,10 @@ class OciTrialExecutor:
             "--mount",
             f"type=bind,source={request.output_dir},target=/output",
         ]
+        if request.network != "none":
+            # The target journal is published only on loopback and only for the
+            # lifetime of this trial. Optimizers durably mirrors every row.
+            argv.extend(["--publish", "127.0.0.1::8788"])
         for name, value in request.secrets.items():
             argv.extend(["--env", f"{name}={value}"])
         argv.append(request.image_reference)
@@ -173,6 +198,7 @@ class OciTrialExecutor:
         stderr_path = request.output_dir / "container.stderr.log"
         started = time.time()
         with stderr_path.open("wb") as stderr_handle:
+            event_poll_url: str | None = None
             process = subprocess.Popen(  # noqa: S603 - fixed binary, recipe-pinned argv
                 argv,
                 stdin=subprocess.DEVNULL,
@@ -180,10 +206,30 @@ class OciTrialExecutor:
                 stderr=stderr_handle,
                 env=self._env(),
             )
+            if request.network != "none":
+                base_url = self._published_event_url(container)
+                if base_url is not None:
+                    event_poll_url = f"{base_url}/rollouts/{request.trial_id}/events"
+                    on_event(
+                        {
+                            "event": "rollout.stream.declared",
+                            "schema_version": "synth.trace-stream-declaration.v1",
+                            "rollout_id": request.trial_id,
+                            "transports": {
+                                "poll": {
+                                    "url": event_poll_url
+                                }
+                            },
+                        }
+                    )
             stop_tailing = threading.Event()
             tail = threading.Thread(
-                target=_tail_events,
-                args=(request.output_dir / "events.jsonl", on_event, stop_tailing),
+                target=_poll_events if event_poll_url else _tail_events,
+                args=(
+                    event_poll_url or request.output_dir / "events.jsonl",
+                    on_event,
+                    stop_tailing,
+                ),
                 daemon=True,
             )
             tail.start()
@@ -275,6 +321,43 @@ def _tail_events(
                         continue
                     if isinstance(payload, dict):
                         on_event(payload)
+            return
+
+
+def _poll_events(
+    url: str, on_event: Callable[[dict[str, Any]], None], stop: threading.Event
+) -> None:
+    """Consume the target's declared cursor authority; JSONL is fallback only."""
+
+    after = 0
+    terminal = False
+    while True:
+        try:
+            with urllib.request.urlopen(f"{url}?after={after}&limit=200", timeout=1.0) as response:
+                page = json.load(response)
+            for payload in page.get("events") or []:
+                if isinstance(payload, dict):
+                    on_event(payload)
+            cursor = page.get("cursor") if isinstance(page.get("cursor"), dict) else {}
+            after = int(cursor.get("next") or after)
+            terminal = bool(cursor.get("closed"))
+            if cursor.get("has_more"):
+                continue
+        except (OSError, ValueError, urllib.error.URLError):
+            pass
+        if terminal or stop.wait(0.1):
+            # A final read closes the race between the last page and container exit.
+            if not terminal:
+                try:
+                    with urllib.request.urlopen(
+                        f"{url}?after={after}&limit=200", timeout=0.5
+                    ) as response:
+                        page = json.load(response)
+                    for payload in page.get("events") or []:
+                        if isinstance(payload, dict):
+                            on_event(payload)
+                except (OSError, ValueError, urllib.error.URLError):
+                    pass
             return
 
 

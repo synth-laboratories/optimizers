@@ -29,9 +29,12 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, "/opt/eval")
 from policy_setup import CandidateError, resolve_policy, summarize_usage  # noqa: E402
@@ -40,6 +43,10 @@ INPUT = Path("/input")
 OUTPUT = Path("/output")
 TASK_DIR = Path("/opt/gamebench/tasks/craftax-singleplayer")
 SWEEP = TASK_DIR / "scripts" / "run_policy_sweep.py"
+EVENT_PORT = 8788
+_EVENT_LOCK = threading.Lock()
+_EVENT_SEQUENCE = 0
+_ACTIVE_ROLLOUT_ID = "pending"
 
 # Scenario id -> the exact board and step budget it means. The id is part of
 # the evidence: reading it tells you what was measured.
@@ -63,9 +70,113 @@ EXIT_CANDIDATE_EPISODE_TIMEOUT = 41
 
 
 def emit(event: str, **fields: Any) -> None:
-    with (OUTPUT / "events.jsonl").open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps({"event": event, "at": time.time(), **fields}) + "\n")
-        handle.flush()
+    global _EVENT_SEQUENCE
+    with _EVENT_LOCK:
+        _EVENT_SEQUENCE += 1
+        payload = {
+            "schema_version": "synth.trace-stream-event.v1",
+            "sequence": _EVENT_SEQUENCE,
+            "event": event,
+            "at": time.time(),
+            **fields,
+        }
+        with (OUTPUT / "events.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, separators=(",", ":")) + "\n")
+            handle.flush()
+
+
+def _event_rows(after: int, limit: int) -> tuple[list[dict[str, Any]], int]:
+    rows: list[dict[str, Any]] = []
+    path = OUTPUT / "events.jsonl"
+    with _EVENT_LOCK:
+        high_water = _EVENT_SEQUENCE
+        if path.is_file():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if int(row.get("sequence") or 0) > after:
+                    rows.append(row)
+                    if len(rows) >= limit:
+                        break
+    return rows, high_water
+
+
+class _EventHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:  # noqa: N802 - stdlib handler contract
+        parsed = urlparse(self.path)
+        if parsed.path == "/health":
+            return self._json(200, {"ready": True, "rollout_id": _ACTIVE_ROLLOUT_ID})
+        parts = parsed.path.strip("/").split("/")
+        if len(parts) == 3 and parts[0] == "rollouts" and parts[2] == "events":
+            query = parse_qs(parsed.query)
+            after = max(0, int((query.get("after") or ["0"])[0]))
+            limit = min(1000, max(1, int((query.get("limit") or ["200"])[0])))
+            rows, high_water = _event_rows(after, limit)
+            next_cursor = int(rows[-1]["sequence"]) if rows else after
+            return self._json(
+                200,
+                {
+                    "schema_version": "synth.trace-stream-page.v1",
+                    "rollout_id": parts[1],
+                    "events": rows,
+                    "cursor": {
+                        "after": after,
+                        "next": next_cursor,
+                        "high_water": high_water,
+                        "has_more": next_cursor < high_water,
+                        "closed": any(row.get("event") == "rollout.finished" for row in rows),
+                    },
+                },
+            )
+        self._json(404, {"error": "not_found"})
+
+    def log_message(self, _format: str, *_args: Any) -> None:
+        return
+
+    def _json(self, status: int, payload: dict[str, Any]) -> None:
+        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def _serve_events() -> ThreadingHTTPServer:
+    server = ThreadingHTTPServer(("0.0.0.0", EVENT_PORT), _EventHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def _mirror_rollout_events(source: Path, stop: threading.Event) -> None:
+    offset = 0
+    while True:
+        if source.is_file():
+            with source.open("r", encoding="utf-8") as handle:
+                handle.seek(offset)
+                for line in handle:
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    kind = str(row.pop("kind", "environment.step"))
+                    emit(kind, **row)
+                offset = handle.tell()
+        if stop.wait(0.05):
+            # One final pass catches the writer's last flushed transition.
+            if source.is_file():
+                with source.open("r", encoding="utf-8") as handle:
+                    handle.seek(offset)
+                    for line in handle:
+                        try:
+                            row = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        kind = str(row.pop("kind", "environment.step"))
+                        emit(kind, **row)
+            return
 
 
 def write_result(
@@ -174,6 +285,16 @@ def write_trace(report: dict[str, Any], trial_id: str, seed: int) -> None:
                     )
                     + "\n"
                 )
+            # The Rust REPL exposes evaluator-owned action transitions through
+            # the same journal served by /rollouts/{id}/events. Mirror those
+            # exact identities into Trace V5 fallback evidence rather than
+            # reconstructing a second, terminal-only trajectory.
+            rows, _ = _event_rows(0, 1000)
+            for event in rows:
+                if event.get("event") == "environment.step" and event.get(
+                    "rollout_id"
+                ) == episode.get("rollout_id"):
+                    handle.write(json.dumps(event, separators=(",", ":")) + "\n")
             if episode.get("state") is not None:
                 handle.write(
                     json.dumps(
@@ -190,9 +311,11 @@ def write_trace(report: dict[str, Any], trial_id: str, seed: int) -> None:
 
 
 def main() -> int:
+    global _ACTIVE_ROLLOUT_ID
     OUTPUT.mkdir(parents=True, exist_ok=True)
     trial = json.loads((INPUT / "trial.json").read_text(encoding="utf-8"))
     trial_id = trial["trial_id"]
+    _ACTIVE_ROLLOUT_ID = trial_id
     seed = int(trial["seed"])
     started = time.time()
     gates: list[dict[str, Any]] = []
@@ -248,7 +371,8 @@ def main() -> int:
     report_path.parent.mkdir(parents=True, exist_ok=True)
 
     emit("rollout.started", seed=seed, world=scenario["world"], max_steps=scenario["max_steps"])
-    completed = subprocess.run(  # noqa: S603 - fixed interpreter, image-owned script
+    rollout_journal = work / "rollout-events.jsonl"
+    process = subprocess.Popen(  # noqa: S603 - fixed interpreter, image-owned script
         [
             sys.executable,
             str(SWEEP),
@@ -265,18 +389,29 @@ def main() -> int:
             "rust",
         ],
         cwd=str(TASK_DIR),
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        check=False,
         env={
             **os.environ,
             **policy_env,
+            "EVAL_TRIAL_ID": trial_id,
+            "GAMEBENCH_ROLLOUT_EVENT_PATH": str(rollout_journal),
             # Candidate artifacts are declarative TOML. The executed policy is
             # image-owned /opt/eval/llm_policy.py, so no candidate code shares
             # the evaluator process in this target.
             "EVAL_TRUSTED_DECLARATIVE_POLICY": "llm-policy.v1",
         },
     )
+    stop_mirror = threading.Event()
+    mirror = threading.Thread(
+        target=_mirror_rollout_events, args=(rollout_journal, stop_mirror), daemon=True
+    )
+    mirror.start()
+    stdout, stderr = process.communicate()
+    stop_mirror.set()
+    mirror.join(timeout=2)
+    completed = subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
     if work_report.is_file():
         report_path.write_bytes(work_report.read_bytes())
     (OUTPUT / "suite.json").write_bytes(suite_path.read_bytes())
@@ -387,4 +522,8 @@ def _artifacts(report_path: Path) -> list[dict[str, Any]]:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    event_server = _serve_events()
+    try:
+        sys.exit(main())
+    finally:
+        event_server.shutdown()

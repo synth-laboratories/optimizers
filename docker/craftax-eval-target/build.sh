@@ -47,6 +47,7 @@ git -C "$gamebench" archive "$shared_commit" \
 # transitions and frame cadence match the modern target contract.
 git -C "$gamebench" archive "$shared_commit" \
     tasks/craftax-singleplayer/scripts/run_policy_sweep.py \
+    tasks/craftax-singleplayer/containers/codepolicy/rollout_code_policy.py \
     | tar -x -C "$stage/gamebench"
 cp "$here/local_mlx_policy_environment.patch" "$stage/"
 git -C "$stage/gamebench" apply "$stage/local_mlx_policy_environment.patch"

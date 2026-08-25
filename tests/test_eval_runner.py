@@ -634,6 +634,39 @@ def test_an_exhausted_llm_policy_requests_episode_stop(tmp_path: Path):
     assert decision["stop_reason"] == f"call cap reached ({policy.MAX_CALLS})"
 
 
+@pytest.mark.parametrize(
+    ("details", "cached", "uncached", "reported"),
+    [({}, None, None, False), ({"cached_tokens": 0}, 0, 100, True),
+     ({"cached_tokens": 40}, 40, 60, True)],
+)
+def test_llm_policy_preserves_missing_vs_zero_cache_telemetry(
+    monkeypatch, details, cached, uncached, reported
+):
+    policy_path = Path(__file__).parents[1] / "docker/shared/llm_policy.py"
+    spec = importlib.util.spec_from_file_location("test_llm_policy_usage", policy_path)
+    assert spec is not None and spec.loader is not None
+    policy = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(policy)
+    monkeypatch.setattr(
+        policy,
+        "_post",
+        lambda *_args, **_kwargs: {
+            "choices": [{"message": {"content": "{}"}}],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 10,
+                "prompt_tokens_details": details,
+            },
+        },
+    )
+
+    _, usage = policy._complete([{"role": "user", "content": "test"}])
+
+    assert usage["cached_tokens"] == cached
+    assert usage["uncached_prompt_tokens"] == uncached
+    assert usage["cache_telemetry_reported"] is reported
+
+
 def test_a_policy_with_no_budget_reports_no_coverage_rather_than_zero():
     """A code policy has no budget to exhaust. Absent coverage is absent, not
     0.0 — a zero here would read as \"the policy never chose anything\"."""

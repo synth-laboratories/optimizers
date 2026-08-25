@@ -102,7 +102,7 @@ def _post(body: dict[str, Any], timeout: float) -> dict[str, Any]:
         return json.loads(response.read().decode("utf-8"))
 
 
-def _complete(messages: list[dict[str, str]]) -> tuple[str, dict[str, int]]:
+def _complete(messages: list[dict[str, str]]) -> tuple[str, dict[str, int | None]]:
     headroom = _HEADROOM.get(EFFORT, 8_192)
     timeout = _TIMEOUT.get(EFFORT, 180.0)
     body: dict[str, Any] = {
@@ -132,10 +132,20 @@ def _complete(messages: list[dict[str, str]]) -> tuple[str, dict[str, int]]:
         text = (choice.get("message") or {}).get("content") or ""
         if text:
             break
+    cached = details.get("cached_tokens")
+    cached_tokens = int(cached) if cached is not None else None
+    prompt_tokens = int(usage.get("prompt_tokens") or 0)
     return text, {
-        "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+        "prompt_tokens": prompt_tokens,
         "completion_tokens": int(usage.get("completion_tokens") or 0),
-        "cached_tokens": int(details.get("cached_tokens") or 0),
+        # Null means the endpoint did not expose cache accounting. It must not
+        # be rewritten to zero: "not reported" and "reported no cache hit" are
+        # different experimental facts.
+        "cached_tokens": cached_tokens,
+        "cache_telemetry_reported": cached is not None,
+        "uncached_prompt_tokens": prompt_tokens - cached_tokens
+        if cached_tokens is not None
+        else None,
     }
 
 
@@ -230,11 +240,12 @@ def choose_actions(
         return {"actions": [fallback], "rationale": "route error"}
 
     elapsed_s = max(time.time() - started, 0.000001)
-    call_usd = _cost(usage["prompt_tokens"], usage["completion_tokens"], usage["cached_tokens"])
+    billable_cached = usage["cached_tokens"] or 0
+    call_usd = _cost(usage["prompt_tokens"], usage["completion_tokens"], billable_cached)
     _STATE["calls"] += 1
     _STATE["prompt_tokens"] += usage["prompt_tokens"]
     _STATE["completion_tokens"] += usage["completion_tokens"]
-    _STATE["cached_tokens"] += usage["cached_tokens"]
+    _STATE["cached_tokens"] += billable_cached
     _STATE["usd"] += call_usd
     plan = _parse_plan(text, valid_actions)
     _record(

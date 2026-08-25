@@ -38,6 +38,7 @@ API_KEY = os.environ.get(os.environ.get("EVAL_LLM_SECRET_NAME", "OPENAI_API_KEY"
 USD_IN = float(os.environ.get("EVAL_LLM_USD_PER_1M_INPUT", "0") or 0)
 USD_OUT = float(os.environ.get("EVAL_LLM_USD_PER_1M_OUTPUT", "0") or 0)
 USD_CACHED = float(os.environ.get("EVAL_LLM_USD_PER_1M_CACHED_INPUT", "0") or 0)
+SYSTEM_APPEND = os.environ.get("EVAL_LLM_SYSTEM_APPEND", "").strip()[:1000]
 
 # Completion headroom must clear the reasoning budget, or every plan truncates
 # and the trial measures the cap instead of the model.
@@ -56,6 +57,8 @@ SYSTEM_PROMPT = (
     "asked again, so commit to a plan you believe in and keep the rationale to "
     "one short sentence."
 )
+if SYSTEM_APPEND:
+    SYSTEM_PROMPT += "\n\nAdditional policy instruction:\n" + SYSTEM_APPEND
 
 _STATE: dict[str, Any] = {
     "calls": 0,
@@ -226,6 +229,7 @@ def choose_actions(
             return _exhaust(f"route failed {_STATE['errors']} times")
         return {"actions": [fallback], "rationale": "route error"}
 
+    elapsed_s = max(time.time() - started, 0.000001)
     call_usd = _cost(usage["prompt_tokens"], usage["completion_tokens"], usage["cached_tokens"])
     _STATE["calls"] += 1
     _STATE["prompt_tokens"] += usage["prompt_tokens"]
@@ -239,9 +243,11 @@ def choose_actions(
             "seed": seed,
             "model": MODEL,
             "effort": EFFORT,
-            "elapsed_s": round(time.time() - started, 3),
+            "elapsed_s": round(elapsed_s, 3),
+            "tokens_per_second": round(usage["completion_tokens"] / elapsed_s, 3),
             "usd": call_usd,
             "plan": plan,
+            "response": text[:2000],
             **usage,
         }
     )

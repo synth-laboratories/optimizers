@@ -10,6 +10,7 @@ same claim as a candidate winning, and the two are reported separately.
 from __future__ import annotations
 
 import hashlib
+import dataclasses
 import json
 import shutil
 import signal
@@ -43,6 +44,7 @@ from .models import (
     CandidateSet,
     ContainerResult,
     EvalContractError,
+    ModelRoute,
     PolicyCandidate,
     SeedLedger,
     SelectionDecision,
@@ -78,6 +80,7 @@ class WorkerManifest:
     session_ref: str | None
     correlation: dict[str, Any] | None = None
     plan_override: dict[str, Any] | None = None
+    model_route_overrides: dict[str, str] | None = None
 
     @classmethod
     def load(cls, path: Path) -> WorkerManifest:
@@ -96,6 +99,15 @@ class WorkerManifest:
         override = payload.get("plan_override")
         if override is not None and not isinstance(override, dict):
             raise EvalContractError("worker manifest plan_override must be an object")
+        route_overrides = payload.get("model_route_overrides")
+        if route_overrides is not None and (
+            not isinstance(route_overrides, dict)
+            or not all(
+                isinstance(key, str) and isinstance(value, str)
+                for key, value in route_overrides.items()
+            )
+        ):
+            raise EvalContractError("worker manifest model_route_overrides must be a string map")
         return cls(
             run_id=payload["run_id"],
             recipe_id=payload["recipe_id"],
@@ -104,6 +116,7 @@ class WorkerManifest:
             session_ref=payload.get("session_ref"),
             correlation=correlation,
             plan_override=override,
+            model_route_overrides=route_overrides,
         )
 
 
@@ -256,6 +269,25 @@ class EvalRunner:
         self.manifest = manifest
         self.home = EvalHome.open(manifest.home)
         self.recipe: EvalRecipe = self.home.recipe(manifest.recipe_id)
+        if manifest.model_route_overrides:
+            declared = {model.id for model in self.recipe.models}
+            unknown = set(manifest.model_route_overrides) - declared
+            if unknown:
+                raise EvalContractError(
+                    "worker manifest overrides undeclared models: " + ", ".join(sorted(unknown))
+                )
+            self.recipe = dataclasses.replace(
+                self.recipe,
+                models=tuple(
+                    ModelRoute.from_mapping(
+                        {
+                            **model.to_json(),
+                            "route": manifest.model_route_overrides.get(model.id, model.route),
+                        }
+                    )
+                    for model in self.recipe.models
+                ),
+            )
         self.candidate_set = CandidateSet.load(manifest.candidate_set_path)
         self.run_dir = self.home.run_dir(manifest.run_id)
         self.run_dir.mkdir(parents=True, exist_ok=True)

@@ -18,7 +18,9 @@ LABEL ai.synth.eval.target.source-repo="gamebench"
 LABEL ai.synth.eval.target.source-commit="${GAMEBENCH_SOURCE_COMMIT}"
 LABEL ai.synth.eval.target.source-subpath="${GAMEBENCH_SOURCE_SUBPATH}"
 
-RUN useradd --create-home --uid 10001 target
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --uid 10001 target
 COPY gamebench /opt/gamebench
 COPY --from=rust-builder \
     /opt/gamebench/tasks/craftax-singleplayer/gold_rust/target/release/craftax_repl \

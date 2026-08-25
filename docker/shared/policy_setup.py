@@ -88,6 +88,7 @@ def _llm_policy(trial: dict[str, Any], input_dir: Path, work: Path) -> tuple[Pat
         "EVAL_LLM_USD_PER_1M_OUTPUT": str(route["usd_per_1m_output"]),
         "EVAL_LLM_USD_PER_1M_CACHED_INPUT": str(route["usd_per_1m_cached_input"]),
         "EVAL_LLM_USAGE_PATH": str(usage_path),
+        "EVAL_LLM_SYSTEM_APPEND": str(config.get("system_prompt_append", ""))[:1000],
     }
     if not os.environ.get(route["secret"], "").strip():
         raise CandidateError(
@@ -114,6 +115,7 @@ def summarize_usage(work: Path) -> dict[str, Any]:
         "cost_usd": 0.0,
         "route_errors": 0,
         "llm_seconds": 0.0,
+        "tokens_per_second": None,
         # Null for a policy that played its whole episode. Set once the model
         # stopped choosing and the harness started filling, so a reader can tell
         # a score the model earned from one a fallback coasted to.
@@ -145,4 +147,8 @@ def summarize_usage(work: Path) -> dict[str, Any]:
         summary["cost_usd"] += float(entry.get("usd") or 0.0)
     summary["cost_usd"] = round(summary["cost_usd"], 6)
     summary["llm_seconds"] = round(summary["llm_seconds"], 3)
+    if summary["completion_tokens"] and summary["llm_seconds"]:
+        summary["tokens_per_second"] = round(
+            summary["completion_tokens"] / summary["llm_seconds"], 3
+        )
     return summary

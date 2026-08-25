@@ -243,6 +243,7 @@ def main() -> int:
     suite_path = work / "suite.json"
     suite_path.write_text(json.dumps(suite, indent=2), encoding="utf-8")
     work_report = work / "report.json"
+    replay_dir = work / "replays"
     report_path = OUTPUT / "verifier" / "report.json"
     report_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -258,6 +259,8 @@ def main() -> int:
             "--output",
             str(work_report),
             "--include-trace",
+            "--replay-dir",
+            str(replay_dir),
             "--lane",
             "rust",
         ],
@@ -270,6 +273,11 @@ def main() -> int:
     if work_report.is_file():
         report_path.write_bytes(work_report.read_bytes())
     (OUTPUT / "suite.json").write_bytes(suite_path.read_bytes())
+    if replay_dir.is_dir():
+        output_frames = OUTPUT / "frames"
+        output_frames.mkdir(parents=True, exist_ok=True)
+        for replay in replay_dir.glob("*.gif"):
+            (output_frames / replay.name).write_bytes(replay.read_bytes())
     (OUTPUT / "verifier" / "stderr.log").write_text(completed.stderr or "", encoding="utf-8")
 
     usage = summarize_usage(work)
@@ -360,6 +368,14 @@ def _artifacts(report_path: Path) -> list[dict[str, Any]]:
     ]
     if report_path.is_file():
         artifacts.append({"role": "verifier", "path": "verifier/report.json"})
+    for replay in sorted((OUTPUT / "frames").glob("*.gif")):
+        artifacts.append(
+            {
+                "role": "replay",
+                "path": f"frames/{replay.name}",
+                "media_type": "image/gif",
+            }
+        )
     return [entry for entry in artifacts if (OUTPUT / entry["path"]).is_file()]
 
 

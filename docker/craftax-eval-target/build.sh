@@ -23,11 +23,16 @@ stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
 cp "$here/Dockerfile" "$here/target.py" "$stage/"
 rsync -a --exclude '__pycache__' "$here/../shared/" "$stage/shared/"
-# Archive the task and its `tasks/shared` sibling at the same commit. This also
-# excludes caches and build outputs without relying on the checkout's state.
+# Archive the task at the fixture-bound commit. `tasks/shared` was extracted
+# later and does not exist at that historical ref; it is policy-harness code,
+# not part of the Rust fixture source closure, so stage it from the resolved
+# checkout commit and let the resulting image digest bind that combination.
 mkdir -p "$stage/gamebench"
-git -C "$gamebench" archive "$commit" \
-    tasks/craftax-singleplayer tasks/shared | tar -x -C "$stage/gamebench"
+git -C "$gamebench" archive "$commit" tasks/craftax-singleplayer \
+    | tar -x -C "$stage/gamebench"
+shared_commit="$(git -C "$gamebench" rev-parse 'HEAD^{commit}')"
+git -C "$gamebench" archive "$shared_commit" tasks/shared \
+    | tar -x -C "$stage/gamebench"
 
 docker build \
     --build-arg "GAMEBENCH_SOURCE_COMMIT=$commit" \

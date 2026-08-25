@@ -10,21 +10,24 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 gamebench="${1:-$HOME/Documents/GitHub/gamebench}"
 task="$gamebench/tasks/craftax-singleplayer"
 [ -d "$task" ] || { echo "no craftax task at $task" >&2; exit 1; }
-commit="$(git -C "$gamebench" rev-parse HEAD 2>/dev/null || echo unknown)"
+# The tracked linux-aarch64 REPL fixture is cryptographically bound to this
+# GameBench source closure. Building the image from a moving checkout can bake
+# a fresh binary beside a stale fixture manifest, which the trusted verifier
+# correctly rejects before a rollout. Archive the same immutable source ref the
+# fixture declares; callers may override only to publish a new fixture/source
+# pair deliberately.
+source_ref="${GAMEBENCH_CRAFTAX_SOURCE_REF:-80c630db6ab35e7c9ae2b79eda51ac2bfc16ad6b}"
+commit="$(git -C "$gamebench" rev-parse "$source_ref^{commit}")"
 
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
 cp "$here/Dockerfile" "$here/target.py" "$stage/"
 rsync -a --exclude '__pycache__' "$here/../shared/" "$stage/shared/"
-# The task tree only; caches and build outputs would change the digest for no
-# behavioural reason.
-# The task tree and its `tasks/shared` sibling: `containers/codepolicy` resolves
-# the shared policy sandbox relative to the task's grandparent, so the sibling
-# has to keep its real position in the tree.
-rsync -a --exclude '__pycache__' --exclude '.pytest_cache' --exclude 'target/' \
-    "$task/" "$stage/gamebench/tasks/craftax-singleplayer/"
-rsync -a --exclude '__pycache__' \
-    "$gamebench/tasks/shared/" "$stage/gamebench/tasks/shared/"
+# Archive the task and its `tasks/shared` sibling at the same commit. This also
+# excludes caches and build outputs without relying on the checkout's state.
+mkdir -p "$stage/gamebench"
+git -C "$gamebench" archive "$commit" \
+    tasks/craftax-singleplayer tasks/shared | tar -x -C "$stage/gamebench"
 
 docker build \
     --build-arg "GAMEBENCH_SOURCE_COMMIT=$commit" \

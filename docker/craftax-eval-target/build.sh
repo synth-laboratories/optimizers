@@ -33,6 +33,11 @@ git -C "$gamebench" archive "$commit" tasks/craftax-singleplayer \
 shared_commit="$(git -C "$gamebench" rev-parse 'HEAD^{commit}')"
 git -C "$gamebench" archive "$shared_commit" tasks/shared \
     | tar -x -C "$stage/gamebench"
+# Preserve trusted evaluator tracebacks in the target's captured stderr. The
+# upstream sweep intentionally emits only a stable exit-43 receipt; without the
+# traceback Workshop cannot distinguish or repair image/source-closure faults.
+cp "$here/run_policy_sweep_observability.patch" "$stage/"
+git -C "$stage/gamebench" apply "$stage/run_policy_sweep_observability.patch"
 
 docker build \
     --build-arg "GAMEBENCH_SOURCE_COMMIT=$commit" \

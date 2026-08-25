@@ -18,7 +18,7 @@ LABEL ai.synth.eval.target.source-repo="gamebench"
 LABEL ai.synth.eval.target.source-commit="${GAMEBENCH_SOURCE_COMMIT}"
 LABEL ai.synth.eval.target.source-subpath="${GAMEBENCH_SOURCE_SUBPATH}"
 
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+RUN apt-get update && apt-get install -y --no-install-recommends bubblewrap ffmpeg \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 10001 target
 COPY gamebench /opt/gamebench

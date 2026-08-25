@@ -268,7 +268,14 @@ def main() -> int:
         capture_output=True,
         text=True,
         check=False,
-        env={**os.environ, **policy_env},
+        env={
+            **os.environ,
+            **policy_env,
+            # Candidate artifacts are declarative TOML. The executed policy is
+            # image-owned /opt/eval/llm_policy.py, so no candidate code shares
+            # the evaluator process in this target.
+            "EVAL_TRUSTED_DECLARATIVE_POLICY": "llm-policy.v1",
+        },
     )
     if work_report.is_file():
         report_path.write_bytes(work_report.read_bytes())
@@ -281,7 +288,7 @@ def main() -> int:
     (OUTPUT / "verifier" / "stderr.log").write_text(completed.stderr or "", encoding="utf-8")
 
     usage = summarize_usage(work)
-    if usage["calls"]:
+    if (work / "usage.jsonl").is_file():
         (OUTPUT / "usage.jsonl").write_bytes((work / "usage.jsonl").read_bytes())
     if completed.returncode == EXIT_CANDIDATE_POLICY_FAILURE:
         gates.append({"id": "verifier_completed", "passed": False})

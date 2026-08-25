@@ -44,6 +44,8 @@ git -C "$gamebench" archive "$shared_commit" \
     | tar -x -C "$stage/gamebench"
 cp "$here/local_mlx_policy_environment.patch" "$stage/"
 git -C "$stage/gamebench" apply "$stage/local_mlx_policy_environment.patch"
+cp "$here/trusted_declarative_policy.patch" "$stage/"
+git -C "$stage/gamebench" apply "$stage/trusted_declarative_policy.patch"
 # Preserve trusted evaluator tracebacks in the target's captured stderr. The
 # upstream sweep intentionally emits only a stable exit-43 receipt; without the
 # traceback Workshop cannot distinguish or repair image/source-closure faults.

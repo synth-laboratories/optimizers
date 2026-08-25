@@ -16,14 +16,10 @@ task="$gamebench/tasks/craftax-singleplayer"
 # correctly rejects before a rollout. Archive the same immutable source ref the
 # fixture declares; callers may override only to publish a new fixture/source
 # pair deliberately.
-# The runnable harness/fixture landed later than the exact Rust source closure
-# recorded by that fixture. Stage the harness commit, then overlay gold_rust
-# from the manifest-bound source commit so verification and the built binary
-# describe the same bytes.
+# Stage the immutable replay-capable harness, fixture, and its already-matching
+# Rust source closure from one commit.
 task_ref="${GAMEBENCH_CRAFTAX_TASK_REF:-6403e18388f525321cc3a748953c914553a59531}"
-source_ref="${GAMEBENCH_CRAFTAX_SOURCE_REF:-945898b7894803ca148adf58bb4e75601e8115e2}"
 task_commit="$(git -C "$gamebench" rev-parse "$task_ref^{commit}")"
-source_commit="$(git -C "$gamebench" rev-parse "$source_ref^{commit}")"
 
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
@@ -35,8 +31,6 @@ rsync -a --exclude '__pycache__' "$here/../shared/" "$stage/shared/"
 # checkout commit and let the resulting image digest bind that combination.
 mkdir -p "$stage/gamebench"
 git -C "$gamebench" archive "$task_commit" tasks/craftax-singleplayer \
-    | tar -x -C "$stage/gamebench"
-git -C "$gamebench" archive "$source_commit" tasks/craftax-singleplayer/gold_rust \
     | tar -x -C "$stage/gamebench"
 shared_commit="$(git -C "$gamebench" rev-parse 'HEAD^{commit}')"
 git -C "$gamebench" archive "$shared_commit" tasks/shared \
@@ -57,6 +51,6 @@ cp "$here/run_policy_sweep_observability.patch" "$stage/"
 git -C "$stage/gamebench" apply "$stage/run_policy_sweep_observability.patch"
 
 docker build \
-    --build-arg "GAMEBENCH_SOURCE_COMMIT=$source_commit" \
+    --build-arg "GAMEBENCH_SOURCE_COMMIT=$task_commit" \
     -t craftax-eval-target "$stage"
 docker image inspect --format '{{.Id}}' craftax-eval-target

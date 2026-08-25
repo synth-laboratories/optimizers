@@ -27,6 +27,11 @@ COPY --from=rust-builder \
     /opt/gamebench/tasks/craftax-singleplayer/gold_rust/target/release/craftax_repl
 COPY target.py /app/target.py
 COPY shared /opt/eval
+# The trusted harness verifies and atomically materializes the fixture binary
+# at runtime. Its target/release directory must therefore be writable by the
+# dedicated non-root evaluator user; candidate code remains isolated elsewhere.
+RUN chown -R target:target \
+    /opt/gamebench/tasks/craftax-singleplayer/gold_rust/target
 # The outer eval container is the security boundary. GameBench records this as
 # container_standalone and avoids attempting a nested bubblewrap namespace.
 ENV GAMEBENCH_STANDALONE=1 PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1

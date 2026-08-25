@@ -20,8 +20,8 @@ task="$gamebench/tasks/craftax-singleplayer"
 # recorded by that fixture. Stage the harness commit, then overlay gold_rust
 # from the manifest-bound source commit so verification and the built binary
 # describe the same bytes.
-task_ref="${GAMEBENCH_CRAFTAX_TASK_REF:-80c630db6ab35e7c9ae2b79eda51ac2bfc16ad6b}"
-source_ref="${GAMEBENCH_CRAFTAX_SOURCE_REF:-5ca3b2b7c99318d0d46db5faaca3f87bf671ea5d}"
+task_ref="${GAMEBENCH_CRAFTAX_TASK_REF:-6403e18388f525321cc3a748953c914553a59531}"
+source_ref="${GAMEBENCH_CRAFTAX_SOURCE_REF:-945898b7894803ca148adf58bb4e75601e8115e2}"
 task_commit="$(git -C "$gamebench" rev-parse "$task_ref^{commit}")"
 source_commit="$(git -C "$gamebench" rev-parse "$source_ref^{commit}")"
 

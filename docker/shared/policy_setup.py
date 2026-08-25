@@ -82,6 +82,8 @@ def _llm_policy(trial: dict[str, Any], input_dir: Path, work: Path) -> tuple[Pat
         "EVAL_LLM_TEMPERATURE": str(config.get("temperature", 0)),
         "EVAL_LLM_PLAN_MIN": str(config.get("plan_min", 5)),
         "EVAL_LLM_PLAN_MAX": str(config.get("plan_max", 20)),
+        "EVAL_LLM_COMPACT_AFTER_TOKENS": str(config.get("compact_after_tokens", 3200)),
+        "EVAL_LLM_COMPACT_TAIL_TURNS": str(config.get("compact_tail_turns", 2)),
         "EVAL_LLM_MAX_CALLS": str(budget["max_llm_calls"]),
         "EVAL_LLM_MAX_USD": str(budget["max_usd"]),
         "EVAL_LLM_USD_PER_1M_INPUT": str(route["usd_per_1m_input"]),
@@ -135,6 +137,10 @@ def summarize_usage(work: Path) -> dict[str, Any]:
             summary["budget_exhausted"] = str(entry.get("reason") or "budget exhausted")
             ply = entry.get("ply")
             summary["exhausted_at_ply"] = int(ply) if isinstance(ply, int) else None
+            continue
+        # Transcript lifecycle markers (for example context_compacted) are
+        # trace records, not provider inference calls.
+        if entry.get("event"):
             continue
         summary["llm_seconds"] += float(entry.get("elapsed_s") or 0.0)
         if entry.get("error"):

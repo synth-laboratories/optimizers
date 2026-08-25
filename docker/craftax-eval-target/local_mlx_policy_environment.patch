@@ -1,0 +1,32 @@
+diff --git a/tasks/shared/codepolicy/policy_subprocess.py b/tasks/shared/codepolicy/policy_subprocess.py
+index d7d48a2..4bf7de9 100644
+--- a/tasks/shared/codepolicy/policy_subprocess.py
++++ b/tasks/shared/codepolicy/policy_subprocess.py
+@@ -18,5 +18,26 @@ from pathlib import Path
+ from typing import Any
+ 
+ 
+-_POLICY_ENV_ALLOWLIST: frozenset[str] = frozenset()
++# This target's candidate is a trusted, image-owned LLM policy; the untrusted
++# candidate artifact is declarative TOML. Pass only its evaluator-authored
++# local inference contract. Hosted provider keys remain deliberately absent.
++_POLICY_ENV_ALLOWLIST: frozenset[str] = frozenset(
++    {
++        "EVAL_LLM_ROUTE",
++        "EVAL_LLM_MODEL",
++        "EVAL_LLM_EFFORT",
++        "EVAL_LLM_SECRET_NAME",
++        "EVAL_LLM_TEMPERATURE",
++        "EVAL_LLM_PLAN_MIN",
++        "EVAL_LLM_PLAN_MAX",
++        "EVAL_LLM_MAX_CALLS",
++        "EVAL_LLM_MAX_USD",
++        "EVAL_LLM_USD_PER_1M_INPUT",
++        "EVAL_LLM_USD_PER_1M_OUTPUT",
++        "EVAL_LLM_USD_PER_1M_CACHED_INPUT",
++        "EVAL_LLM_USAGE_PATH",
++        "EVAL_LLM_SYSTEM_APPEND",
++        "SYNTH_MLX_RL_TOKEN",
++    }
++)
+ _MAX_IPC_LINE_CHARS = 2 * 1024 * 1024

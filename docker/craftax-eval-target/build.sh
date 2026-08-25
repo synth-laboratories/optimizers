@@ -41,6 +41,15 @@ git -C "$gamebench" archive "$source_commit" tasks/craftax-singleplayer/gold_rus
 shared_commit="$(git -C "$gamebench" rev-parse 'HEAD^{commit}')"
 git -C "$gamebench" archive "$shared_commit" tasks/shared \
     | tar -x -C "$stage/gamebench"
+# Replace the archived task's pre-shared bubblewrap-only implementation with
+# the current thin adapter. The shared authority recognizes an outer Linux
+# trial container as the security boundary and avoids requiring privileged
+# nested user namespaces.
+git -C "$gamebench" archive "$shared_commit" \
+    tasks/craftax-singleplayer/containers/codepolicy/policy_subprocess.py \
+    | tar -x -C "$stage/gamebench"
+cp "$here/local_mlx_policy_environment.patch" "$stage/"
+git -C "$stage/gamebench" apply "$stage/local_mlx_policy_environment.patch"
 # Preserve trusted evaluator tracebacks in the target's captured stderr. The
 # upstream sweep intentionally emits only a stable exit-43 receipt; without the
 # traceback Workshop cannot distinguish or repair image/source-closure faults.

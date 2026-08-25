@@ -163,6 +163,9 @@ def test_worker_manifest_can_override_only_a_declared_local_route(tmp_path):
                 "model_route_overrides": {
                     "mlx-local-base": "http://host.docker.internal:49152/v1/chat/completions"
                 },
+                "model_request_overrides": {
+                    "mlx-local-base": "/models/Qwen/Qwen3.5-0.8B"
+                },
             }
         ),
         encoding="utf-8",
@@ -170,6 +173,9 @@ def test_worker_manifest_can_override_only_a_declared_local_route(tmp_path):
     loaded = WorkerManifest.load(manifest)
     assert loaded.model_route_overrides == {
         "mlx-local-base": "http://host.docker.internal:49152/v1/chat/completions"
+    }
+    assert loaded.model_request_overrides == {
+        "mlx-local-base": "/models/Qwen/Qwen3.5-0.8B"
     }
 
 

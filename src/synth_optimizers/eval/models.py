@@ -391,6 +391,7 @@ class ModelRoute:
     """
 
     id: str
+    request_model: str | None
     route: str
     secret: str
     efforts: tuple[str, ...]
@@ -413,6 +414,11 @@ class ModelRoute:
 
         return cls(
             id=_text(data.get("id"), field_name="model.id"),
+            request_model=(
+                _text(data.get("request_model"), field_name="model.request_model")
+                if data.get("request_model") is not None
+                else None
+            ),
             route=route,
             secret=_identifier(data.get("secret"), field_name="model.secret"),
             efforts=_text_tuple(data.get("efforts", []), field_name="model.efforts"),
@@ -426,6 +432,7 @@ class ModelRoute:
     def to_json(self) -> dict[str, Any]:
         return {
             "id": self.id,
+            **({"request_model": self.request_model} if self.request_model else {}),
             "route": self.route,
             "secret": self.secret,
             "efforts": list(self.efforts),

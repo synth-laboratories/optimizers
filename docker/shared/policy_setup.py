@@ -75,6 +75,7 @@ def _llm_policy(trial: dict[str, Any], input_dir: Path, work: Path) -> tuple[Pat
 
     usage_path = work / "usage.jsonl"
     env = {
+        "EVAL_TRUSTED_DECLARATIVE_POLICY": "llm-policy.v1",
         "EVAL_LLM_ROUTE": route["route"],
         "EVAL_LLM_MODEL": route.get("request_model") or model_id,
         "EVAL_LLM_EFFORT": effort,

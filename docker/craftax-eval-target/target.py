@@ -179,6 +179,38 @@ def _mirror_rollout_events(source: Path, stop: threading.Event) -> None:
             return
 
 
+def _mirror_policy_usage(source: Path, stop: threading.Event) -> None:
+    """Publish sanitized per-call policy evidence while the rollout is live."""
+
+    offset = 0
+    while True:
+        if source.is_file():
+            with source.open("r", encoding="utf-8") as handle:
+                handle.seek(offset)
+                for line in handle:
+                    if not line.endswith("\n"):
+                        break
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(row, dict) and row.get("event") == "policy.call":
+                        emit("policy.call", **{key: value for key, value in row.items() if key != "event"})
+                offset = handle.tell()
+        if stop.wait(0.05):
+            if source.is_file():
+                with source.open("r", encoding="utf-8") as handle:
+                    handle.seek(offset)
+                    for line in handle:
+                        try:
+                            row = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if isinstance(row, dict) and row.get("event") == "policy.call":
+                            emit("policy.call", **{key: value for key, value in row.items() if key != "event"})
+            return
+
+
 def write_result(
     trial_id: str,
     *,
@@ -407,10 +439,15 @@ def main() -> int:
     mirror = threading.Thread(
         target=_mirror_rollout_events, args=(rollout_journal, stop_mirror), daemon=True
     )
+    usage_mirror = threading.Thread(
+        target=_mirror_policy_usage, args=(work / "usage.jsonl", stop_mirror), daemon=True
+    )
     mirror.start()
+    usage_mirror.start()
     stdout, stderr = process.communicate()
     stop_mirror.set()
     mirror.join(timeout=2)
+    usage_mirror.join(timeout=2)
     completed = subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
     if work_report.is_file():
         report_path.write_bytes(work_report.read_bytes())
@@ -485,6 +522,11 @@ def main() -> int:
         "rollout.finished",
         reward=reward,
         achievements=achievements,
+        achievement_frequency=report.get("achievement_frequency") or {},
+        unique_achievements=report.get("unique_achievements") or [],
+        reward_distribution=report.get("reward_distribution") or {},
+        achievement_count_distribution=report.get("achievement_count_distribution") or {},
+        episode_summaries=report.get("episode_summaries") or [],
         cost_usd=usage["cost_usd"],
         policy_step_fraction=usage["policy_step_fraction"],
     )

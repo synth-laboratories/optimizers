@@ -138,7 +138,7 @@ def rig(monkeypatch, tmp_path):
     inp, out = tmp_path / "input", tmp_path / "output"
     (inp / "policy").mkdir(parents=True)
     (inp / "policy" / "policy.json").write_text(json.dumps({
-        "schema_version": "eval.mlx-lora-policy.v1", "base_model": "Qwen/Qwen3.5-0.8B",
+        "schema_version": "eval.mlx-lora-policy.v1", "base_model": "Qwen/Qwen3.5-2B",
         "adapter": False, "chat_template_digest": "sha256:" + "ab" * 32, "thinking_mode": "off",
     }))
     monkeypatch.setattr(target, "INPUT", inp)

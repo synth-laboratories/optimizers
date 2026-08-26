@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 from .executor import (
     ContainerRuntimeError,
@@ -82,6 +83,9 @@ class WorkerManifest:
     plan_override: dict[str, Any] | None = None
     model_route_overrides: dict[str, str] | None = None
     model_request_overrides: dict[str, str] | None = None
+    credential_mode: str | None = None
+    provider_routes: dict[str, Any] | None = None
+    mlx_inference_url: str | None = None
 
     @classmethod
     def load(cls, path: Path) -> WorkerManifest:
@@ -118,6 +122,45 @@ class WorkerManifest:
             )
         ):
             raise EvalContractError("worker manifest model_request_overrides must be a string map")
+        credential_mode = payload.get("credential_mode")
+        provider_routes = payload.get("provider_routes")
+        mlx_inference_url = payload.get("mlx_inference_url")
+        if credential_mode is not None and credential_mode != "workshop_proxy":
+            raise EvalContractError("paid eval credential_mode must be workshop_proxy")
+        if provider_routes is not None and not isinstance(provider_routes, dict):
+            raise EvalContractError("worker manifest provider_routes must be an object")
+        if mlx_inference_url is not None:
+            if not isinstance(mlx_inference_url, str):
+                raise EvalContractError("worker manifest mlx_inference_url must be a string")
+            parsed = urlsplit(mlx_inference_url)
+            try:
+                port = parsed.port
+            except ValueError as error:
+                raise EvalContractError("worker manifest mlx_inference_url has an invalid port") from error
+            if (
+                parsed.scheme != "http"
+                or parsed.hostname != "127.0.0.1"
+                or port is None
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.path not in ("", "/")
+                or parsed.query
+                or parsed.fragment
+            ):
+                raise EvalContractError(
+                    "worker manifest mlx_inference_url must be an app-owned IPv4 loopback origin"
+                )
+            mlx_inference_url = f"http://127.0.0.1:{port}"
+        if credential_mode == "workshop_proxy":
+            route = str((provider_routes or {}).get("openai") or "")
+            lowered = route.lower()
+            if (
+                not route.startswith("http://host.docker.internal:")
+                or "/cap/wcap_" not in route
+                or not route.endswith("/chat/completions")
+                or any(host in lowered for host in ("api.openai.com", "127.0.0.1", "localhost"))
+            ):
+                raise EvalContractError("Workshop proxy route is absent or not container-reachable")
         return cls(
             run_id=payload["run_id"],
             recipe_id=payload["recipe_id"],
@@ -128,6 +171,9 @@ class WorkerManifest:
             plan_override=override,
             model_route_overrides=route_overrides,
             model_request_overrides=request_overrides,
+            credential_mode=credential_mode,
+            provider_routes=provider_routes,
+            mlx_inference_url=mlx_inference_url,
         )
 
 
@@ -444,11 +490,28 @@ class EvalRunner:
         models = []
         for model in self.recipe.models:
             payload = model.to_json()
+            if self.manifest.credential_mode == "workshop_proxy":
+                payload["route"] = self.manifest.provider_routes["openai"]  # type: ignore[index]
+            elif (
+                self.manifest.mlx_inference_url is not None
+                and model.secret == "SYNTH_MLX_RL_TOKEN"
+            ):
+                port = urlsplit(self.manifest.mlx_inference_url).port
+                payload["route"] = f"http://host.docker.internal:{port}/v1/chat/completions"
             selected = self._model_efforts.get(model.id)
             if selected is not None:
                 payload["efforts"] = [selected]
             models.append(payload)
         return models
+
+    def _container_extra_hosts(self) -> tuple[str, ...]:
+        values = [
+            str(value)
+            for value in (self.manifest.provider_routes or {}).get("extra_hosts", [])
+        ]
+        if self.manifest.mlx_inference_url is not None:
+            values.append("host.docker.internal:host-gateway")
+        return tuple(dict.fromkeys(values))
 
     # ---------------------------------------------------------------- inputs
 
@@ -669,10 +732,16 @@ class EvalRunner:
         """Resolved once per run, from names the recipe declared and nothing else."""
 
         if self._resolved_secrets is None:
-            self._resolved_secrets = {
-                name: self.home.resolve_secret(name, declared=self.recipe.secrets)
-                for name in self.recipe.secrets
-            }
+            if self.manifest.credential_mode == "workshop_proxy":
+                sentinel = str((self.manifest.provider_routes or {}).get("api_key_sentinel") or "")
+                if sentinel != "workshop-proxy":
+                    raise EvalContractError("Workshop proxy manifest omitted its API key sentinel")
+                self._resolved_secrets = {name: sentinel for name in self.recipe.secrets}
+            else:
+                self._resolved_secrets = {
+                    name: self.home.resolve_secret(name, declared=self.recipe.secrets)
+                    for name in self.recipe.secrets
+                }
         return self._resolved_secrets
 
     def _run_trial(self, key: TrialKey) -> TrialRecord:
@@ -728,6 +797,7 @@ class EvalRunner:
                     limits=self.recipe.limits,
                     network=self.recipe.target.network,
                     secrets=self._secrets(),
+                    extra_hosts=self._container_extra_hosts(),
                 ),
                 on_event=lambda payload: self.events.emit(
                     "eval.trial.event", trial_id=key.trial_id, container_event=payload

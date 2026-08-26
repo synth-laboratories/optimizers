@@ -140,12 +140,12 @@ def test_local_recipe_still_declares_a_call_ceiling():
     assert recipe.budget.max_llm_calls > 0
 
 
-def test_craftax_local_recipe_is_bounded_and_retains_replay():
+def test_craftax_local_recipe_is_ten_seed_2b_and_retains_replay():
     recipe = get_recipe(CRAFTAX_MLX_RECIPE)
     assert recipe.policy_kind == "llm-policy.v1"
-    assert recipe.screening_seeds == (101, 102)
-    assert recipe.limits.max_parallel_trials == 1
-    assert recipe.budget is not None and recipe.budget.max_llm_calls == 8
+    assert recipe.screening_seeds == tuple(range(91001, 91011))
+    assert recipe.limits.max_parallel_trials == 10
+    assert recipe.budget is not None and recipe.budget.max_llm_calls == 4
     assert set(recipe.target.required_artifacts) == {"trace", "replay"}
     assert recipe.models[0].id == "mlx-local-base"
 

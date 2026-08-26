@@ -1,18 +1,18 @@
 [recipe]
 id = "eval.craftax.mlx-local-policy.smoke.v1"
-title = "Craftax local MLX prompt comparison"
-description = "Compare bounded Craftax prompt variants through Workshop's managed local MLX endpoint."
+title = "Craftax local MLX policy smoke"
+description = "Score the Workshop-owned local MLX base policy on pinned Craftax, report only."
 task = "craftax"
 policy_kind = "llm-policy.v1"
 image = "craftax-eval-target"
-prerequisites = ["Pinned local Craftax target", "Workshop-managed Qwen/Qwen3.5-0.8B MLX inference"]
-scenarios = ["craftax-policy-dev-9x9"]
-screening_seeds = [101, 102]
+prerequisites = ["Pinned local Craftax target", "Workshop-managed Qwen/Qwen3.5-2B MLX inference"]
+scenarios = ["craftax-default-48x48"]
+screening_seeds = [91001, 91002, 91003, 91004, 91005, 91006, 91007, 91008, 91009, 91010]
 confirmation_seeds = []
 secrets = ["SYNTH_MLX_RL_TOKEN"]
 
 [recipe.budget]
-max_llm_calls = 8
+max_llm_calls = 4
 max_usd = 0.01
 
 [[recipe.models]]
@@ -24,7 +24,7 @@ usd_per_1m_input = 0.0
 usd_per_1m_output = 0.0
 usd_per_1m_cached_input = 0.0
 price_source = "local-compute"
-price_as_of = "2026-08-24"
+price_as_of = "2026-08-26"
 
 [recipe.target]
 schema_version = "eval.target.v1"
@@ -46,15 +46,15 @@ direction = "maximize"
 [recipe.selection]
 primary_metric = "reward"
 min_lift = 0.0
-min_valid_trials = 2
+min_valid_trials = 10
 decision_mode = "report_only"
 
 [recipe.selection.elimination]
 kind = "none"
 
 [recipe.limits]
-max_parallel_trials = 1
-timeout_seconds = 600
-cpus = 2.0
-memory_mb = 4096
+max_parallel_trials = 10
+timeout_seconds = 900
+cpus = 1.0
+memory_mb = 1024
 max_output_bytes = 268435456

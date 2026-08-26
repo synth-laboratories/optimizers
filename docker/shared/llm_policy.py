@@ -373,6 +373,7 @@ def choose_actions(
     }
     _record(
         {
+            "event": "policy.call",
             "ply": ply,
             "seed": seed,
             "model": MODEL,
@@ -381,6 +382,7 @@ def choose_actions(
             "tokens_per_second": round(usage["completion_tokens"] / elapsed_s, 3),
             "usd": call_usd,
             "plan": plan,
+            "observation_text": observation_text,
             "thinking": thinking[:4000],
             "tool_call": call,
             "context_messages": len(_STATE["history"]),

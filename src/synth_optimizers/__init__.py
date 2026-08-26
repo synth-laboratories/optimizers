@@ -5,8 +5,17 @@ PyO3 exports were demoted in the v2 service rebuild and are no longer importable
 """
 
 import importlib
+from pkgutil import extend_path
 from importlib.metadata import PackageNotFoundError, version as distribution_version
 from typing import Any
+
+# Workshop's reviewed-local-source lane executes Python from the staged project
+# while reusing the immutable installed runtime for dependencies and the native
+# extension. Extend the package path before importing the extension so that
+# source Python/catalog changes can be exercised without rebuilding the Rust
+# wheel. A normal wheel install has only one package directory, so this is a
+# no-op outside that explicit developer lane.
+__path__ = extend_path(__path__, __name__)
 
 from ._synth_optimizers import (
     BudgetExceededError,

@@ -155,6 +155,39 @@ def make_home(tmp_path: Path, *, capacity: int = 2) -> EvalHome:
     return home
 
 
+def test_new_eval_home_defaults_to_ten_live_lanes(tmp_path: Path) -> None:
+    home = EvalHome.open(tmp_path / "new-home")
+    assert home.config.max_concurrent_trials == 10
+
+
+def test_legacy_app_default_migrates_but_custom_ceiling_does_not(tmp_path: Path) -> None:
+    legacy_root = tmp_path / "legacy-home"
+    legacy_root.mkdir()
+    (legacy_root / "runtime.toml").write_text(
+        """# Local `eval` runtime. The Desktop app owns this file; it is not agent input.
+
+# OCI runtime used to launch pinned target images.
+container_runtime = "docker"
+
+# Hard ceiling on trial containers running at once across *all* local eval runs.
+max_concurrent_trials = 2
+
+# Seconds a semaphore lease survives without a heartbeat before it is reclaimed.
+lease_ttl_seconds = 120
+""",
+        encoding="utf-8",
+    )
+    assert EvalHome.open(legacy_root).config.max_concurrent_trials == 10
+
+    custom_root = tmp_path / "custom-home"
+    custom_root.mkdir()
+    (custom_root / "runtime.toml").write_text(
+        'container_runtime = "docker"\nmax_concurrent_trials = 2\nlease_ttl_seconds = 120\n',
+        encoding="utf-8",
+    )
+    assert EvalHome.open(custom_root).config.max_concurrent_trials == 2
+
+
 def stage(home: EvalHome, tmp_path: Path, labels=("baseline", "champion", "laggard")):
     sources = []
     for label in labels:

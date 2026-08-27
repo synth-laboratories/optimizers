@@ -24,7 +24,7 @@ from pathlib import Path
 from .models import EvalContractError
 from .recipes import EvalRecipe, catalog
 
-DEFAULT_RUNTIME_TOML = """\
+LEGACY_DEFAULT_RUNTIME_TOML = """\
 # Local `eval` runtime. The Desktop app owns this file; it is not agent input.
 
 # OCI runtime used to launch pinned target images.
@@ -36,6 +36,10 @@ max_concurrent_trials = 2
 # Seconds a semaphore lease survives without a heartbeat before it is reclaimed.
 lease_ttl_seconds = 120
 """
+
+DEFAULT_RUNTIME_TOML = LEGACY_DEFAULT_RUNTIME_TOML.replace(
+    "max_concurrent_trials = 2", "max_concurrent_trials = 10"
+)
 
 DEFAULT_SECRETS_TOML = """\
 # Credentials a recipe explicitly declares. Only a name a recipe lists in its
@@ -81,6 +85,14 @@ class EvalHome:
                 target = path / name
                 if not target.exists():
                     target.write_text(default, encoding="utf-8")
+                elif name == "runtime.toml":
+                    # v0.8's ten-lane NanoHorizon recipe cannot be live if an
+                    # untouched older app default silently caps it at two.
+                    # Migrate only the byte-identical app-owned default; an
+                    # operator-edited ceiling remains authoritative.
+                    current = target.read_text(encoding="utf-8")
+                    if current == LEGACY_DEFAULT_RUNTIME_TOML:
+                        target.write_text(DEFAULT_RUNTIME_TOML, encoding="utf-8")
         return cls(root=path, config=_load_runtime(path / "runtime.toml"))
 
     @property

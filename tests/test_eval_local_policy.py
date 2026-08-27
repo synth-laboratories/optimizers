@@ -387,7 +387,13 @@ def make_home(tmp_path: Path) -> EvalHome:
     return home
 
 
-def make_runner(tmp_path: Path, home: EvalHome, *, registrar=None) -> EvalRunner:
+def make_runner(
+    tmp_path: Path,
+    home: EvalHome,
+    *,
+    registrar=None,
+    mlx_inference_url: str | None = None,
+) -> EvalRunner:
     write_adapter(tmp_path / "src" / "base", adapter=False)
     write_adapter(tmp_path / "src" / "final", weights=b"weights-40")
     candidate_set = stage_candidate_set(
@@ -415,6 +421,7 @@ def make_runner(tmp_path: Path, home: EvalHome, *, registrar=None) -> EvalRunner
                     home.candidates_dir / candidate_set.id / "candidate_set.json"
                 ),
                 "session_ref": "session_test",
+                "mlx_inference_url": mlx_inference_url,
             }
         ),
         encoding="utf-8",
@@ -424,6 +431,51 @@ def make_runner(tmp_path: Path, home: EvalHome, *, registrar=None) -> EvalRunner
         executor=AccuracyExecutor(),
         policy_registrar=registrar,
     )
+
+
+def test_app_owned_dynamic_mlx_port_is_projected_into_trial_container(tmp_path):
+    home = make_home(tmp_path)
+    runner = make_runner(
+        tmp_path,
+        home,
+        registrar=FakeRegistrar(),
+        mlx_inference_url="http://127.0.0.1:55764",
+    )
+    assert runner.manifest.mlx_inference_url == "http://127.0.0.1:55764"
+    assert runner._narrowed_models()[0]["route"] == (
+        "http://host.docker.internal:55764/v1/chat/completions"
+    )
+    assert runner._container_extra_hosts() == ("host.docker.internal:host-gateway",)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://localhost:55764",
+        "http://127.0.0.1:55764/v1/chat/completions",
+        "http://user:pass@127.0.0.1:55764",
+        "https://127.0.0.1:55764",
+        "http://10.0.0.7:55764",
+    ],
+)
+def test_worker_manifest_refuses_non_origin_mlx_routes(tmp_path, url):
+    manifest = tmp_path / "worker.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": "eval.worker-manifest.v1",
+                "run_id": "run_mlx_bad_route",
+                "recipe_id": MLX_RECIPE,
+                "home": str(tmp_path / "home"),
+                "candidate_set_path": str(tmp_path / "candidates.json"),
+                "session_ref": "session_test",
+                "mlx_inference_url": url,
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(EvalContractError, match="app-owned IPv4 loopback origin"):
+        WorkerManifest.load(manifest)
 
 
 def test_trial_carries_an_immutable_snapshot_id(tmp_path):

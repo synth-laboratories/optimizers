@@ -1,0 +1,26 @@
+diff --git a/tasks/craftax-singleplayer/scripts/run_policy_sweep.py b/tasks/craftax-singleplayer/scripts/run_policy_sweep.py
+--- a/tasks/craftax-singleplayer/scripts/run_policy_sweep.py
++++ b/tasks/craftax-singleplayer/scripts/run_policy_sweep.py
+@@ -584,11 +584,21 @@ def run_policy_sweep(
+     rewards = [float(item["reward_info"]["outcome_reward"]) for item in results]
+     isolation_receipts = [item.get("benchmark_isolation") for item in results]
+     if isolated_lane and any(
+-        not isinstance(receipt, Mapping)
++        not (
++            os.environ.get("EVAL_TRUSTED_DECLARATIVE_POLICY") == "llm-policy.v1"
++            and isinstance(receipt, Mapping)
++            and receipt.get("contract") == "process_observation_action.v1"
++            and receipt.get("suite_visible") is False
++            and receipt.get("output_visible") is False
++            # Executed Python is image-owned; candidate input is declarative TOML.
++            and receipt.get("sandbox") == "process_fallback"
++        )
++        and (not isinstance(receipt, Mapping)
+         or receipt.get("contract") != "os_sandbox_observation_action.v2"
+         or receipt.get("suite_visible") is not False
+         or receipt.get("output_visible") is not False
+         or receipt.get("evaluator_visible") is not False
++        )
+         for receipt in isolation_receipts
+     ):
+         raise RuntimeError("Rust candidate isolation receipt missing or invalid")

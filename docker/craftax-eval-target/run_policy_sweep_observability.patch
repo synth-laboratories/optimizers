@@ -1,0 +1,24 @@
+diff --git a/tasks/craftax-singleplayer/scripts/run_policy_sweep.py b/tasks/craftax-singleplayer/scripts/run_policy_sweep.py
+index 82f77fb..f7be9ea 100755
+--- a/tasks/craftax-singleplayer/scripts/run_policy_sweep.py
++++ b/tasks/craftax-singleplayer/scripts/run_policy_sweep.py
+@@ -15,6 +15,7 @@ import subprocess
+ import sys
+ import threading
+ import time
++import traceback
+ import urllib.error
+ import urllib.parse
+ import urllib.request
+@@ -1024,7 +1025,10 @@ def main() -> int:
+             exit_code=EXIT_EPISODE_WORKER_FAILURE,
+         )
+         return EXIT_EPISODE_WORKER_FAILURE
+-    except Exception:
++    except Exception as error:
++        # stderr is captured and retained by the trusted target wrapper. Keep
++        # the stable receipt while making evaluator-owned failures diagnosable.
++        traceback.print_exception(type(error), error, error.__traceback__, file=sys.stderr)
+         _write_failure_receipt(
+             output_path,
+             status="error",

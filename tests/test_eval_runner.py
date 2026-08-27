@@ -634,6 +634,116 @@ def test_an_exhausted_llm_policy_requests_episode_stop(tmp_path: Path):
     assert decision["stop_reason"] == f"call cap reached ({policy.MAX_CALLS})"
 
 
+@pytest.mark.parametrize(
+    ("details", "cached", "uncached", "reported"),
+    [({}, None, None, False), ({"cached_tokens": 0}, 0, 100, True),
+     ({"cached_tokens": 40}, 40, 60, True)],
+)
+def test_llm_policy_preserves_missing_vs_zero_cache_telemetry(
+    monkeypatch, details, cached, uncached, reported
+):
+    policy_path = Path(__file__).parents[1] / "docker/shared/llm_policy.py"
+    spec = importlib.util.spec_from_file_location("test_llm_policy_usage", policy_path)
+    assert spec is not None and spec.loader is not None
+    policy = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(policy)
+    monkeypatch.setattr(
+        policy,
+        "_post",
+        lambda *_args, **_kwargs: {
+            "choices": [{"message": {"content": "{}"}}],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 10,
+                "prompt_tokens_details": details,
+            },
+        },
+    )
+
+    _, usage = policy._complete(
+        [{"role": "user", "content": "test"}], ["noop", "left"]
+    )
+
+    assert usage["cached_tokens"] == cached
+    assert usage["uncached_prompt_tokens"] == uncached
+    assert usage["cache_telemetry_reported"] is reported
+
+
+def test_llm_policy_appends_tool_call_and_result_state(monkeypatch, tmp_path: Path):
+    policy_path = Path(__file__).parents[1] / "docker/shared/llm_policy.py"
+    spec = importlib.util.spec_from_file_location("test_llm_policy_history", policy_path)
+    assert spec is not None and spec.loader is not None
+    policy = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(policy)
+    policy.USAGE_PATH = str(tmp_path / "usage.jsonl")
+    seen = []
+
+    def complete(messages, valid_actions):
+        seen.append(json.loads(json.dumps(messages)))
+        index = len(seen)
+        return ({
+            "role": "assistant",
+            "content": f"thinking {index}",
+            "tool_calls": [{
+                "id": f"call_{index}", "type": "function",
+                "function": {"name": "craftax_interact", "arguments": '{"actions":["left"]}'},
+            }],
+        }, {"prompt_tokens": 100 * index, "completion_tokens": 10,
+             "cached_tokens": None, "cache_telemetry_reported": False,
+             "uncached_prompt_tokens": None})
+
+    monkeypatch.setattr(policy, "_complete", complete)
+    first = policy.choose_actions(
+        observation_text="opening state", session={}, valid_actions=["noop", "left"],
+        readout={}, seed=101, ply=0,
+    )
+    second = policy.choose_actions(
+        observation_text="state after moving", session={}, valid_actions=["noop", "left"],
+        readout={}, seed=101, ply=1,
+    )
+
+    assert first["actions"] == ["left"]
+    assert second["actions"] == ["left"]
+    assert [item["role"] for item in seen[1]] == ["system", "user", "assistant", "tool"]
+    assert seen[1][:2] == seen[0]  # byte-stable cacheable prefix
+    assert seen[1][2]["content"] == "thinking 1"
+    assert seen[1][2]["tool_calls"][0]["function"]["name"] == "craftax_interact"
+    assert "state after moving" in seen[1][3]["content"]
+
+
+def test_llm_policy_compaction_keeps_complete_tool_pairs(tmp_path: Path):
+    policy_path = Path(__file__).parents[1] / "docker/shared/llm_policy.py"
+    spec = importlib.util.spec_from_file_location("test_llm_policy_compaction", policy_path)
+    assert spec is not None and spec.loader is not None
+    policy = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(policy)
+    policy.USAGE_PATH = str(tmp_path / "usage.jsonl")
+    policy.COMPACT_AFTER_TOKENS = 1
+    policy.COMPACT_TAIL_TURNS = 1
+    system = {"role": "system", "content": "system"}
+    turns = []
+    for index in range(3):
+        assistant = {"role": "assistant", "content": f"thought {index}", "tool_calls": [{"id": f"c{index}"}]}
+        tool = {"role": "tool", "tool_call_id": f"c{index}", "content": f"state {index}"}
+        turns.append({"assistant": assistant, "tool": tool, "actions": ["noop"], "thinking": f"thought {index}"})
+    policy._STATE.update({
+        "history": [system, {"role": "user", "content": "opening"},
+                    *sum(([turn["assistant"], turn["tool"]] for turn in turns), [])],
+        "opening_message": {"role": "user", "content": "opening"},
+        "turns": turns, "last_prompt_tokens": 10, "compactions": 0,
+    })
+
+    policy._maybe_compact()
+
+    assert [item["role"] for item in policy._STATE["history"]] == [
+        "system", "user", "user", "assistant", "tool"
+    ]
+    assert policy._STATE["history"][1]["content"] == "opening"
+    assert policy._STATE["history"][-1]["content"] == "state 2"
+    assert "thought 0" in policy._STATE["history"][2]["content"]
+    assert policy._STATE["compactions"] == 1
+
+
 def test_a_policy_with_no_budget_reports_no_coverage_rather_than_zero():
     """A code policy has no budget to exhaust. Absent coverage is absent, not
     0.0 — a zero here would read as \"the policy never chose anything\"."""

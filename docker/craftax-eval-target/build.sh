@@ -10,23 +10,53 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 gamebench="${1:-$HOME/Documents/GitHub/gamebench}"
 task="$gamebench/tasks/craftax-singleplayer"
 [ -d "$task" ] || { echo "no craftax task at $task" >&2; exit 1; }
-commit="$(git -C "$gamebench" rev-parse HEAD 2>/dev/null || echo unknown)"
+# The tracked linux-aarch64 REPL fixture is cryptographically bound to this
+# GameBench source closure. Building the image from a moving checkout can bake
+# a fresh binary beside a stale fixture manifest, which the trusted verifier
+# correctly rejects before a rollout. Archive the same immutable source ref the
+# fixture declares; callers may override only to publish a new fixture/source
+# pair deliberately.
+# Stage the immutable replay-capable harness, fixture, and its already-matching
+# Rust source closure from one commit.
+task_ref="${GAMEBENCH_CRAFTAX_TASK_REF:-6403e18388f525321cc3a748953c914553a59531}"
+task_commit="$(git -C "$gamebench" rev-parse "$task_ref^{commit}")"
 
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
 cp "$here/Dockerfile" "$here/target.py" "$stage/"
 rsync -a --exclude '__pycache__' "$here/../shared/" "$stage/shared/"
-# The task tree only; caches and build outputs would change the digest for no
-# behavioural reason.
-# The task tree and its `tasks/shared` sibling: `containers/codepolicy` resolves
-# the shared policy sandbox relative to the task's grandparent, so the sibling
-# has to keep its real position in the tree.
-rsync -a --exclude '__pycache__' --exclude '.pytest_cache' --exclude 'target/' \
-    "$task/" "$stage/gamebench/tasks/craftax-singleplayer/"
-rsync -a --exclude '__pycache__' \
-    "$gamebench/tasks/shared/" "$stage/gamebench/tasks/shared/"
+# Archive the task at the fixture-bound commit. `tasks/shared` was extracted
+# later and does not exist at that historical ref; it is policy-harness code,
+# not part of the Rust fixture source closure, so stage it from the resolved
+# checkout commit and let the resulting image digest bind that combination.
+mkdir -p "$stage/gamebench"
+git -C "$gamebench" archive "$task_commit" tasks/craftax-singleplayer \
+    | tar -x -C "$stage/gamebench"
+shared_commit="$(git -C "$gamebench" rev-parse 'HEAD^{commit}')"
+git -C "$gamebench" archive "$shared_commit" tasks/shared \
+    | tar -x -C "$stage/gamebench"
+# Replace the archived task's pre-shared bubblewrap-only implementation with
+# the current thin adapter. The shared authority recognizes an outer Linux
+# trial container as the security boundary and avoids requiring privileged
+# nested user namespaces.
+git -C "$gamebench" archive "$shared_commit" \
+    tasks/craftax-singleplayer/containers/codepolicy/policy_subprocess.py \
+    | tar -x -C "$stage/gamebench"
+# The evaluator journal and replay policy evolve independently of the pinned
+# Rust fixture closure. Stage the reviewed current sweep adapter so action
+# transitions and frame cadence match the modern target contract.
+git -C "$gamebench" archive "$shared_commit" \
+    tasks/craftax-singleplayer/scripts/run_policy_sweep.py \
+    tasks/craftax-singleplayer/containers/codepolicy/rollout_code_policy.py \
+    | tar -x -C "$stage/gamebench"
+cp "$here/local_mlx_policy_environment.patch" "$stage/"
+git -C "$stage/gamebench" apply "$stage/local_mlx_policy_environment.patch"
+# The staged current sweep already owns trusted-declarative isolation receipts,
+# evaluator tracebacks, detailed rollout events, and replay cadence. Keeping
+# those changes in GameBench avoids an increasingly stale stack of line-based
+# patches at image-build time.
 
 docker build \
-    --build-arg "GAMEBENCH_SOURCE_COMMIT=$commit" \
+    --build-arg "GAMEBENCH_SOURCE_COMMIT=$task_commit" \
     -t craftax-eval-target "$stage"
 docker image inspect --format '{{.Id}}' craftax-eval-target

@@ -76,18 +76,21 @@ def _llm_policy(trial: dict[str, Any], input_dir: Path, work: Path) -> tuple[Pat
     usage_path = work / "usage.jsonl"
     env = {
         "EVAL_LLM_ROUTE": route["route"],
-        "EVAL_LLM_MODEL": model_id,
+        "EVAL_LLM_MODEL": route.get("request_model") or model_id,
         "EVAL_LLM_EFFORT": effort,
         "EVAL_LLM_SECRET_NAME": route["secret"],
         "EVAL_LLM_TEMPERATURE": str(config.get("temperature", 0)),
         "EVAL_LLM_PLAN_MIN": str(config.get("plan_min", 5)),
         "EVAL_LLM_PLAN_MAX": str(config.get("plan_max", 20)),
+        "EVAL_LLM_COMPACT_AFTER_TOKENS": str(config.get("compact_after_tokens", 3200)),
+        "EVAL_LLM_COMPACT_TAIL_TURNS": str(config.get("compact_tail_turns", 2)),
         "EVAL_LLM_MAX_CALLS": str(budget["max_llm_calls"]),
         "EVAL_LLM_MAX_USD": str(budget["max_usd"]),
         "EVAL_LLM_USD_PER_1M_INPUT": str(route["usd_per_1m_input"]),
         "EVAL_LLM_USD_PER_1M_OUTPUT": str(route["usd_per_1m_output"]),
         "EVAL_LLM_USD_PER_1M_CACHED_INPUT": str(route["usd_per_1m_cached_input"]),
         "EVAL_LLM_USAGE_PATH": str(usage_path),
+        "EVAL_LLM_SYSTEM_APPEND": str(config.get("system_prompt_append", ""))[:1000],
     }
     if not os.environ.get(route["secret"], "").strip():
         raise CandidateError(
@@ -114,6 +117,7 @@ def summarize_usage(work: Path) -> dict[str, Any]:
         "cost_usd": 0.0,
         "route_errors": 0,
         "llm_seconds": 0.0,
+        "tokens_per_second": None,
         # Null for a policy that played its whole episode. Set once the model
         # stopped choosing and the harness started filling, so a reader can tell
         # a score the model earned from one a fallback coasted to.
@@ -134,6 +138,10 @@ def summarize_usage(work: Path) -> dict[str, Any]:
             ply = entry.get("ply")
             summary["exhausted_at_ply"] = int(ply) if isinstance(ply, int) else None
             continue
+        # Transcript lifecycle markers (for example context_compacted) are
+        # trace records, not provider inference calls.
+        if entry.get("event"):
+            continue
         summary["llm_seconds"] += float(entry.get("elapsed_s") or 0.0)
         if entry.get("error"):
             summary["route_errors"] += 1
@@ -145,4 +153,8 @@ def summarize_usage(work: Path) -> dict[str, Any]:
         summary["cost_usd"] += float(entry.get("usd") or 0.0)
     summary["cost_usd"] = round(summary["cost_usd"], 6)
     summary["llm_seconds"] = round(summary["llm_seconds"], 3)
+    if summary["completion_tokens"] and summary["llm_seconds"]:
+        summary["tokens_per_second"] = round(
+            summary["completion_tokens"] / summary["llm_seconds"], 3
+        )
     return summary

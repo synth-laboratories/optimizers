@@ -29,6 +29,7 @@ from synth_optimizers.eval.executor import TrialExecution, TrialRunRequest
 from synth_optimizers.eval.staging import CandidateSource, stage_candidate_set
 
 MLX_RECIPE = "eval.mlx.local-policy.smoke.v1"
+CRAFTAX_MLX_RECIPE = "eval.craftax.mlx-local-policy.smoke.v1"
 FIXTURE_RECIPE = "eval.fixture.policy-smoke.v1"
 PINNED = "sha256:" + "cd" * 32
 TEMPLATE_DIGEST = "sha256:" + "ef" * 32
@@ -137,6 +138,45 @@ def test_local_recipe_still_declares_a_call_ceiling():
     recipe = get_recipe(MLX_RECIPE)
     assert recipe.budget is not None
     assert recipe.budget.max_llm_calls > 0
+
+
+def test_craftax_local_recipe_is_bounded_and_retains_replay():
+    recipe = get_recipe(CRAFTAX_MLX_RECIPE)
+    assert recipe.policy_kind == "llm-policy.v1"
+    assert recipe.screening_seeds == (101, 102)
+    assert recipe.limits.max_parallel_trials == 1
+    assert recipe.budget is not None and recipe.budget.max_llm_calls == 8
+    assert set(recipe.target.required_artifacts) == {"trace", "replay"}
+    assert recipe.models[0].id == "mlx-local-base"
+
+
+def test_worker_manifest_can_override_only_a_declared_local_route(tmp_path):
+    manifest = tmp_path / "worker.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": "eval.worker-manifest.v1",
+                "run_id": "opt_local",
+                "recipe_id": CRAFTAX_MLX_RECIPE,
+                "home": str(tmp_path / "home"),
+                "candidate_set_path": str(tmp_path / "candidates.json"),
+                "model_route_overrides": {
+                    "mlx-local-base": "http://host.docker.internal:49152/v1/chat/completions"
+                },
+                "model_request_overrides": {
+                    "mlx-local-base": "/models/Qwen/Qwen3.5-0.8B"
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    loaded = WorkerManifest.load(manifest)
+    assert loaded.model_route_overrides == {
+        "mlx-local-base": "http://host.docker.internal:49152/v1/chat/completions"
+    }
+    assert loaded.model_request_overrides == {
+        "mlx-local-base": "/models/Qwen/Qwen3.5-0.8B"
+    }
 
 
 # --------------------------------------------------------- O3 mlx-lora.v1

@@ -153,6 +153,46 @@ def test_sdk_samples_and_parses_the_final_channel(monkeypatch) -> None:
     assert sampled["token_ids"] == [7, 8]
 
 
+def test_sdk_live_sampler_name_advances_after_training(monkeypatch) -> None:
+    transport = _transport(monkeypatch)
+    handle = transport.create_lora_training_client("openai/gpt-oss-20b", rank=4, seed=1)
+    session = ProviderSession(
+        provider="tinker",
+        session_id=handle.session_id,
+        model_id="openai/gpt-oss-20b",
+        request_id="session",
+    )
+    request = SampleRequest(
+        request_id="rollout",
+        prompt_token_ids=(1, 2, 3),
+        max_tokens=8,
+        seed=0,
+    )
+
+    transport.sample(session, request)
+    trainer = transport.sessions[session.session_id]["training"]
+    assert trainer.last_sampler_name.endswith("-live-0")
+
+    transport.train_step(
+        session,
+        TrainingStepRequest(
+            request_id="update",
+            loss_name="cispo.slime.v1",
+            data=(
+                {
+                    "token_ids": (1, 2, 3),
+                    "prompt_token_ids": (1,),
+                    "behavior_logprobs": (-0.1, -0.2),
+                    "advantages": [0.5, 0.5],
+                },
+            ),
+            metadata={"eps_clip": 1.0, "eps_clip_high": 4.0},
+        ),
+    )
+    transport.sample(session, request)
+    assert trainer.last_sampler_name.endswith("-live-1")
+
+
 def test_validation_receipt_marks_cispo_only_after_a_paid_update(tmp_path) -> None:
     path = tmp_path / "cispo.json"
     write_receipt(

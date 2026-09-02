@@ -232,7 +232,19 @@ class TinkerSdkTransport:
             return self._samplers[session_id]
         if session_id is None:
             raise ProviderError("sample_unsupported", "sampling handle is missing a session")
-        saved = self.save_checkpoint(session_id, step=0, kind="inference", request_id=f"{session_id}-live")
+        state = self.sessions.get(session_id) or {}
+        step = int(state.get("step", 0))
+        # Tinker requires every persisted sampler name to be unique. Training
+        # invalidates the cached sampler after each optimizer step, so a
+        # constant ``<session>-live`` name collides as soon as the next
+        # on-policy group asks for fresh weights. Scope the implicit live
+        # sampler to the model step while keeping retries idempotent.
+        saved = self.save_checkpoint(
+            session_id,
+            step=step,
+            kind="inference",
+            request_id=f"{session_id}-live-{step}",
+        )
         sampler = self._service.create_sampling_client(model_path=saved["provider_reference"])
         self._samplers[session_id] = sampler
         return sampler

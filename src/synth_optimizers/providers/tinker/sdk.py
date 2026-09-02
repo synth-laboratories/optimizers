@@ -300,13 +300,20 @@ def _train_datum(tinker_module: Any, item: Mapping[str, Any], loss_fn: str) -> A
                 ),
             },
         )
+    full_sequence = bool(item.get("loss_mask"))
     prompt = list(item.get("prompt_token_ids") or ())
     completion = list(item.get("token_ids") or ())
-    ids = prompt + completion if prompt else completion
+    ids = completion if full_sequence else (prompt + completion if prompt else completion)
     if len(ids) < 2:
         raise ProviderError("cispo_tokens_missing", "CISPO datum needs at least two tokens")
     prompt_len = len(prompt) if prompt else 0
-    shifted = [index >= prompt_len for index in range(1, len(ids))]
+    supplied_mask = list(item.get("loss_mask") or ())
+    shifted = (
+        [bool(value) for value in supplied_mask[1:len(ids)]]
+        if full_sequence else [index >= prompt_len for index in range(1, len(ids))]
+    )
+    if len(shifted) != len(ids) - 1:
+        raise ProviderError("cispo_mask_alignment", "CISPO loss mask must align with full token sequence")
     trained = sum(shifted)
     behavior = list(item.get("behavior_logprobs") or ())
     advantage = item.get("advantages")
@@ -315,9 +322,14 @@ def _train_datum(tinker_module: Any, item: Mapping[str, Any], loss_fn: str) -> A
     else:
         scalar = float(advantage or 0.0)
     logprobs, advantages = [], []
+    if full_sequence and len(behavior) != len(ids):
+        raise ProviderError("cispo_logprob_alignment", "full-sequence behavior logprobs must align with tokens")
     completion_logprobs = iter(behavior)
-    for enabled in shifted:
-        logprobs.append(next(completion_logprobs, 0.0) if enabled else 0.0)
+    for position, enabled in enumerate(shifted, start=1):
+        logprobs.append(
+            float(behavior[position]) if full_sequence and enabled
+            else (next(completion_logprobs, 0.0) if enabled else 0.0)
+        )
         advantages.append(scalar / trained if enabled and trained else 0.0)
     return tinker_module.Datum(
         model_input=tinker_module.ModelInput.from_ints(ids[:-1]),

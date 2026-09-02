@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
@@ -191,6 +193,32 @@ def test_sdk_live_sampler_name_advances_after_training(monkeypatch) -> None:
     )
     transport.sample(session, request)
     assert trainer.last_sampler_name.endswith("-live-1")
+
+
+def test_sdk_creates_one_live_sampler_for_parallel_rollouts(monkeypatch) -> None:
+    transport = _transport(monkeypatch)
+    handle = transport.create_lora_training_client("openai/gpt-oss-20b", rank=4, seed=1)
+    session = ProviderSession(
+        provider="tinker",
+        session_id=handle.session_id,
+        model_id="openai/gpt-oss-20b",
+        request_id="session",
+    )
+    trainer = transport.sessions[session.session_id]["training"]
+    original_save = trainer.save_weights_for_sampler
+    saves: list[str] = []
+
+    def slow_save(name, ttl_seconds=None):
+        saves.append(name)
+        time.sleep(0.02)
+        return original_save(name, ttl_seconds=ttl_seconds)
+
+    trainer.save_weights_for_sampler = slow_save
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        samplers = list(pool.map(lambda _: transport._sampler_for(session), range(8)))
+
+    assert len(saves) == 1
+    assert all(sampler is samplers[0] for sampler in samplers)
 
 
 def test_validation_receipt_marks_cispo_only_after_a_paid_update(tmp_path) -> None:

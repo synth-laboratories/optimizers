@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import threading
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -53,6 +54,7 @@ class TinkerSdkTransport:
         self.validation_receipt = validation_receipt
         self.sessions: dict[str, dict[str, Any]] = {}
         self._samplers: dict[str, Any] = {}
+        self._sampler_lock = threading.Lock()
         self._tokenizer: Any | None = None
         self._renderer: Any | None = None
         self.cancelled: set[str] = set()
@@ -232,22 +234,29 @@ class TinkerSdkTransport:
             return self._samplers[session_id]
         if session_id is None:
             raise ProviderError("sample_unsupported", "sampling handle is missing a session")
-        state = self.sessions.get(session_id) or {}
-        step = int(state.get("step", 0))
-        # Tinker requires every persisted sampler name to be unique. Training
-        # invalidates the cached sampler after each optimizer step, so a
-        # constant ``<session>-live`` name collides as soon as the next
-        # on-policy group asks for fresh weights. Scope the implicit live
-        # sampler to the model step while keeping retries idempotent.
-        saved = self.save_checkpoint(
-            session_id,
-            step=step,
-            kind="inference",
-            request_id=f"{session_id}-live-{step}",
-        )
-        sampler = self._service.create_sampling_client(model_path=saved["provider_reference"])
-        self._samplers[session_id] = sampler
-        return sampler
+        # Parallel rollouts can all arrive immediately after training clears
+        # the cache. Only one caller may persist and bind a sampler for a model
+        # step; the rest reuse it after the double-check. Tinker rejects two
+        # saves with the same name even when both came from the same process.
+        with self._sampler_lock:
+            if session_id in self._samplers:
+                return self._samplers[session_id]
+            state = self.sessions.get(session_id) or {}
+            step = int(state.get("step", 0))
+            # Training invalidates the cached sampler after each optimizer
+            # step. Scope the implicit live sampler to that step so later
+            # updates never collide with an earlier persisted checkpoint.
+            saved = self.save_checkpoint(
+                session_id,
+                step=step,
+                kind="inference",
+                request_id=f"{session_id}-live-{step}",
+            )
+            sampler = self._service.create_sampling_client(
+                model_path=saved["provider_reference"]
+            )
+            self._samplers[session_id] = sampler
+            return sampler
 
     def _ce_datum(self, tokens: Sequence[int], mask: Sequence[bool]) -> Any:
         ids = list(tokens)

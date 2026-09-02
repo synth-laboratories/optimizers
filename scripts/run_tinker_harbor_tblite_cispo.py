@@ -48,13 +48,23 @@ class RolloutGateway:
                 try:
                     size = int(self.headers.get("content-length", "0"))
                     payload = json.loads(self.rfile.read(size))
-                    messages = payload.get("messages") or []
+                    messages = list(payload.get("messages") or [])
+                    max_tokens = int(payload.get("max_tokens") or 4096)
                     rendered = owner.adapter.tokenize_chat(messages, add_generation_prompt=True)
                     prompt = tuple(int(token) for token in rendered["prompt_token_ids"])
+                    removed_messages = 0
+                    while len(prompt) + max_tokens > 32_768 and len(messages) > 3:
+                        del messages[2]
+                        removed_messages += 1
+                        rendered = owner.adapter.tokenize_chat(
+                            messages, add_generation_prompt=True
+                        )
+                        prompt = tuple(int(token) for token in rendered["prompt_token_ids"])
+                    max_tokens = min(max_tokens, max(1, 32_768 - len(prompt)))
                     started = time.monotonic()
                     sample_request = SampleRequest(
                         request_id=new_request_id("harbor", self.path, str(time.time_ns())),
-                        prompt_token_ids=prompt, max_tokens=int(payload.get("max_tokens") or 4096),
+                        prompt_token_ids=prompt, max_tokens=max_tokens,
                         temperature=float(payload.get("temperature", 0.8)),
                         seed=int(payload.get("seed", 0)),
                     )
@@ -73,6 +83,7 @@ class RolloutGateway:
                         "generation_logprobs": list(sampled.logprobs),
                         "generation_loss_mask": [1] * len(sampled.token_ids),
                         "checkpoint_digest": owner.checkpoint_digest,
+                        "gateway_compacted_messages": removed_messages,
                     }
                     result = {"choices": [{"message": {"role": "assistant", "content": content}}],
                               "usage": {"prompt_tokens": len(prompt), "completion_tokens": len(sampled.token_ids),
@@ -145,7 +156,7 @@ def register_policy(
             "sampling_seed": seed, "command_timeout_seconds": 300,
             "timeout_seconds": 3600, "output_limit": 6000,
             "workspace_aliases": ["/app", "/workdir"],
-            "compaction_threshold_tokens": 28000, "compaction_keep_messages": 10,
+            "compaction_threshold_tokens": 18000, "compaction_keep_messages": 4,
         }})
     return cid
 
@@ -198,11 +209,72 @@ def main() -> None:
     parser.add_argument("--eval-seeds", type=int, default=10)
     parser.add_argument("--port", type=int, default=18096)
     parser.add_argument("--gateway-port", type=int, default=18110)
+    parser.add_argument("--baseline-checkpoint")
+    parser.add_argument("--trained-checkpoint")
     args = parser.parse_args()
     load_key(args.env_file)
     args.output_dir.mkdir(parents=True, exist_ok=False)
     base = f"http://127.0.0.1:{args.port}"
     adapter = TinkerAdapter(TinkerCredentials.from_env())
+    if bool(args.baseline_checkpoint) != bool(args.trained_checkpoint):
+        raise SystemExit("both --baseline-checkpoint and --trained-checkpoint are required")
+    if args.baseline_checkpoint and args.trained_checkpoint:
+        # Bind the base-model tokenizer and Prime renderer. Checkpoint-only
+        # sampling otherwise has no model identity and falls back to ASCII
+        # tokenization/decoding in the provider adapter.
+        adapter.create_session(
+            "openai/gpt-oss-20b",
+            rank=8,
+            seed=0,
+            request_id=new_request_id("tblite", "eval-tokenizer"),
+        )
+
+        def external_checkpoint(reference: str, step: int) -> ProviderCheckpoint:
+            digest = hashlib.sha256(reference.encode()).hexdigest()
+            return ProviderCheckpoint(
+                checkpoint_id=f"external-{digest[:16]}",
+                provider_reference=reference,
+                step=step,
+                digest=f"sha256:{digest}",
+                kind="inference",
+                resume_token=reference,
+            )
+
+        gateway = RolloutGateway(adapter, None, args.gateway_port)
+        gateway.start()
+        seeds = [10_000 + index for index in range(args.eval_seeds)]
+        summary = {
+            "schema_version": "harbor.tblite.paired_eval.v1",
+            "evaluations": {},
+            "model": "openai/gpt-oss-20b",
+        }
+        try:
+            targets = (
+                ("eval_baseline", external_checkpoint(args.baseline_checkpoint, 0)),
+                ("eval_trained", external_checkpoint(args.trained_checkpoint, args.steps)),
+            )
+            for phase, target in targets:
+                rows = evaluate(
+                    base, gateway, target, args.gateway_port, phase, seeds, args.max_parallel
+                )
+                summary["evaluations"][phase] = {
+                    "seeds": seeds,
+                    "checkpoint_digest": hashlib.sha256(
+                        target.provider_reference.encode()
+                    ).hexdigest(),
+                    "rollouts": [
+                        {key: row[key] for key in ("rollout_id", "reward", "usage")}
+                        for row in rows
+                    ],
+                }
+                (args.output_dir / "summary.json").write_text(
+                    json.dumps(summary, indent=2) + "\n"
+                )
+                print(json.dumps(summary["evaluations"][phase]), flush=True)
+            print(json.dumps(summary, indent=2))
+        finally:
+            gateway.close()
+        return
     session = adapter.create_session("openai/gpt-oss-20b", rank=8, seed=0, request_id=new_request_id("tblite", "session"))
     checkpoint = adapter.save_checkpoint(session, step=0, kind="inference", request_id=new_request_id("tblite", "initial"))
     baseline_checkpoint = checkpoint

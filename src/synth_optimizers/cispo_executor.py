@@ -106,8 +106,18 @@ class TinkerCispoExecutor:
             "cost_missing": True,
         }
 
-    def submit(self, config: Mapping[str, Any], *, job_id: str | None = None) -> dict[str, Any]:
-        prepared = self._prepare(config, job_id=job_id)
+    def submit(
+        self,
+        config: Mapping[str, Any],
+        *,
+        job_id: str | None = None,
+        idempotency_key_override: str | None = None,
+    ) -> dict[str, Any]:
+        prepared = self._prepare(
+            config,
+            job_id=job_id,
+            idempotency_key_override=idempotency_key_override,
+        )
         if prepared.state in TERMINAL_STATES or prepared.state == "running":
             return self.status(prepared.job_id)
         if self.sync:
@@ -131,11 +141,17 @@ class TinkerCispoExecutor:
             return self.status(job_id)
         return self._run(job_id)
 
-    def _prepare(self, config: Mapping[str, Any], *, job_id: str | None) -> TrainingJob:
+    def _prepare(
+        self,
+        config: Mapping[str, Any],
+        *,
+        job_id: str | None,
+        idempotency_key_override: str | None = None,
+    ) -> TrainingJob:
         request = _cispo_request(config)
         dataset = _dataset(config)
         model_id = self.provider.resolve_model(request.model_id)
-        key = idempotency_key(
+        generated_key = idempotency_key(
             algorithm_id=ALGORITHM_ID,
             implementation_version=IMPLEMENTATION_VERSION,
             provider="tinker",
@@ -149,6 +165,7 @@ class TinkerCispoExecutor:
             runner_version=request.runner_version or RUNNER_VERSION,
             repeat_index=request.repeat_index,
         )
+        key = idempotency_key_override or generated_key
         snapshot = {
             **dict(config),
             "algorithm_id": ALGORITHM_ID,

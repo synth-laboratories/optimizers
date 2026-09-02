@@ -290,7 +290,11 @@ class SftService:
         canonical_run_id = requested_run_id or _fresh_run_id()
         validated = SftConfig.from_mapping(config, run_id=canonical_run_id)
         payload = _executor_config(validated)
-        result = self.executor.submit(payload, job_id=canonical_run_id)
+        result = self.executor.submit(
+            payload,
+            job_id=canonical_run_id,
+            idempotency_key_override=idempotency_key,
+        )
         return self._submit_response(canonical_run_id, str(result.get("status") or "queued"))
 
     def submit_toml(

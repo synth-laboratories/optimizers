@@ -86,8 +86,18 @@ class TinkerSftExecutor:
             "cost_missing": True,
         }
 
-    def submit(self, config: Mapping[str, Any], *, job_id: str | None = None) -> dict[str, Any]:
-        prepared = self._prepare(config, job_id=job_id)
+    def submit(
+        self,
+        config: Mapping[str, Any],
+        *,
+        job_id: str | None = None,
+        idempotency_key_override: str | None = None,
+    ) -> dict[str, Any]:
+        prepared = self._prepare(
+            config,
+            job_id=job_id,
+            idempotency_key_override=idempotency_key_override,
+        )
         if prepared.state in TERMINAL_STATES or prepared.state == "running":
             return self.status(prepared.job_id)
         if self.sync:
@@ -118,7 +128,13 @@ class TinkerSftExecutor:
             return self.status(job_id)
         return self._run(job_id)
 
-    def _prepare(self, config: Mapping[str, Any], *, job_id: str | None) -> TrainingJob:
+    def _prepare(
+        self,
+        config: Mapping[str, Any],
+        *,
+        job_id: str | None,
+        idempotency_key_override: str | None = None,
+    ) -> TrainingJob:
         dataset = self._dataset(config)
         validate_dataset_manifest(dataset.manifest)
         model_id = self.provider.resolve_model(
@@ -131,7 +147,7 @@ class TinkerSftExecutor:
         training.setdefault("checkpoint_every_steps", int((config.get("checkpoint_steps") or [training["steps"]])[0]))
         training.setdefault("eval_every_steps", training["checkpoint_every_steps"])
         seed = int(config.get("seed") or 0)
-        key = idempotency_key(
+        generated_key = idempotency_key(
             algorithm_id=SFT_ALGORITHM_ID,
             implementation_version=SFT_IMPLEMENTATION_VERSION,
             provider="tinker",
@@ -145,6 +161,7 @@ class TinkerSftExecutor:
             runner_version=str(config.get("runner_version") or RUNNER_VERSION),
             repeat_index=int(config.get("repeat_index") or 0),
         )
+        key = idempotency_key_override or generated_key
         snapshot = {
             **dict(config),
             "base_model": model_id,

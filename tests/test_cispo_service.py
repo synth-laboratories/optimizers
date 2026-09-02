@@ -62,6 +62,30 @@ def test_cispo_service_fixture_submit_completes(tmp_path) -> None:
     service.store.close()
 
 
+def test_cispo_service_honors_explicit_idempotency_scope_per_run(tmp_path) -> None:
+    service = CispoService.from_fixture(tmp_path / "cispo.sqlite")
+    first = service.submit(
+        _learning_signal_request(),
+        run_id="cispo_workshop_a",
+        idempotency_key="cispo_workshop_a",
+    )
+    retried = service.submit(
+        _learning_signal_request(),
+        run_id="cispo_workshop_a",
+        idempotency_key="cispo_workshop_a",
+    )
+    second = service.submit(
+        _learning_signal_request(),
+        run_id="cispo_workshop_b",
+        idempotency_key="cispo_workshop_b",
+    )
+    assert first["run_id"] == retried["run_id"] == "cispo_workshop_a"
+    assert second["run_id"] == "cispo_workshop_b"
+    jobs = service.store._db.execute("SELECT COUNT(*) FROM training_jobs").fetchone()[0]
+    assert jobs == 2
+    service.store.close()
+
+
 def test_cispo_http_rejects_algorithm_sft(tmp_path) -> None:
     service = CispoService.from_fixture(tmp_path / "cispo.sqlite")
     server = _start_http(service)

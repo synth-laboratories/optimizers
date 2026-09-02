@@ -75,6 +75,24 @@ def test_sft_service_serializes_same_idempotency_key(tmp_path) -> None:
     service.store.close()
 
 
+def test_sft_service_honors_explicit_idempotency_scope_per_run(tmp_path) -> None:
+    service = SftService.from_fixture(tmp_path / "sft.sqlite")
+    first = service.submit(
+        fixture_config(), run_id="sft_workshop_a", idempotency_key="sft_workshop_a"
+    )
+    retried = service.submit(
+        fixture_config(), run_id="sft_workshop_a", idempotency_key="sft_workshop_a"
+    )
+    second = service.submit(
+        fixture_config(), run_id="sft_workshop_b", idempotency_key="sft_workshop_b"
+    )
+    assert first["run_id"] == retried["run_id"] == "sft_workshop_a"
+    assert second["run_id"] == "sft_workshop_b"
+    jobs = service.store._db.execute("SELECT COUNT(*) FROM training_jobs").fetchone()[0]
+    assert jobs == 2
+    service.store.close()
+
+
 def test_sft_http_service_hides_executor_behind_public_token(tmp_path) -> None:
     service = SftService.from_fixture(tmp_path / "sft.sqlite")
     server = create_sft_http_server(("127.0.0.1", 0), service, service_token="public-token")

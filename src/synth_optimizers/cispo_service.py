@@ -197,7 +197,11 @@ class CispoService:
             raise CispoServiceError(str(exc)) from exc
         requested_run_id = run_id or idempotency_key or _optional_text(payload.get("run_id"))
         canonical_run_id = requested_run_id or _fresh_run_id()
-        result = self.executor.submit(payload, job_id=canonical_run_id)
+        result = self.executor.submit(
+            payload,
+            job_id=canonical_run_id,
+            idempotency_key_override=idempotency_key,
+        )
         return self._submit_response(canonical_run_id, str(result.get("status") or "queued"))
 
     def get(self, run_id: str) -> dict[str, Any]:

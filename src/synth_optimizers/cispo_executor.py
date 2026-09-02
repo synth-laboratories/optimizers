@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import statistics
+from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -43,6 +44,7 @@ from .training_eval import (
     evaluate_checkpoint,
     paired_uplift,
     public_evaluation,
+    sample_parallelism,
     system_prompt_from,
 )
 
@@ -397,17 +399,25 @@ class TinkerCispoExecutor:
                 self.provider, example, system_prompt=prompt, add_generation_prompt=True
             )
             prompt_ids = tuple(tokenized.get("prompt_token_ids") or (1, 2, 3))
-            for member in range(group_size):
-                sampled = self.provider.sample(
-                    session,
-                    SampleRequest(
-                        request_id=new_request_id(job_id, "roll", str(update), str(prompt_index), str(member)),
-                        prompt_token_ids=prompt_ids,
-                        max_tokens=int(request.training.get("max_sample_tokens") or 24),
-                        temperature=float(request.training.get("temperature") or 1.0),
-                        seed=request.seed + update * 1000 + prompt_index * 10 + member,
+            requests = [
+                SampleRequest(
+                    request_id=new_request_id(
+                        job_id, "roll", str(update), str(prompt_index), str(member)
                     ),
+                    prompt_token_ids=prompt_ids,
+                    max_tokens=int(request.training.get("max_sample_tokens") or 24),
+                    temperature=float(request.training.get("temperature") or 1.0),
+                    seed=request.seed + update * 1000 + prompt_index * 10 + member,
                 )
+                for member in range(group_size)
+            ]
+            with ThreadPoolExecutor(max_workers=sample_parallelism()) as executor:
+                futures = [
+                    executor.submit(self.provider.sample, session, sample_request)
+                    for sample_request in requests
+                ]
+                sampled_group = [future.result() for future in futures]
+            for sampled in sampled_group:
                 predicted = extract_final_label(sampled.text)
                 label = extract_final_label(example.label or "")
                 reward = 1.0 if predicted == label else 0.0

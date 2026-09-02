@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import math
+import os
 import random
 import statistics
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
 from .providers.protocols import ProviderCheckpoint, SampleRequest, TrainingProvider
@@ -71,12 +73,15 @@ def evaluate_checkpoint(
     valid = 0
     predictions: list[dict[str, Any]] = []
     allowed_labels = {extract_final_label(example.label or "") for example in examples}
+    prepared: list[tuple[int, Example, SampleRequest]] = []
     for index, example in enumerate(examples):
         tokenized = encode_example(
             provider, example, system_prompt=system_prompt, add_generation_prompt=True
         )
-        sampled = provider.sample_checkpoint(
-                handle,
+        prepared.append(
+            (
+                index,
+                example,
                 SampleRequest(
                     request_id=new_request_id(handle.checkpoint_id, "eval", str(index)),
                     prompt_token_ids=tuple(tokenized.get("prompt_token_ids") or (1, 2, 3)),
@@ -85,6 +90,22 @@ def evaluate_checkpoint(
                     seed=index,
                 ),
             )
+        )
+
+    # NanoClassify's proven Banking77 reference uses 50 concurrent sampler
+    # calls. Submit the same bounded fan-out here, but consume futures in
+    # dataset order so cumulative metrics and streamed event order stay
+    # deterministic and paired evidence remains reproducible.
+    def ordered_samples() -> Any:
+        with ThreadPoolExecutor(max_workers=sample_parallelism()) as executor:
+            futures = [
+                executor.submit(provider.sample_checkpoint, handle, request)
+                for _, _, request in prepared
+            ]
+            for prepared_row, future in zip(prepared, futures, strict=True):
+                yield prepared_row, future.result()
+
+    for (index, example, _), sampled in ordered_samples():
         predicted = extract_final_label(sampled.text)
         label = extract_final_label(example.label or "")
         is_valid = predicted in allowed_labels
@@ -124,6 +145,16 @@ def evaluate_checkpoint(
         "per_intent": intent_rows,
         "predictions": predictions,
     }
+
+
+def sample_parallelism() -> int:
+    """Bound provider sampling fan-out; matches the NanoClassify reference."""
+
+    raw = os.environ.get("SYNTH_OPTIMIZERS_SAMPLE_PARALLELISM", "50")
+    try:
+        return max(1, min(100, int(raw)))
+    except ValueError:
+        return 50
 
 
 def public_evaluation(evaluation: Mapping[str, Any]) -> dict[str, Any]:

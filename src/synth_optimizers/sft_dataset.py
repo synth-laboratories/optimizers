@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import csv
+import json
+import random
+from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -31,6 +35,9 @@ class SplitDataset:
     labels: tuple[str, ...]
     renderer_version: str
     manifest: dict[str, Any]
+
+
+BANKING77_NANOCLASSIFY_SPLIT = "banking77.nanoclassify.v1"
 
 
 def parse_example(raw: Mapping[str, Any], *, index: int) -> Example:
@@ -196,3 +203,124 @@ def load_examples_from_config(config: Mapping[str, Any]) -> list[dict[str, Any]]
                 rows.append(json.loads(line))
         return rows
     raise DatasetError("SFT config requires examples, dataset.examples, or training_jsonl")
+
+
+def split_dataset_from_config(config: Mapping[str, Any]) -> SplitDataset:
+    """Materialize either explicit indexes or NanoClassify's Banking77 split.
+
+    The NanoClassify contract reserves ten examples per intent from the
+    official train CSV, samples a fixed 400-row development set for checkpoint
+    selection, and keeps closeout rows disjoint. A private source-index manifest
+    marks the closeout set sealed; a seeded sample from the public test CSV is
+    useful real evidence but is labeled unsealed in the manifest.
+    """
+
+    dataset = config.get("dataset") if isinstance(config.get("dataset"), Mapping) else {}
+    if dataset.get("split_strategy") != BANKING77_NANOCLASSIFY_SPLIT:
+        examples = load_examples_from_config(config)
+        return materialize_splits(
+            examples,
+            renderer_version=str(config.get("renderer_version") or "chat.v1"),
+            train=dataset.get("train_indexes"),
+            calibration=dataset.get("calibration_indexes"),
+            heldout=dataset.get("heldout_indexes"),
+        )
+
+    train_csv = _required_path(dataset.get("train_csv"), "dataset.train_csv")
+    heldout_csv = _required_path(dataset.get("heldout_csv"), "dataset.heldout_csv")
+    split_seed = int(dataset.get("split_seed") or 20260907)
+    selection_seed = int(dataset.get("selection_seed") or 20260908)
+    heldout_seed = int(dataset.get("heldout_seed") or 20260906)
+    dev_per_class = int(dataset.get("dev_per_class") or 10)
+    selection_size = int(dataset.get("selection_size") or 400)
+    heldout_size = int(dataset.get("heldout_size") or 400)
+
+    source_train = _csv_rows(train_csv, prefix="train")
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in source_train:
+        grouped[str(row["category"])].append(row)
+    rng = random.Random(split_seed)
+    train_rows: list[dict[str, Any]] = []
+    dev_rows: list[dict[str, Any]] = []
+    for category in sorted(grouped):
+        bucket = grouped[category][:]
+        rng.shuffle(bucket)
+        if len(bucket) <= dev_per_class:
+            raise DatasetError(f"Banking77 intent {category} has no train rows after reservation")
+        dev_rows.extend(bucket[:dev_per_class])
+        train_rows.extend(bucket[dev_per_class:])
+    rng.shuffle(train_rows)
+    rng.shuffle(dev_rows)
+    if selection_size > len(dev_rows):
+        raise DatasetError("selection_size exceeds the reserved Banking77 development pool")
+    selection_rows = random.Random(selection_seed).sample(dev_rows, selection_size)
+
+    source_heldout = _csv_rows(heldout_csv, prefix="heldout")
+    manifest_path = dataset.get("heldout_indices_json")
+    if isinstance(manifest_path, str) and manifest_path.strip():
+        index_payload = json.loads(_required_path(manifest_path, "dataset.heldout_indices_json").read_text())
+        indices = index_payload.get("selected_source_indices", index_payload)
+        if not isinstance(indices, list) or len(indices) != heldout_size:
+            raise DatasetError("sealed heldout index manifest has the wrong sample size")
+        if len(set(map(int, indices))) != len(indices):
+            raise DatasetError("sealed heldout source indices must be unique")
+        heldout_rows = [source_heldout[int(index)] for index in indices]
+        heldout_sealed = True
+        heldout_method = "explicit_source_indices"
+    else:
+        if heldout_size > len(source_heldout):
+            raise DatasetError("heldout_size exceeds the Banking77 heldout source")
+        heldout_rows = random.Random(heldout_seed).sample(source_heldout, heldout_size)
+        heldout_sealed = False
+        heldout_method = "seeded_public_test_sample"
+
+    examples = [*train_rows, *selection_rows, *heldout_rows]
+    train_end = len(train_rows)
+    selection_end = train_end + len(selection_rows)
+    result = materialize_splits(
+        examples,
+        renderer_version=str(config.get("renderer_version") or "chat.v1"),
+        train=range(train_end),
+        calibration=range(train_end, selection_end),
+        heldout=range(selection_end, len(examples)),
+    )
+    result.manifest.update(
+        {
+            "split_strategy": BANKING77_NANOCLASSIFY_SPLIT,
+            "split_seed": split_seed,
+            "selection_seed": selection_seed,
+            "heldout_seed": heldout_seed,
+            "dev_per_class": dev_per_class,
+            "selection_role": "development_selection",
+            "heldout_role": "post_selection_closeout",
+            "heldout_sealed": heldout_sealed,
+            "heldout_selection_method": heldout_method,
+            "source_counts": {"train": len(source_train), "heldout": len(source_heldout)},
+        }
+    )
+    return result
+
+
+def _required_path(value: Any, field: str):
+    from pathlib import Path
+
+    path = Path(str(value or "").strip())
+    if not path.is_file():
+        raise DatasetError(f"{field} is not a file: {path}")
+    return path
+
+
+def _csv_rows(path, *, prefix: str) -> list[dict[str, Any]]:
+    with path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    if not rows or set(rows[0]) != {"text", "category"}:
+        raise DatasetError(f"{path} must contain Banking77 text,category columns")
+    return [
+        {
+            "example_id": f"banking77_{prefix}_{index:05d}",
+            "text": str(row["text"]),
+            "category": str(row["category"]),
+            "metadata": {"source": str(path), "source_index": index},
+        }
+        for index, row in enumerate(rows)
+    ]

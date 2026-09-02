@@ -35,9 +35,16 @@ from .providers.tinker.client import TinkerAdapter, TinkerCredentials, new_reque
 from .providers.tinker.fake import FakeTinkerProvider
 from .providers.tinker.tokenize import extract_final_label
 from .runtime import RUNNER_VERSION, JobStore, JobStoreError, TrainingJob, digest_payload, idempotency_key
-from .sft_dataset import Example, SplitDataset, load_examples_from_config, materialize_splits
+from .sft_dataset import Example, SplitDataset, split_dataset_from_config
 from .sft_executor import _public_status
-from .training_eval import encode_example, eval_max_tokens, evaluate_checkpoint, system_prompt_from
+from .training_eval import (
+    encode_example,
+    eval_max_tokens,
+    evaluate_checkpoint,
+    paired_uplift,
+    public_evaluation,
+    system_prompt_from,
+)
 
 
 class TinkerCispoExecutor:
@@ -213,6 +220,32 @@ class TinkerCispoExecutor:
         start = _resume_update(job) + 1
         checkpoints: list[dict[str, Any]] = []
         try:
+            baseline_checkpoint = self.provider.save_checkpoint(
+                session,
+                step=0,
+                kind="inference",
+                request_id=new_request_id(job_id, "baseline", "inference"),
+            )
+            baseline_record = {
+                "checkpoint_id": baseline_checkpoint.checkpoint_id,
+                "provider_reference": baseline_checkpoint.provider_reference,
+                "digest": baseline_checkpoint.digest,
+                "step": 0,
+            }
+            baseline = self._evaluate(
+                job_id,
+                baseline_record,
+                dataset.calibration,
+                phase="selection",
+                candidate="parent",
+                config=config,
+            )
+            self.store.append_event(
+                job_id,
+                "cispo.baseline_eval.completed",
+                {**baseline_record, **public_evaluation(baseline), "role": "selection"},
+                phase="running",
+            )
             for update in range(start, updates + 1):
                 if self.store.require(job_id).state == "cancelled":
                     return self.status(job_id)
@@ -239,20 +272,41 @@ class TinkerCispoExecutor:
                         phase="running",
                     )
                 if update == updates or update % int(request.training.get("checkpoint_every_updates") or updates) == 0:
-                    checkpoints.append(self._checkpoint_and_eval(job_id, session, dataset, update, config))
+                    checkpoints.append(
+                        self._checkpoint_and_eval(
+                            job_id, session, dataset, update, config, baseline=baseline
+                        )
+                    )
                     self.store.set_resume_token(job_id, checkpoints[-1]["checkpoint_id"])
             promoted = max(checkpoints, key=lambda item: item["calibration_accuracy"]) if checkpoints else None
             if promoted is None:
                 return self._fail(job_id, "CISPO produced no checkpoint")
             self.store.append_event(job_id, "cispo.checkpoint.promoted", promoted, phase="evaluating")
             self.store.transition(job_id, "evaluating")
-            heldout = evaluate_checkpoint(
-                self.provider,
+            heldout_base = self._evaluate(
+                job_id,
+                baseline_record,
+                dataset.heldout,
+                phase="heldout",
+                candidate="parent",
+                config=config,
+            )
+            heldout_trained = self._evaluate(
+                job_id,
                 promoted,
                 dataset.heldout,
-                system_prompt=system_prompt_from(config),
-                max_tokens=eval_max_tokens(config),
+                phase="heldout",
+                candidate="selected",
+                config=config,
             )
+            heldout = {
+                **public_evaluation(heldout_trained),
+                "role": "heldout",
+                "heldout_locked": True,
+                "baseline": public_evaluation(heldout_base),
+                "trained": public_evaluation(heldout_trained),
+                "paired_uplift": self._paired(config, heldout_base, heldout_trained),
+            }
             self.store.append_event(job_id, "cispo.heldout_eval.completed", heldout, phase="evaluating")
             self.store.transition(job_id, "materializing")
             bundle = {
@@ -508,7 +562,14 @@ class TinkerCispoExecutor:
         )
 
     def _checkpoint_and_eval(
-        self, job_id: str, session: ProviderSession, dataset: SplitDataset, update: int, config: Mapping[str, Any]
+        self,
+        job_id: str,
+        session: ProviderSession,
+        dataset: SplitDataset,
+        update: int,
+        config: Mapping[str, Any],
+        *,
+        baseline: Mapping[str, Any],
     ) -> dict[str, Any]:
         training = self.provider.save_checkpoint(
             session, step=update, kind="training", request_id=new_request_id(job_id, "ckpt", str(update), "training")
@@ -526,16 +587,77 @@ class TinkerCispoExecutor:
             "step": update,
         }
         self.store.append_event(job_id, "cispo.checkpoint.created", record, phase="evaluating")
-        evaluation = evaluate_checkpoint(
-            self.provider,
+        evaluation = self._evaluate(
+            job_id,
             record,
             dataset.calibration,
-            system_prompt=system_prompt_from(config),
-            max_tokens=eval_max_tokens(config),
+            phase="selection",
+            candidate=f"checkpoint:{update}",
+            config=config,
         )
-        payload = {**record, "calibration_accuracy": evaluation["accuracy"], "per_intent": evaluation["per_intent"]}
+        payload = {
+            **record,
+            **public_evaluation(evaluation),
+            "calibration_accuracy": evaluation["accuracy"],
+            "role": "selection",
+            "paired_uplift": self._paired(config, baseline, evaluation),
+        }
         self.store.append_event(job_id, "cispo.checkpoint_eval.completed", payload, phase="evaluating")
         return payload
+
+    def _evaluate(
+        self,
+        job_id: str,
+        checkpoint: Mapping[str, Any],
+        examples: Sequence[Example],
+        *,
+        phase: str,
+        candidate: str,
+        config: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        def stream(record: Mapping[str, Any]) -> None:
+            self.store.append_event(
+                job_id,
+                "cispo.evaluation.example.completed",
+                {
+                    **record,
+                    "evaluation_id": f"{phase}:{candidate}",
+                    "role": phase,
+                    "phase": phase,
+                    "candidate": candidate,
+                    "checkpoint_id": checkpoint.get("checkpoint_id"),
+                    "step": checkpoint.get("step", 0),
+                    "score": record["cumulative_accuracy"],
+                    "sample_count": record["completed"],
+                    "metric": "accuracy",
+                    "status": "running" if record["completed"] != record["total"] else "completed",
+                },
+                phase="evaluating" if phase == "heldout" else "running",
+            )
+
+        return evaluate_checkpoint(
+            self.provider,
+            checkpoint,
+            examples,
+            system_prompt=system_prompt_from(config),
+            max_tokens=eval_max_tokens(config),
+            on_example=stream,
+        )
+
+    @staticmethod
+    def _paired(
+        config: Mapping[str, Any], baseline: Mapping[str, Any], challenger: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        evaluation = config.get("evaluation") if isinstance(config.get("evaluation"), Mapping) else {}
+        return paired_uplift(
+            baseline,
+            challenger,
+            confidence=float(evaluation.get("confidence") or 0.95),
+            bootstrap_resamples=int(evaluation.get("bootstrap_resamples") or 4_000),
+            seed=int(config.get("seed") or 20260907),
+            minimum_claim_uplift=float(evaluation.get("minimum_claim_uplift") or 0.01),
+            minimum_paired_examples=int(evaluation.get("minimum_paired_examples") or 100),
+        )
 
     def _fail(self, job_id: str, reason: str) -> dict[str, Any]:
         self.store.append_event(job_id, "cispo.failed", {"reason": reason}, phase="failed")
@@ -565,18 +687,7 @@ def _cispo_request(config: Mapping[str, Any]) -> Any:
 
 
 def _dataset(config: Mapping[str, Any]) -> SplitDataset:
-    examples = load_examples_from_config(config if "examples" in config or "training_jsonl" in config else {
-        **config,
-        "examples": (config.get("dataset") or {}).get("examples") or config.get("examples") or [],
-    })
-    dataset_cfg = config.get("dataset") if isinstance(config.get("dataset"), Mapping) else {}
-    return materialize_splits(
-        examples,
-        renderer_version=str(config.get("renderer_version") or "chat.v1"),
-        train=dataset_cfg.get("train_indexes"),
-        calibration=dataset_cfg.get("calibration_indexes"),
-        heldout=dataset_cfg.get("heldout_indexes"),
-    )
+    return split_dataset_from_config(config)
 
 
 def _batch(examples: Sequence[Example], step: int, size: int) -> list[Example]:

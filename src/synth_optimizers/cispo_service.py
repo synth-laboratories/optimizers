@@ -402,7 +402,8 @@ def _executor_config(config: Mapping[str, Any]) -> dict[str, Any]:
     dataset = payload.get("dataset")
     has_examples = isinstance(payload.get("examples"), list) and bool(payload.get("examples"))
     has_dataset_examples = isinstance(dataset, Mapping) and bool(dataset.get("examples"))
-    if not has_examples and not has_dataset_examples:
+    has_dataset_source = isinstance(dataset, Mapping) and bool(dataset.get("split_strategy"))
+    if not has_examples and not has_dataset_examples and not has_dataset_source:
         examples = fixture_examples()
         payload["examples"] = examples
         merged_dataset = dict(dataset) if isinstance(dataset, Mapping) else {}

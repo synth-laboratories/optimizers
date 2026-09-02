@@ -6,6 +6,8 @@ from synth_optimizers.recipes.banking77 import cispo_recipe, evaluation_report, 
 from synth_optimizers.read_models import cispo_collections, reduce_summary, replay_equals_read_model
 from synth_optimizers.runtime import JobStore
 from synth_optimizers.sft_executor import TinkerSftExecutor
+from synth_optimizers.sft_dataset import Example
+from synth_optimizers.training_eval import evaluate_checkpoint
 
 
 def test_tiny_sft_job_creates_and_evaluates_a_checkpoint(tmp_path) -> None:
@@ -21,6 +23,42 @@ def test_tiny_sft_job_creates_and_evaluates_a_checkpoint(tmp_path) -> None:
     assert digest.startswith("sha256:")
     assert b"sft.tinker.v1" in body
     store.close()
+
+
+def test_selection_and_heldout_requests_do_not_share_idempotency_keys() -> None:
+    transport = FakeTinkerProvider(sample_text="card_arrival")
+    provider = TinkerAdapter(TinkerCredentials(api_key="fixture"), transport=transport)
+    checkpoint = {
+        "checkpoint_id": "inference-0-reference",
+        "provider_reference": "tinker://reference/inference/0",
+        "step": 0,
+        "digest": "sha256:" + "0" * 64,
+    }
+    selection = Example(
+        example_id="banking77_train_00001",
+        messages=(
+            {"role": "user", "content": "Where is my card?"},
+            {"role": "assistant", "content": "card_arrival"},
+        ),
+        label="card_arrival",
+        text="Where is my card?",
+        metadata={},
+    )
+    heldout = Example(
+        example_id="banking77_heldout_00001",
+        messages=(
+            {"role": "user", "content": "Why was I charged at the cash machine?"},
+            {"role": "assistant", "content": "cash_withdrawal_charge"},
+        ),
+        label="cash_withdrawal_charge",
+        text="Why was I charged at the cash machine?",
+        metadata={},
+    )
+    evaluate_checkpoint(provider, checkpoint, [selection])
+    evaluate_checkpoint(provider, checkpoint, [heldout])
+    sample_ids = [request_id for kind, request_id in transport.calls if kind == "sample"]
+    assert len(sample_ids) == 2
+    assert len(set(sample_ids)) == 2
 
 
 def test_zero_advantage_cispo_skips_the_update(tmp_path) -> None:

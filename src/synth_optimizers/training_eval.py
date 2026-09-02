@@ -83,7 +83,13 @@ def evaluate_checkpoint(
                 index,
                 example,
                 SampleRequest(
-                    request_id=new_request_id(handle.checkpoint_id, "eval", str(index)),
+                    # The same checkpoint is evaluated first on selection and
+                    # later on heldout. Index alone collides across those
+                    # splits, causing the idempotency cache to replay a
+                    # selection prediction against an unrelated heldout row.
+                    request_id=new_request_id(
+                        handle.checkpoint_id, "eval", example.example_id, str(index)
+                    ),
                     prompt_token_ids=tuple(tokenized.get("prompt_token_ids") or (1, 2, 3)),
                     max_tokens=max_tokens,
                     temperature=0.0,

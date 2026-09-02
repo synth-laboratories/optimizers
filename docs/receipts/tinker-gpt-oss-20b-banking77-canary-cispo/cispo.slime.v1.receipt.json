@@ -1,0 +1,14 @@
+{
+  "capability": "cispo.slime.v1",
+  "cispo_job_id": "cispo_canary",
+  "cost_missing": true,
+  "cost_usd": null,
+  "digest": "sha256:b042638414f1bf54209cc93c66346e820ac5f60fd7d68c06086239be24913823",
+  "model_id": "openai/gpt-oss-20b",
+  "paid_update": true,
+  "renderer_version": "renderers.gpt-oss.low.v1",
+  "schema_version": "tinker.capability_validation.v1",
+  "sft_job_id": "sft_canary",
+  "validated": true,
+  "validated_at": "2026-09-02T14:47:29.840603Z"
+}

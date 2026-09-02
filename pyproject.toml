@@ -17,6 +17,10 @@ banking77 = [
     "datasets>=2.19.0",
     "openai>=1.0.0",
 ]
+tinker = [
+    "tinker",
+    "renderers>=0.1.9",
+]
 dev = [
     "maturin>=1.7.0",
     "pytest>=8.0.0",
@@ -34,6 +38,7 @@ dev = [
 
 [project.scripts]
 synth-optimizers = "synth_optimizers.cli:main"
+synth-optimizers-cispo = "synth_optimizers.cispo_cli:main"
 
 [project.urls]
 Homepage = "https://github.com/synth-laboratories/optimizers"

@@ -49,6 +49,15 @@ SYSTEM_PROMPT = (
     "symbolic text interface.\n"
     "Goal: unlock as many achievements as possible — collect wood, place a "
     "crafting table, make tools, mine stone/coal/iron, and survive.\n"
+    "Tactical rules: `do` interacts with the tile directly in front of the "
+    "player; using it on tree, fire_tree, or ice_shrub collects wood. A move "
+    "also changes facing. Read the reported front tile, nearby map, inventory, "
+    "and achievements literally. First collect wood: if a wood source is in "
+    "front, use `do`; otherwise move toward the nearest visible wood source. "
+    "Never emit place_* or make_* actions until the inventory requirements "
+    "shown by the observation are present. Legal means accepted by the engine, "
+    "not necessarily useful in the current state. Prefer a short executable "
+    "route over repeated movement into an obstacle.\n"
     "You will be shown the current observation and the legal actions.\n"
     f'Reply with ONLY a JSON object: {{"actions": [...], "rationale": "..."}} '
     f"where actions is a list of {PLAN_MIN} to {PLAN_MAX} action names from the "
@@ -106,8 +115,19 @@ def _complete(messages: list[dict[str, str]]) -> tuple[str, dict[str, int]]:
         "model": MODEL,
         "messages": messages,
         "max_completion_tokens": headroom,
+        # DeepSeek Flash may spend the entire completion budget reasoning and
+        # leave `content` empty when unconstrained.  OpenRouter's JSON mode
+        # makes the tiny action contract explicit, so the model terminates
+        # with a parseable plan instead of a 2K-token, no-op rollout.
+        "response_format": {"type": "json_object"},
     }
-    if EFFORT:
+    if EFFORT == "none":
+        # OpenRouter treats an omitted reasoning field as provider-default,
+        # which is still a long reasoning trace for DeepSeek Flash.  Disable
+        # it explicitly for the recipe's `none` lane so the completion budget
+        # is spent on the action plan the environment can execute.
+        body["reasoning"] = {"enabled": False}
+    elif EFFORT:
         body["reasoning_effort"] = EFFORT
     if TEMPERATURE:
         body["temperature"] = TEMPERATURE
@@ -235,6 +255,7 @@ def choose_actions(
     plan = _parse_plan(text, valid_actions)
     _record(
         {
+            "event": "policy.call",
             "ply": ply,
             "seed": seed,
             "model": MODEL,
@@ -242,6 +263,7 @@ def choose_actions(
             "elapsed_s": round(time.time() - started, 3),
             "usd": call_usd,
             "plan": plan,
+            "observation_text": observation_text,
             **usage,
         }
     )

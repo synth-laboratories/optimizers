@@ -27,7 +27,7 @@ MAX_LINES = 2_000
 #: ``cli.py`` carries eight argparse trees including the `mapo`/`reflexion`/
 #: `gelo` surfaces that P4-3 removes; ``o11y.py`` embeds the board's HTML/JS.
 ALLOWLIST: dict[str, int] = {
-    "src/synth_optimizers/cli.py": 2_567,
+    "src/synth_optimizers/cli.py": 2_467,
     "src/synth_optimizers/hosted.py": 2_014,
     "src/synth_optimizers/o11y.py": 3_236,
 }

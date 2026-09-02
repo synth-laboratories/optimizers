@@ -490,7 +490,7 @@ class HostedOptimizerClient:
         config: Mapping[str, Any] | Any,
         **kwargs: Any,
     ) -> OptimizerRunSubmitResponse:
-        """Submit a hosted SFT run executed by the Optimizers-beta backend."""
+        """Submit a hosted SFT run executed by the public Tinker SFT runtime."""
         return self._submit(OptimizerAlgorithmSlug.SFT, config, **kwargs)
 
     def submit_cispo(

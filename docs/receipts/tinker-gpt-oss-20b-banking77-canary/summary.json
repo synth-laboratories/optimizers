@@ -1,0 +1,19 @@
+{
+  "cispo": "failed",
+  "paid_update": false,
+  "receipt": {
+    "capability": "cispo.slime.v1",
+    "cispo_job_id": "cispo_canary",
+    "cost_missing": true,
+    "cost_usd": null,
+    "digest": "sha256:c6ea4003a523c65988ffa81881a078f491aa8c10de7274eac1c9c390e1ac5ed9",
+    "model_id": "openai/gpt-oss-20b",
+    "paid_update": false,
+    "renderer_version": "renderers.gpt-oss.low.v1",
+    "schema_version": "tinker.capability_validation.v1",
+    "sft_job_id": "sft_canary",
+    "validated": false,
+    "validated_at": "2026-09-02T14:43:21.007976Z"
+  },
+  "sft": "completed"
+}

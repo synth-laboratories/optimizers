@@ -539,6 +539,21 @@ class JesterkyWorkflowTomlSection(BaseModel):
         )
 
 
+class DiskBudgetTomlSection(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = True
+    soft_limit_gb: float = 5.0
+    hard_limit_gb: float = 10.0
+
+    def to_domain(self) -> "DiskBudgetConfig":
+        return DiskBudgetConfig(
+            enabled=bool(self.enabled),
+            soft_limit_gb=float(self.soft_limit_gb),
+            hard_limit_gb=float(self.hard_limit_gb),
+        )
+
+
 class GepaTomlDocument(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -552,6 +567,7 @@ class GepaTomlDocument(BaseModel):
         default_factory=JesterkyWorkflowTomlSection
     )
     cache: CacheTomlSection = Field(default_factory=CacheTomlSection)
+    disk_budget: DiskBudgetTomlSection = Field(default_factory=DiskBudgetTomlSection)
     usage_registration: UsageRegistrationTomlSection = Field(
         default_factory=UsageRegistrationTomlSection
     )
@@ -577,6 +593,7 @@ class GepaTomlDocument(BaseModel):
             budget=self.gepa.budget_config(),
             jesterky_workflow=self.jesterky_workflow.to_domain(),
             cache=self.cache.to_domain(),
+            disk_budget=self.disk_budget.to_domain(),
             usage_registration=self.usage_registration.to_domain(),
             target_modules=list(self.candidate.target_modules),
             seed_candidate=dict(self.seed_candidate),
@@ -1253,6 +1270,20 @@ class CacheConfig:
 
 
 @dataclass(slots=True)
+class DiskBudgetConfig:
+    enabled: bool = True
+    soft_limit_gb: float = 5.0
+    hard_limit_gb: float = 10.0
+
+    def to_toml(self) -> dict[str, Any]:
+        return {
+            "enabled": bool(self.enabled),
+            "soft_limit_gb": float(self.soft_limit_gb),
+            "hard_limit_gb": float(self.hard_limit_gb),
+        }
+
+
+@dataclass(slots=True)
 class JesterkyWorkflowConfig:
     """Per-run toggle for jesterky trace annotate inside GEPA."""
 
@@ -1329,6 +1360,7 @@ class GepaConfig:
         default_factory=JesterkyWorkflowConfig
     )
     cache: CacheConfig = field(default_factory=CacheConfig)
+    disk_budget: DiskBudgetConfig = field(default_factory=DiskBudgetConfig)
     usage_registration: UsageRegistrationConfig = field(
         default_factory=UsageRegistrationConfig
     )
@@ -1425,6 +1457,7 @@ class GepaConfig:
         payload["gepa"] = gepa
         payload["jesterky_workflow"] = self.jesterky_workflow.to_toml()
         payload["cache"] = self.cache.to_toml()
+        payload["disk_budget"] = self.disk_budget.to_toml()
         return payload
 
     def to_config_json(self) -> dict[str, Any]:

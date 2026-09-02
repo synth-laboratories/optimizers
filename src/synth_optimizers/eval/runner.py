@@ -78,6 +78,8 @@ class WorkerManifest:
     session_ref: str | None
     correlation: dict[str, Any] | None = None
     plan_override: dict[str, Any] | None = None
+    credential_mode: str | None = None
+    provider_routes: dict[str, Any] | None = None
 
     @classmethod
     def load(cls, path: Path) -> WorkerManifest:
@@ -96,6 +98,22 @@ class WorkerManifest:
         override = payload.get("plan_override")
         if override is not None and not isinstance(override, dict):
             raise EvalContractError("worker manifest plan_override must be an object")
+        credential_mode = payload.get("credential_mode")
+        provider_routes = payload.get("provider_routes")
+        if credential_mode is not None and credential_mode != "workshop_proxy":
+            raise EvalContractError("paid eval credential_mode must be workshop_proxy")
+        if provider_routes is not None and not isinstance(provider_routes, dict):
+            raise EvalContractError("worker manifest provider_routes must be an object")
+        if credential_mode == "workshop_proxy":
+            route = str((provider_routes or {}).get("openai") or "")
+            lowered = route.lower()
+            if (
+                not route.startswith("http://host.docker.internal:")
+                or "/cap/wcap_" not in route
+                or not route.endswith("/chat/completions")
+                or any(host in lowered for host in ("api.openai.com", "127.0.0.1", "localhost"))
+            ):
+                raise EvalContractError("Workshop proxy route is absent or not container-reachable")
         return cls(
             run_id=payload["run_id"],
             recipe_id=payload["recipe_id"],
@@ -104,6 +122,8 @@ class WorkerManifest:
             session_ref=payload.get("session_ref"),
             correlation=correlation,
             plan_override=override,
+            credential_mode=credential_mode,
+            provider_routes=provider_routes,
         )
 
 
@@ -395,6 +415,8 @@ class EvalRunner:
         models = []
         for model in self.recipe.models:
             payload = model.to_json()
+            if self.manifest.credential_mode == "workshop_proxy":
+                payload["route"] = self.manifest.provider_routes["openai"]  # type: ignore[index]
             selected = self._model_efforts.get(model.id)
             if selected is not None:
                 payload["efforts"] = [selected]
@@ -620,10 +642,16 @@ class EvalRunner:
         """Resolved once per run, from names the recipe declared and nothing else."""
 
         if self._resolved_secrets is None:
-            self._resolved_secrets = {
-                name: self.home.resolve_secret(name, declared=self.recipe.secrets)
-                for name in self.recipe.secrets
-            }
+            if self.manifest.credential_mode == "workshop_proxy":
+                sentinel = str((self.manifest.provider_routes or {}).get("api_key_sentinel") or "")
+                if sentinel != "workshop-proxy":
+                    raise EvalContractError("Workshop proxy manifest omitted its API key sentinel")
+                self._resolved_secrets = {name: sentinel for name in self.recipe.secrets}
+            else:
+                self._resolved_secrets = {
+                    name: self.home.resolve_secret(name, declared=self.recipe.secrets)
+                    for name in self.recipe.secrets
+                }
         return self._resolved_secrets
 
     def _run_trial(self, key: TrialKey) -> TrialRecord:
@@ -679,6 +707,10 @@ class EvalRunner:
                     limits=self.recipe.limits,
                     network=self.recipe.target.network,
                     secrets=self._secrets(),
+                    extra_hosts=tuple(
+                        str(value)
+                        for value in (self.manifest.provider_routes or {}).get("extra_hosts", [])
+                    ),
                 ),
                 on_event=lambda payload: self.events.emit(
                     "eval.trial.event", trial_id=key.trial_id, container_event=payload

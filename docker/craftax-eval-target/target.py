@@ -29,6 +29,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -189,6 +190,85 @@ def write_trace(report: dict[str, Any], trial_id: str, seed: int) -> None:
                 )
 
 
+def run_sweep(command: list[str], *, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    """Run GameBench while mirroring its trusted per-step journal live.
+
+    The journal stays in the private work directory, outside candidate-owned
+    `/output`. This wrapper is the only writer to the public event stream.
+    """
+
+    private_events = Path(env["GAMEBENCH_ROLLOUT_EVENT_PATH"])
+    usage_events = Path("/tmp/work/usage.jsonl")
+    process = subprocess.Popen(  # noqa: S603 - fixed interpreter and image-owned script
+        command,
+        cwd=str(TASK_DIR),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    stop = threading.Event()
+
+    def mirror() -> None:
+        offset = 0
+        usage_offset = 0
+        while not stop.wait(0.15):
+            offset = _mirror_rows(private_events, offset)
+            usage_offset = _mirror_usage(usage_events, usage_offset)
+        _mirror_rows(private_events, offset)
+        _mirror_usage(usage_events, usage_offset)
+
+    tail = threading.Thread(target=mirror, daemon=True)
+    tail.start()
+    stdout, stderr = process.communicate()
+    stop.set()
+    tail.join(timeout=2)
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+def _mirror_usage(path: Path, offset: int) -> int:
+    """Publish per-call model evidence while the rollout is still running."""
+    if not path.is_file():
+        return offset
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            handle.seek(offset)
+            for line in handle:
+                if not line.endswith("\n"):
+                    break
+                offset += len(line.encode("utf-8"))
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(payload, dict) and payload.get("event") == "policy.call":
+                    emit("policy.call", **{key: value for key, value in payload.items() if key != "event"})
+    except OSError:
+        pass
+    return offset
+
+
+def _mirror_rows(path: Path, offset: int) -> int:
+    if not path.is_file():
+        return offset
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            handle.seek(offset)
+            for line in handle:
+                if not line.endswith("\n"):
+                    break
+                offset += len(line.encode("utf-8"))
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(payload, dict):
+                    emit("rollout.step", **payload)
+    except OSError:
+        pass
+    return offset
+
+
 def main() -> int:
     OUTPUT.mkdir(parents=True, exist_ok=True)
     trial = json.loads((INPUT / "trial.json").read_text(encoding="utf-8"))
@@ -247,8 +327,10 @@ def main() -> int:
     report_path.parent.mkdir(parents=True, exist_ok=True)
 
     emit("rollout.started", seed=seed, world=scenario["world"], max_steps=scenario["max_steps"])
-    completed = subprocess.run(  # noqa: S603 - fixed interpreter, image-owned script
-        [
+    rollout_events = work / "rollout-events.jsonl"
+    replay_dir = work / "replays"
+    replay_dir.mkdir(parents=True, exist_ok=True)
+    command = [
             sys.executable,
             str(SWEEP),
             "--policy",
@@ -260,12 +342,17 @@ def main() -> int:
             "--include-trace",
             "--lane",
             "rust",
-        ],
-        cwd=str(TASK_DIR),
-        capture_output=True,
-        text=True,
-        check=False,
-        env={**os.environ, **policy_env},
+            "--replay-dir",
+            str(replay_dir),
+        ]
+    completed = run_sweep(
+        command,
+        env={
+            **os.environ,
+            **policy_env,
+            "GAMEBENCH_ROLLOUT_EVENT_PATH": str(rollout_events),
+            "EVAL_TRIAL_ID": trial_id,
+        },
     )
     if work_report.is_file():
         report_path.write_bytes(work_report.read_bytes())
@@ -273,8 +360,12 @@ def main() -> int:
     (OUTPUT / "verifier" / "stderr.log").write_text(completed.stderr or "", encoding="utf-8")
 
     usage = summarize_usage(work)
-    if usage["calls"]:
-        (OUTPUT / "usage.jsonl").write_bytes((work / "usage.jsonl").read_bytes())
+    usage_path = work / "usage.jsonl"
+    if usage_path.is_file():
+        # Route failures are evidence too. Preserve their sanitized status and
+        # message even when no provider call succeeded, otherwise a zero-call
+        # run erases the only actionable explanation for its fallback steps.
+        (OUTPUT / "usage.jsonl").write_bytes(usage_path.read_bytes())
     if completed.returncode == EXIT_CANDIDATE_POLICY_FAILURE:
         gates.append({"id": "verifier_completed", "passed": False})
         write_result(
@@ -319,6 +410,11 @@ def main() -> int:
         return 0
 
     report = json.loads(report_path.read_text(encoding="utf-8"))
+    public_replays = OUTPUT / "replays"
+    if replay_dir.is_dir():
+        public_replays.mkdir(parents=True, exist_ok=True)
+        for replay in replay_dir.glob("*.gif"):
+            (public_replays / replay.name).write_bytes(replay.read_bytes())
     write_trace(report, trial_id, seed)
     gates.append({"id": "verifier_completed", "passed": True})
     reward = float(report.get("mean_reward", 0.0))
@@ -335,6 +431,11 @@ def main() -> int:
         "rollout.finished",
         reward=reward,
         achievements=achievements,
+        achievement_frequency=report.get("achievement_frequency") or {},
+        unique_achievements=report.get("unique_achievements") or [],
+        reward_distribution=report.get("reward_distribution") or {},
+        achievement_count_distribution=report.get("achievement_count_distribution") or {},
+        episode_summaries=report.get("episode_summaries") or [],
         cost_usd=usage["cost_usd"],
         policy_step_fraction=usage["policy_step_fraction"],
     )
@@ -360,6 +461,8 @@ def _artifacts(report_path: Path) -> list[dict[str, Any]]:
     ]
     if report_path.is_file():
         artifacts.append({"role": "verifier", "path": "verifier/report.json"})
+    for replay in sorted((OUTPUT / "replays").glob("*.gif")) if (OUTPUT / "replays").is_dir() else []:
+        artifacts.append({"role": "replay", "path": f"replays/{replay.name}"})
     return [entry for entry in artifacts if (OUTPUT / entry["path"]).is_file()]
 
 

@@ -172,6 +172,7 @@ def evaluate(
     gateway_port: int,
     phase: str,
     seeds: list[int],
+    max_parallel: int,
 ) -> list[dict]:
     gateway.sample_checkpoint = checkpoint
     gateway.checkpoint_digest = hashlib.sha256(checkpoint.provider_reference.encode()).hexdigest()
@@ -179,7 +180,7 @@ def evaluate(
         register_policy(base, gateway_port, checkpoint.provider_reference, phase, member, seed)
         for member, seed in enumerate(seeds)
     ]
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(seeds)) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(seeds), max_parallel)) as pool:
         futures = [
             pool.submit(rollout, base, configs[member], TASKS[member % len(TASKS)], phase, member)
             for member in range(len(seeds))
@@ -193,6 +194,7 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--steps", type=int, default=5)
     parser.add_argument("--cardinality", type=int, default=4)
+    parser.add_argument("--max-parallel", type=int, default=10)
     parser.add_argument("--eval-seeds", type=int, default=10)
     parser.add_argument("--port", type=int, default=18096)
     parser.add_argument("--gateway-port", type=int, default=18110)
@@ -215,7 +217,9 @@ def main() -> None:
             phase = f"u{update:02d}"
             configs = [register_policy(base, args.gateway_port, checkpoint.provider_reference, phase, member, update * 1000 + member) for member in range(args.cardinality)]
             gateway.sample_checkpoint = checkpoint
-            with concurrent.futures.ThreadPoolExecutor(max_workers=args.cardinality) as pool:
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=min(args.cardinality, args.max_parallel)
+            ) as pool:
                 futures = [pool.submit(rollout, base, configs[member], task, phase, member) for member in range(args.cardinality)]
                 rows = [future.result() for future in futures]
             rewards = [row["reward"] for row in rows]
@@ -241,7 +245,9 @@ def main() -> None:
             print(json.dumps(step), flush=True)
         seeds = [10_000 + index for index in range(args.eval_seeds)]
         for phase, target in (("eval_baseline", baseline_checkpoint), ("eval_trained", checkpoint)):
-            rows = evaluate(base, gateway, target, args.gateway_port, phase, seeds)
+            rows = evaluate(
+                base, gateway, target, args.gateway_port, phase, seeds, args.max_parallel
+            )
             summary["evaluations"][phase] = {
                 "seeds": seeds,
                 "checkpoint_digest": hashlib.sha256(target.provider_reference.encode()).hexdigest(),

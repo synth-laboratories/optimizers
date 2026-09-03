@@ -44,6 +44,26 @@ class SamplerOrigin:
 
 
 @dataclass(frozen=True, slots=True)
+class AttemptFacts:
+    """What an attempt is, beyond which policy it samples.
+
+    A group pin says which policy and which task family; an episode record
+    demands the task id and seed. Without these on the binding call the gateway
+    can only fabricate them from the pin, which is how a run ends up training
+    on evidence that names the wrong task.
+    """
+
+    rollout_id: str
+    task_id: str
+    seed: int
+    terminal_status: str = "completed"
+
+    def __post_init__(self) -> None:
+        if not self.rollout_id.strip() or not self.task_id.strip():
+            raise PortError("an attempt must name its rollout and its task")
+
+
+@dataclass(frozen=True, slots=True)
 class PolicyRevision:
     """One materialized, immutable, sampleable policy."""
 
@@ -83,11 +103,14 @@ class SamplerGateway(Protocol):
         pin: GroupPin,
         sample_index: int,
         proxy_request_id: str,
+        attempt: AttemptFacts,
     ) -> SamplerOrigin:
         """Open a session-scoped origin pinned to one immutable revision.
 
         Binding the same proxy_request_id twice must return the same origin;
-        binding a route to a second revision must raise.
+        binding a route to a second revision must raise. The attempt facts are
+        required here rather than inferred later, so the evidence this origin
+        captures can name the task and seed it actually ran.
         """
 
     def close(self, proxy_request_id: str) -> None:

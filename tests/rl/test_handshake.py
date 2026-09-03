@@ -526,7 +526,7 @@ def test_clock_skew_beyond_tolerance_is_a_rejected_clause() -> None:
     container = FakeContainer(skew_seconds=9.5)
     with pytest.raises(ClauseRejected) as excinfo:
         _evaluate(container, plan=run_plan(groups_per_step=1))
-    assert "reward.horizon_quiescence" in excinfo.value.clause_ids
+    assert "lifecycle.clock_skew" in excinfo.value.clause_ids
     assert "clock skew" in str(excinfo.value)
 
 
@@ -698,6 +698,7 @@ def test_requirement_document_carries_the_declared_shape() -> None:
         "run_plan",
         "taskset",
         "clock",
+        "accept_degraded",
     }
     assert payload["schema_version"] == HANDSHAKE_SCHEMA_VERSION
     assert set(MANDATORY_CLAUSES).issubset(set(payload["requirements"]))
@@ -761,3 +762,114 @@ def test_taskset_resolution_must_cover_every_requested_task() -> None:
     with pytest.raises(ClauseRejected) as excinfo:
         _evaluate(short, request=request)
     assert "discovery.task_digests" in excinfo.value.clause_ids
+
+
+def test_clock_skew_does_not_apply_to_a_horizon_with_no_wall_clock() -> None:
+    """A step horizon reads no wall clock, so skew is not a question it asks."""
+
+    from synth_optimizers.contracts.rl_clauses import applies
+
+    assert applies("lifecycle.clock_skew", horizon_kind="wall_clock")
+    assert not applies("lifecycle.clock_skew", horizon_kind="steps")
+    assert not applies("lifecycle.clock_skew", horizon_kind="env_ticks")
+    # Every other clause applies unconditionally.
+    assert applies("reward.horizon_quiescence", horizon_kind="steps")
+
+
+def test_a_conditional_clause_need_not_be_named_by_the_requirement_document() -> None:
+    from synth_optimizers.contracts.rl_clauses import (
+        CONDITIONAL_CLAUSES,
+        MANDATORY_CLAUSES,
+        UNCONDITIONAL_MANDATORY_CLAUSES,
+    )
+
+    assert "lifecycle.clock_skew" in MANDATORY_CLAUSES
+    assert "lifecycle.clock_skew" in CONDITIONAL_CLAUSES
+    assert "lifecycle.clock_skew" not in UNCONDITIONAL_MANDATORY_CLAUSES
+    # Mandatory and conditional are different things: an optional clause may be
+    # declined, a conditional one may not be declined where it applies.
+    from synth_optimizers.contracts.rl_clauses import OPTIONAL_CLAUSES
+
+    assert "lifecycle.clock_skew" not in OPTIONAL_CLAUSES
+
+
+def test_a_declared_substitute_satisfies_a_clause_the_run_plan_cannot_lower() -> None:
+    """Clipping answers the quiescence question by other means.
+
+    Rejecting stops the run; degrading implies a run-plan dimension to lower,
+    and clipping has none. So the substitute is neither, and the executor must
+    have said in its requirement document that it accepts that answer.
+    """
+
+    from synth_optimizers.rl.handshake import _apply_substitutes
+
+    degraded = ClauseResult(
+        clause_id="reward.horizon_quiescence",
+        verdict="degraded",
+        reason="cannot kill agent-authored background processes",
+        source="container",
+    )
+    untouched = ClauseResult(
+        clause_id="lifecycle.idempotency", verdict="accepted", source="container"
+    )
+
+    # Unacknowledged, the clause keeps its verdict and still blocks the run.
+    kept, none_substituted = _apply_substitutes((degraded, untouched), ())
+    assert [item.verdict for item in kept] == ["degraded", "accepted"]
+    assert none_substituted == ()
+
+    # Acknowledged with the declared substitute, it is satisfied and recorded.
+    resolved, substituted = _apply_substitutes(
+        (degraded, untouched),
+        (("reward.horizon_quiescence", "horizon_clipped_snapshot"),),
+    )
+    assert [item.verdict for item in resolved] == ["accepted", "accepted"]
+    assert "horizon_clipped_snapshot" in resolved[0].reason
+    assert len(substituted) == 1
+    assert substituted[0].clause_id == "reward.horizon_quiescence"
+    assert substituted[0].verdict == "degraded"
+    assert substituted[0].fallback == "horizon_clipped_snapshot"
+
+
+def test_a_substitute_is_refused_where_none_was_declared() -> None:
+    from synth_optimizers.rl.handshake import HandshakeError, _apply_substitutes
+
+    degraded = ClauseResult(
+        clause_id="reward.horizon_quiescence", verdict="degraded", source="container"
+    )
+    # A clause with no declared substitute cannot acquire one by assertion.
+    with pytest.raises(HandshakeError, match="no declared substitute"):
+        _apply_substitutes((degraded,), (("lifecycle.idempotency", "hope"),))
+    # Nor may a clause be satisfied by a substitute nobody declared for it.
+    with pytest.raises(HandshakeError, match="has no substitute"):
+        _apply_substitutes(
+            (degraded,), (("reward.horizon_quiescence", "just_trust_it"),)
+        )
+
+
+def test_an_accepted_clause_is_not_quietly_rewritten_by_an_acknowledgement() -> None:
+    from synth_optimizers.rl.handshake import _apply_substitutes
+
+    accepted = ClauseResult(
+        clause_id="reward.horizon_quiescence", verdict="accepted", source="container"
+    )
+    resolved, substituted = _apply_substitutes(
+        (accepted,), (("reward.horizon_quiescence", "horizon_clipped_snapshot"),)
+    )
+    assert resolved[0] is accepted
+    assert substituted == ()
+
+
+def test_the_requirement_document_carries_the_acknowledgement() -> None:
+    import dataclasses
+
+    container = FakeContainer()
+    _, base, _, _ = _evaluate(container)
+    request = dataclasses.replace(
+        base,
+        accept_degraded=(("reward.horizon_quiescence", "horizon_clipped_snapshot"),),
+    )
+    assert request.to_payload()["accept_degraded"] == {
+        "reward.horizon_quiescence": "horizon_clipped_snapshot"
+    }
+    assert base.to_payload()["accept_degraded"] == {}

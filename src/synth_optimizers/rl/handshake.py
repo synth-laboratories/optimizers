@@ -19,7 +19,11 @@ from typing import Any
 
 from ..contracts.rl_clauses import (
     HANDSHAKE_SCHEMA_VERSION,
+    CLAUSE_SUBSTITUTES,
+    CONDITIONAL_CLAUSES,
+    FALLBACK_SATISFIABLE_CLAUSES,
     MANDATORY_CLAUSES,
+    applies,
     OPTIONAL_CLAUSES,
 )
 from ..contracts.rl_identity import PARTIAL_ROSTER_DISPOSITIONS, Horizon
@@ -228,6 +232,10 @@ class HandshakeRequest:
     taskset: TasksetRequest
     clock: ClockStamp
     attempt: int = 1
+    # Degradations the executor has already acknowledged, as clause id to the
+    # declared substitute it will run under. A degradation that cannot be met by
+    # lowering the run plan has no other way to be accepted.
+    accept_degraded: tuple[tuple[str, str], ...] = ()
     schema_version: str = HANDSHAKE_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -235,11 +243,15 @@ class HandshakeRequest:
             clause
             for clause in self.requirements
             if clause not in set(MANDATORY_CLAUSES) | set(OPTIONAL_CLAUSES)
+            and clause not in CONDITIONAL_CLAUSES
         )
         if unknown:
             raise HandshakeError(f"requirement document names unknown clauses: {unknown}")
+        declared = set(self.requirements)
         missing = tuple(
-            clause for clause in MANDATORY_CLAUSES if clause not in set(self.requirements)
+            clause
+            for clause in MANDATORY_CLAUSES
+            if clause not in declared and clause not in CONDITIONAL_CLAUSES
         )
         if missing:
             raise HandshakeError(
@@ -263,6 +275,7 @@ class HandshakeRequest:
                 "fingerprint": self.renderer_profile.fingerprint,
             },
             "requirements": list(self.requirements),
+            "accept_degraded": {clause: substitute for clause, substitute in self.accept_degraded},
             "topology": {
                 "expected_topology_id": self.topology.expected_topology_id,
                 "trainable_teams": list(self.topology.trainable_teams),
@@ -610,15 +623,16 @@ def _skew_clause(
     verdict: HandshakeVerdict,
     tolerance: float,
 ) -> ClauseResult | None:
-    # The horizon is the instant the reward is read, so for a wall-clock horizon
-    # a skewed clock is a rejected clause rather than a logged warning.
-    if capability.horizon.horizon_kind != "wall_clock":
+    # The horizon is the instant the reward is read, so where that instant comes
+    # off a wall clock a skewed clock is a rejected clause rather than a logged
+    # warning. Where it does not, the clause does not apply at all.
+    if not applies("lifecycle.clock_skew", horizon_kind=capability.horizon.horizon_kind):
         return None
     skew = abs(float(verdict.measured_skew_seconds))
     if skew <= tolerance:
         return None
     return ClauseResult(
-        clause_id="reward.horizon_quiescence",
+        clause_id="lifecycle.clock_skew",
         verdict="rejected",
         reason=(
             f"measured clock skew {skew}s exceeds the declared tolerance {tolerance}s "
@@ -658,6 +672,59 @@ def _unanswered_clauses(clauses: Sequence[ClauseResult]) -> list[ClauseResult]:
         for clause in MANDATORY_CLAUSES
         if clause not in answered
     ]
+
+
+def _apply_substitutes(
+    clauses: Sequence[ClauseResult],
+    accept_degraded: Sequence[tuple[str, str]],
+) -> tuple[tuple[ClauseResult, ...], tuple[Fallback, ...]]:
+    """Let a declared substitute satisfy a mandatory clause by other means.
+
+    A container that cannot quiesce may clip its state to the horizon instead.
+    That is neither a rejection, which would stop the run, nor a degradation,
+    which implies a run-plan dimension to lower — clipping has none. It is the
+    same question answered another way, and the executor must have said in its
+    requirement document that it accepts that answer.
+    """
+
+    acknowledged = dict(accept_degraded)
+    unknown = tuple(
+        clause for clause in acknowledged if clause not in FALLBACK_SATISFIABLE_CLAUSES
+    )
+    if unknown:
+        raise HandshakeError(
+            f"accept_degraded names clauses with no declared substitute: {unknown}"
+        )
+    resolved: list[ClauseResult] = []
+    substituted: list[Fallback] = []
+    for result in clauses:
+        substitute = acknowledged.get(result.clause_id)
+        satisfiable = result.verdict in {"degraded", "unsupported", "rejected"}
+        if substitute is None or not satisfiable:
+            resolved.append(result)
+            continue
+        allowed = CLAUSE_SUBSTITUTES[result.clause_id]
+        if substitute not in allowed:
+            raise HandshakeError(
+                f"{result.clause_id} has no substitute {substitute!r}; declared: {allowed}"
+            )
+        resolved.append(
+            ClauseResult(
+                clause_id=result.clause_id,
+                verdict="accepted",
+                reason=f"satisfied by the declared substitute {substitute!r}: {result.reason}",
+                source=result.source,
+            )
+        )
+        substituted.append(
+            Fallback(
+                clause_id=result.clause_id,
+                verdict=result.verdict,
+                fallback=substitute,
+                reason=result.reason,
+            )
+        )
+    return tuple(resolved), tuple(substituted)
 
 
 def _fallbacks(clauses: Sequence[ClauseResult], obligations: Obligations) -> tuple[Fallback, ...]:
@@ -746,6 +813,7 @@ def evaluate_handshake(
         tuple(local),
         tuple(_unanswered_clauses(verdict.clauses)),
     )
+    clauses, substituted = _apply_substitutes(clauses, request.accept_degraded)
     blocking = rejected_mandatory(clauses)
     if blocking:
         raise ClauseRejected(blocking)
@@ -754,7 +822,7 @@ def evaluate_handshake(
         for result in clauses
         if result.verdict == "degraded" and result.mandatory
     )
-    fallbacks = _fallbacks(clauses, verdict.obligations)
+    fallbacks = _fallbacks(clauses, verdict.obligations) + substituted
     not_lowerable = tuple(clause for clause in degraded if clause not in LOWERABLE_CLAUSES)
     if not_lowerable:
         raise ClauseRejected(

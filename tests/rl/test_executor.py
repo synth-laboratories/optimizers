@@ -438,3 +438,41 @@ def test_the_receipt_directory_carries_every_artifact_the_note_lists(tmp_path) -
         assert traces[0]["trace_digest"]
         receipts = _rows(directory / "reward_receipts.jsonl")
         assert receipts[0]["reward_id"]
+
+
+def test_the_receipt_says_whether_the_renderer_was_ever_verified() -> None:
+    """Identity is not agreement, and a receipt must not conflate them.
+
+    A container declares a renderer profile; whether a renderer here produces
+    the same tokens is a separate question, answered only by a canary. A
+    receipt that records the declaration alone reads as though the second
+    question had been answered too.
+    """
+
+    from synth_optimizers.contracts.rl_records import RendererProfile, canary_digest
+
+    unproven = RendererProfile(
+        profile_id="renderers.stub.v1",
+        package="renderers",
+        package_version="0.1.11",
+        config_digest="sha256:cfg",
+        tokenizer_id="vendor/policy-20b",
+        tokenizer_digest="sha256:tok",
+        stop_token_ids=(2,),
+    )
+    assert unproven.agreement_proven is False
+    assert unproven.canary_digest == ""
+
+    proven = RendererProfile(
+        profile_id="renderers.stub.v1",
+        package="renderers",
+        package_version="0.1.11",
+        config_digest="sha256:cfg",
+        tokenizer_id="vendor/policy-20b",
+        tokenizer_digest="sha256:tok",
+        stop_token_ids=(2,),
+        canary_digest=canary_digest((1, 2, 3)),
+    )
+    assert proven.agreement_proven is True
+    # Proving agreement does not change identity: the same profile either way.
+    assert proven.fingerprint == unproven.fingerprint

@@ -1228,6 +1228,12 @@ class ContainerRunExecutor:
                 "tokenizer_id": profile.tokenizer_id,
                 "tokenizer_digest": profile.tokenizer_digest,
                 "fingerprint": profile.fingerprint,
+                # Identity is what the container declared; agreement is whether
+                # a renderer here was ever shown to produce the same tokens. A
+                # receipt that records the first without the second reads as
+                # though the second happened.
+                "agreement_proven": profile.agreement_proven,
+                "canary_digest": profile.canary_digest,
                 "sampling_transport": self.config.model.sampling_transport,
                 "wire_api": self.config.model.wire_api,
                 "prompt_budget_policy": self.session.capability.raw.get("policy", {}).get(

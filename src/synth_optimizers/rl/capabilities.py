@@ -400,11 +400,21 @@ def _parse_topology(payload: Mapping[str, Any]) -> Topology:
     horizon_raw = payload.get("horizon")
     horizon: Horizon | None = None
     if isinstance(horizon_raw, Mapping):
+        # The record names the magnitude `value`, because a step or tick horizon
+        # has no seconds; `value_seconds` is accepted as the older spelling.
+        magnitude = "value" if "value" in horizon_raw else "value_seconds"
+        conversion = horizon_raw.get("seconds_per_unit")
         horizon = Horizon(
             horizon_kind=_text(horizon_raw, "horizon_kind"),
-            value=_number(horizon_raw, "value_seconds"),
+            value=_number(horizon_raw, magnitude),
             time_dilation=_number(horizon_raw, "time_dilation", default=1.0),
             grace_seconds=_number(horizon_raw, "grace_seconds", default=0.0),
+            # Absent stays absent: a unit horizon with no declared conversion
+            # must fail closed at lease sizing rather than default to one
+            # second per unit.
+            seconds_per_unit=(
+                None if conversion is None else _number(horizon_raw, "seconds_per_unit")
+            ),
         )
     parameter_groups_raw = payload.get("parameter_groups") or {}
     if not isinstance(parameter_groups_raw, Mapping):

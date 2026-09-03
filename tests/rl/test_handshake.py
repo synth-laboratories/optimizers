@@ -873,3 +873,46 @@ def test_the_requirement_document_carries_the_acknowledgement() -> None:
         "reward.horizon_quiescence": "horizon_clipped_snapshot"
     }
     assert base.to_payload()["accept_degraded"] == {}
+
+
+def test_a_unit_horizon_keeps_its_declared_conversion_through_the_parse() -> None:
+    """A steps horizon that declares its conversion must arrive carrying it.
+
+    Without this the executor parses the document happily and then raises the
+    moment a lease is sized, which reads as a queue bug rather than a parse bug.
+    """
+
+    payload = capability_payload()
+    payload["topology"]["horizon"] = {
+        "horizon_kind": "steps",
+        "value": 500.0,
+        "seconds_per_unit": 4.0,
+        "time_dilation": 1.0,
+    }
+    payload["capability_hash"] = canonical_capability_hash(payload)
+    document = CapabilityDocument.from_payload(payload)
+    assert document.horizon.horizon_kind == "steps"
+    assert document.horizon.value == 500.0
+    assert document.horizon.seconds_per_unit == 4.0
+    assert document.horizon.declared_seconds_per_unit() == 4.0
+
+
+def test_a_unit_horizon_without_a_conversion_still_fails_closed_later() -> None:
+    from synth_optimizers.contracts.rl_identity import TopologyError
+
+    payload = capability_payload()
+    payload["topology"]["horizon"] = {"horizon_kind": "steps", "value": 500.0}
+    payload["capability_hash"] = canonical_capability_hash(payload)
+    document = CapabilityDocument.from_payload(payload)
+    assert document.horizon.seconds_per_unit is None
+    with pytest.raises(TopologyError, match="may not be guessed"):
+        document.horizon.declared_seconds_per_unit()
+
+
+def test_the_older_value_seconds_spelling_still_parses() -> None:
+    payload = capability_payload()
+    payload["topology"]["horizon"] = {"horizon_kind": "wall_clock", "value_seconds": 5400.0}
+    payload["capability_hash"] = canonical_capability_hash(payload)
+    document = CapabilityDocument.from_payload(payload)
+    assert document.horizon.value == 5400.0
+    assert document.horizon.seconds_per_unit is None

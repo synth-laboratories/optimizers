@@ -289,3 +289,41 @@ def test_non_object_body_is_a_transport_error() -> None:
 def test_client_refuses_a_non_http_base_url() -> None:
     with pytest.raises(ContractError):
         UrllibContainerClient("file:///tmp", ContainerContract.from_metadata(metadata()))
+
+
+def test_the_contract_is_found_by_version_not_by_key_name() -> None:
+    """A container may already publish something under ``cispo``.
+
+    The predecessor training block lives at that key on at least one shipped
+    image, and a live lane reads it for its own routes. Overwriting it to
+    satisfy this executor would point that lane at these routes, so the image
+    advertises beside it — and the executor has to find the declaration by
+    what it says it is.
+    """
+
+    block: dict[str, object] = {"version": CISPO_CONTRACT_VERSION, **DECLARED_ROUTES}
+    predecessor = {"version": "training.rollout.v1", "rollout_route": "/training/rollouts"}
+
+    # Advertised under the conventional key.
+    canonical = ContainerContract.from_metadata(
+        {"metadata": {"optimizer_contracts": {"cispo": block}}}
+    )
+    assert canonical.version == CISPO_CONTRACT_VERSION
+
+    # Advertised beside a predecessor that already holds the key.
+    beside = ContainerContract.from_metadata(
+        {"metadata": {"optimizer_contracts": {"cispo": predecessor, "cispo_v1": block}}}
+    )
+    assert beside.route_table.routes == canonical.route_table.routes
+
+    # The conventional key still wins when it is the real one.
+    both = ContainerContract.from_metadata(
+        {"metadata": {"optimizer_contracts": {"cispo": block, "cispo_v1": predecessor}}}
+    )
+    assert both.route_table.routes == canonical.route_table.routes
+
+    # Nothing that declares this contract anywhere is a refusal that says so.
+    with pytest.raises(ContractError, match="advertises no block declaring"):
+        ContainerContract.from_metadata(
+            {"metadata": {"optimizer_contracts": {"cispo": predecessor}}}
+        )

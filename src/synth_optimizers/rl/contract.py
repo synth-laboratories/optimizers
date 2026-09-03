@@ -194,6 +194,30 @@ class RouteTable:
         return route
 
 
+def _select_contract_block(contracts: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """Find the block that declares this contract, by version rather than key.
+
+    A container may already publish something under ``cispo``: the predecessor
+    training block is read there by a live lane, and overwriting it would point
+    that lane at these routes. So the key is a convention and the version is
+    the identity — the executor accepts the declaration wherever it is
+    advertised, provided it says what it is.
+    """
+
+    preferred = contracts.get(CONTRACT_METADATA_KEY)
+    if isinstance(preferred, Mapping) and _declares_this_contract(preferred):
+        return preferred
+    for key in sorted(str(name) for name in contracts):
+        block = contracts.get(key)
+        if isinstance(block, Mapping) and _declares_this_contract(block):
+            return block
+    return None
+
+
+def _declares_this_contract(block: Mapping[str, Any]) -> bool:
+    return str(block.get("version") or "").strip() == CISPO_CONTRACT_VERSION
+
+
 @dataclass(frozen=True, slots=True)
 class ContainerContract:
     """A parsed, validated, hashed contract advertisement."""
@@ -260,12 +284,15 @@ class ContainerContract:
             raise ContractError(
                 "container metadata must advertise metadata.optimizer_contracts"
             )
-        if CONTRACT_METADATA_KEY not in contracts:
+        block = _select_contract_block(contracts)
+        if block is None:
             raise ContractError(
-                "container metadata must advertise "
-                f"metadata.optimizer_contracts.{CONTRACT_METADATA_KEY}"
+                "container metadata advertises no block declaring "
+                f"version={CISPO_CONTRACT_VERSION!r}; looked at "
+                f"metadata.optimizer_contracts.{CONTRACT_METADATA_KEY} and every "
+                f"sibling key. Found: {sorted(str(key) for key in contracts)}"
             )
-        return cls.from_block(contracts[CONTRACT_METADATA_KEY])
+        return cls.from_block(block)
 
 
 class ContainerClient(ABC):

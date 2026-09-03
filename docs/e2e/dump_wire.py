@@ -1,7 +1,6 @@
 """Serve the container, printing every CISPO request body as it arrives."""
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 

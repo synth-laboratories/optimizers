@@ -177,12 +177,30 @@ def test_probe_evidence_is_rejected_for_training_by_its_own_records() -> None:
             record.validate_for_training()
 
 
-def test_single_turn_probe_cannot_prove_prefix_consistency() -> None:
-    with pytest.raises(ProbeError) as excinfo:
-        validate_probe(
-            attempt(calls=(call(1),)), expected_profile=PROFILE, quiescence_accepted=True
-        )
-    assert "two turns" in str(excinfo.value)
+def test_a_single_turn_probe_says_it_could_not_check_the_prefix() -> None:
+    """A one-turn horizon has one turn to give, and that is not a defect.
+
+    Demanding a second made such containers synthesize a turn they never ran,
+    which is a worse answer than recording plainly that the property went
+    unchecked. The probe still validates everything else about the path.
+    """
+
+    report = validate_probe(
+        attempt(calls=(call(1),)), expected_profile=PROFILE, quiescence_accepted=True
+    )
+    assert report.calls_checked == 1
+    assert report.prefix_checked is False
+    assert report.to_payload()["prefix_checked"] is False
+
+    two_turns = validate_probe(
+        attempt(calls=(call(1), call(2))), expected_profile=PROFILE, quiescence_accepted=True
+    )
+    assert two_turns.prefix_checked is True
+
+
+def test_a_probe_that_made_no_call_proves_nothing() -> None:
+    with pytest.raises(ProbeError, match="proves nothing"):
+        validate_probe(attempt(calls=()), expected_profile=PROFILE, quiescence_accepted=True)
 
 
 def test_unexplained_prefix_divergence_is_an_evidence_failure() -> None:

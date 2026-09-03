@@ -93,6 +93,10 @@ class ProbeReport:
     trace_digest: str
     reward_id: str
     quiescence_attested: bool
+    #: Whether any instance's stream had a second turn to check a prefix
+    #: against. A one-turn container cannot prove this, and the receipt says
+    #: so rather than implying the property held.
+    prefix_checked: bool = False
     schema_version: str = PROBE_REPORT_SCHEMA_VERSION
 
     def to_payload(self) -> dict[str, Any]:
@@ -107,6 +111,7 @@ class ProbeReport:
             "trace_digest": self.trace_digest,
             "reward_id": self.reward_id,
             "quiescence_attested": self.quiescence_attested,
+            "prefix_checked": self.prefix_checked,
             "evidence_digest": self.evidence_digest,
         }
 
@@ -229,10 +234,13 @@ def validate_probe(
     """Validate the probe's shape. Raises a typed error, never returns a bool."""
 
     assert_probe_not_trainable(attempt)
-    if len(attempt.calls) < 2:
-        raise ProbeError(
-            "a probe must exercise at least two turns so prefix consistency is checkable"
-        )
+    if not attempt.calls:
+        raise ProbeError("a probe that made no model call proves nothing about the path")
+    # Prefix consistency needs two turns to be checkable, and a container whose
+    # horizon is one policy turn has only one to give. Demanding a second made
+    # such containers synthesize a turn they never ran, which is a worse
+    # answer than saying plainly that this property went unchecked.
+    prefix_checked = any(len(stream) > 1 for stream in _probe_prefix_streams(attempt.calls).values())
     for call in attempt.calls:
         _check_call_shape(call)
         if call.rollout_id != attempt.rollout_id:
@@ -285,6 +293,7 @@ def validate_probe(
         quiescence_attested=bool(
             attempt.reward.horizon is not None and attempt.reward.horizon.quiescence_attested
         ),
+        prefix_checked=prefix_checked,
     )
 
 

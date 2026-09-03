@@ -916,3 +916,34 @@ def test_the_older_value_seconds_spelling_still_parses() -> None:
     document = CapabilityDocument.from_payload(payload)
     assert document.horizon.value == 5400.0
     assert document.horizon.seconds_per_unit is None
+
+
+def test_a_container_may_omit_a_clause_that_does_not_apply_to_this_run() -> None:
+    """A step horizon reads no wall clock, so omitting skew is correct.
+
+    Demanding a verdict for a clause that does not apply would stop a healthy
+    run before any spend, and answering it would be the worse lie.
+    """
+
+    from synth_optimizers.rl.handshake import _unanswered_clauses
+
+    answered = [
+        ClauseResult(clause_id=clause, verdict="accepted", source="container")
+        for clause in MANDATORY_CLAUSES
+        if clause != "lifecycle.clock_skew"
+    ]
+    assert _unanswered_clauses(answered, horizon_kind="steps") == []
+    assert _unanswered_clauses(answered, horizon_kind="env_ticks") == []
+
+    missing = _unanswered_clauses(answered, horizon_kind="wall_clock")
+    assert [item.clause_id for item in missing] == ["lifecycle.clock_skew"]
+    assert missing[0].verdict == "rejected"
+
+    # A clause that always applies is still demanded, whatever the horizon.
+    without_idempotency = [
+        item for item in answered if item.clause_id != "lifecycle.idempotency"
+    ]
+    ids = {
+        item.clause_id for item in _unanswered_clauses(without_idempotency, horizon_kind="steps")
+    }
+    assert ids == {"lifecycle.idempotency"}

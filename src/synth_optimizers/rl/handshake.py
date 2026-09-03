@@ -661,7 +661,17 @@ def _resolution_clause(
     return ClauseResult(clause_id="discovery.task_digests", verdict="accepted")
 
 
-def _unanswered_clauses(clauses: Sequence[ClauseResult]) -> list[ClauseResult]:
+def _unanswered_clauses(
+    clauses: Sequence[ClauseResult], *, horizon_kind: str | None = None
+) -> list[ClauseResult]:
+    """Mandatory clauses the container left unanswered.
+
+    A conditional clause that does not apply to this run is not unanswered: a
+    step or tick horizon reads no wall clock, so a container that omits
+    `lifecycle.clock_skew` there is correct, and answering it would be the
+    worse lie. Demanding a verdict anyway would stop a healthy run before spend.
+    """
+
     answered = {item.clause_id for item in clauses}
     return [
         ClauseResult(
@@ -670,7 +680,7 @@ def _unanswered_clauses(clauses: Sequence[ClauseResult]) -> list[ClauseResult]:
             reason="container returned no verdict for a mandatory clause",
         )
         for clause in MANDATORY_CLAUSES
-        if clause not in answered
+        if clause not in answered and applies(clause, horizon_kind=horizon_kind)
     ]
 
 
@@ -811,7 +821,11 @@ def evaluate_handshake(
         verdict.clauses,
         tuple(executor_clauses),
         tuple(local),
-        tuple(_unanswered_clauses(verdict.clauses)),
+        tuple(
+            _unanswered_clauses(
+                verdict.clauses, horizon_kind=capability.horizon.horizon_kind
+            )
+        ),
     )
     clauses, substituted = _apply_substitutes(clauses, request.accept_degraded)
     blocking = rejected_mandatory(clauses)

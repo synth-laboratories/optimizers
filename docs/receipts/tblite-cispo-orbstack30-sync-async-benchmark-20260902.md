@@ -1998,6 +1998,41 @@ publishes the document, and everything else parses that document and treats its
 hash as authoritative. Two builders that agree today are two builders that
 disagree later.
 
+### The milestone policy and the TBLite harness disagree
+
+TBLite is the target the original benchmark ran, and `openai/gpt-oss-20b` is the
+policy every acceptance gate names. Under this contract those two cannot
+currently be combined, and the reason is worth stating precisely.
+
+The mini-SWE harness rewrites `stored_content` for `openai/gpt-oss-*` before
+feeding history back to the model. So turn `k+1`'s prompt is not an extension of
+turn `k`'s prompt-plus-generation: the assistant's own earlier text has been
+changed underneath it. The container refuses that rather than mislabelling it,
+which is right -- a rewrite is not a compaction, and calling it one would put a
+false provenance record in the evidence.
+
+But refusing is not the end of the analysis. This document already says that
+"context compaction, summarization, chat-template rewrite, subagent dispatch, or
+any other history rewrite" forks a branch and seals the prior segment. A
+harness-authored content rewrite is exactly that: not a compaction, but a
+history rewrite, and the branch mechanism exists for the whole class. The honest
+treatment is a branch fork whose rule names what actually happened -- a harness
+content rewrite, authored by the harness and therefore never trainable -- rather
+than either a silent stitch or a refusal.
+
+The consequence is real and should be accepted rather than engineered around: a
+harness that rewrites history every turn produces one sealed segment per turn.
+Each turn's own generation is still trainable, and long stitched sequences are
+not available. That is a smaller training signal, and it is the true one. If
+long sequences matter more than the rewrite does, the fix belongs in the
+harness -- stop rewriting stored content -- not in the evidence rules.
+
+Three options, in the order I would take them: stop the rewrite in the harness
+for this policy; failing that, fork a branch per rewrite with an honest rule
+name and accept per-turn segments; failing both, run the TBLite gate on a policy
+whose harness does not rewrite, and say in the receipt that the milestone policy
+was not the one measured.
+
 ### What the containers could not declare
 
 Five images were built against this contract. Each was asked to declare only

@@ -804,3 +804,37 @@ def test_binding_carries_the_attempt_facts_the_episode_will_need() -> None:
         payload = {"rollout_id": "rollout-1", "task_id": "task-7", "seed": 11, **bad}
         with pytest.raises(PortError, match="must name its rollout and its task"):
             AttemptFacts(**payload)
+
+
+def test_the_route_exists_before_its_facts_are_declared() -> None:
+    """Declaring facts against an unregistered route raises.
+
+    Every dispatch passes attempt facts, so declaring them before the route was
+    registered meant no real attempt could be bound at all — and no unit test
+    caught it, because the callers that exercise binding drive a fake gateway.
+    """
+
+    from synth_optimizers.rl.ports import AttemptFacts
+
+    gateway, _sampler, renderer_profile = make_gateway()
+    policy = make_revision(renderer_profile)
+    facts = AttemptFacts(rollout_id="rollout_1", task_id="task_1", seed=7)
+
+    origin = gateway.bind(
+        policy,
+        pin=make_pin(policy),
+        sample_index=0,
+        proxy_request_id="attempt_facts",
+        attempt=facts,
+    )
+    assert origin.proxy_request_id == "attempt_facts"
+
+    # Binding again with the same facts is the same origin, not a rebind.
+    again = gateway.bind(
+        policy,
+        pin=make_pin(policy),
+        sample_index=0,
+        proxy_request_id="attempt_facts",
+        attempt=facts,
+    )
+    assert again.credential == origin.credential

@@ -538,13 +538,6 @@ class SamplerGatewayService:
     ) -> SamplerOrigin:
         if not isinstance(proxy_request_id, str) or not proxy_request_id.strip():
             raise RouteRebindError("a proxy_request_id is required")
-        if attempt is not None:
-            self.declare_attempt(
-                proxy_request_id,
-                rollout_id=attempt.rollout_id,
-                task_id=attempt.task_id,
-                seed=attempt.seed,
-            )
         key = proxy_request_id.strip()
         if "/" in key:
             raise RouteRebindError(f"proxy_request_id {key!r} may not contain a path separator")
@@ -579,7 +572,18 @@ class SamplerGatewayService:
                 sample_index=sample_index,
                 checkpoint=_checkpoint_for(revision),
             )
-            return origin
+        # After the route exists, never before: declaring facts against an
+        # unregistered route raises, and every dispatch passes facts, so doing
+        # this first meant no attempt could be bound at all.
+        if attempt is not None:
+            self.declare_attempt(
+                key,
+                rollout_id=attempt.rollout_id,
+                task_id=attempt.task_id,
+                seed=attempt.seed,
+                terminal_status=attempt.terminal_status,
+            )
+        return origin
 
     def close(self, proxy_request_id: str) -> None:
         with self._lock:

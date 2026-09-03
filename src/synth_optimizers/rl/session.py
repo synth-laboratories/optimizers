@@ -376,6 +376,29 @@ class SubmittedAttempt:
     group_pin_fields: Mapping[str, Any] = field(default_factory=dict)
 
 
+def _origin_payload(origin: SamplerOrigin) -> dict[str, Any]:
+    """Send the origin field for field, not as a bare URL.
+
+    A container checks that the path carries a per-attempt id, and it cannot
+    decide that from a URL string without assuming a path layout — a global
+    ``/v1`` would pass. It also stamps evidence with the behavior fingerprint
+    the origin names, which reaches it nowhere else. The same dataclass exists
+    on both sides; flattening it here threw away the two fields that make the
+    binding checkable.
+    """
+
+    return {
+        "base_url": origin.base_url,
+        "credential": origin.credential,
+        "policy_revision": origin.policy_revision,
+        "behavior_fingerprint": origin.behavior_fingerprint,
+        "proxy_request_id": origin.proxy_request_id,
+        "wire_api": origin.wire_api,
+        "sampling_transport": origin.sampling_transport,
+        "expires_at": origin.expires_at,
+    }
+
+
 class ContractContainerSession:
     """A :class:`~.ports.ContainerSession` over the declared route surface."""
 
@@ -508,7 +531,7 @@ class ContractContainerSession:
                     "policy_revision": first.policy_revision,
                     "transport": first.sampling_transport,
                     "wire_api": first.wire_api,
-                    "sampler_origin": first.base_url,
+                    "sampler_origin": _origin_payload(first),
                     "policy_ref": first.credential,
                     "handshake_id": self.handshake_id,
                     "agreement_digest": self.agreement_digest,
@@ -520,7 +543,9 @@ class ContractContainerSession:
                 group = topology.parameter_group_for(instance.agent_instance_id)
                 origin = origins.get(group, first)
                 policy_ref = origin.credential
+                instance_origin = _origin_payload(origin)
             else:
+                instance_origin = None
                 policy_ref = instance.pinned_identity or ""
                 if not policy_ref:
                     raise SessionError(
@@ -531,6 +556,7 @@ class ContractContainerSession:
                 {
                     "agent_instance_id": instance.agent_instance_id,
                     "policy_ref": policy_ref,
+                    "sampler_origin": instance_origin,
                     "trainable": instance.trainable,
                 }
             )

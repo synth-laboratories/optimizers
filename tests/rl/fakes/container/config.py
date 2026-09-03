@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -198,7 +198,17 @@ class ContainerConfig:
     deferred_scoring: bool = False
     quiescence_supported: bool = True
     settlement_window_seconds: float = 0.0
+    #: The measure the container's reward contract emits when nothing varies it.
     reward_value: float = 1.0
+    #: Per-attempt measure. A single constant makes every attempt in a group
+    #: tie, and a group with no ordering carries no credit, so a fake that only
+    #: ever declares one value cannot drive a run as far as a train call. This
+    #: is either a callable ``(task_id, sample_index) -> float`` or a mapping
+    #: keyed by ``(task_id, sample_index)`` or by ``sample_index`` alone;
+    #: whatever it does not answer falls back to ``reward_value``.
+    reward_value_by_sample: (
+        Mapping[Any, float] | Callable[[str, int], float] | None
+    ) = None
     optimized_team_id: str | None = None
     evaluation_plan_id: str = "eval_plan_v1"
     judge_model_id: str = "judge/model-a"
@@ -228,6 +238,39 @@ class ContainerConfig:
                 raise RecordError(f"unknown clause override {clause_id!r}")
             if verdict not in VERDICTS:
                 raise RecordError(f"unknown verdict {verdict!r}")
+
+    def reward_for(self, task_id: str, sample_index: int) -> float:
+        """The measure this container declares for one attempt of one row."""
+
+        source = self.reward_value_by_sample
+        if source is None:
+            return float(self.reward_value)
+        if callable(source):
+            return float(source(task_id, sample_index))
+        for key in ((task_id, sample_index), sample_index):
+            if key in source:
+                return float(source[key])
+        return float(self.reward_value)
+
+    @property
+    def declared_splits(self) -> dict[str, list[str]]:
+        """The splits the container advertises, from one place only."""
+
+        splits = dict(self.splits) or {
+            "train": list(self.task_ids),
+            "eval": list(self.task_ids[:1]),
+        }
+        return {name: list(rows) for name, rows in splits.items()}
+
+    @property
+    def reward_channel_ids(self) -> tuple[str, ...]:
+        """The channels this container's reward contract will actually emit."""
+
+        teams = self.topology.teams
+        if self.topology.reward_relation in {"competitive_rank", "competitive_margin"}:
+            ordered = sorted(teams, key=lambda team: (not team.trainable, team.team_id))
+            return tuple(f"score::{team.team_id}" for team in ordered)
+        return ("score",)
 
     @property
     def contract_hash(self) -> str:

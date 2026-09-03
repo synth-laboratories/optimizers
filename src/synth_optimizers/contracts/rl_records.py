@@ -87,6 +87,26 @@ def _ints(payload: Mapping[str, Any], name: str) -> tuple[int, ...]:
     return tuple(int(item) for item in value)
 
 
+#: A fixed conversation both sides can render. Comparing declared identity
+#: against declared identity proves nothing: two builds can agree on every
+#: field of a profile and still emit different tokens. Rendering the same
+#: canary and comparing the digest is the only check that touches what
+#: actually goes into training.
+CANARY_MESSAGES: tuple[Mapping[str, str], ...] = (
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "synth renderer canary 0123456789"},
+)
+
+
+def canary_digest(prompt_token_ids: Sequence[int]) -> str:
+    """Digest of the tokens a renderer produces for the canary conversation."""
+
+    tokens = [int(token) for token in prompt_token_ids]
+    if not tokens:
+        raise RecordError("a renderer canary produced no tokens")
+    return digest({"canary": "cispo.renderer_canary.v1", "prompt_token_ids": tokens}, length=32)
+
+
 @dataclass(frozen=True, slots=True)
 class RendererProfile:
     """Pinned renderer identity. A version string alone is not an identity."""
@@ -100,6 +120,10 @@ class RendererProfile:
     stop_token_ids: tuple[int, ...]
     modalities: tuple[str, ...] = ("text",)
     add_generation_prompt: bool = True
+    #: Digest of this renderer's own tokens for CANARY_MESSAGES. Optional,
+    #: because a container declaring none can still run — the receipt then says
+    #: agreement was never proven, rather than implying it was.
+    canary_digest: str = ""
 
     def __post_init__(self) -> None:
         if not self.profile_id.strip():
@@ -136,6 +160,32 @@ class RendererProfile:
                 f"{self.profile_id}@{self.fingerprint} != {other.profile_id}@{other.fingerprint}"
             )
 
+    @property
+    def agreement_proven(self) -> bool:
+        return bool(self.canary_digest)
+
+    def assert_renders_like(self, prompt_token_ids: Sequence[int]) -> None:
+        """Prove a renderer agrees with this profile on real tokens.
+
+        Two builds can agree on every declared field and still tokenize
+        differently: a patched template, a tokenizer rebuilt from different
+        files, a projection applied on one side only. Comparing a declared
+        profile against a declared profile catches none of those.
+        """
+
+        if not self.canary_digest:
+            raise RecordError(
+                f"renderer profile {self.profile_id} declares no canary digest, "
+                "so agreement on tokens cannot be proven"
+            )
+        observed = canary_digest(prompt_token_ids)
+        if observed != self.canary_digest:
+            raise RecordError(
+                f"renderer disagreement on {self.profile_id}: declared canary digest "
+                f"{self.canary_digest}, this renderer produced {observed} — the two builds "
+                "agree on every declared field and tokenize differently"
+            )
+
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any]) -> "RendererProfile":
         modalities = payload.get("modalities") or ("text",)
@@ -149,6 +199,7 @@ class RendererProfile:
             stop_token_ids=_ints(payload, "stop_token_ids"),
             modalities=tuple(str(item) for item in modalities),
             add_generation_prompt=bool(payload.get("add_generation_prompt", True)),
+            canary_digest=str(payload.get("canary_digest") or ""),
         )
 
 

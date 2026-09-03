@@ -472,3 +472,44 @@ def test_a_call_declares_its_author_rather_than_leaving_it_to_be_inferred() -> N
             record.validate_for_training()
     with pytest.raises(RecordError, match="unknown author_kind"):
         call(author_kind="mystery")
+
+
+def test_a_renderer_proves_agreement_on_tokens_not_on_declarations() -> None:
+    """Two builds can agree on every declared field and tokenize differently.
+
+    That is the failure a profile comparison cannot see: a patched template, a
+    tokenizer rebuilt from different files, a projection applied on one side.
+    """
+
+    from synth_optimizers.contracts.rl_records import CANARY_MESSAGES, canary_digest
+
+    tokens = (1, 2, 3, 4, 5)
+    proven = profile(canary_digest=canary_digest(tokens))
+    assert proven.agreement_proven
+    proven.assert_renders_like(tokens)
+
+    # Same declared identity, different tokens: refused.
+    assert proven.fingerprint == profile(canary_digest=canary_digest((9, 9))).fingerprint
+    with pytest.raises(RecordError, match="tokenize differently"):
+        proven.assert_renders_like((1, 2, 3, 4, 6))
+
+    # A profile that declares no canary cannot claim agreement.
+    unproven = profile()
+    assert not unproven.agreement_proven
+    with pytest.raises(RecordError, match="cannot be proven"):
+        unproven.assert_renders_like(tokens)
+
+    with pytest.raises(RecordError, match="produced no tokens"):
+        canary_digest(())
+    assert len(CANARY_MESSAGES) == 2
+
+
+def test_the_canary_is_evidence_not_identity() -> None:
+    """A profile is the same profile whether or not it has been proven."""
+
+    from synth_optimizers.contracts.rl_records import canary_digest
+
+    bare = profile()
+    proven = profile(canary_digest=canary_digest((1, 2, 3)))
+    assert bare.fingerprint == proven.fingerprint
+    bare.assert_matches(proven)

@@ -10,7 +10,8 @@ from __future__ import annotations
 import json
 import threading
 import urllib.parse
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import TracebackType
 from typing import Any
@@ -26,10 +27,13 @@ from synth_optimizers.contracts.rl_identity import (
     TopologyError,
 )
 from synth_optimizers.contracts.rl_records import InferenceCall, RecordError, digest
+from synth_optimizers.rl.capabilities import ClauseResult, canonical_capability_hash
+from synth_optimizers.rl.handshake import Obligations, TaskResolution, compute_agreement_digest
 
 from .client import ContainerClient
 from .codecs import (
     _call_payload,
+    _capability_payload,
     _episode_payload,
     _receipt_payload,
     _renderer_payload,
@@ -84,73 +88,16 @@ class _State:
     # -- capabilities --------------------------------------------------- #
 
     def capability_document(self) -> dict[str, Any]:
-        cfg = self.cfg
-        return {
-            "schema_version": "training.rollout.capabilities.v1",
-            "contract_version": CONTRACT_VERSION,
-            "capability_epoch": self.capability_epoch,
-            "container_id": cfg.container_id,
-            "image_digest": cfg.image_digest,
-            "contract_hash": cfg.contract_hash,
-            "lifecycle": {
-                "asynchronous_submission": True,
-                "idempotent_attempt_ids": True,
-                "cancellation": True,
-                "lease": {
-                    "ttl_seconds": cfg.lease_ttl_seconds,
-                    "renewable": cfg.lease_renewable,
-                    "heartbeat_route": DECLARED_ROUTES["rollout_renew_route"],
-                },
-                "lease_ttl_seconds": cfg.lease_ttl_seconds,
-                "max_concurrency": cfg.advertised_concurrency,
-                "exactly_one_terminal": True,
-                "pause_resume": True,
-                "correlation_fields": list(CORRELATION_FIELDS),
-            },
-            "evidence": {
-                "trace_v5": True,
-                "behavior_logprobs": True,
-                "strict_prefix_stitching": True,
-                "masking_convention": "renderer_sampled_mask_x_policy_authorship",
-                "wire_objects_persisted": True,
-                "artifact_by_reference": cfg.artifact_by_reference,
-                "tito": cfg.tito_supported,
-                "sampling_transports": (
-                    ["message_in_capture_out", "tokens_in_tokens_out"]
-                    if cfg.tito_supported
-                    else ["message_in_capture_out"]
-                ),
-                "wire_api": cfg.wire_api,
-                "probe_binding": cfg.probe_binding_supported,
-                "prompt_budget_policy": cfg.prompt_budget_policy,
-                "max_prompt_tokens": cfg.max_prompt_tokens,
-            },
-            "reward": {
-                "authority": "container",
-                "reward_kind": cfg.reward_kind,
-                "deferred_scoring": cfg.deferred_scoring,
-                "quiescence": cfg.quiescence_supported,
-                "settlement_window_seconds": cfg.settlement_window_seconds,
-                "evaluation_plan_id": cfg.evaluation_plan_id,
-                "channels_per_team": cfg.topology.reward_relation != "cooperative",
-            },
-            "topology": _topology_payload(cfg),
-            "horizon": {
-                "horizon_kind": cfg.horizon.horizon_kind,
-                "value": cfg.horizon.value,
-                "time_dilation": cfg.horizon.time_dilation,
-                "grace_seconds": cfg.horizon.grace_seconds,
-                # Declared for a step or tick horizon; the executor may not
-                # guess a duration for a unit that carries none.
-                "seconds_per_unit": cfg.horizon.seconds_per_unit,
-                "horizon_seconds": cfg.horizon_seconds,
-            },
-            "renderer_profile": _renderer_payload(cfg.renderer_profile),
-            "advertised_concurrency": cfg.advertised_concurrency,
-        }
+        """The advertisement as it goes on the wire: hash included, no envelope."""
+
+        document = _capability_payload(self.cfg, capability_epoch=self.capability_epoch)
+        document["capability_hash"] = canonical_capability_hash(document)
+        return document
 
     def capability_hash(self) -> str:
-        return digest(self.capability_document(), length=32)
+        return canonical_capability_hash(
+            _capability_payload(self.cfg, capability_epoch=self.capability_epoch)
+        )
 
     # -- events --------------------------------------------------------- #
 
@@ -262,6 +209,87 @@ def _clause_verdicts(
     return clauses, obligations
 
 
+class _EchoRequest:
+    """The requirement document as received, for the canonical digest.
+
+    ``compute_agreement_digest`` needs the executor's request payload and
+    nothing else about it; the container holds the bytes it was sent, so it
+    hands them back verbatim rather than re-deriving a request it did not
+    author.
+    """
+
+    __slots__ = ("_payload",)
+
+    def __init__(self, payload: Mapping[str, Any]) -> None:
+        self._payload = {
+            key: value for key, value in payload.items() if key != "renew_of"
+        }
+
+    def to_payload(self) -> dict[str, Any]:
+        return dict(self._payload)
+
+
+def _agreement_digest(
+    state: _State,
+    request: Mapping[str, Any],
+    *,
+    handshake_id: str,
+    capability_hash: str,
+    clauses: Sequence[Mapping[str, Any]],
+    obligations: Mapping[str, Any],
+    resolution: Sequence[Mapping[str, Any]],
+) -> str:
+    """The digest both sides compute, from the shared handshake module."""
+
+    return compute_agreement_digest(
+        _EchoRequest(request),  # type: ignore[arg-type]
+        handshake_id=handshake_id,
+        capability_hash=capability_hash,
+        renderer_fingerprint=state.cfg.renderer_profile.fingerprint,
+        taskset_resolution=[
+            TaskResolution(
+                task_id=str(row["task_id"]),
+                content_digest=str(row["content_digest"]),
+                topology_ref=str(row["topology_ref"]),
+            )
+            for row in resolution
+        ],
+        obligations=Obligations.from_payload(obligations),
+        clauses=[
+            ClauseResult(
+                clause_id=str(row["clause_id"]),
+                verdict=str(row["verdict"]),
+                reason=str(row.get("reason") or ""),
+                source="container",
+            )
+            for row in clauses
+        ],
+    )
+
+
+def _renew(state: _State, handshake_id: str) -> tuple[int, dict[str, Any]]:
+    """Extend an agreement. A renewal never mints a new one.
+
+    The handshake id and the agreement digest are what the executor's ledger
+    gates every attempt on, so a renewal that changed either would not be a
+    renewal: it would silently replace the agreement the run is already
+    executing under.
+    """
+
+    cfg = state.cfg
+    record = dict(state.handshakes[handshake_id])
+    record["expires_at"] = state.clock.rfc3339(cfg.handshake_ttl_seconds)
+    record["expires_at_offset"] = state.clock.now() + cfg.handshake_ttl_seconds
+    record["clock"] = {
+        "container_time": state.clock.rfc3339(cfg.clock_skew_seconds),
+        "measured_skew_seconds": cfg.clock_skew_seconds,
+        "tolerance_seconds": cfg.skew_tolerance_seconds,
+    }
+    record["renewed"] = True
+    state.handshakes[handshake_id] = record
+    return 200, dict(record)
+
+
 def _handshake(state: _State, request: Mapping[str, Any]) -> tuple[int, dict[str, Any]]:
     cfg = state.cfg
     renew_of = request.get("renew_of")
@@ -277,6 +305,7 @@ def _handshake(state: _State, request: Mapping[str, Any]) -> tuple[int, dict[str
                 "prior_capability_hash": prior["capability_hash"],
                 "capability_hash": capability_hash,
             }
+        return _renew(state, str(renew_of))
     clauses, obligations = _clause_verdicts(state, request)
     by_id = {clause["clause_id"]: clause for clause in clauses}
     rejected_mandatory = [
@@ -302,16 +331,14 @@ def _handshake(state: _State, request: Mapping[str, Any]) -> tuple[int, dict[str
     accepted = not rejected_mandatory and not unaccepted_degraded
     state.counter += 1
     handshake_id = f"hs_{digest([cfg.container_id, state.counter, request], length=16)}"
-    agreement_digest = digest(
-        {
-            "request": request,
-            "capability_hash": capability_hash,
-            "clauses": clauses,
-            "obligations": obligations,
-            "taskset_resolution": resolution,
-            "renderer_profile": _renderer_payload(cfg.renderer_profile),
-        },
-        length=32,
+    agreement_digest = _agreement_digest(
+        state,
+        request,
+        handshake_id=handshake_id,
+        capability_hash=capability_hash,
+        clauses=clauses,
+        obligations=obligations,
+        resolution=resolution,
     )
     record = {
         "schema_version": HANDSHAKE_SCHEMA_VERSION,
@@ -711,20 +738,25 @@ def _handle(
             "contract_version": CONTRACT_VERSION,
         }
     if method == "GET" and path == "/training/capabilities":
-        document = state.capability_document()
-        return 200, {"capabilities": document, "capability_hash": state.capability_hash()}
+        # The document is the body: the client hands the response straight to
+        # ``CapabilityDocument.from_payload``, envelope-free.
+        return 200, state.capability_document()
     if method == "POST" and path == "/training/handshake":
         return _handshake(state, body)
     if method == "GET" and path == "/taskset":
-        splits = dict(cfg.splits) or {"train": list(cfg.task_ids), "eval": list(cfg.task_ids[:1])}
         return 200, {
             "taskset_id": cfg.taskset_id,
             "version": cfg.taskset_version,
-            "splits": {name: list(rows) for name, rows in splits.items()},
+            "splits": cfg.declared_splits,
             "task_family": cfg.task_family,
         }
-    if method == "GET" and path == "/taskset/tasks":
-        requested = tuple(dict.fromkeys(_csv(query.get("ids")) or cfg.task_ids))
+    if method == "POST" and path == "/taskset/tasks":
+        # ``ROUTE_METHODS`` declares this route POST: a row request carries a
+        # list of ids and a split, not a query string.
+        asked = body.get("ids")
+        if isinstance(asked, str):
+            asked = _csv([asked])
+        requested = tuple(dict.fromkeys(tuple(str(item) for item in asked or ()) or cfg.task_ids))
         unknown = [task_id for task_id in requested if task_id not in cfg.task_ids]
         if unknown:
             return 404, {"error": "unknown_task", "reason": f"{unknown}"}
@@ -1022,6 +1054,21 @@ class RunningContainer:
 
     def client(self, **kwargs: Any) -> ContainerClient:
         return ContainerClient(self.base_url, **kwargs)
+
+    def set_reward_source(
+        self,
+        source: Mapping[Any, float] | Callable[[str, int], float] | None,
+    ) -> None:
+        """Re-declare the per-attempt measure this container will emit.
+
+        A single constant makes every attempt in a group tie, and a tied group
+        carries no ordering, so a caller that needs variance says so here
+        rather than reaching into the container's private state.
+        """
+
+        with self._state.lock:
+            self._state.cfg = replace(self._state.cfg, reward_value_by_sample=source)
+            self.config = self._state.cfg
 
     def revoke_handshake(self, handshake_id: str) -> None:
         """The container may revoke a handshake when it degrades."""

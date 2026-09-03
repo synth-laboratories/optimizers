@@ -483,11 +483,16 @@ def _reward(
         )
     teams = cfg.topology.teams or (Team(team_id="solo", trainable=True),)
     competitive = cfg.topology.reward_relation in {"competitive_rank", "competitive_margin"}
+    # The declared measure for *this* attempt: one constant for every attempt
+    # would leave every group tied and no group with an ordering to credit.
+    value = cfg.reward_for(
+        attempt.task_id, int(attempt.correlation.get("sample_index") or 0)
+    )
     channels: list[RewardChannel] = []
     if competitive:
         ordered = sorted(teams, key=lambda team: (not team.trainable, team.team_id))
         for rank, team in enumerate(ordered, start=1):
-            measure = round(cfg.reward_value / rank, 6)
+            measure = round(value / rank, 6)
             channels.append(
                 RewardChannel(
                     channel_id=f"score::{team.team_id}",
@@ -502,7 +507,7 @@ def _reward(
             RewardChannel(
                 channel_id="score",
                 team_id=team.team_id if len(teams) > 1 else None,
-                measure=cfg.reward_value,
+                measure=value,
             )
         )
     wanted_team = cfg.optimized_team_id

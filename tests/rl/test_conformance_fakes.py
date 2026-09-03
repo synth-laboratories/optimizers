@@ -881,7 +881,7 @@ def test_probe_binding_is_refused_when_it_was_not_advertised() -> None:
         with pytest.raises(ContainerError) as caught:
             client.bind_policy(kind="probe")
         assert caught.value.payload["error"] == "probe_unsupported"
-        assert client.capabilities()["capabilities"]["evidence"]["probe_binding"] is False
+        assert client.capabilities()["policy"]["probe_binding"] is False
     finally:
         container.shutdown()
 
@@ -1045,9 +1045,9 @@ def test_a_lease_is_advertised_not_derived_from_the_horizon() -> None:
     config = scenarios.competitive_realtime()
     container, client = _drive(config)
     try:
-        capabilities = client.capabilities()["capabilities"]
+        capabilities = client.capabilities()
         lease = capabilities["lifecycle"]["lease"]
-        horizon = capabilities["horizon"]
+        horizon = capabilities["topology"]["horizon"]
         assert lease["ttl_seconds"] == config.lease_ttl_seconds
         assert lease["renewable"] is True
         assert lease["heartbeat_route"] == DECLARED_ROUTES["rollout_renew_route"]
@@ -1064,10 +1064,10 @@ def test_a_unit_horizon_declares_its_conversion() -> None:
     config = scenarios.deferred_program_quiesced()
     container, client = _drive(config)
     try:
-        horizon = client.capabilities()["capabilities"]["horizon"]
+        horizon = client.capabilities()["topology"]["horizon"]
         assert horizon["horizon_kind"] == "env_ticks"
         assert horizon["seconds_per_unit"] == pytest.approx(0.5)
-        assert horizon["horizon_seconds"] == pytest.approx(50.0)
+        assert horizon["value"] * horizon["seconds_per_unit"] == pytest.approx(50.0)
     finally:
         container.shutdown()
 

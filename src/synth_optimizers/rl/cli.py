@@ -66,10 +66,10 @@ LIFECYCLE_CONTROLS = ("pause", "drain", "resume", "stop")
 class Plane:
     """The three ports one live run is driven through.
 
-    There is no concrete container client in this package -- ``contract`` names
-    the client as an abstract seam -- so the CLI cannot assemble a live plane by
-    itself. ``--plane MODULE:FACTORY`` names the assembly, and the factory is
-    called with the parsed run configuration and returns one of these.
+    :mod:`synth_optimizers.rl.plane` assembles these from a run configuration
+    and is what a command reaches when no assembly is named.
+    ``--plane MODULE:FACTORY`` overrides it: the factory is called with the
+    parsed run configuration and returns one of these.
     """
 
     session: ContainerSession
@@ -122,7 +122,7 @@ def register(subcommands: argparse._SubParsersAction) -> None:
     run.add_argument(
         "--plane",
         metavar="MODULE:FACTORY",
-        help="Assembles the session, sampler gateway, and policy binder for this run.",
+        help="Overrides the default assembly of the session, gateway, and binder.",
     )
     run.add_argument(
         "--validate-only",
@@ -177,7 +177,7 @@ def register(subcommands: argparse._SubParsersAction) -> None:
     evaluate.add_argument(
         "--plane",
         metavar="MODULE:FACTORY",
-        help="Assembles the session, sampler gateway, and policy binder for the arms.",
+        help="Overrides the default assembly of the session, gateway, and binder.",
     )
     evaluate.add_argument("--receipts-dir", help="Where to write the evaluation receipt.")
     evaluate.add_argument(
@@ -299,14 +299,21 @@ def _run(args: argparse.Namespace) -> int:
     if not args.receipts:
         raise SystemExit("--receipts is required: a run that leaves no receipt is not a run")
     plane = _open_plane(args, config)
-    report = execute(
-        config,
-        plane.session,
-        plane.gateway,
-        plane.binder,
-        clock=plane.clock or RunClock(),
-        plan=ExecutionPlan(receipts=Path(args.receipts), max_ticks=args.max_ticks),
-    )
+    # An assembly that opened a listener and a catalog closes them when the run
+    # ends, however it ends. A plane that owns nothing declares no ``close``.
+    release = getattr(plane, "close", None)
+    try:
+        report = execute(
+            config,
+            plane.session,
+            plane.gateway,
+            plane.binder,
+            clock=plane.clock or RunClock(),
+            plan=ExecutionPlan(receipts=Path(args.receipts), max_ticks=args.max_ticks),
+        )
+    finally:
+        if callable(release):
+            release()
     payload = {
         "run_id": report.run_id,
         "plan_hash": report.plan_hash,
@@ -735,15 +742,43 @@ def _rehandshake_hook(args: argparse.Namespace) -> Any:
     return lambda: identity
 
 
+def _default_plane(config: Any) -> Plane:
+    """No ``--plane``: assemble the real one from the parsed configuration.
+
+    Every construction failure arrives here as a typed refusal naming what was
+    missing -- a credential, a reachable container, a writable catalog path --
+    and is re-raised as one legible line rather than a traceback.
+    """
+
+    from .plane import PlaneError, build_plane
+
+    try:
+        return build_plane(config)
+    except PlaneError as error:
+        raise SystemExit(
+            f"cannot assemble the container plane from this configuration: {error}. "
+            "Pass --plane MODULE:FACTORY to name an assembly of your own, or resolve "
+            "offline with --resolve-only"
+        ) from error
+
+
 def _open_plane(args: argparse.Namespace, config: Any) -> Plane:
-    """The live session, sampler gateway, and binder, from a named factory."""
+    """The live session, sampler gateway, and binder.
+
+    ``--plane MODULE:FACTORY`` names an assembly and overrides everything. In
+    its absence the default assembly is built from the run configuration, so a
+    command that was handed one refuses only when there is no configuration to
+    build from.
+    """
 
     spec = getattr(args, "plane", None)
     if not spec:
+        if config is not None:
+            return _default_plane(config)
         raise SystemExit(
-            "no live container plane is assembled here: this package names the container "
-            "client as an abstract seam and builds no concrete one. Pass --plane "
-            "MODULE:FACTORY, or resolve offline with --resolve-only"
+            "no container plane can be assembled without a run configuration: pass "
+            "--config so the default plane has a container to build against, name one "
+            "with --plane MODULE:FACTORY, or resolve offline with --resolve-only"
         )
     module_name, _, attribute = str(spec).partition(":")
     if not module_name or not attribute:

@@ -2,13 +2,11 @@
 
 Three pieces, none of which belongs in the engine:
 
-* :class:`CanonicalClient` is a ``ContainerClient`` over a running fake. The
-  fakes were built before the shared ``cispo.capabilities.v1`` document and the
-  canonical agreement digest existed, so this adapter renders the fake's own
-  declaration into the canonical one and re-derives the digest the handshake
-  module computes. Everything else is a straight pass-through to the declared
-  route. See the report: this adapter is the shape of the change the fakes
-  need, not a behavior the executor should carry.
+* :class:`CanonicalClient` is a ``ContainerClient`` over a running fake: every
+  method is a straight pass-through to the declared route, and it records the
+  call order so a test can assert the startup sequence. The fake serves the
+  canonical ``cispo.capabilities.v1`` document and the canonical agreement
+  digest itself; nothing here rewrites what the container said.
 * :class:`RecordingGateway` is a ``SamplerGateway``. It owns the renderer
   profile and mints one origin per attempt; it never samples, because the fake
   produces the generations.
@@ -25,7 +23,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -38,7 +36,6 @@ from synth_optimizers.contracts.rl_records import (
     SamplingProfile,
     TrainableEpisode,
 )
-from synth_optimizers.rl.capabilities import canonical_capability_hash
 from synth_optimizers.rl.catalog import (
     CheckpointArtifacts,
     CheckpointCatalog,
@@ -49,12 +46,6 @@ from synth_optimizers.rl.catalog import (
     TrainingStateRef,
 )
 from synth_optimizers.rl.contract import ContainerClient, ContainerContract, ContainerStatusError
-from synth_optimizers.rl.handshake import (
-    ClauseResult,
-    Obligations,
-    TaskResolution,
-    compute_agreement_digest,
-)
 from synth_optimizers.rl.policy_sets import (
     ComponentSaveAttempt,
     PolicySetComponent,
@@ -101,53 +92,8 @@ class PlaneClock:
 # --------------------------------------------------------------------------- #
 
 
-class _EchoRequest:
-    """Enough of a handshake request for the digest function: its payload."""
-
-    def __init__(self, payload: Mapping[str, Any]) -> None:
-        self._payload = dict(payload)
-
-    def to_payload(self) -> dict[str, Any]:
-        return dict(self._payload)
-
-
-def _reward_channels(config: ContainerConfig) -> tuple[str, ...]:
-    """The channels the container's reward contract will actually emit."""
-
-    teams = config.topology.teams
-    if config.topology.reward_relation in {"competitive_rank", "competitive_margin"}:
-        ordered = sorted(teams, key=lambda team: (not team.trainable, team.team_id))
-        return tuple(f"score::{team.team_id}" for team in ordered)
-    return ("score",)
-
-
-def _topology_with_horizon(
-    config: ContainerConfig, topology: Mapping[str, Any]
-) -> dict[str, Any]:
-    """A topology that declares no horizon still runs under one: the fallback."""
-
-    payload = dict(topology)
-    # The fakes name a pinned opponent ``policy_ref``; the canonical capability
-    # document names it ``pinned_identity``. Same fact, two spellings.
-    payload["agent_instances"] = [
-        {**dict(row), "pinned_identity": row.get("pinned_identity") or row.get("policy_ref")}
-        for row in topology.get("agent_instances") or ()
-    ]
-    if payload.get("horizon"):
-        return payload
-    horizon = config.horizon
-    payload["horizon"] = {
-        "horizon_kind": horizon.horizon_kind,
-        "value": horizon.value,
-        "time_dilation": horizon.time_dilation,
-        "grace_seconds": horizon.grace_seconds,
-        "seconds_per_unit": horizon.seconds_per_unit,
-    }
-    return payload
-
-
 class CanonicalClient(ContainerClient):
-    """Declared routes against a fake, rendered into the canonical schemas."""
+    """The declared routes of a running fake, behind the shared interface."""
 
     def __init__(
         self,
@@ -159,8 +105,9 @@ class CanonicalClient(ContainerClient):
         self._config = container.config
         self._client = container.client()
         self._contract = ContainerContract.from_metadata(self._client.call("GET", "/metadata"))
-        self._reward_for = reward_for or (lambda _task_id, index: 0.25 * (index + 1))
-        self._sample_of: dict[str, tuple[str, int]] = {}
+        # One constant measure would tie every attempt in a group; the
+        # container carries the per-attempt reward source itself.
+        container.set_reward_source(reward_for or (lambda _task_id, index: 0.25 * (index + 1)))
         self.handshake_id = ""
         self.agreement_digest = ""
         self.calls: list[str] = []
@@ -181,22 +128,6 @@ class CanonicalClient(ContainerClient):
     def fetch_reference(self, reference: str) -> Mapping[str, Any]:
         return self._client.call("GET", reference)
 
-    def _apply_reward(self, rollout_id: str) -> None:
-        """Vary the container's declared measure per sample.
-
-        ``ContainerConfig.reward_value`` is one constant, so every attempt a
-        fake serves ties with every other and no group ever carries an
-        ordering. Re-declaring the container's reward before it seals an
-        attempt is how this harness produces a group with variance; the reward
-        is still the container's own, computed by its own evidence path.
-        """
-
-        task_id, sample_index = self._sample_of.get(rollout_id, ("", 0))
-        value = self._reward_for(task_id, sample_index)
-        state = self._container._state  # noqa: SLF001 - the fakes expose no setter
-        with state.lock:
-            state.cfg = replace(self._config, reward_value=value)
-
     # -- declared routes ---------------------------------------------------
 
     def health(self) -> Mapping[str, Any]:
@@ -209,141 +140,15 @@ class CanonicalClient(ContainerClient):
 
     def capabilities(self) -> Mapping[str, Any]:
         self._record("capabilities")
-        declared = self._client.capabilities()["capabilities"]
-        config = self._config
-        topology = self._client.topology(config.topology.topology_id)
-        taskset = self._client.taskset()
-        document: dict[str, Any] = {
-            "schema_version": "cispo.capabilities.v1",
-            "capability_epoch": declared["capability_epoch"],
-            "container_id": declared["container_id"],
-            "container_image_digest": declared["image_digest"],
-            "contract_version": declared["contract_version"],
-            "renderer_profile": declared["renderer_profile"],
-            "discovery": {
-                "taskset_id": taskset["taskset_id"],
-                "taskset_version": str(taskset["version"]),
-                "splits": sorted(taskset["splits"]),
-                "task_content_digests": True,
-                "deterministic_lookup": True,
-                "duplicate_free": True,
-            },
-            "policy": {
-                "binding_transport": config.sampling_transport,
-                "wire_api": config.wire_api,
-                "session_scoped_sampler_origin": True,
-                "embeds_credentials": False,
-                "revision_immutable_after_admission": True,
-                "records_policy_revision": True,
-                "probe_binding": config.probe_binding_supported,
-                "prompt_budget_policy": config.prompt_budget_policy,
-            },
-            "lifecycle": {
-                "max_concurrency": declared["lifecycle"]["max_concurrency"],
-                "lease_ttl_seconds": declared["lifecycle"]["lease_ttl_seconds"],
-                "supports_idempotency": True,
-                "supports_cancellation": True,
-                "supports_lease_renewal": config.lease_renewable,
-                "exactly_one_terminal_result": True,
-                "supports_pause_resume": True,
-                "straggler_grace_seconds": config.horizon.grace_seconds,
-            },
-            "evidence": {
-                "trace_v5": True,
-                "behavior_logprobs": True,
-                "strict_prefix": True,
-                "masking": True,
-                "wire_objects": True,
-                "artifact_reference": config.artifact_by_reference,
-                "tokens_in_tokens_out": config.tito_supported,
-            },
-            "reward": {
-                "authority": "container",
-                "binds_trace_digest": True,
-                "quiescence": config.quiescence_supported,
-                "horizon_clipping": True,
-                "channels": list(_reward_channels(config)),
-                "reward_relation": config.topology.reward_relation,
-                "evaluation_plan_id": config.evaluation_plan_id,
-                "settlement_window_seconds": config.settlement_window_seconds,
-                "deferred_scoring": config.deferred_scoring,
-            },
-            "recovery": {"restart": True, "stale_discard": True},
-            "topology": _topology_with_horizon(config, topology),
-            "clock": {"skew_tolerance_seconds": config.skew_tolerance_seconds},
-        }
-        document["capability_hash"] = canonical_capability_hash(document)
-        return {"capabilities": document}
+        return self._client.capabilities()
 
     def handshake(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         self._record("handshake")
-        renew_of = str(request.get("renew_of") or "")
         payload = dict(self._client.handshake(dict(request)))
-        if renew_of:
-            return self._renewal(renew_of, payload)
-        capability_hash = str(self.capabilities()["capabilities"]["capability_hash"])
-        payload["schema_version"] = "cispo.handshake.v1"
-        payload["capability_hash"] = capability_hash
-        clauses = tuple(
-            ClauseResult(
-                clause_id=str(row["clause_id"]),
-                verdict=str(row["verdict"]),
-                reason=str(row.get("reason") or ""),
-                source="container",
-            )
-            for row in payload["clauses"]
-        )
-        resolution = tuple(
-            TaskResolution(
-                task_id=str(row["task_id"]),
-                content_digest=str(row["content_digest"]),
-                topology_ref=str(row["topology_ref"]),
-            )
-            for row in payload["taskset_resolution"]
-        )
-        renderer = RendererProfile.from_payload(
-            self._client.capabilities()["capabilities"]["renderer_profile"]
-        )
-        payload["agreement_digest"] = compute_agreement_digest(
-            _EchoRequest(request),
-            handshake_id=str(payload["handshake_id"]),
-            capability_hash=capability_hash,
-            renderer_fingerprint=renderer.fingerprint,
-            taskset_resolution=resolution,
-            obligations=Obligations.from_payload(payload["obligations"]),
-            clauses=clauses,
-        )
         if payload.get("accepted"):
-            state = self._container._state  # noqa: SLF001 - fakes keep the record
-            with state.lock:
-                record = state.handshakes.get(str(payload["handshake_id"]))
-                if record is not None:
-                    record["agreement_digest"] = payload["agreement_digest"]
             self.handshake_id = str(payload["handshake_id"])
             self.agreement_digest = str(payload["agreement_digest"])
         return payload
-
-    def _renewal(self, handshake_id: str, payload: Mapping[str, Any]) -> Mapping[str, Any]:
-        """A renewal extends the agreement it renews; it never mints a new one.
-
-        The fake answers every handshake with a fresh id and digest, so the
-        renewal is re-addressed here to the agreement the run already holds.
-        """
-
-        state = self._container._state  # noqa: SLF001 - the fakes keep the record
-        with state.lock:
-            record = dict(state.handshakes[handshake_id])
-            record["expires_at"] = payload["expires_at"]
-            record["expires_at_offset"] = payload["expires_at_offset"]
-            state.handshakes[handshake_id] = record
-        renewed = dict(payload)
-        renewed["schema_version"] = "cispo.handshake.v1"
-        renewed["handshake_id"] = handshake_id
-        renewed["agreement_digest"] = record["agreement_digest"]
-        renewed["capability_hash"] = str(
-            self.capabilities()["capabilities"]["capability_hash"]
-        )
-        return renewed
 
     def taskset(self) -> Mapping[str, Any]:
         self._record("taskset")
@@ -351,7 +156,9 @@ class CanonicalClient(ContainerClient):
 
     def taskset_tasks(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         self._record("taskset_tasks")
-        return self._client.taskset_tasks(request.get("ids") or ())
+        return self._client.taskset_tasks(
+            request.get("ids") or (), split=str(request.get("split") or "train")
+        )
 
     def topology(self, topology_id: str) -> Mapping[str, Any]:
         self._record("topology")
@@ -367,19 +174,10 @@ class CanonicalClient(ContainerClient):
 
     def submit_rollout(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         self._record("submit_rollout")
-        payload = dict(request)
-        correlation = dict(payload.get("correlation") or {})
-        accepted = self._client.submit(**payload)
-        rollout_id = str(accepted["rollout_id"])
-        self._sample_of[rollout_id] = (
-            str(payload.get("task_id") or ""),
-            int(correlation.get("sample_index") or 0),
-        )
-        return accepted
+        return self._client.submit(**dict(request))
 
     def rollout_state(self, rollout_id: str) -> Mapping[str, Any]:
         self._record("rollout_state")
-        self._apply_reward(rollout_id)
         return self._client.state(rollout_id)
 
     def rollout_events(self, rollout_id: str, *, cursor: str | None = None) -> Mapping[str, Any]:
@@ -392,7 +190,6 @@ class CanonicalClient(ContainerClient):
 
     def finalize_rollout(self, rollout_id: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
         self._record("finalize_rollout")
-        self._apply_reward(rollout_id)
         return self._client.finalize(rollout_id)
 
     def terminate_rollout(self, rollout_id: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -911,5 +708,5 @@ def config_text(
         topology_id=config.topology.topology_id,
         trainable_teams=", ".join(f'"{item}"' for item in teams),
         partial_roster=config.partial_roster_disposition,
-        optimized_channel=optimized_channel or _reward_channels(config)[0],
+        optimized_channel=optimized_channel or config.reward_channel_ids[0],
     )

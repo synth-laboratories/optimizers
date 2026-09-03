@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import urllib.error
-import urllib.parse
 import urllib.request
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -152,6 +151,8 @@ class ContainerClient:
         return self.call("GET", self.route("health_route"))
 
     def capabilities(self) -> Mapping[str, Any]:
+        """The capability document itself: the body carries no envelope."""
+
         return self.call("GET", self.route("capabilities_route"))
 
     def handshake(self, document: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -164,9 +165,9 @@ class ContainerClient:
     def taskset(self) -> Mapping[str, Any]:
         return self.call("GET", self.route("taskset_route"))
 
-    def taskset_tasks(self, ids: Iterable[str]) -> Mapping[str, Any]:
-        query = urllib.parse.urlencode({"ids": ",".join(ids)})
-        return self.call("GET", f"{self.route('taskset_tasks_route')}?{query}")
+    def taskset_tasks(self, ids: Iterable[str], *, split: str = "train") -> Mapping[str, Any]:
+        body = {"ids": [str(item) for item in ids], "split": split}
+        return self.call("POST", self.route("taskset_tasks_route"), body)
 
     def topology(self, topology_id: str) -> Mapping[str, Any]:
         return self.call("GET", self.route("topology_route", topology_id=topology_id))
@@ -221,7 +222,8 @@ class ContainerClient:
         return tuple(str(row["task_id"]) for row in rows)
 
     def requirement_document(self, **overrides: Any) -> dict[str, Any]:
-        capabilities = self.capabilities()["capabilities"]
+        capabilities = self.capabilities()
+        horizon = capabilities["topology"]["horizon"]
         document: dict[str, Any] = {
             "schema_version": HANDSHAKE_SCHEMA_VERSION,
             "run_id": "run_fake",
@@ -252,7 +254,7 @@ class ContainerClient:
                 "max_execution_slots": 2,
                 "maximum_policy_lag": 1,
                 "target_train_updates": 1,
-                "expected_horizon_seconds": capabilities["horizon"]["value"],
+                "expected_horizon_seconds": horizon["value"],
             },
             "taskset": {"taskset_id": self.taskset()["taskset_id"], "split": "train"},
             "clock": {"executor_time": "2026-09-02T12:00:00+00:00"},
@@ -303,7 +305,7 @@ class ContainerClient:
     ) -> Mapping[str, Any]:
         """Bind one policy, or a whole roster when the topology is joint."""
 
-        capabilities = self.capabilities()["capabilities"]
+        capabilities = self.capabilities()
         instances = capabilities["topology"]["agent_instances"]
         kind = "probe" if probe else "trainable"
         if len(instances) < 2:
@@ -315,7 +317,9 @@ class ContainerClient:
             bindings=[
                 {
                     "agent_instance_id": instance["agent_instance_id"],
-                    "policy_ref": instance["policy_ref"] or f"ckpt::rev{policy_revision}",
+                    "policy_ref": (
+                        instance["pinned_identity"] or f"ckpt::rev{policy_revision}"
+                    ),
                 }
                 for instance in instances
             ],

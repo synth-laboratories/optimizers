@@ -30,8 +30,15 @@ from synth_optimizers.contracts.rl_records import (
     TrainableEpisode,
     TrainableSegment,
 )
+from synth_optimizers.rl.capabilities import CAPABILITY_SCHEMA_VERSION
 
-from .config import ALIAS_REFS, ContainerConfig
+from .config import (
+    ALIAS_REFS,
+    CONTRACT_VERSION,
+    CORRELATION_FIELDS,
+    DECLARED_ROUTES,
+    ContainerConfig,
+)
 
 def _renderer_payload(profile: RendererProfile) -> dict[str, Any]:
     return {
@@ -365,6 +372,8 @@ def _topology_payload(cfg: ContainerConfig) -> dict[str, Any]:
         "reward_relation": topology.reward_relation,
         "parameter_groups": dict(topology.parameter_groups),
         "partial_roster_disposition": cfg.partial_roster_disposition,
+        # The canonical capability parser reads a pinned opponent under
+        # ``pinned_identity``; there is no second spelling of the same fact.
         "agent_instances": [
             {
                 "agent_instance_id": instance.agent_instance_id,
@@ -372,7 +381,7 @@ def _topology_payload(cfg: ContainerConfig) -> dict[str, Any]:
                 "policy_type_id": instance.policy_type_id,
                 "team_id": instance.team_id,
                 "trainable": instance.trainable,
-                "policy_ref": (
+                "pinned_identity": (
                     alias
                     if (alias and not instance.trainable)
                     else instance.pinned_identity
@@ -396,30 +405,129 @@ def _topology_payload(cfg: ContainerConfig) -> dict[str, Any]:
             }
             for channel in topology.communication_channels
         ],
-        "horizon": {
-            "horizon_kind": topology.horizon.horizon_kind,
-            "value": topology.horizon.value,
-            "time_dilation": topology.horizon.time_dilation,
-            "grace_seconds": topology.horizon.grace_seconds,
-            "seconds_per_unit": topology.horizon.seconds_per_unit,
-        }
-        if topology.horizon
-        else None,
+        # A topology that declares no horizon of its own still runs under the
+        # container's configured one, and the executor may not guess it: the
+        # declared horizon is always here, with the conversion a unit horizon
+        # needs to become a duration.
+        "horizon": _horizon_payload(cfg.horizon),
+    }
+
+
+def _horizon_payload(horizon: Horizon) -> dict[str, Any]:
+    return {
+        "horizon_kind": horizon.horizon_kind,
+        "value": horizon.value,
+        "time_dilation": horizon.time_dilation,
+        "grace_seconds": horizon.grace_seconds,
+        "seconds_per_unit": horizon.seconds_per_unit,
+    }
+
+
+def _capability_payload(cfg: ContainerConfig, *, capability_epoch: int) -> dict[str, Any]:
+    """The ``cispo.capabilities.v1`` advertisement, without its own hash.
+
+    Every section the canonical :class:`CapabilityDocument` parses is here and
+    is derived from the declared configuration, so a fake advertises exactly
+    what the executor will hold it to. The extra keys -- the lease block, the
+    correlation fields, the declared transports -- are the fake's own capability
+    flags; the canonical parser ignores what it does not name, and the content
+    hash still covers all of it.
+    """
+
+    return {
+        "schema_version": CAPABILITY_SCHEMA_VERSION,
+        "capability_epoch": capability_epoch,
+        "container_id": cfg.container_id,
+        "container_image_digest": cfg.image_digest,
+        "contract_version": CONTRACT_VERSION,
+        "contract_hash": cfg.contract_hash,
+        "renderer_profile": _renderer_payload(cfg.renderer_profile),
+        "discovery": {
+            "taskset_id": cfg.taskset_id,
+            "taskset_version": str(cfg.taskset_version),
+            "splits": sorted(cfg.declared_splits),
+            "task_content_digests": True,
+            "deterministic_lookup": True,
+            "duplicate_free": True,
+            "task_family": cfg.task_family,
+        },
+        "policy": {
+            "binding_transport": cfg.sampling_transport,
+            "wire_api": cfg.wire_api,
+            "session_scoped_sampler_origin": True,
+            "embeds_credentials": False,
+            "revision_immutable_after_admission": True,
+            "records_policy_revision": True,
+            "policy_kind": cfg.policy_kind,
+            "probe_binding": cfg.probe_binding_supported,
+            "prompt_budget_policy": cfg.prompt_budget_policy,
+            "max_prompt_tokens": cfg.max_prompt_tokens,
+            "sampling_transports": (
+                ["message_in_capture_out", "tokens_in_tokens_out"]
+                if cfg.tito_supported
+                else ["message_in_capture_out"]
+            ),
+        },
+        "lifecycle": {
+            "max_concurrency": cfg.advertised_concurrency,
+            "lease_ttl_seconds": cfg.lease_ttl_seconds,
+            "supports_idempotency": True,
+            "supports_cancellation": True,
+            "supports_lease_renewal": cfg.lease_renewable,
+            "exactly_one_terminal_result": True,
+            "supports_pause_resume": True,
+            "straggler_grace_seconds": cfg.horizon.grace_seconds,
+            # A lease is advertised, never derived from the horizon: the
+            # horizon says how long an episode runs, the TTL how long one grant
+            # survives without a heartbeat.
+            "lease": {
+                "ttl_seconds": cfg.lease_ttl_seconds,
+                "renewable": cfg.lease_renewable,
+                "heartbeat_route": DECLARED_ROUTES["rollout_renew_route"],
+            },
+            "asynchronous_submission": True,
+            "correlation_fields": list(CORRELATION_FIELDS),
+        },
+        "evidence": {
+            "trace_v5": True,
+            "behavior_logprobs": True,
+            "strict_prefix": True,
+            "masking": True,
+            "wire_objects": True,
+            "artifact_reference": cfg.artifact_by_reference,
+            "tokens_in_tokens_out": cfg.tito_supported,
+            "masking_convention": "renderer_sampled_mask_x_policy_authorship",
+        },
+        "reward": {
+            "authority": "container",
+            "binds_trace_digest": True,
+            "quiescence": cfg.quiescence_supported,
+            "horizon_clipping": True,
+            "channels": list(cfg.reward_channel_ids),
+            "reward_relation": cfg.topology.reward_relation,
+            "evaluation_plan_id": cfg.evaluation_plan_id,
+            "settlement_window_seconds": cfg.settlement_window_seconds,
+            "deferred_scoring": cfg.deferred_scoring,
+            "reward_kind": cfg.reward_kind,
+        },
+        "recovery": {"restart": True, "stale_discard": True},
+        "topology": _topology_payload(cfg),
+        "clock": {"skew_tolerance_seconds": cfg.skew_tolerance_seconds},
     }
 
 
 def topology_from_payload(payload: Mapping[str, Any]) -> Topology:
     """Decode a declared topology.
 
-    A non-trainable instance whose ``policy_ref`` is an alias rather than an
-    immutable identity is refused here with a ``TopologyError``: an opponent
+    A non-trainable instance whose ``pinned_identity`` is an alias rather than
+    an immutable identity is refused here with a ``TopologyError``: an opponent
     resolved as ``latest`` is not a reproducible sample.
     """
 
     instances: list[AgentInstance] = []
     for raw in payload.get("agent_instances") or ():
         trainable = bool(raw.get("trainable"))
-        ref = raw.get("policy_ref")
+        ref = raw.get("pinned_identity")
         if not trainable and isinstance(ref, str) and ref.strip().lower() in ALIAS_REFS:
             raise TopologyError(
                 f"opponent {raw.get('agent_instance_id')!r} resolves alias {ref!r}; "

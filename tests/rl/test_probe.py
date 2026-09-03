@@ -360,3 +360,46 @@ def test_absent_cancellation_is_refused() -> None:
             quiescence_accepted=True,
         )
     assert "cancellation" in str(excinfo.value)
+
+
+def test_a_joint_probe_checks_each_instance_stream_separately() -> None:
+    """Prefix consistency belongs to a conversation, not to an attempt.
+
+    A joint episode interleaves instances, so checking calls in submission
+    order compares one instance's turn against another's and fails every
+    correct joint probe.
+    """
+
+    from synth_optimizers.rl.probe import _probe_prefix_streams
+
+    def call(instance: str, name: str, prompt: tuple[int, ...]) -> InferenceCall:
+        return InferenceCall(
+            call_id=name,
+            proxy_request_id="prid",
+            rollout_id="probe_1",
+            group_id="group_1",
+            sample_index=0,
+            agent_instance_id=instance,
+            behavior_fingerprint="fp",
+            policy_revision=0,
+            wire_api="chat_completions",
+            sampling_transport="message_in_capture_out",
+            token_capture_provenance="probe_synthetic",
+            prompt_token_ids=prompt,
+            generation_token_ids=(7, 8),
+            generation_logprobs=(-0.5, -0.25),
+            sampled_mask=(1, 1),
+            finish_reason="stop_token",
+            trainable=False,
+        )
+
+    # Interleaved, and each instance's own stream is a strict prefix chain.
+    interleaved = [
+        call("elf_0", "a1", (1, 2)),
+        call("barbarian_0", "b1", (5, 6)),
+        call("elf_0", "a2", (1, 2, 7, 8)),
+        call("barbarian_0", "b2", (5, 6, 7, 8)),
+    ]
+    streams = _probe_prefix_streams(interleaved)
+    assert sorted(streams) == ["barbarian_0", "elf_0"]
+    assert [c.call_id for c in streams["elf_0"]] == ["a1", "a2"]

@@ -338,7 +338,12 @@ def _resolve_channel(reward: RewardRecord, team_id: str | None) -> RewardChannel
             f"reward {reward.reward_id} names channel {reward.optimized_channel!r} "
             "which it does not carry"
         )
-    if team_id is None or optimized.team_id == team_id:
+    if team_id is None or optimized.team_id == team_id or optimized.team_id is None:
+        # A channel that names no team is the run's single measure, and it
+        # applies to whichever team stamped the trajectory. A team becomes a
+        # comparison key only where the reward actually separates teams; a
+        # cooperative container that stamps its one team on every episode and
+        # reports one untargeted measure is the common case, not an error.
         return optimized
     candidates = [channel for channel in reward.channels if channel.team_id == team_id]
     if len(candidates) == 1:

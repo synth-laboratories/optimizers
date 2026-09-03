@@ -23,7 +23,7 @@ from test_evaluation import World, build_world, make_record, sha
 
 from synth_optimizers.cli import build_parser
 from synth_optimizers.cli import main as umbrella_main
-from synth_optimizers.rl.cli import dispatch, register
+from synth_optimizers.rl.cli import Plane, dispatch, register
 from synth_optimizers.rl.evaluation import PairedEvaluation
 from synth_optimizers.rl.store import JournalStore, RunIdentity
 from test_evaluation import (
@@ -34,6 +34,49 @@ from test_evaluation import (
 )
 
 RUN_ID = "run_a"
+
+CONFIG = """
+schema_version = "cispo.container.v1"
+run_id = "run_a"
+
+[container]
+url = "http://127.0.0.1:9/"
+
+[model]
+provider = "vendor"
+id = "vendor/base-model-a"
+family = "vendor"
+
+[plan]
+preset = "cispo"
+
+[reward]
+optimized_channel = "task_reward"
+"""
+
+#: What the plane factory was handed, so a test can prove the seam was reached
+#: with the parsed configuration rather than with a path or a namespace.
+PLANE_CALLS: list = []
+
+
+class PlaneReached(RuntimeError):
+    """Raised by the test factory instead of assembling anything live."""
+
+
+def refusing_plane(*, config=None):
+    PLANE_CALLS.append(config)
+    raise PlaneReached("the plane factory was reached")
+
+
+def half_a_plane(*, config=None):
+    _ = config
+    return Plane(session=object(), gateway=object(), binder=None)
+
+
+def write_config(tmp_path) -> str:
+    path = tmp_path / "run.toml"
+    path.write_text(CONFIG, encoding="utf-8")
+    return str(path)
 
 
 # --------------------------------------------------------------------------- #
@@ -451,18 +494,27 @@ def test_evaluate_rejects_a_malformed_seed(
     assert "TASK_ID=SEED" in str(raised.value)
 
 
-def test_evaluate_without_a_live_plane_refuses_legibly(
+def test_evaluate_without_a_plane_refuses_rather_than_inventing_one(
     world: World, catalog_path: str, digests: str, pin_file: str
 ) -> None:
-    try:
-        import synth_optimizers.rl.session  # noqa: F401
-    except ImportError:
-        pass
-    else:  # pragma: no cover - once the session seam lands this stops applying
-        pytest.skip("the live session module landed; this refusal no longer applies")
     with pytest.raises(SystemExit) as raised:
         run_cli(evaluate_argv(catalog_path, digests, pin_file))
-    assert "--resolve-only" in str(raised.value)
+    message = str(raised.value)
+    assert "--plane" in message
+    assert "--resolve-only" in message
+
+
+def test_evaluate_reaches_the_named_plane_factory(
+    world: World, catalog_path: str, digests: str, pin_file: str
+) -> None:
+    PLANE_CALLS.clear()
+    argv = evaluate_argv(catalog_path, digests, pin_file) + [
+        "--plane",
+        "test_rl_cli:refusing_plane",
+    ]
+    with pytest.raises(PlaneReached):
+        run_cli(argv)
+    assert PLANE_CALLS == [None]
 
 
 # --------------------------------------------------------------------------- #
@@ -583,15 +635,81 @@ def test_run_refuses_a_config_that_is_not_there(tmp_path) -> None:
     assert "no such config file" in str(raised.value)
 
 
-def test_run_without_an_executor_names_what_is_missing(tmp_path) -> None:
-    try:
-        import synth_optimizers.rl.executor  # noqa: F401
-    except ImportError:
-        pass
-    else:  # pragma: no cover - once the executor lands this stops applying
-        pytest.skip("the run executor landed; this refusal no longer applies")
-    config = tmp_path / "run.toml"
-    config.write_text("[run]\nrun_id = 'run_a'\n", encoding="utf-8")
+def test_run_validates_the_config_and_starts_nothing(tmp_path, capsys) -> None:
+    code = run_cli(["rl", "run", "--config", write_config(tmp_path), "--validate-only"])
+    assert code == 0
+    output = capsys.readouterr().out
+    assert "run run_a: plan=" in output
+    assert "nothing was started" in output
+
+
+def test_run_refuses_a_configuration_it_cannot_validate(tmp_path, capsys) -> None:
+    path = tmp_path / "bad.toml"
+    path.write_text('schema_version = "cispo.container.v1"\n', encoding="utf-8")
+    assert run_cli(["rl", "run", "--config", str(path)]) == 1
+    assert "container" in capsys.readouterr().err
+
+
+def test_run_without_a_plane_refuses_rather_than_inventing_one(tmp_path, capsys) -> None:
     with pytest.raises(SystemExit) as raised:
-        run_cli(["rl", "run", "--config", str(config)])
-    assert "execute_run" in str(raised.value)
+        run_cli(["rl", "run", "--config", write_config(tmp_path), "--receipts", str(tmp_path)])
+    assert "--plane" in str(raised.value)
+    capsys.readouterr()
+
+
+def test_run_requires_a_receipt_directory(tmp_path) -> None:
+    with pytest.raises(SystemExit) as raised:
+        run_cli(["rl", "run", "--config", write_config(tmp_path), "--plane", "x:y"])
+    assert "--receipts is required" in str(raised.value)
+
+
+def test_run_reaches_the_named_plane_factory_with_the_parsed_config(tmp_path) -> None:
+    PLANE_CALLS.clear()
+    with pytest.raises(PlaneReached):
+        run_cli(
+            [
+                "rl",
+                "run",
+                "--config",
+                write_config(tmp_path),
+                "--receipts",
+                str(tmp_path / "receipts"),
+                "--plane",
+                "test_rl_cli:refusing_plane",
+            ]
+        )
+    assert [getattr(item, "run_id", None) for item in PLANE_CALLS] == ["run_a"]
+
+
+def test_run_refuses_a_plane_that_is_not_module_and_factory(tmp_path) -> None:
+    with pytest.raises(SystemExit) as raised:
+        run_cli(
+            [
+                "rl",
+                "run",
+                "--config",
+                write_config(tmp_path),
+                "--receipts",
+                str(tmp_path),
+                "--plane",
+                "not_a_spec",
+            ]
+        )
+    assert "MODULE:FACTORY" in str(raised.value)
+
+
+def test_run_refuses_a_plane_that_is_missing_a_port(tmp_path) -> None:
+    with pytest.raises(SystemExit) as raised:
+        run_cli(
+            [
+                "rl",
+                "run",
+                "--config",
+                write_config(tmp_path),
+                "--receipts",
+                str(tmp_path),
+                "--plane",
+                "test_rl_cli:half_a_plane",
+            ]
+        )
+    assert "binder" in str(raised.value)

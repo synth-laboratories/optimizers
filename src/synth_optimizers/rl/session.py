@@ -22,7 +22,7 @@ No task, harness, environment or algorithm name appears in this module.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -152,6 +152,7 @@ def call_from_payload(payload: Mapping[str, Any]) -> InferenceCall:
         content_mask=_ints(payload, "content_mask"),
         renderer_profile_fingerprint=str(payload.get("renderer_profile_fingerprint") or ""),
         trainable=bool(payload.get("trainable", True)),
+        author_kind=str(payload.get("author_kind") or "policy"),
         branch_id=str(payload.get("branch_id") or "root"),
         parent_branch_id=payload.get("parent_branch_id"),
         compaction=(
@@ -629,12 +630,17 @@ class ContractContainerSession:
                 f"{known} then {rollout_id}"
             )
         self._by_key[idempotency_key] = rollout_id
-        self._submitted[rollout_id] = SubmittedAttempt(
-            rollout_id=rollout_id,
-            idempotency_key=idempotency_key,
-            policy_binding_id=binding_id,
-            accepted=dict(accepted),
-            group_pin_fields=dict(accepted.get("group_pin_fields") or {}),
+        # An idempotent replay answers with less than the acceptance did, so the
+        # first acceptance is the record kept.
+        self._submitted.setdefault(
+            rollout_id,
+            SubmittedAttempt(
+                rollout_id=rollout_id,
+                idempotency_key=idempotency_key,
+                policy_binding_id=binding_id,
+                accepted=dict(accepted),
+                group_pin_fields=dict(accepted.get("group_pin_fields") or {}),
+            ),
         )
         return rollout_id
 
@@ -697,7 +703,39 @@ class ContractContainerSession:
             raise SessionError(f"rollout {rollout_id} sealed a trace with no digest")
         episode = self._episode(rollout_id, trace)
         reward = self._reward(rollout_id, trace_digest)
-        return episode, reward
+        return self._align_team(episode, reward), reward
+
+    def _align_team(
+        self, episode: TrainableEpisode, reward: RewardRecord
+    ) -> TrainableEpisode:
+        """Drop a team the reward does not measure separately.
+
+        A single-team topology names its team on every trajectory while its
+        reward carries one untargeted channel. Carrying the team forward would
+        send the credit estimator looking for a per-team channel that does not
+        exist, so an untargeted optimized channel means the team is not a
+        comparison key for this episode. A team the reward *does* split on is
+        always kept.
+        """
+
+        if episode.team_id is None:
+            return episode
+        if any(channel.team_id == episode.team_id for channel in reward.channels):
+            return episode
+        optimized = next(
+            (
+                channel
+                for channel in reward.channels
+                if channel.channel_id == reward.optimized_channel
+            ),
+            None,
+        )
+        if optimized is not None and optimized.team_id is None:
+            return replace(episode, team_id=None)
+        raise SessionError(
+            f"rollout {episode.rollout_id} names team {episode.team_id!r} but its reward "
+            f"carries no channel for that team and no untargeted optimized channel"
+        )
 
     def _episode(self, rollout_id: str, trace: Mapping[str, Any]) -> TrainableEpisode:
         rows = trace.get("episodes") or ()

@@ -17,14 +17,17 @@ Nothing here names a task, a harness, an environment, or a provider.
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import sys
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from ..contracts.rl_records import RecordError
 from .catalog import PUBLICATION_STATUSES, CatalogError, CheckpointCatalog
+from .config import ConfigError
 from .evaluation import (
     EvaluationError,
     EvaluationRequest,
@@ -34,6 +37,7 @@ from .evaluation import (
     RosterSlot,
 )
 from .lifecycle import LifecycleError, RunLifecycle
+from .ports import ContainerSession, PolicyBinder, PortError, SamplerGateway
 from .resolver import (
     ArtifactMissingError,
     EvaluationResolver,
@@ -45,9 +49,33 @@ from .resolver import (
 from .store import JournalStore, RunIdentity, StoreError
 
 #: Every error the plane raises that means "refused", not "crashed".
-PLANE_ERRORS = (ResolutionError, EvaluationError, CatalogError, StoreError, LifecycleError)
+PLANE_ERRORS = (
+    ResolutionError,
+    EvaluationError,
+    CatalogError,
+    StoreError,
+    LifecycleError,
+    ConfigError,
+    PortError,
+)
 
 LIFECYCLE_CONTROLS = ("pause", "drain", "resume", "stop")
+
+
+@dataclass(frozen=True, slots=True)
+class Plane:
+    """The three ports one live run is driven through.
+
+    There is no concrete container client in this package -- ``contract`` names
+    the client as an abstract seam -- so the CLI cannot assemble a live plane by
+    itself. ``--plane MODULE:FACTORY`` names the assembly, and the factory is
+    called with the parsed run configuration and returns one of these.
+    """
+
+    session: ContainerSession
+    gateway: SamplerGateway
+    binder: PolicyBinder
+    clock: Any = None
 
 
 class _RefusingProbe:
@@ -89,6 +117,18 @@ def register(subcommands: argparse._SubParsersAction) -> None:
 
     run = commands.add_parser("run", help="Execute a training run from a config file.")
     run.add_argument("--config", required=True, help="Path to a run config file.")
+    run.add_argument("--receipts", help="Directory the run leaves its receipt in.")
+    run.add_argument("--max-ticks", type=int, default=256)
+    run.add_argument(
+        "--plane",
+        metavar="MODULE:FACTORY",
+        help="Assembles the session, sampler gateway, and policy binder for this run.",
+    )
+    run.add_argument(
+        "--validate-only",
+        action="store_true",
+        help="Load and validate the configuration, print its plan hash, and start nothing.",
+    )
     run.add_argument("--json", action="store_true")
 
     evaluate = commands.add_parser(
@@ -105,7 +145,9 @@ def register(subcommands: argparse._SubParsersAction) -> None:
         help="The arm to compare against. Defaults to the run's registered baseline alias.",
     )
     evaluate.add_argument("--match-set", help="Pinned match-set revision both arms play.")
-    evaluate.add_argument("--evaluation-id", help="Defaults to a digest of the request.")
+    evaluate.add_argument(
+        "--evaluation-id", help="Names the receipt and the catalog relations it appends."
+    )
     evaluate.add_argument(
         "--seed",
         action="append",
@@ -131,6 +173,12 @@ def register(subcommands: argparse._SubParsersAction) -> None:
         help="JSON object of provider reference -> observed digest.",
     )
     evaluate.add_argument("--pin", help="JSON file carrying the run-invariant group pin fields.")
+    evaluate.add_argument("--config", help="Run config describing the container to evaluate in.")
+    evaluate.add_argument(
+        "--plane",
+        metavar="MODULE:FACTORY",
+        help="Assembles the session, sampler gateway, and policy binder for the arms.",
+    )
     evaluate.add_argument("--receipts-dir", help="Where to write the evaluation receipt.")
     evaluate.add_argument(
         "--resolve-only",
@@ -233,26 +281,65 @@ def dispatch(args: argparse.Namespace) -> int:
 
 
 def _run(args: argparse.Namespace) -> int:
-    """Start a training run. The loop itself lives behind the executor seam."""
+    """Start a training run. The loop is the executor's; the assembly is a seam."""
+
+    from .config import load as load_run_config
+    from .executor import ExecutionPlan, execute
+    from .session import RunClock
 
     config_path = Path(args.config)
     if not config_path.is_file():
         raise SystemExit(f"cannot read {args.config}: no such config file")
-    try:
-        from .config import load_run_config
-        from .executor import execute_run
-    except ImportError as error:
-        raise SystemExit(
-            "the run executor is not available in this build "
-            f"({error}); `rl run` needs synth_optimizers.rl.config.load_run_config and "
-            "synth_optimizers.rl.executor.execute_run"
-        ) from error
-    result = execute_run(load_run_config(config_path))
-    payload = result.to_payload() if hasattr(result, "to_payload") else {"result": str(result)}
+    config = load_run_config(config_path)
+    plan_hash = config.expanded_plan().plan_hash
+    print(f"run {config.run_id}: plan={plan_hash} target={config.plan.target_train_updates}")
+    if args.validate_only:
+        print("configuration is valid; nothing was started (--validate-only)")
+        return 0
+    if not args.receipts:
+        raise SystemExit("--receipts is required: a run that leaves no receipt is not a run")
+    plane = _open_plane(args, config)
+    report = execute(
+        config,
+        plane.session,
+        plane.gateway,
+        plane.binder,
+        clock=plane.clock or RunClock(),
+        plan=ExecutionPlan(receipts=Path(args.receipts), max_ticks=args.max_ticks),
+    )
+    payload = {
+        "run_id": report.run_id,
+        "plan_hash": report.plan_hash,
+        "stop_reason": report.stop_reason,
+        "lifecycle_state": report.lifecycle_state,
+        "sampled_groups": report.sampled_groups,
+        "updates": len(report.updates),
+        "trained_groups": list(report.trained_groups),
+        "skipped_groups": list(report.skipped_groups),
+        "stale_groups": list(report.stale_groups),
+        "receipt_directory": str(report.receipt_directory),
+        "final_revisions": {
+            group: {
+                "policy_revision_id": revision.revision_id,
+                "checkpoint_id": revision.checkpoint_id,
+                "sampler_reference": revision.sampler_reference,
+            }
+            for group, revision in report.final_revisions.items()
+        },
+    }
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
-    else:
-        print(f"run finished: {payload.get('run_id', config_path)}")
+        return 0
+    print(
+        f"run {report.run_id} {report.stop_reason}: updates={len(report.updates)} "
+        f"sampled_groups={report.sampled_groups} state={report.lifecycle_state}"
+    )
+    for group, revision in report.final_revisions.items():
+        print(
+            f"  {group}: selector={revision.revision_id} resolved={revision.checkpoint_id} "
+            f"ref={revision.sampler_reference}"
+        )
+    print(f"receipts: {report.receipt_directory}")
     return 0
 
 
@@ -285,7 +372,7 @@ def _evaluate(args: argparse.Namespace) -> int:
                 print("resolved and verified; no attempt was run (--resolve-only)")
             return 0
         request = _request(args, baseline_selector)
-        plane = _open_plane(args)
+        plane = _open_plane(args, _optional_run_config(args))
         receipt = PairedEvaluation(
             resolver,
             session=plane.session,
@@ -648,18 +735,42 @@ def _rehandshake_hook(args: argparse.Namespace) -> Any:
     return lambda: identity
 
 
-def _open_plane(args: argparse.Namespace) -> Any:
-    """The live session, sampler gateway, and binder for a running run."""
+def _open_plane(args: argparse.Namespace, config: Any) -> Plane:
+    """The live session, sampler gateway, and binder, from a named factory."""
 
-    try:
-        from .session import open_evaluation_plane
-    except ImportError as error:
+    spec = getattr(args, "plane", None)
+    if not spec:
         raise SystemExit(
-            "no live run plane is available in this build "
-            f"({error}); run `rl evaluate --resolve-only` to verify a selector offline, or "
-            "call synth_optimizers.rl.evaluation.PairedEvaluation with a session of your own"
-        ) from error
-    return open_evaluation_plane(args)
+            "no live container plane is assembled here: this package names the container "
+            "client as an abstract seam and builds no concrete one. Pass --plane "
+            "MODULE:FACTORY, or resolve offline with --resolve-only"
+        )
+    module_name, _, attribute = str(spec).partition(":")
+    if not module_name or not attribute:
+        raise SystemExit(f"--plane expects MODULE:FACTORY, got {spec!r}")
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError as error:
+        raise SystemExit(f"--plane {spec}: {error}") from error
+    factory = getattr(module, attribute, None)
+    if factory is None:
+        raise SystemExit(f"--plane {spec}: {module_name} declares no {attribute}")
+    plane = factory(config=config)
+    ports = ("session", "gateway", "binder")
+    missing = [name for name in ports if getattr(plane, name, None) is None]
+    if missing:
+        raise SystemExit(f"--plane {spec} returned no {missing}")
+    return plane
+
+
+def _optional_run_config(args: argparse.Namespace) -> Any:
+    """The run configuration an arm is evaluated inside, when one was named."""
+
+    if not getattr(args, "config", None):
+        return None
+    from .config import load as load_run_config
+
+    return load_run_config(Path(args.config))
 
 
 def _print_resolution(label: str, resolution: Resolution) -> None:
@@ -720,4 +831,4 @@ def main(argv: Sequence[str] | None = None) -> int:
     return dispatch(args)
 
 
-__all__ = ["LIFECYCLE_CONTROLS", "PLANE_ERRORS", "dispatch", "main", "register"]
+__all__ = ["LIFECYCLE_CONTROLS", "PLANE_ERRORS", "Plane", "dispatch", "main", "register"]

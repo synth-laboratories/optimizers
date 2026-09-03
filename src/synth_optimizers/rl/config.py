@@ -336,7 +336,10 @@ class PlanSelection:
             schedule["max_steps_per_round"] = self.steps_per_round
         if schedule:
             overlay["schedule"] = schedule
-        return plan_module.expand(overlay)
+        try:
+            return plan_module.expand(overlay)
+        except plan_module.PlanValidationError as error:
+            raise ConfigError(f"[plan] {error}") from error
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -781,7 +784,10 @@ def _assert_startup_invariants(config: RunConfig) -> None:
     """The bounds the note requires to hold before the first attempt is admitted."""
 
     plan = config.expanded_plan()
-    plan_module.require_implemented(plan)
+    try:
+        plan_module.require_implemented(plan)
+    except plan_module.PlanValidationError as error:
+        raise ConfigError(f"[plan] {error}") from error
     pipeline = config.pipeline
     lag = pipeline.train_ready_capacity - 1
     if lag > pipeline.maximum_policy_lag:

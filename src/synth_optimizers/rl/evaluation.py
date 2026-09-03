@@ -501,7 +501,7 @@ class PairedEvaluation:
 
         # --- only now does anything run ---
         for arm in ARMS:
-            self._run_arm(bound[arm], request, tasks, pinned_match, opponents)
+            self._run_arm(bound[arm], request, tasks, pinned_match)
 
         results = {
             arm: ArmResult(
@@ -703,7 +703,6 @@ class PairedEvaluation:
         request: EvaluationRequest,
         tasks: Mapping[str, TaskSpec],
         match_set_revision_id: str | None,
-        opponents: tuple[ResolvedOpponent, ...],
     ) -> None:
         primary = request.roster[0]
         revision = bound.revisions[primary.parameter_group_id]
@@ -734,7 +733,6 @@ class PairedEvaluation:
                 for origin in origins.values():
                     self._gateway.close(origin.proxy_request_id)
             bound.attempts.append(row)
-        _ = opponents
 
     def _bind_roster(
         self,

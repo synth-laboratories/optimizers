@@ -649,6 +649,21 @@ def test_paired_arms_run_identical_seeds_and_produce_a_comparable_summary(world:
     assert sorted(gateway.closed) == sorted(item[0] for item in gateway.bound)
 
 
+def test_every_origin_is_bound_with_the_task_and_seed_it_will_run(world: World) -> None:
+    _, _, gateway, _ = run_evaluation(
+        world,
+        request_for(trained="ckpt_primary_u1", baseline="ckpt_baseline_primary"),
+    )
+    # The gateway is told what the attempt is, not left to infer it from the pin.
+    assert [(fact.task_id, fact.seed) for fact in gateway.facts] == [
+        (TASK_A, 3),
+        (TASK_B, 5),
+        (TASK_A, 3),
+        (TASK_B, 5),
+    ]
+    assert len({fact.rollout_id for fact in gateway.facts}) == 4
+
+
 def test_receipt_carries_selector_resolution_refs_seeds_and_rewards(world: World) -> None:
     receipt, _, _, _ = run_evaluation(
         world,

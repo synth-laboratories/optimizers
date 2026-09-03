@@ -343,6 +343,7 @@ class ContainerRunExecutor:
             raise ExecutorError("the run resolved no task rows to sample")
 
         self.revisions: dict[str, PolicyRevision] = {}
+        self.baseline_revisions: dict[str, PolicyRevision] = {}
         self.current_revision = 0
         self.sampled_groups = 0
         self.updates: list[UpdateRecord] = []
@@ -354,6 +355,7 @@ class ContainerRunExecutor:
         self._origins: dict[str, str] = {}
         self._submitted_at: dict[str, float] = {}
         self._pending_groups: list[str] = []
+        self._pending_recycled: list[GateRejection] = []
         self._recycled: list[Mapping[str, Any]] = []
         self._rehandshakes: list[Mapping[str, Any]] = []
         self._stop_reason = ""
@@ -366,7 +368,7 @@ class ContainerRunExecutor:
         """Every trainable parameter group the container's topology declares."""
 
         topology = self.session.topology
-        declared = topology.trainable_parameter_groups
+        declared = topology.trainable_parameter_groups()
         if declared:
             return declared
         return ("pg_solo",)
@@ -388,6 +390,7 @@ class ContainerRunExecutor:
                     f"{parameter_group!r} was asked for"
                 )
             self.revisions[parameter_group] = revision
+            self.baseline_revisions[parameter_group] = revision
         self.current_revision = min(
             revision.revision for revision in self.revisions.values()
         )
@@ -489,9 +492,16 @@ class ContainerRunExecutor:
         return group_id
 
     def _readmit_recycled(self, rejection: GateRejection) -> str | None:
-        """A recycled group returns slots, not tasks: re-admit under a fresh pin."""
+        """A recycled group returns slots, not tasks: re-admit under a fresh pin.
+
+        The slots wait when there is no room for another open group; they are
+        never re-minted, because the queue engine may not invent a task
+        identity and neither may this loop.
+        """
 
         if self.sampled_groups >= self.config.maximum_sampled_groups:
+            return None
+        if len(self.queues.open_groups()) >= self.config.pipeline.max_open_groups:
             return None
         source = self._pins[rejection.group_id]
         task = next(
@@ -585,12 +595,30 @@ class ContainerRunExecutor:
             except SessionError as error:
                 self.queues.fail(attempt.attempt_id, reason=f"submit_refused: {error}")
                 continue
+            self._declare(origins, rollout_id=rollout_id, task=task)
             self._rollouts[attempt.attempt_id] = rollout_id
             self._attempts[rollout_id] = attempt.attempt_id
             self._origins[attempt.attempt_id] = next(iter(origins.values())).proxy_request_id
             self._submitted_at[attempt.attempt_id] = self.clock.now()
             sent += 1
         return sent
+
+    def _declare(
+        self, origins: Mapping[str, SamplerOrigin], *, rollout_id: str, task: TaskSpec
+    ) -> None:
+        """Hand the container's rollout id back to a gateway that wants it.
+
+        ``bind`` happens before ``submit`` -- the origin is what is submitted --
+        so the rollout id arrives by this second door, which the port declares.
+        """
+
+        for origin in origins.values():
+            self.gateway.declare_attempt(
+                origin.proxy_request_id,
+                rollout_id=rollout_id,
+                task_id=task.task_id,
+                seed=task.seed,
+            )
 
     def _close_origin(self, attempt_id: str) -> None:
         proxy_request_id = self._origins.pop(attempt_id, None)
@@ -779,7 +807,7 @@ class ContainerRunExecutor:
                 ),
             )
         )
-        self._readmit_recycled(rejection)
+        self._pending_recycled.append(rejection)
 
     def _train(self, group_ids: Sequence[str]) -> UpdateRecord:
         bundles: list[EvidenceBundle] = []
@@ -878,6 +906,14 @@ class ContainerRunExecutor:
         self.queues.sweep()
         admitted = 0
         while self.lifecycle.gates.admit and self.queues.has_capacity("rollout"):
+            # Returned slots go back before new ones are minted: a recycled
+            # group is work that already left the pipeline.
+            if self._pending_recycled:
+                if self._readmit_recycled(self._pending_recycled[0]) is None:
+                    break
+                self._pending_recycled.pop(0)
+                admitted += 1
+                continue
             if self.admit_group() is None:
                 break
             admitted += 1
@@ -1007,7 +1043,7 @@ class ContainerRunExecutor:
                 {
                     "cursor": row.cursor,
                     "at": row.at,
-                    "control": row.detail.get("control", row.reason),
+                    "control": row.subject,
                     "from_state": row.from_state,
                     "to_state": row.to_state,
                     "reason": row.reason,
@@ -1055,7 +1091,7 @@ class ContainerRunExecutor:
                 "run_binding_digest": self.identity.binding_digest,
             },
         )
-        baseline = {
+        first_published = {
             name: _revision_payload(revision)
             for name, revision in (self.updates[0].revisions if self.updates else {}).items()
         }
@@ -1070,7 +1106,7 @@ class ContainerRunExecutor:
                     name: _revision_payload(revision)
                     for name, revision in self.revisions.items()
                 },
-                "first_published": baseline,
+                "first_published": first_published,
                 "updates": [record.to_payload() for record in self.updates],
             },
         )
@@ -1294,17 +1330,9 @@ class ContainerRunExecutor:
         return tuple(item.group_id for item in self.group_outcomes if item.disposition == "trained")
 
     def _baseline_revisions(self) -> Mapping[str, PolicyRevision]:
-        rows: dict[str, PolicyRevision] = {}
-        for name in self.parameter_groups:
-            revision = self.revisions.get(name)
-            if revision is None:
-                continue
-            rows[name] = revision if not self.updates else self.updates[0].revisions.get(
-                name, revision
-            )
-        if not self.updates:
-            return dict(self.revisions)
-        return {name: value for name, value in rows.items()}
+        """The revisions the run started from, whatever it published later."""
+
+        return dict(self.baseline_revisions)
 
     def _horizon_row(self, record: AttemptEvidence) -> Mapping[str, Any]:
         horizon = record.reward.horizon

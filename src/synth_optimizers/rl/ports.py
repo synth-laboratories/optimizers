@@ -53,6 +53,8 @@ class AttemptFacts:
     on evidence that names the wrong task.
     """
 
+    #: The executor's own attempt id at bind time; the container's rollout id
+    #: once it has accepted the attempt and `declare_attempt` has been called.
     rollout_id: str
     task_id: str
     seed: int
@@ -111,6 +113,22 @@ class SamplerGateway(Protocol):
         binding a route to a second revision must raise. The attempt facts are
         required here rather than inferred later, so the evidence this origin
         captures can name the task and seed it actually ran.
+        """
+
+    def declare_attempt(
+        self,
+        proxy_request_id: str,
+        *,
+        rollout_id: str,
+        task_id: str,
+        seed: int,
+        terminal_status: str = "completed",
+    ) -> None:
+        """Attach the container's own rollout id to an already-bound origin.
+
+        The origin is what gets submitted, so the container has no rollout id
+        to give until after submission. Binding carries the attempt id the
+        executor minted; this replaces it with the container's once known.
         """
 
     def close(self, proxy_request_id: str) -> None:

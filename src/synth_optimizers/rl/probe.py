@@ -209,6 +209,17 @@ def _check_cursors(cursors: Sequence[int]) -> None:
             )
 
 
+def _probe_prefix_streams(
+    calls: Sequence[InferenceCall],
+) -> dict[str, list[InferenceCall]]:
+    """One conversation per agent instance, in call order."""
+
+    streams: dict[str, list[InferenceCall]] = {}
+    for call in calls:
+        streams.setdefault(call.agent_instance_id or "", []).append(call)
+    return streams
+
+
 def validate_probe(
     attempt: ProbeAttempt,
     *,
@@ -246,8 +257,13 @@ def validate_probe(
                 f"{tuple(expected_profile.stop_token_ids)}"
             )
     attempt.behavior.renderer_profile.assert_matches(expected_profile)
-    for previous, following in zip(attempt.calls, attempt.calls[1:], strict=False):
-        assert_strict_prefix(previous, following)
+    # Prefix consistency is a property of one conversation, not of an attempt.
+    # A joint episode interleaves several instances' calls, so checking the
+    # attempt's calls in submission order would compare one instance's turn
+    # against another's and fail every correct joint probe.
+    for stream in _probe_prefix_streams(attempt.calls).values():
+        for previous, following in zip(stream, stream[1:], strict=False):
+            assert_strict_prefix(previous, following)
     _check_cursors(attempt.event_cursors)
     if len(attempt.terminal_results) != 1:
         raise ProbeError(

@@ -703,3 +703,50 @@ def test_an_empty_batch_and_a_channel_the_receipt_lacks_both_raise() -> None:
                 bundles[1],
             ],
         )
+
+
+def test_a_single_team_run_with_one_untargeted_measure_assembles() -> None:
+    """The common case: one team stamped everywhere, one measure reported.
+
+    A team is a comparison key only where the reward separates teams. Refusing
+    an untargeted channel because a trajectory carries a team id would make
+    every cooperative single-team run unassemblable.
+    """
+
+    from synth_optimizers.contracts.rl_records import RewardChannel, RewardRecord
+    from synth_optimizers.rl.assembly import _resolve_channel
+
+    untargeted = RewardRecord(
+        reward_id="reward-1",
+        rollout_id="rollout-1",
+        trace_digest="sha256:trace",
+        channels=(RewardChannel("reward", None, 1.0),),
+        optimized_channel="reward",
+        terminal_status="completed",
+        evaluation_plan_id="plan-1",
+    )
+    assert _resolve_channel(untargeted, None).measure == 1.0
+    assert _resolve_channel(untargeted, "team-1").measure == 1.0
+    assert _resolve_channel(untargeted, "any-other-team").measure == 1.0
+
+
+def test_a_competitive_reward_still_resolves_per_team() -> None:
+    from synth_optimizers.contracts.rl_records import RewardChannel, RewardRecord
+    from synth_optimizers.rl.assembly import AssemblyError, _resolve_channel
+
+    ranked = RewardRecord(
+        reward_id="reward-2",
+        rollout_id="rollout-2",
+        trace_digest="sha256:trace",
+        channels=(
+            RewardChannel("team_rank", "terra", 14.0, rank=1),
+            RewardChannel("rival_rank", "gemini37", 13.0, rank=2),
+        ),
+        optimized_channel="team_rank",
+        terminal_status="completed",
+        evaluation_plan_id="plan-1",
+    )
+    assert _resolve_channel(ranked, "terra").measure == 14.0
+    assert _resolve_channel(ranked, "gemini37").measure == 13.0
+    with pytest.raises(AssemblyError, match="channels for team"):
+        _resolve_channel(ranked, "grok46")

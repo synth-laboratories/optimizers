@@ -1921,27 +1921,32 @@ policy type. `best:<metric>` maximizes unless the metric declares a direction.
 revisions as integers; the catalog names them as text. A group pin carries
 both, so the bridge is a field rather than a lookup convention.
 
-### Open questions the implementation could not settle
+### Decisions taken after the first implementation pass
 
-These need a decision before the acceptance runs, and each was raised
-independently by more than one work stream:
+**Clock skew is its own clause.** `lifecycle.clock_skew`, and it is conditional
+rather than optional: a `steps` or `env_ticks` horizon reads no wall clock, so
+the clause does not apply, which is a different statement from a container
+declining it. An optional clause may be declined; a conditional one may not be
+declined where it applies. The requirement document names conditional clauses
+only when their condition holds.
 
-1. **No clause id for clock skew.** The note says skew past tolerance is a
-   rejected clause but names none. It is currently folded into
-   `reward.horizon_quiescence`, which is where the horizon is read but is not
-   what skew is about. A `lifecycle.clock_skew` id would say it plainly.
-2. **A mandatory clause satisfiable by a declared substitute has no verdict
-   that fits.** `reward.horizon_quiescence` is mandatory, yet a horizon-clipped
-   snapshot is an accepted substitute for quiescence. `rejected` stops the run
-   and `degraded` implies a run-plan dimension to lower. The registry needs
-   either a fallback-satisfiable set or a `substitutes` field on the verdict.
-3. **Degraded acceptance has no wire field.** For a degradation that is not
-   plan-lowerable there is no declared way for the executor to acknowledge the
-   fallback it will run under. An `accept_degraded` list on the request
-   document is the shape the fakes assumed.
-4. **Credit parity.** Adopt the plan's standardized estimator, or add a
-   legacy-compatible credit kind to both planes so the old normalized numbers
-   reproduce bit-for-bit. See the parity paragraph above.
+**A mandatory clause may be satisfied by a declared substitute.**
+`CLAUSE_SUBSTITUTES` names which substitute answers which clause — a container
+that cannot quiesce may clip its state to the horizon instead. That is neither
+a rejection, which stops the run, nor a degradation, which implies a run-plan
+dimension to lower and clipping has none. The executor must acknowledge the
+substitute it will run under in `accept_degraded`, a field of the requirement
+document, and the run receipt records it as a fallback. An acknowledgement
+never rewrites a clause the container already accepted, and a substitute nobody
+declared is refused.
+
+**Credit follows the plan, not the old executor.** The plane uses the plan's
+`length_weighted_leave_one_out` and its standardized variant. No
+legacy-compatible credit kind is added: the two differ by exactly `n/(n-1)`
+with identical signs, ordering, and skip verdicts, so behavior is materially
+unchanged, and a second permanently maintained estimator buys only the ability
+to reproduce old normalized numbers exactly. Runs before this change are
+reproducible from their own receipts, not from this code path.
 
 ### Success criteria
 

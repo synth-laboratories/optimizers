@@ -1860,6 +1860,89 @@ The generic conformance suite must not select behavior by task name.
   role-incompatible components are evidence failures rather than silent
   fallback to `latest`.
 
+### Rulings the implementation settled
+
+Six parallel work streams built against this document and each returned the
+places it was underdetermined. These are the rulings, recorded here so the next
+reader does not re-litigate them.
+
+**Leases have two clocks, and only one of them is a lease.** A heartbeat TTL
+keeps an attempt alive; a straggler deadline fixed at grant decides when it has
+run too long. Heartbeats never move the deadline, or a heartbeating straggler
+is immortal. The straggler deadline covers the horizon times its dilation plus
+the quiescence and artifact-collection budgets plus the declared grace. Where a
+container declares a grace and the run configuration also carries one, the
+container's declaration wins; the configured value is a fallback for a
+container that declares none.
+
+**A unit horizon must declare its conversion.** A `steps` or `env_ticks`
+horizon carries no duration, so `seconds_per_unit` is required and its absence
+is a refusal rather than a default of one second per unit. A container's lease
+TTL is its own advertised obligation and is not derived from the horizon.
+
+**Only admission may be refused, never executed work.** The rollout queue and
+the open-group bound apply backpressure by refusing admission. Downstream
+fullness throttles dispatch instead: refusing an attempt that already ran would
+break exactly-one-terminal-result. Straggler replacements and lease-expiry
+recovery bypass the admission bound, because they re-enter work that already
+left the pipeline.
+
+**Recycling returns slots, not tasks.** A group discarded at the dequeue gate
+for staleness returns its slots — sample index, task id, seed, original
+idempotency key — and the executor re-admits them under a fresh pin. The queue
+engine may not mint a task identity.
+
+**A group that can never complete is reported, not silently dropped.** A
+straggler cancelled with no replacement budget leaves a group that cannot fill.
+The engine reports it; disposal is the caller's, and automatic discard must be
+a policy field if it is ever wanted.
+
+**Drain cancels what it can never run.** Attempts admitted but never dispatched
+are cancelled with a recorded reason distinguishing them from terminate-routed
+cancellations, so receipts stay complete and cost stays attributable.
+
+**Checkpoint records are immutable; their status is a relation.** A record
+carries its registration-time publication status and policy-set memberships;
+the effective values derive from an append-only event log. The run receipt
+serializes the derived view. This is the only reading under which "records are
+immutable" and "publication_status is a record field" are both true.
+
+**Superseded checkpoints remain evaluable.** Published and superseded resolve;
+staged resolves only when explicitly allowed; orphaned never does. Otherwise a
+paired baseline-versus-trained comparison across rounds stops resolving the
+moment a newer round supersedes the baseline.
+
+**Ambiguous selectors are refused, not guessed.** `latest-published` with
+published checkpoints in several parameter groups has no single answer, so it
+raises rather than picking one; qualify it with a run, parameter group, or
+policy type. `best:<metric>` maximizes unless the metric declares a direction.
+
+**Two identities for a revision, carried together.** The queue counts policy
+revisions as integers; the catalog names them as text. A group pin carries
+both, so the bridge is a field rather than a lookup convention.
+
+### Open questions the implementation could not settle
+
+These need a decision before the acceptance runs, and each was raised
+independently by more than one work stream:
+
+1. **No clause id for clock skew.** The note says skew past tolerance is a
+   rejected clause but names none. It is currently folded into
+   `reward.horizon_quiescence`, which is where the horizon is read but is not
+   what skew is about. A `lifecycle.clock_skew` id would say it plainly.
+2. **A mandatory clause satisfiable by a declared substitute has no verdict
+   that fits.** `reward.horizon_quiescence` is mandatory, yet a horizon-clipped
+   snapshot is an accepted substitute for quiescence. `rejected` stops the run
+   and `degraded` implies a run-plan dimension to lower. The registry needs
+   either a fallback-satisfiable set or a `substitutes` field on the verdict.
+3. **Degraded acceptance has no wire field.** For a degradation that is not
+   plan-lowerable there is no declared way for the executor to acknowledge the
+   fallback it will run under. An `accept_degraded` list on the request
+   document is the shape the fakes assumed.
+4. **Credit parity.** Adopt the plan's standardized estimator, or add a
+   legacy-compatible credit kind to both planes so the old normalized numbers
+   reproduce bit-for-bit. See the parity paragraph above.
+
 ### Success criteria
 
 #### Common gates for all acceptance runs

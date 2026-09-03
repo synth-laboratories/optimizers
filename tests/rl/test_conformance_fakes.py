@@ -29,6 +29,7 @@ from fakes.container import (
     ContainerError,
     RunningContainer,
     group_pin_from_fields,
+    rollout_receipt_from_payload,
     serve,
     topology_from_payload,
 )
@@ -41,6 +42,7 @@ from synth_optimizers.contracts.rl_identity import (
 from synth_optimizers.contracts.rl_records import (
     EvidenceError,
     InferenceCall,
+    RecordError,
     assert_strict_prefix,
 )
 
@@ -583,8 +585,15 @@ def test_rubric_judge_spans_are_recorded_but_untrainable() -> None:
         with pytest.raises(EvidenceError, match="non-trainable"):
             span.validate_for_training()
         assert all(
-            span.call_id not in episode.segments[0].call_ids for episode in attempt.episodes
+            span.call_id not in segment.call_ids
+            for episode in attempt.episodes
+            for segment in episode.segments
         )
+        judged = attempt.context_segments_by("judge")
+        assert len(judged) == 1
+        assert judged[0].call_ids == (span.call_id,)
+        assert judged[0].trainable_tokens == 0
+        assert judged[0].trainable is False
         assert attempt.reward.metadata["judge_model_id"]
         assert attempt.reward.metadata["judge_spans_trainable"] is False
     finally:
@@ -611,6 +620,13 @@ def test_competitive_container_pins_opponents_and_ranks_both_teams() -> None:
                 assert call.parameter_group_id is None
                 with pytest.raises(EvidenceError):
                     call.validate_for_training()
+
+        opponent_segments = attempt.context_segments_by("opponent")
+        assert {segment.agent_instance_id for segment in opponent_segments} == opponents
+        for segment in opponent_segments:
+            assert segment.trainable_tokens == 0
+            assert segment.trainable is False
+            assert segment.team_id == "team_away"
 
         trained = {episode.agent_instance_id for episode in attempt.episodes}
         assert trained == {"home_1", "home_2"}
@@ -808,7 +824,13 @@ def test_probe_walks_the_whole_path_and_stays_out_of_training() -> None:
             assert call.token_capture_provenance == "probe_synthetic"
             with pytest.raises(EvidenceError, match="non-trainable"):
                 call.validate_for_training()
-        assert attempt.episodes == ()
+        # Probe evidence is produced and then refused by its own marking; an
+        # empty episode list would hide that the path was walked at all.
+        assert attempt.episodes
+        for episode in attempt.episodes:
+            assert episode.probe is True
+            with pytest.raises(EvidenceError, match="probe-derived"):
+                episode.validate()
 
         # Idempotent resubmit of the same key is the same logical attempt.
         replay = client.submit(
@@ -940,6 +962,128 @@ def test_replay_of_the_same_configuration_is_bit_for_bit(name: str) -> None:
             container.shutdown()
 
     assert snapshot() == snapshot()
+
+
+def test_every_call_stamps_the_renderer_profile_that_produced_it() -> None:
+    config = scenarios.multi_turn_environment_reward()
+    container, client = _drive(config)
+    try:
+        attempt = client.run_attempt(task_id=_first_task(client))
+        expected = config.renderer_profile.fingerprint
+        assert attempt.trace["renderer_profile"]["profile_id"] == (
+            config.renderer_profile.profile_id
+        )
+        for call in attempt.calls:
+            assert call.renderer_profile_fingerprint == expected
+    finally:
+        container.shutdown()
+
+
+def test_a_foreign_authored_segment_may_never_carry_trainable_tokens() -> None:
+    """The fake respects the rule, and the shared record enforces it."""
+
+    container, client = _drive(scenarios.rubric_scored_judge())
+    try:
+        attempt = client.run_attempt(task_id=_first_task(client))
+        judged = attempt.context_segments_by("judge")[0]
+        with pytest.raises(RecordError, match="foreign authorship is never trainable"):
+            replace(judged, loss_mask=(1,) * len(judged.token_ids))
+    finally:
+        container.shutdown()
+
+
+def test_the_terminal_transition_seals_a_receipt_bound_to_its_agreement() -> None:
+    container, client = _drive(scenarios.one_call_classification())
+    try:
+        attempt = client.run_attempt(task_id=_first_task(client))
+        receipt = attempt.receipt
+        assert receipt.rollout_id == attempt.rollout_id
+        assert receipt.terminal_status == "completed"
+        assert receipt.trace_digest == attempt.trace_digest
+        assert receipt.evidence_digest
+        assert receipt.agreement_digest == client.agreement_digest
+        assert receipt.handshake_id == client.handshake_id
+        assert receipt.reward_id == attempt.reward.reward_id
+        assert receipt.probe is False
+        assert receipt.replacement_index == 0
+        assert receipt.replacement_reason is None
+    finally:
+        container.shutdown()
+
+
+def test_a_straggler_replacement_is_recorded_as_such() -> None:
+    """Replacing a straggler may not silently change group membership."""
+
+    container, client = _drive(scenarios.one_call_classification())
+    try:
+        binding = client.bind()
+        first = client.submit(
+            task_id="row_0001", idempotency_key="straggler", policy_config_id=binding["config_id"]
+        )
+        cancelled = client.terminate(first["rollout_id"], reason="exceeded_horizon_plus_grace")
+        assert cancelled["state"] == "cancelled"
+        second = client.submit(
+            task_id="row_0001",
+            idempotency_key="straggler-replacement",
+            policy_config_id=binding["config_id"],
+            replaces={
+                "attempt_id": first["rollout_id"],
+                "index": 1,
+                "reason": "exceeded_horizon_plus_grace",
+            },
+        )
+        client.state(second["rollout_id"])
+        receipt = rollout_receipt_from_payload(client.finalize(second["rollout_id"])["receipt"])
+        assert receipt.replaced_attempt_id == first["rollout_id"]
+        assert receipt.replacement_index == 1
+        assert receipt.replacement_reason == "exceeded_horizon_plus_grace"
+    finally:
+        container.shutdown()
+
+
+def test_a_lease_is_advertised_not_derived_from_the_horizon() -> None:
+    config = scenarios.competitive_realtime()
+    container, client = _drive(config)
+    try:
+        capabilities = client.capabilities()["capabilities"]
+        lease = capabilities["lifecycle"]["lease"]
+        horizon = capabilities["horizon"]
+        assert lease["ttl_seconds"] == config.lease_ttl_seconds
+        assert lease["renewable"] is True
+        assert lease["heartbeat_route"] == DECLARED_ROUTES["rollout_renew_route"]
+        # The horizon is advertised separately; the two are different clocks.
+        assert horizon["horizon_kind"] == "wall_clock"
+        assert horizon["value"] == pytest.approx(5400.0)
+        assert horizon["time_dilation"] == pytest.approx(4.0)
+        assert lease["ttl_seconds"] != horizon["value"]
+    finally:
+        container.shutdown()
+
+
+def test_a_unit_horizon_declares_its_conversion() -> None:
+    config = scenarios.deferred_program_quiesced()
+    container, client = _drive(config)
+    try:
+        horizon = client.capabilities()["capabilities"]["horizon"]
+        assert horizon["horizon_kind"] == "env_ticks"
+        assert horizon["seconds_per_unit"] == pytest.approx(0.5)
+        assert horizon["horizon_seconds"] == pytest.approx(50.0)
+    finally:
+        container.shutdown()
+
+
+def test_an_unrenewable_lease_under_the_horizon_is_a_rejected_clause() -> None:
+    with serve(scenarios.lease_too_short_for_horizon()) as container:
+        client = container.client()
+        payload = client.negotiate()[-1]
+        assert payload["accepted"] is False
+        assert payload["rejected_mandatory_clauses"] == ["lifecycle.lease_renewal"]
+        clause = next(
+            row for row in payload["clauses"] if row["clause_id"] == "lifecycle.lease_renewal"
+        )
+        assert clause["verdict"] == "rejected"
+        assert "shorter than the declared horizon" in clause["reason"]
+        assert payload["obligations"]["lease_renewable"] is False
 
 
 def test_the_seed_is_load_bearing_for_the_sampled_evidence() -> None:

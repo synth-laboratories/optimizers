@@ -45,6 +45,8 @@ each one must produce:
 ``competitive_match_set_drift``        ``MixedGroupError`` pin drifts inside one group
 ``prompt_budget_refuse``               container refusal    overlong prompt refused
 ``rejected_mandatory_clause``          handshake refusal    run stops before any spend
+``skewed_clock``                       handshake refusal    wall-clock skew past tolerance
+``lease_too_short_for_horizon``        handshake refusal    unrenewable lease under horizon
 =====================================  ==================  ================================
 """
 
@@ -140,7 +142,9 @@ def party_topology() -> Topology:
         communication_channels=(
             CommunicationChannel(channel_id="party_chat", scope="intra_team"),
         ),
-        horizon=Horizon(horizon_kind="steps", value=3.0),
+        # A step horizon carries no duration of its own, so the conversion is
+        # declared: a lease may never be guessed from a unit with no duration.
+        horizon=Horizon(horizon_kind="steps", value=3.0, seconds_per_unit=45.0),
         parameter_groups={"type_alpha": "pg_alpha", "type_beta": "pg_beta"},
     )
 
@@ -304,7 +308,7 @@ def deferred_program_quiesced() -> ContainerConfig:
         container_id="fake-program-quiesced",
         topology=solo_topology(
             actuation_model="deferred_program",
-            horizon=Horizon(horizon_kind="env_ticks", value=100.0),
+            horizon=Horizon(horizon_kind="env_ticks", value=100.0, seconds_per_unit=0.5),
         ),
         turns=3,
         quiescence_supported=True,
@@ -319,7 +323,7 @@ def clipped_no_quiescence() -> ContainerConfig:
         container_id="fake-clipped",
         topology=solo_topology(
             actuation_model="deferred_program",
-            horizon=Horizon(horizon_kind="env_ticks", value=100.0),
+            horizon=Horizon(horizon_kind="env_ticks", value=100.0, seconds_per_unit=0.5),
         ),
         turns=3,
         quiescence_supported=False,
@@ -512,7 +516,7 @@ def deferred_program_unquiesced() -> ContainerConfig:
         container_id="fake-program-loose",
         topology=solo_topology(
             actuation_model="deferred_program",
-            horizon=Horizon(horizon_kind="env_ticks", value=100.0),
+            horizon=Horizon(horizon_kind="env_ticks", value=100.0, seconds_per_unit=0.5),
         ),
         turns=3,
         quiescence_supported=True,
@@ -550,6 +554,21 @@ def prompt_budget_refuse() -> ContainerConfig:
         max_prompt_tokens=10,
         prompt_budget_policy="refuse",
         seed=42,
+    )
+
+
+def lease_too_short_for_horizon() -> ContainerConfig:
+    """A non-renewable lease shorter than the horizon it must cover."""
+
+    return _base(
+        container_id="fake-shortlease",
+        topology=solo_topology(
+            horizon=Horizon(horizon_kind="wall_clock", value=5400.0),
+        ),
+        turns=1,
+        lease_ttl_seconds=120.0,
+        lease_renewable=False,
+        seed=45,
     )
 
 
@@ -624,4 +643,5 @@ NON_CONFORMANT: Mapping[str, tuple[Callable[[], ContainerConfig], type[Exception
     "prompt_budget_refuse": (prompt_budget_refuse, None),
     "rejected_mandatory_clause": (rejected_mandatory_clause, None),
     "skewed_clock": (skewed_clock, None),
+    "lease_too_short_for_horizon": (lease_too_short_for_horizon, None),
 }

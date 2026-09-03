@@ -238,6 +238,10 @@ class InferenceCall:
     finish_reason: str
     stop_token_ids: tuple[int, ...] = ()
     content_mask: tuple[int, ...] = ()
+    # The behavior fingerprint is a digest, so a call alone cannot say which
+    # renderer produced it. Stamp the profile fingerprint too: the note requires
+    # the trace to identify the renderer that produced the tokens.
+    renderer_profile_fingerprint: str = ""
     trainable: bool = True
     branch_id: str = "root"
     parent_branch_id: str | None = None
@@ -389,9 +393,14 @@ class TrainableEpisode:
     team_id: str | None = None
     policy_set_revision_id: str | None = None
     trace_digest: str = ""
+    probe: bool = False
     schema_version: str = TRAINABLE_EPISODE_SCHEMA_VERSION
 
     def validate(self) -> None:
+        if self.probe:
+            raise EvidenceError(
+                f"episode {self.rollout_id} is probe-derived and may not enter a group or batch"
+            )
         if not self.segments:
             raise EvidenceError(f"episode {self.rollout_id} has no trainable segments")
         if not self.trace_digest:

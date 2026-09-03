@@ -180,12 +180,25 @@ class Horizon:
     value: float
     time_dilation: float = 1.0
     grace_seconds: float = 0.0
+    # A step or tick horizon carries no duration of its own, so leases and queue
+    # timeouts cannot be derived from it without a declared conversion.
+    seconds_per_unit: float = 1.0
 
     def __post_init__(self) -> None:
         if self.horizon_kind not in HORIZON_KINDS:
             raise TopologyError(f"unknown horizon_kind {self.horizon_kind!r}")
         if self.value <= 0:
             raise TopologyError("horizon value must be positive")
+        if self.seconds_per_unit <= 0:
+            raise TopologyError("seconds_per_unit must be positive")
+
+    @property
+    def lease_seconds(self) -> float:
+        """Wall-clock budget a lease must cover, including the declared grace."""
+
+        if self.horizon_kind == "wall_clock":
+            return self.value + self.grace_seconds
+        return self.value * self.seconds_per_unit + self.grace_seconds
 
 
 @dataclass(frozen=True, slots=True)
@@ -326,6 +339,8 @@ class RolloutReceipt:
     evidence_digest: str
     reward_id: str | None = None
     handshake_id: str = ""
+    # Per-attempt admission is auditable without reaching for the group pin.
+    agreement_digest: str = ""
     agent_instance_id: str | None = None
     team_id: str | None = None
     probe: bool = False

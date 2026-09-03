@@ -1,0 +1,41 @@
+[
+  {
+    "event_id": "evt_511d87a427b84ecbaf4ec4357e7d9f58",
+    "event_type": "cispo.canary.started",
+    "job_id": "cispo_canary",
+    "kind": "cispo.canary.started",
+    "occurred_at": "2026-09-02T14:43:06.143695Z",
+    "payload": {
+      "model_id": "openai/gpt-oss-20b",
+      "validated": false
+    },
+    "phase": "running",
+    "producer": {
+      "commit": "local",
+      "service": "synth-optimizers",
+      "version": "synth-optimizers.training.v1"
+    },
+    "schema_version": "training.event.v1",
+    "sequence": 1,
+    "sequence_number": 1
+  },
+  {
+    "event_id": "evt_6ba88d4b5bd4483899b51dbd01dcad84",
+    "event_type": "cispo.failed",
+    "job_id": "cispo_canary",
+    "kind": "cispo.failed",
+    "occurred_at": "2026-09-02T14:43:21.005944Z",
+    "payload": {
+      "reason": "tinker_fatal: Request failed: Unknown user error: Invalid checkpoint name 'optimizers-inference-327bf988-a131-5d14-9c38-ece24f71ae32:train:0-live': must start with an alphanumeric character or underscore and contain only alphanumeric characters, hyphens, underscores, and dots for self.request_id='327bf988-a131-5d14-9c38-ece24f71ae32:train:0:1' and expected type self.model_cls=<class 'tinker.types._pydantic_types.save_weights_for_sampler_response.SaveWeightsForSamplerResponseInternal'>"
+    },
+    "phase": "failed",
+    "producer": {
+      "commit": "local",
+      "service": "synth-optimizers",
+      "version": "synth-optimizers.training.v1"
+    },
+    "schema_version": "training.event.v1",
+    "sequence": 2,
+    "sequence_number": 2
+  }
+]

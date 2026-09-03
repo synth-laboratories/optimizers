@@ -1,0 +1,283 @@
+[
+  {
+    "event_id": "evt_12ba9e90789749e0872cd911e1c5ef7d",
+    "event_type": "cispo.canary.started",
+    "job_id": "cispo_canary",
+    "kind": "cispo.canary.started",
+    "occurred_at": "2026-09-02T14:45:18.615003Z",
+    "payload": {
+      "model_id": "openai/gpt-oss-20b",
+      "validated": false
+    },
+    "phase": "running",
+    "producer": {
+      "commit": "local",
+      "service": "synth-optimizers",
+      "version": "synth-optimizers.training.v1"
+    },
+    "schema_version": "training.event.v1",
+    "sequence": 1,
+    "sequence_number": 1
+  },
+  {
+    "event_id": "evt_8e8a682460454a759fe4e15b7c851556",
+    "event_type": "cispo.rollout_group.completed",
+    "job_id": "cispo_canary",
+    "kind": "cispo.rollout_group.completed",
+    "occurred_at": "2026-09-02T14:46:08.878141Z",
+    "payload": {
+      "group_id": "1:0",
+      "iteration": 1,
+      "label": "order_physical_card",
+      "reward_mean": 0.5,
+      "reward_range": 1.0,
+      "reward_variance": 0.25,
+      "rewards": [
+        0.0,
+        1.0
+      ]
+    },
+    "phase": "running",
+    "producer": {
+      "commit": "local",
+      "service": "synth-optimizers",
+      "version": "synth-optimizers.training.v1"
+    },
+    "schema_version": "training.event.v1",
+    "sequence": 2,
+    "sequence_number": 2
+  },
+  {
+    "event_id": "evt_27220b3470104b5ab0f42dfc43f7b296",
+    "event_type": "cispo.group_advantage.computed",
+    "job_id": "cispo_canary",
+    "kind": "cispo.group_advantage.computed",
+    "occurred_at": "2026-09-02T14:46:08.878684Z",
+    "payload": {
+      "advantages": [
+        -0.7071057811879616,
+        0.7071057811879616
+      ],
+      "group_id": "1:0",
+      "zero_advantage": false
+    },
+    "phase": "running",
+    "producer": {
+      "commit": "local",
+      "service": "synth-optimizers",
+      "version": "synth-optimizers.training.v1"
+    },
+    "schema_version": "training.event.v1",
+    "sequence": 3,
+    "sequence_number": 3
+  },
+  {
+    "event_id": "evt_72576a5786404918bb4badecc8a40ca1",
+    "event_type": "cispo.importance_ratio.measured",
+    "job_id": "cispo_canary",
+    "kind": "cispo.importance_ratio.measured",
+    "occurred_at": "2026-09-02T14:47:13.580485Z",
+    "payload": {
+      "clipped_token_fraction": 0.0,
+      "effective_tokens": 39,
+      "kl_proxy": 3.2114219934348127,
+      "mean_ratio": 0.47697729430379215,
+      "ratio_max": 0.9999983310727032,
+      "ratio_min": 6.805689736080934e-06,
+      "update": 1
+    },
+    "phase": "running",
+    "producer": {
+      "commit": "local",
+      "service": "synth-optimizers",
+      "version": "synth-optimizers.training.v1"
+    },
+    "schema_version": "training.event.v1",
+    "sequence": 4,
+    "sequence_number": 4
+  },
+  {
+    "event_id": "evt_db75e1aba7f34160917f399788a0d021",
+    "event_type": "cispo.update.completed",
+    "job_id": "cispo_canary",
+    "kind": "cispo.update.completed",
+    "occurred_at": "2026-09-02T14:47:16.987400Z",
+    "payload": {
+      "group_count": 1,
+      "reward_mean": 0.5,
+      "reward_range": 1.0,
+      "reward_variance": 0.25,
+      "skipped": false,
+      "update": 1,
+      "zero_advantage_groups": 0,
+      "zero_advantage_rate": 0.0
+    },
+    "phase": "running",
+    "producer": {
+      "commit": "local",
+      "service": "synth-optimizers",
+      "version": "synth-optimizers.training.v1"
+    },
+    "schema_version": "training.event.v1",
+    "sequence": 5,
+    "sequence_number": 5
+  },
+  {
+    "event_id": "evt_3d7696b61e6e4847a326371c785f12f4",
+    "event_type": "cispo.checkpoint.created",
+    "job_id": "cispo_canary",
+    "kind": "cispo.checkpoint.created",
+    "occurred_at": "2026-09-02T14:47:22.321575Z",
+    "payload": {
+      "checkpoint_id": "inference-1-f641303cc58b",
+      "digest": "sha256:005d04fd07e9dc205790e63035051220a2da1b7fd972a56cf56bf641303cc58b",
+      "provider_reference": "tinker://83e9359e-c0a3-57a2-8f07-cde03dd2262e:train:0/sampler_weights/optimizers-inference-tinkerreq_4988a1f16239d7dc4a26f0e9",
+      "resume_token": "tinker://83e9359e-c0a3-57a2-8f07-cde03dd2262e:train:0/weights/optimizers-training-tinkerreq_35faac593488d73c3395021d",
+      "step": 1,
+      "training_checkpoint_id": "training-1-5d9574cf907f",
+      "training_provider_reference": "tinker://83e9359e-c0a3-57a2-8f07-cde03dd2262e:train:0/weights/optimizers-training-tinkerreq_35faac593488d73c3395021d"
+    },
+    "phase": "evaluating",
+    "producer": {
+      "commit": "local",
+      "service": "synth-optimizers",
+      "version": "synth-optimizers.training.v1"
+    },
+    "schema_version": "training.event.v1",
+    "sequence": 6,
+    "sequence_number": 6
+  },
+  {
+    "event_id": "evt_8db7aaf8e77746609c2aafd1771340bc",
+    "event_type": "cispo.checkpoint_eval.completed",
+    "job_id": "cispo_canary",
+    "kind": "cispo.checkpoint_eval.completed",
+    "occurred_at": "2026-09-02T14:47:29.825016Z",
+    "payload": {
+      "calibration_accuracy": 1.0,
+      "checkpoint_id": "inference-1-f641303cc58b",
+      "digest": "sha256:005d04fd07e9dc205790e63035051220a2da1b7fd972a56cf56bf641303cc58b",
+      "per_intent": {
+        "card_swallowed": {
+          "accuracy": 1.0,
+          "correct": 1,
+          "n": 1
+        }
+      },
+      "provider_reference": "tinker://83e9359e-c0a3-57a2-8f07-cde03dd2262e:train:0/sampler_weights/optimizers-inference-tinkerreq_4988a1f16239d7dc4a26f0e9",
+      "resume_token": "tinker://83e9359e-c0a3-57a2-8f07-cde03dd2262e:train:0/weights/optimizers-training-tinkerreq_35faac593488d73c3395021d",
+      "step": 1,
+      "training_checkpoint_id": "training-1-5d9574cf907f",
+      "training_provider_reference": "tinker://83e9359e-c0a3-57a2-8f07-cde03dd2262e:train:0/weights/optimizers-training-tinkerreq_35faac593488d73c3395021d"
+    },
+    "phase": "evaluating",
+    "producer": {
+      "commit": "local",
+      "service": "synth-optimizers",
+      "version": "synth-optimizers.training.v1"
+    },
+    "schema_version": "training.event.v1",
+    "sequence": 7,
+    "sequence_number": 7
+  },
+  {
+    "event_id": "evt_ed34c50edfab4f209b3ea3ad6661753b",
+    "event_type": "cispo.checkpoint.promoted",
+    "job_id": "cispo_canary",
+    "kind": "cispo.checkpoint.promoted",
+    "occurred_at": "2026-09-02T14:47:29.827607Z",
+    "payload": {
+      "calibration_accuracy": 1.0,
+      "checkpoint_id": "inference-1-f641303cc58b",
+      "digest": "sha256:005d04fd07e9dc205790e63035051220a2da1b7fd972a56cf56bf641303cc58b",
+      "per_intent": {
+        "card_swallowed": {
+          "accuracy": 1.0,
+          "correct": 1,
+          "n": 1
+        }
+      },
+      "provider_reference": "tinker://83e9359e-c0a3-57a2-8f07-cde03dd2262e:train:0/sampler_weights/optimizers-inference-tinkerreq_4988a1f16239d7dc4a26f0e9",
+      "resume_token": "tinker://83e9359e-c0a3-57a2-8f07-cde03dd2262e:train:0/weights/optimizers-training-tinkerreq_35faac593488d73c3395021d",
+      "step": 1,
+      "training_checkpoint_id": "training-1-5d9574cf907f",
+      "training_provider_reference": "tinker://83e9359e-c0a3-57a2-8f07-cde03dd2262e:train:0/weights/optimizers-training-tinkerreq_35faac593488d73c3395021d"
+    },
+    "phase": "evaluating",
+    "producer": {
+      "commit": "local",
+      "service": "synth-optimizers",
+      "version": "synth-optimizers.training.v1"
+    },
+    "schema_version": "training.event.v1",
+    "sequence": 8,
+    "sequence_number": 8
+  },
+  {
+    "event_id": "evt_b75fca42debc4200a3dd387da350161a",
+    "event_type": "cispo.heldout_eval.completed",
+    "job_id": "cispo_canary",
+    "kind": "cispo.heldout_eval.completed",
+    "occurred_at": "2026-09-02T14:47:29.830011Z",
+    "payload": {
+      "accuracy": 0.0,
+      "n": 1,
+      "per_intent": {
+        "get_physical_card": {
+          "accuracy": 0.0,
+          "correct": 0,
+          "n": 1
+        }
+      }
+    },
+    "phase": "evaluating",
+    "producer": {
+      "commit": "local",
+      "service": "synth-optimizers",
+      "version": "synth-optimizers.training.v1"
+    },
+    "schema_version": "training.event.v1",
+    "sequence": 9,
+    "sequence_number": 9
+  },
+  {
+    "event_id": "evt_74dffc636db149f7925b199387e6b014",
+    "event_type": "cispo.model.materialized",
+    "job_id": "cispo_canary",
+    "kind": "cispo.model.materialized",
+    "occurred_at": "2026-09-02T14:47:29.833254Z",
+    "payload": {
+      "checkpoint_id": "inference-1-f641303cc58b",
+      "digest": "sha256:db279e374badb42b2dda0fe594d0b86b2a202472b2d23e0d6055c06b9f01752e"
+    },
+    "phase": "materializing",
+    "producer": {
+      "commit": "local",
+      "service": "synth-optimizers",
+      "version": "synth-optimizers.training.v1"
+    },
+    "schema_version": "training.event.v1",
+    "sequence": 10,
+    "sequence_number": 10
+  },
+  {
+    "event_id": "evt_ead26a5f7e4e40bcb7198a0d947f8ab8",
+    "event_type": "cispo.completed",
+    "job_id": "cispo_canary",
+    "kind": "cispo.completed",
+    "occurred_at": "2026-09-02T14:47:29.837914Z",
+    "payload": {
+      "heldout_accuracy": 0.0,
+      "selected_checkpoint_id": "inference-1-f641303cc58b"
+    },
+    "phase": "completed",
+    "producer": {
+      "commit": "local",
+      "service": "synth-optimizers",
+      "version": "synth-optimizers.training.v1"
+    },
+    "schema_version": "training.event.v1",
+    "sequence": 11,
+    "sequence_number": 11
+  }
+]

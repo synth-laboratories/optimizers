@@ -292,3 +292,35 @@ def test_clause_registry_is_complete_and_partitioned() -> None:
     assert OPTIONAL_CLAUSES <= set(ALL_CLAUSES)
     assert set(MANDATORY_CLAUSES).isdisjoint(OPTIONAL_CLAUSES)
     assert set(MANDATORY_CLAUSES) | OPTIONAL_CLAUSES == set(ALL_CLAUSES)
+
+
+def test_probe_derived_episode_may_not_enter_a_group_or_batch() -> None:
+    from synth_optimizers.contracts.rl_records import TrainableEpisode, TrainableSegment
+
+    segment = TrainableSegment(
+        token_ids=(1, 2, 3),
+        loss_mask=(0, 1, 1),
+        behavior_logprobs=(0.0, -0.5, -0.25),
+    )
+    kwargs = {
+        "rollout_id": "rollout_1",
+        "task_id": "task_1",
+        "seed": 7,
+        "policy_revision": 3,
+        "behavior_fingerprint": "fp",
+        "segments": (segment,),
+        "terminal_status": "completed",
+        "trace_digest": "sha256:trace",
+    }
+    TrainableEpisode(**kwargs).validate()
+    with pytest.raises(EvidenceError, match="probe-derived"):
+        TrainableEpisode(**kwargs, probe=True).validate()
+
+
+def test_horizon_lease_covers_step_and_tick_budgets() -> None:
+    wall = Horizon("wall_clock", 5400.0, 4.0, grace_seconds=120.0)
+    assert wall.lease_seconds == 5520.0
+    ticks = Horizon("env_ticks", 1000.0, seconds_per_unit=0.6, grace_seconds=30.0)
+    assert ticks.lease_seconds == 630.0
+    with pytest.raises(TopologyError, match="seconds_per_unit"):
+        Horizon("env_ticks", 1000.0, seconds_per_unit=0.0)

@@ -198,6 +198,23 @@ class TinkerAdapter:
             return tokenizer(messages, add_generation_prompt=add_generation_prompt)
         return fallback_tokenize(messages, add_generation_prompt=add_generation_prompt)
 
+    def bridge_chat(
+        self,
+        previous_prompt_token_ids: Sequence[int],
+        previous_completion_token_ids: Sequence[int],
+        messages: Sequence[Mapping[str, str]],
+    ) -> dict[str, Any] | None:
+        """The renderer's own turn-to-turn bridge, when this client has one.
+
+        ``None`` means no extension was proven, not that one was refused: the
+        caller forks a branch and records why rather than splicing on faith.
+        """
+
+        bridge = getattr(self._client(), "bridge_chat", None)
+        if not callable(bridge):
+            return None
+        return bridge(previous_prompt_token_ids, previous_completion_token_ids, messages)
+
     def decode_tokens(self, token_ids: Sequence[int]) -> str:
         decoder = getattr(self._client(), "decode", None)
         if callable(decoder):

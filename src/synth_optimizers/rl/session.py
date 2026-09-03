@@ -531,6 +531,12 @@ class ContractContainerSession:
                     "policy_revision": first.policy_revision,
                     "transport": first.sampling_transport,
                     "wire_api": first.wire_api,
+                    # The container stamps its evidence with this identity, and
+                    # a probe has no origin to carry it in, so it is named at
+                    # the top level for both kinds rather than only nested.
+                    "behavior_fingerprint": first.behavior_fingerprint,
+                    "model_family": self._config.model.family,
+                    "model_id": self._config.model.id,
                     "sampler_origin": _origin_payload(first),
                     "policy_ref": first.credential,
                     "handshake_id": self.handshake_id,
@@ -565,6 +571,9 @@ class ContractContainerSession:
                 "kind": kind,
                 "policy_revision": first.policy_revision,
                 "transport": first.sampling_transport,
+                "behavior_fingerprint": first.behavior_fingerprint,
+                "model_family": self._config.model.family,
+                "model_id": self._config.model.id,
                 "policy_set_revision_id": pin.policy_set_revision_id or "policy-set-0",
                 "match_set_revision_id": pin.match_set_revision_id,
                 "bindings": bindings,

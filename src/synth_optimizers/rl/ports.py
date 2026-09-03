@@ -59,6 +59,9 @@ class AttemptFacts:
     task_id: str
     seed: int
     terminal_status: str = "completed"
+    #: True while the rollout id is the executor's own attempt id, before the
+    #: container has named its own. Only a provisional id may be replaced.
+    provisional: bool = False
 
     def __post_init__(self) -> None:
         if not self.rollout_id.strip() or not self.task_id.strip():

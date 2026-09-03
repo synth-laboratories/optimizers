@@ -18,12 +18,14 @@ from synth_optimizers.contracts.rl_records import (
     EvidenceError,
     RendererProfile,
     SamplingProfile,
+    assert_strict_prefix,
     digest,
 )
 from synth_optimizers.providers.protocols import ProviderUsage, SampleRequest, SampleResult
 from synth_optimizers.rl.gateway import (
     COMPACT_MARKER,
     COMPACT_RULE,
+    HISTORY_DROP_RULE,
     TRANSPORT_MESSAGE_IN,
     TRANSPORT_TOKENS_IN,
     TRUNCATE_RULE,
@@ -34,8 +36,10 @@ from synth_optimizers.rl.gateway import (
     GatewayServer,
     PrimeChatRenderer,
     PrimeResponsesRenderer,
+    HistoryDivergenceError,
     PromptBudget,
     PromptBudgetError,
+    RendererBridgeError,
     RendererMismatchError,
     RouteRebindError,
     SamplerEvidenceError,
@@ -47,6 +51,7 @@ from synth_optimizers.rl.ports import PolicyRevision, SamplerGateway
 
 ROLE_TOKENS = {"system": 190, "developer": 189, "user": 191, "assistant": 200, "tool": 192}
 GENERATION_PROMPT = 200
+HISTORY_ASSISTANT = 201
 CONTRACT = "sha256:" + "ab" * 32
 
 
@@ -77,12 +82,76 @@ class StubPrimeRenderer:
             ids.append(GENERATION_PROMPT)
         return ids
 
+    def bridge_to_next_turn(
+        self,
+        previous_prompt_ids: list[int],
+        previous_completion_ids: list[int],
+        new_messages: list[Mapping[str, Any]],
+        *,
+        tools: Any = None,
+    ) -> Any:
+        """The ``renderers`` bridging contract: extend, never re-render.
+
+        The prior prompt and the sampled ids are carried through untouched, and
+        only the turns this call adds are rendered, exactly as ``render_ids``
+        would have rendered them in place.
+        """
+
+        del tools
+        if not previous_prompt_ids or not new_messages:
+            return None
+        if any(str(row.get("role")) == "assistant" for row in new_messages):
+            return None
+        token_ids = (
+            list(previous_prompt_ids)
+            + list(previous_completion_ids)
+            + self.render_ids(new_messages, add_generation_prompt=True)
+        )
+        return type("Bridged", (), {"token_ids": token_ids})()
+
     def get_stop_token_ids(self) -> list[int]:
         return [200002, 199999]
 
     def parse_response(self, token_ids: Sequence[int]) -> Any:
         text = "".join(chr(int(token)) for token in token_ids)
         return type("Parsed", (), {"content": text})()
+
+
+@dataclass
+class StubDriftingRenderer(StubPrimeRenderer):
+    """A renderer whose re-render of a sampled turn is not what was sampled.
+
+    gpt-oss closes a sampled assistant turn with ``<|return|>`` and re-renders
+    that same turn in history under ``<|end|>``, so a full re-render of the
+    conversation is never a byte-for-byte prefix of the ids the model produced.
+    This stub reproduces exactly that shape: a *historical* assistant turn opens
+    on its own token, and the generation prompt the model sampled after opens on
+    another. Only a splice can carry turn one forward.
+    """
+
+    def render_ids(
+        self, rows: Sequence[Mapping[str, Any]], *, add_generation_prompt: bool = False
+    ) -> list[int]:
+        ids: list[int] = []
+        for row in rows:
+            role = str(row.get("role", ""))
+            if role == "assistant":
+                ids.append(HISTORY_ASSISTANT)
+            elif role in ROLE_TOKENS:
+                ids.append(ROLE_TOKENS[role])
+            else:
+                raise ValueError(f"stub renderer has no role token for {role!r}")
+            ids.extend(ord(character) for character in str(row.get("content", "")))
+        if add_generation_prompt:
+            ids.append(GENERATION_PROMPT)
+        return ids
+
+
+@dataclass
+class StubUnbridgedRenderer(StubPrimeRenderer):
+    """A renderer with no bridging path at all. Turn two has nowhere to go."""
+
+    bridge_to_next_turn = None
 
 
 def tokens_of(text: str) -> tuple[int, ...]:
@@ -204,8 +273,9 @@ def make_gateway(
     sampler: ScriptedSampler | None = None,
     budget: PromptBudget | None = None,
     responses_wire: bool = False,
+    stub: StubPrimeRenderer | None = None,
 ) -> tuple[SamplerGatewayService, ScriptedSampler, RendererProfile]:
-    stub = StubPrimeRenderer()
+    stub = stub if stub is not None else StubPrimeRenderer()
     base = profile()
     renderer = (
         PrimeResponsesRenderer.over(stub, base) if responses_wire else PrimeChatRenderer(stub, base)
@@ -429,14 +499,156 @@ def test_a_declared_container_rewrite_forks_a_branch_with_provenance() -> None:
     assert [segment.branch_id for segment in episode.segments] == ["root", "root.1"]
 
 
+# ------------------------------------------------------ multi-turn stitching
+
+
+def turn_two(reply: str = "aa", ask: str = "second") -> list[dict[str, str]]:
+    """The list a container resends: everything so far, plus what it just added."""
+
+    return [*OPENING, {"role": "assistant", "content": reply}, {"role": "user", "content": ask}]
+
+
+def test_three_turns_each_extend_the_sequence_the_turn_before_produced() -> None:
+    """The whole point: turn k+1's prompt is turn k's prompt-plus-generation.
+
+    The renderer here cannot re-render its way to that -- a historical assistant
+    turn opens on a different token than the generation prompt the model sampled
+    after, exactly as harmony's ``<|end|>`` differs from its ``<|return|>``. The
+    only way these three prompts stitch is by splicing ids the gateway already
+    holds, and ``assert_strict_prefix`` is the judge of whether it did.
+    """
+
+    sampler = ScriptedSampler(completions=["aa", "bb", "cc"])
+    gateway, _sampler, renderer_profile = make_gateway(
+        sampler=sampler, stub=StubDriftingRenderer()
+    )
+    bind_attempt(gateway, renderer_profile)
+    gateway.handle("attempt_1", chat_body(OPENING))
+    second_turns = turn_two()
+    gateway.handle("attempt_1", chat_body(second_turns))
+    third_turns = [
+        *second_turns,
+        {"role": "assistant", "content": "bb"},
+        {"role": "tool", "content": "observation"},
+    ]
+    gateway.handle("attempt_1", chat_body(third_turns))
+
+    first, second, third = gateway.calls("attempt_1")
+    assert second.prompt_token_ids[: len(first.full_sequence)] == first.full_sequence
+    assert third.prompt_token_ids[: len(second.full_sequence)] == second.full_sequence
+    assert_strict_prefix(first, second)
+    assert_strict_prefix(second, third)
+    assert [call.branch_id for call in (first, second, third)] == ["root", "root", "root"]
+    assert all(call.compaction is None for call in (first, second, third))
+    episode = gateway.episode("attempt_1")
+    episode.validate()
+    assert [segment.branch_id for segment in episode.segments] == ["root"] * 3
+
+
+def test_the_spliced_prompt_is_the_previous_sequence_plus_the_new_turn_alone() -> None:
+    """Nothing is spliced in but the tokens this turn actually added."""
+
+    stub = StubDriftingRenderer()
+    sampler = ScriptedSampler(completions=["aa", "bb"])
+    gateway, _sampler, renderer_profile = make_gateway(sampler=sampler, stub=stub)
+    bind_attempt(gateway, renderer_profile)
+    gateway.handle("attempt_1", chat_body(OPENING))
+    gateway.handle("attempt_1", chat_body(turn_two()))
+
+    first, second = gateway.calls("attempt_1")
+    added = tuple(
+        stub.render_ids([{"role": "user", "content": "second"}], add_generation_prompt=True)
+    )
+    assert second.prompt_token_ids == first.full_sequence + added
+    # And it is emphatically not the re-render: that is the prompt the gateway
+    # used to build, and the one whose divergence the contract refuses.
+    rerendered = tuple(stub.render_ids(turn_two(), add_generation_prompt=True))
+    assert second.prompt_token_ids != rerendered
+
+
+def test_a_container_that_drops_a_middle_turn_forks_a_branch_with_provenance() -> None:
+    """A dropped turn is a compaction: it forks and is recorded, it does not raise."""
+
+    sampler = ScriptedSampler(completions=["aa", "bb", "cc"])
+    gateway, _sampler, renderer_profile = make_gateway(sampler=sampler)
+    bind_attempt(gateway, renderer_profile)
+    gateway.handle("attempt_1", chat_body(OPENING))
+    second_turns = turn_two()
+    gateway.handle("attempt_1", chat_body(second_turns))
+    compacted = [
+        row for row in second_turns if row != {"role": "user", "content": "first"}
+    ] + [{"role": "assistant", "content": "bb"}, {"role": "user", "content": "third"}]
+    gateway.handle("attempt_1", chat_body(compacted))
+
+    first, second, third = gateway.calls("attempt_1")
+    assert second.compaction is None and second.branch_id == "root"
+    assert third.compaction is not None
+    assert third.compaction.rule == HISTORY_DROP_RULE
+    assert third.compaction.removed_message_indices == (1,)
+    assert third.branch_id == "root.1"
+    assert third.parent_branch_id == "root"
+    episode = gateway.episode("attempt_1")
+    episode.validate()
+    assert [segment.branch_id for segment in episode.segments] == ["root", "root", "root.1"]
+
+
+def test_a_renderer_with_no_bridging_path_is_refused_by_name() -> None:
+    """No bridge, no second turn. The alternative is a silent re-tokenization."""
+
+    sampler = ScriptedSampler(completions=["aa", "bb"])
+    gateway, _sampler, renderer_profile = make_gateway(
+        sampler=sampler, stub=StubUnbridgedRenderer()
+    )
+    bind_attempt(gateway, renderer_profile)
+    gateway.handle("attempt_1", chat_body(OPENING))
+    with pytest.raises(RendererBridgeError) as refusal:
+        gateway.handle("attempt_1", chat_body(turn_two()))
+    assert renderer_profile.profile_id in str(refusal.value)
+    # Refused before the provider was reached: a turn that cannot be stitched
+    # must not be paid for first and discarded afterwards.
+    assert len(sampler.requests) == 1
+    assert len(gateway.calls("attempt_1")) == 1
+
+
+def test_an_edited_history_is_refused_before_anything_is_sampled() -> None:
+    """A turn the gateway never sampled is a rewrite, and rewrites are declared."""
+
+    sampler = ScriptedSampler(completions=["aa", "bb"])
+    gateway, _sampler, renderer_profile = make_gateway(sampler=sampler)
+    bind_attempt(gateway, renderer_profile)
+    gateway.handle("attempt_1", chat_body(OPENING))
+    edited = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "not what was asked"},
+        {"role": "assistant", "content": "aa"},
+        {"role": "user", "content": "second"},
+    ]
+    with pytest.raises(HistoryDivergenceError):
+        gateway.handle("attempt_1", chat_body(edited))
+    assert len(sampler.requests) == 1
+    assert len(gateway.calls("attempt_1")) == 1
+
+
 # ---------------------------------------------------------- prompt budgets
 
 
+LONG_OPENING = [
+    {"role": "system", "content": "s" * 20},
+    {"role": "user", "content": "u" * 24},
+]
+
+
 def long_turns() -> list[dict[str, str]]:
+    """``LONG_OPENING`` continued by one sampled turn and one new one.
+
+    A budget is exercised by a conversation that outgrew it, which is a real
+    continuation of the turn before it. A second turn that shares no history
+    with the first is a rewrite, and the gateway now says so before it samples.
+    """
+
     return [
-        {"role": "system", "content": "s" * 20},
-        {"role": "user", "content": "u" * 20},
-        {"role": "assistant", "content": "a" * 20},
+        *LONG_OPENING,
+        {"role": "assistant", "content": "aa"},
         {"role": "user", "content": "v" * 20},
     ]
 
@@ -470,7 +682,7 @@ def test_prompt_budget_truncate_drops_oldest_turns_and_records_provenance() -> N
         ),
     )
     bind_attempt(gateway, renderer_profile)
-    gateway.handle("attempt_1", chat_body(OPENING))
+    gateway.handle("attempt_1", chat_body(LONG_OPENING))
     gateway.handle("attempt_1", chat_body(long_turns()))
     _first, second = gateway.calls("attempt_1")
     assert len(second.prompt_token_ids) <= 70
@@ -496,7 +708,7 @@ def test_prompt_budget_compact_forks_a_branch_and_leaves_a_marker() -> None:
         ),
     )
     bind_attempt(gateway, renderer_profile)
-    gateway.handle("attempt_1", chat_body(OPENING))
+    gateway.handle("attempt_1", chat_body(LONG_OPENING))
     gateway.handle("attempt_1", chat_body(long_turns()))
     _first, second = gateway.calls("attempt_1")
     assert second.compaction is not None
@@ -838,3 +1050,56 @@ def test_the_route_exists_before_its_facts_are_declared() -> None:
         attempt=facts,
     )
     assert again.credential == origin.credential
+
+
+def test_a_provisional_rollout_id_is_settled_once_the_container_names_its_own() -> None:
+    """The container cannot name a rollout id before it accepts the attempt.
+
+    The origin is what gets submitted, and a container that serves submission
+    synchronously runs the whole episode inside that call — so by the time its
+    rollout id comes back, the calls are already recorded. Only the provisional
+    id may be settled, and every recorded call is re-stamped so none is left
+    naming a placeholder the container never knew about.
+    """
+
+    from synth_optimizers.rl.gateway import AttemptFactsError
+    from synth_optimizers.rl.ports import AttemptFacts
+
+    gateway, _sampler, renderer_profile = make_gateway()
+    policy = make_revision(renderer_profile)
+    gateway.bind(
+        policy,
+        pin=make_pin(policy),
+        sample_index=0,
+        proxy_request_id="attempt_settle",
+        attempt=AttemptFacts(rollout_id="attempt_settle", task_id="task_1", seed=7),
+    )
+    gateway.handle("attempt_settle", chat_body([{"role": "user", "content": "go"}]))
+
+    settled = gateway.declare_attempt(
+        "attempt_settle", rollout_id="rollout_from_container", task_id="task_1", seed=7
+    )
+    assert settled.rollout_id == "rollout_from_container"
+    assert settled.provisional is False
+    episode = gateway.episode("attempt_settle")
+    assert episode.rollout_id == "rollout_from_container"
+
+    # Settled once, it is fixed: a second, different id is refused.
+    with pytest.raises(AttemptFactsError, match="facts are fixed"):
+        gateway.declare_attempt(
+            "attempt_settle", rollout_id="rollout_other", task_id="task_1", seed=7
+        )
+
+    # A provisional id may not be settled onto a different task or seed.
+    gateway.bind(
+        policy,
+        pin=make_pin(policy),
+        sample_index=1,
+        proxy_request_id="attempt_other",
+        attempt=AttemptFacts(rollout_id="attempt_other", task_id="task_1", seed=7),
+    )
+    gateway.handle("attempt_other", chat_body([{"role": "user", "content": "go"}]))
+    with pytest.raises(AttemptFactsError, match="facts are fixed"):
+        gateway.declare_attempt(
+            "attempt_other", rollout_id="rollout_x", task_id="a_different_task", seed=7
+        )

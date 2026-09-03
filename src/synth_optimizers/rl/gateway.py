@@ -71,6 +71,14 @@ COMPACT_MARKER = "[{count} earlier turns elided]"
 CONTAINER_REWRITE_RULE = "container.declared_history_rewrite.v1"
 RESPONSES_PROJECTION = "responses.items_to_renderer_rows.v1"
 
+# Turn k+1 normally extends turn k. When it cannot, the reason is named here
+# rather than left to a re-render nobody recorded: the renderer refused to
+# extend its own prior turn, the renderer re-closed that turn under a different
+# token, or the container itself dropped turns out of the history it resent.
+BRIDGE_DECLINED_RULE = "renderer.bridge_declined.full_rerender.v1"
+BRIDGE_RECLOSE_RULE = "renderer.turn_close_rewrite.v1"
+HISTORY_DROP_RULE = "container.detected_history_drop.v1"
+
 # The provider names its own stop conditions; the record names three. An
 # unmapped reason is refused rather than pooled into "stop".
 _FINISH_REASONS: Mapping[str, str] = {
@@ -113,6 +121,15 @@ class RendererMismatchError(GatewayError):
     """A second renderer tried to enter the run. Exactly one party renders."""
 
 
+class RendererBridgeError(GatewayError):
+    """The renderer offers no path from one sampled turn to the next.
+
+    Without one, turn two could only be built by re-tokenizing turn one's text,
+    which is the detokenize-then-retokenize the contract prohibits. The gateway
+    names the renderer and refuses rather than doing it quietly.
+    """
+
+
 class PromptBudgetError(GatewayError):
     """The rendered prompt exceeded its budget under the declared policy."""
 
@@ -123,6 +140,15 @@ class AttemptFactsError(GatewayError):
 
 class SamplerEvidenceError(EvidenceError):
     """Sampling came back without evidence that can be trained on."""
+
+
+class HistoryDivergenceError(EvidenceError):
+    """The resent turn list neither extends the previous one nor drops from it.
+
+    Removing turns is a compaction and forks a branch; inventing a turn that was
+    never in the history, or editing one that was, is a rewrite the container has
+    to declare. Either way the gateway never retokenizes new text onto old ids.
+    """
 
 
 # --------------------------------------------------------------- rendering
@@ -146,9 +172,62 @@ class GatewayRenderer(Protocol):
     @property
     def wire_apis(self) -> tuple[str, ...]: ...
 
+    @property
+    def bridges(self) -> bool:
+        """Whether this renderer can extend a sampled turn without re-rendering."""
+        ...
+
     def render(self, rows: Sequence[Mapping[str, Any]]) -> RenderedPrompt: ...
 
+    def bridge(
+        self,
+        previous_prompt_token_ids: Sequence[int],
+        previous_generation_token_ids: Sequence[int],
+        new_rows: Sequence[Mapping[str, Any]],
+    ) -> RenderedPrompt | None:
+        """Extend ``previous_prompt + previous_generation`` by ``new_rows``.
+
+        The sampled tokens are carried through verbatim; only the turns the
+        container added this time are rendered. ``None`` means the renderer
+        will not vouch for the extension -- a thinking-retention policy that
+        drops history at a user boundary, a prior turn with no recoverable
+        close -- and the caller must fork a branch rather than pretend.
+        """
+        ...
+
     def decode(self, token_ids: Sequence[int]) -> str: ...
+
+
+def _prime_bridge(
+    renderer: Any,
+    previous_prompt_token_ids: Sequence[int],
+    previous_generation_token_ids: Sequence[int],
+    rows: Sequence[Mapping[str, Any]],
+) -> RenderedPrompt | None:
+    """The ``renderers`` package's own bridge, or nothing.
+
+    ``bridge_to_next_turn`` exists precisely so the next prompt is the previous
+    prompt-plus-generation with the new turns appended. It returns ``None``
+    whenever it cannot prove that contract holds, and so does this.
+    """
+
+    bridge = getattr(renderer, "bridge_to_next_turn", None)
+    if not callable(bridge) or not rows:
+        return None
+    rendered = bridge(
+        [int(token) for token in previous_prompt_token_ids],
+        [int(token) for token in previous_generation_token_ids],
+        [dict(row) for row in rows],
+    )
+    if rendered is None:
+        return None
+    token_ids = tuple(int(token) for token in getattr(rendered, "token_ids", ()) or ())
+    if not token_ids:
+        return None
+    return RenderedPrompt(
+        token_ids=token_ids,
+        stop_token_ids=tuple(int(token) for token in renderer.get_stop_token_ids()),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +240,23 @@ class PrimeChatRenderer:
     @property
     def wire_apis(self) -> tuple[str, ...]:
         return (WIRE_CHAT_COMPLETIONS,)
+
+    @property
+    def bridges(self) -> bool:
+        return callable(getattr(self.renderer, "bridge_to_next_turn", None))
+
+    def bridge(
+        self,
+        previous_prompt_token_ids: Sequence[int],
+        previous_generation_token_ids: Sequence[int],
+        new_rows: Sequence[Mapping[str, Any]],
+    ) -> RenderedPrompt | None:
+        return _prime_bridge(
+            self.renderer,
+            previous_prompt_token_ids,
+            previous_generation_token_ids,
+            [dict(row) for row in new_rows],
+        )
 
     def render(self, rows: Sequence[Mapping[str, Any]]) -> RenderedPrompt:
         rendered = tokenize_with_renderer(
@@ -207,6 +303,28 @@ class PrimeResponsesRenderer:
     @property
     def wire_apis(self) -> tuple[str, ...]:
         return (WIRE_RESPONSES,)
+
+    @property
+    def bridges(self) -> bool:
+        return callable(getattr(self.renderer, "bridge_to_next_turn", None))
+
+    def bridge(
+        self,
+        previous_prompt_token_ids: Sequence[int],
+        previous_generation_token_ids: Sequence[int],
+        new_rows: Sequence[Mapping[str, Any]],
+    ) -> RenderedPrompt | None:
+        # The new items reach the renderer through the same declared projection
+        # the full render uses, so a bridged Responses prompt and a re-rendered
+        # one are the same tokens under the same folded profile identity.
+        if not new_rows:
+            return None
+        return _prime_bridge(
+            self.renderer,
+            previous_prompt_token_ids,
+            previous_generation_token_ids,
+            project_responses_items(new_rows),
+        )
 
     def render(self, rows: Sequence[Mapping[str, Any]]) -> RenderedPrompt:
         projected = project_responses_items(rows)
@@ -277,6 +395,71 @@ def project_responses_items(items: Sequence[Mapping[str, Any]]) -> list[dict[str
     if not rows:
         raise WireError("responses request carries no input items")
     return rows
+
+
+# ------------------------------------------------------- conversation shape
+
+
+TurnIdentity = tuple[str, str]
+
+
+def row_identity(row: Mapping[str, Any]) -> TurnIdentity:
+    """A wire-agnostic identity for one turn, for comparing two message lists.
+
+    The container knows nothing about tokens, so the only thing it can be held
+    to across turns is the turns themselves. Whitespace is stripped because a
+    harness echoes back the text it was handed, and every harness strips it.
+    """
+
+    role = str(row.get("role") or "").strip()
+    content = row.get("content")
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, Sequence) and not isinstance(content, (str, bytes)):
+        text = "".join(_part_text(part) for part in content)
+    elif content is None:
+        text = ""
+    else:
+        text = str(content)
+    structured = row.get("tool_calls") or row.get("tool_call_id")
+    if structured is not None:
+        text = f"{text}\x00{json.dumps(structured, sort_keys=True, default=str)}"
+    return role, text.strip()
+
+
+def removals_between(
+    history: Sequence[TurnIdentity], rows: Sequence[TurnIdentity]
+) -> tuple[int, ...] | None:
+    """Which history turns ``rows`` dropped, or ``None`` if it did not just drop.
+
+    A compaction removes turns; it does not invent them. ``rows`` therefore has
+    to retain the last turn of the history -- the assistant turn the gateway
+    itself sampled -- and everything it keeps before that has to appear in the
+    history, in order. Anything else is an edit, and an edit is not detectable
+    as a removal, so it is refused rather than guessed at.
+    """
+
+    if not history:
+        return None
+    boundary = -1
+    for index in range(len(rows) - 1, -1, -1):
+        if rows[index] == history[-1]:
+            boundary = index
+            break
+    if boundary < 0:
+        return None
+    removed: list[int] = []
+    cursor = 0
+    for row in rows[: boundary + 1]:
+        while cursor < len(history) and history[cursor] != row:
+            removed.append(cursor)
+            cursor += 1
+        if cursor >= len(history):
+            return None
+        cursor += 1
+    if cursor != len(history):
+        return None
+    return tuple(removed)
 
 
 # ------------------------------------------------------------ wire parsing
@@ -409,6 +592,24 @@ class BudgetEvent:
 UNBOUNDED_BUDGET = PromptBudget(max_prompt_tokens=2**31 - 1, policy="refuse")
 
 
+# ------------------------------------------------------------- the stitch
+
+
+@dataclass(frozen=True, slots=True)
+class _Stitch:
+    """How this turn relates to the last one: a token splice, or a fork.
+
+    ``prompt`` is the spliced sequence when the renderer bridged the sampled
+    turn forward. ``rule`` names why it could not, in which case the caller
+    re-renders and forks a branch under that rule. Both empty means there was
+    no previous turn to stitch to.
+    """
+
+    prompt: tuple[int, ...] | None = None
+    rule: str | None = None
+    removed: tuple[int, ...] = ()
+
+
 # --------------------------------------------------------------- the route
 
 
@@ -425,6 +626,10 @@ class _Route:
     fork_count: int = 0
     calls: list[InferenceCall] = field(default_factory=list)
     budget_events: list[BudgetEvent] = field(default_factory=list)
+    # The conversation as the container last sent it, with the assistant turn
+    # the gateway sampled appended. The next call is measured against this: it
+    # says where the container's new turns begin, and whether it dropped any.
+    history: tuple[TurnIdentity, ...] = ()
     # One attempt's calls are a sequence and are serialized against each other;
     # two attempts are not, so the route map lock is never held across sampling.
     lock: threading.RLock = field(default_factory=threading.RLock)
@@ -582,6 +787,7 @@ class SamplerGatewayService:
                 task_id=attempt.task_id,
                 seed=attempt.seed,
                 terminal_status=attempt.terminal_status,
+                provisional=True,
             )
         return origin
 
@@ -600,26 +806,50 @@ class SamplerGatewayService:
         task_id: str,
         seed: int,
         terminal_status: str = "completed",
+        provisional: bool = False,
     ) -> AttemptFacts:
         """Bind the attempt facts ``bind`` does not carry: task id and seed.
 
         ``SamplerGateway.bind`` receives a group pin and a sample index, and a
         ``TrainableEpisode`` requires a task id and a seed, so those facts have
-        to arrive by a second door. They must arrive before the first call, or
-        the records would not agree on which rollout they belong to.
+        to arrive by a second door.
+
+        One of those facts cannot be known at bind time. The origin is what
+        gets submitted, so the container has no rollout id to give until it has
+        accepted the attempt -- and a container that serves submission
+        synchronously runs the whole episode inside that call, so by the time
+        its rollout id comes back the calls are already recorded. The executor
+        therefore binds with its own attempt id, marked provisional, and this
+        replaces it once the container names its own. Everything else about an
+        attempt stays fixed from the first call: only the provisional rollout id
+        may be settled, and only when the task and seed still agree.
         """
 
         route = self._locked_route(proxy_request_id)
         with route.lock:
-            if route.calls:
+            held = route.facts
+            settling = (
+                held is not None
+                and held.provisional
+                and held.task_id == str(task_id).strip()
+                and held.seed == int(seed)
+            )
+            if route.calls and not settling:
                 raise AttemptFactsError(
                     f"attempt {proxy_request_id} already recorded calls; its facts are fixed"
                 )
+            if route.calls and settling:
+                # Re-stamp what is already recorded, so no call is left naming
+                # the placeholder the container never knew about.
+                route.calls = [
+                    replace(call, rollout_id=str(rollout_id).strip()) for call in route.calls
+                ]
             facts = AttemptFacts(
                 rollout_id=str(rollout_id).strip(),
                 task_id=str(task_id).strip(),
                 seed=int(seed),
                 terminal_status=str(terminal_status).strip(),
+                provisional=provisional,
             )
             if not facts.rollout_id or not facts.task_id:
                 raise AttemptFactsError("an attempt declares both a rollout id and a task id")
@@ -691,6 +921,7 @@ class SamplerGatewayService:
                 provenance=provenance,
                 body=body,
             )
+            self._remember(route, request, text)
             return {**body, "synth_capture": _capture(call, self.renderer_profile)}
 
     def calls(self, proxy_request_id: str) -> tuple[InferenceCall, ...]:
@@ -869,8 +1100,13 @@ class SamplerGatewayService:
         if not request.rows:
             raise WireError("a message-in call carries no turns")
         rows = request.rows
-        rendered = self._renderer.render(rows)
-        prompt = rendered.token_ids
+        # Turn two is turn one's prompt-plus-generation with the new turns
+        # appended, spliced from the ids the gateway already holds. Rendering
+        # the whole list again would tokenize the sampled turn from its text.
+        stitch = self._stitch(route, request)
+        prompt = (
+            stitch.prompt if stitch.prompt is not None else self._renderer.render(rows).token_ids
+        )
         cap = self._effective_cap(request)
         removed: tuple[int, ...] = ()
         before = len(prompt)
@@ -908,7 +1144,74 @@ class SamplerGatewayService:
                 rows,
                 self._provenance(route, prompt, self._budget.rule, removed),
             )
-        return prompt, rows, declared
+        if declared is not None:
+            return prompt, rows, declared
+        if stitch.rule is not None:
+            return prompt, rows, self._provenance(route, prompt, stitch.rule, stitch.removed)
+        return prompt, rows, None
+
+    def _stitch(self, route: _Route, request: WireRequest) -> _Stitch:
+        """Splice this turn onto the last one, or name why it cannot be spliced.
+
+        The container hands over a whole message list and knows nothing about
+        tokens, so the gateway is the party that has to tell an extension from
+        a rewrite. An extension bridges; a removal forks under its own rule; an
+        edit is neither, and is refused rather than retokenized onto old ids.
+        """
+
+        previous = route.calls[-1] if route.calls else None
+        if previous is None or request.declared_rewrite is not None:
+            return _Stitch()
+        rows = tuple(row_identity(row) for row in self._identity_rows(route, request.rows))
+        history = route.history
+        if not history:
+            return _Stitch(rule=BRIDGE_DECLINED_RULE)
+        if len(rows) < len(history) or rows[: len(history)] != history:
+            removed = removals_between(history, rows)
+            if removed is None:
+                raise HistoryDivergenceError(
+                    f"attempt {route.origin.proxy_request_id} resent a history that neither "
+                    f"extends nor drops turns from the {len(history)} it was sampled against; "
+                    "an edited or invented turn must be declared in synth_history_rewrite"
+                )
+            return _Stitch(rule=HISTORY_DROP_RULE, removed=removed)
+        added = request.rows[len(history) :]
+        if not getattr(self._renderer, "bridges", False):
+            raise RendererBridgeError(
+                f"renderer {self.renderer_profile.profile_id} offers no bridge from one turn "
+                "to the next, so turn two could only be built by re-tokenizing turn one's "
+                "text; bind a renderer that can extend a sampled turn"
+            )
+        bridged = self._renderer.bridge(
+            previous.prompt_token_ids, previous.generation_token_ids, added
+        )
+        if bridged is None:
+            return _Stitch(rule=BRIDGE_DECLINED_RULE)
+        anchor = previous.full_sequence
+        if bridged.token_ids[: len(anchor)] != anchor:
+            # The renderer re-closed the prior turn under a different token.
+            # That is a real rewrite of sampled context, so it forks.
+            return _Stitch(rule=BRIDGE_RECLOSE_RULE)
+        return _Stitch(prompt=bridged.token_ids)
+
+    def _identity_rows(
+        self, route: _Route, rows: Sequence[Mapping[str, Any]]
+    ) -> Sequence[Mapping[str, Any]]:
+        """The renderer rows these wire turns stand for, one for one."""
+
+        if route.origin.wire_api == WIRE_RESPONSES:
+            return project_responses_items(rows)
+        return rows
+
+    def _remember(self, route: _Route, request: WireRequest, reply: str) -> None:
+        """Record the conversation the next turn will be measured against."""
+
+        if route.origin.sampling_transport == TRANSPORT_TOKENS_IN or not request.rows:
+            route.history = ()
+            return
+        route.history = tuple(
+            row_identity(row) for row in self._identity_rows(route, request.rows)
+        ) + (("assistant", reply.strip()),)
 
     def _tokens_in_prompt(
         self, route: _Route, request: WireRequest
@@ -1258,6 +1561,7 @@ _STATUS_FOR: tuple[tuple[type[BaseException], int], ...] = (
     (ClosedOriginError, 409),
     (RouteRebindError, 409),
     (PromptBudgetError, 413),
+    (RendererBridgeError, 501),
     (RendererMismatchError, 409),
     (WireError, 400),
     (SamplerEvidenceError, 502),
@@ -1312,6 +1616,8 @@ __all__ = [
     "ATTEMPT_PATH_SEGMENT",
     "AttemptFacts",
     "AttemptFactsError",
+    "BRIDGE_DECLINED_RULE",
+    "BRIDGE_RECLOSE_RULE",
     "BudgetEvent",
     "COMPACT_MARKER",
     "COMPACT_RULE",
@@ -1321,6 +1627,8 @@ __all__ = [
     "GatewayError",
     "GatewayRenderer",
     "GatewayServer",
+    "HISTORY_DROP_RULE",
+    "HistoryDivergenceError",
     "PROMPT_BUDGET_POLICIES",
     "PrimeChatRenderer",
     "PrimeResponsesRenderer",
@@ -1328,6 +1636,7 @@ __all__ = [
     "PromptBudgetError",
     "RESPONSES_PROJECTION",
     "RenderedPrompt",
+    "RendererBridgeError",
     "RendererMismatchError",
     "RouteRebindError",
     "SamplerBackend",
@@ -1344,4 +1653,6 @@ __all__ = [
     "WireRequest",
     "parse_wire_request",
     "project_responses_items",
+    "removals_between",
+    "row_identity",
 ]

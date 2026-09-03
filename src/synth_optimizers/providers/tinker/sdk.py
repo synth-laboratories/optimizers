@@ -19,7 +19,7 @@ from ..protocols import (
 )
 from .capabilities import KNOWN_CAPABILITIES
 from .models import resolve_tinker_model
-from .prime import create_prime_renderer, parse_completion
+from .prime import bridge_with_renderer, create_prime_renderer, parse_completion
 from .tokenize import extract_final_label, tokenize_live
 from .validation import default_receipt_path, is_cispo_validated
 
@@ -111,6 +111,23 @@ class TinkerSdkTransport:
             self._tokenizer,
             messages,
             add_generation_prompt=add_generation_prompt,
+        )
+
+    def bridge_chat(
+        self,
+        previous_prompt_token_ids: Sequence[int],
+        previous_completion_token_ids: Sequence[int],
+        messages: Sequence[Mapping[str, str]],
+    ) -> dict[str, Any] | None:
+        """Extend the last sampled turn rather than re-render the conversation."""
+
+        if self._renderer is None:
+            return None
+        return bridge_with_renderer(
+            self._renderer,
+            previous_prompt_token_ids,
+            previous_completion_token_ids,
+            messages,
         )
 
     def decode(self, token_ids: Sequence[int]) -> str:

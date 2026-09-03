@@ -394,6 +394,46 @@ class ProviderRenderer:
             stop_token_ids=tuple(int(token) for token in rendered.get("stop_token_ids") or ()),
         )
 
+    @property
+    def bridges(self) -> bool:
+        return callable(getattr(self.provider, "bridge_chat", None))
+
+    def bridge(
+        self,
+        previous_prompt_token_ids: Sequence[int],
+        previous_generation_token_ids: Sequence[int],
+        new_rows: Sequence[Mapping[str, Any]],
+    ) -> RenderedPrompt | None:
+        """Extend the previous turn's ids by the turns this call added.
+
+        The new turns pass through the same declared projection the full render
+        uses, so a bridged Responses prompt is the Responses prompt. ``None``
+        means the renderer would not vouch for the extension -- a thinking
+        retention policy that drops history at a user boundary is the usual
+        reason -- and the gateway forks a branch instead of pretending.
+        """
+
+        bridge = getattr(self.provider, "bridge_chat", None)
+        if not callable(bridge) or not new_rows:
+            return None
+        source = (
+            project_responses_items(new_rows)
+            if self.wire_api == WIRE_RESPONSES
+            else [dict(row) for row in new_rows]
+        )
+        bridged = bridge(
+            list(previous_prompt_token_ids), list(previous_generation_token_ids), source
+        )
+        if not bridged:
+            return None
+        token_ids = tuple(int(token) for token in bridged.get("prompt_token_ids") or ())
+        if not token_ids:
+            return None
+        return RenderedPrompt(
+            token_ids=token_ids,
+            stop_token_ids=tuple(int(token) for token in bridged.get("stop_token_ids") or ()),
+        )
+
     def decode(self, token_ids: Sequence[int]) -> str:
         return str(self.provider.decode_tokens(list(token_ids)))
 

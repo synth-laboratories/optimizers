@@ -1998,6 +1998,61 @@ publishes the document, and everything else parses that document and treats its
 hash as authoritative. Two builders that agree today are two builders that
 disagree later.
 
+### What the containers could not declare
+
+Five images were built against this contract. Each was asked to declare only
+what it can honestly declare, and the refusals are more informative than the
+acceptances.
+
+**DungeonGrid cannot declare a party communication channel at all, and that
+blocks its row of the evidence matrix.** The Rust engine's HTTP wire has no
+message verb: `action_from_string` has no `message` branch and
+`legal_action_strings` never offers one, so no policy playing that wire can
+author a party message. `DungeonGridAction::Message` and `apply_message` exist
+in the engine core and are reachable only in-process. Because a declared
+channel that returns nothing for a whole episode is a dropped-channel evidence
+failure, the container declares no channel rather than one it cannot fill, and
+says so on its health route and in its reward receipt. The carrying half is
+written and tested against real engine state: a delivered message is emitted as
+untrainable context with its author declared, and its text sits in the
+receiving seat's prompt where the mask is zero, so it is untrainable twice
+over. The fix is upstream: add a message verb to the engine wire and emit it
+from the legal-action list when communication is enabled. Until then, criterion
+9 of the MARL gate is demonstrable and the party-communication half of the
+evidence matrix row is not.
+
+**Two declarations are too narrow, with concrete shapes proposed.**
+`PolicyFacts.wire_api` is scalar, and a binding is refused when its wire
+differs, so an image that genuinely serves both wires can advertise only one --
+DungeonGrid already runs policies over both. It should be a set plus a default:
+`wire_apis: tuple[str, ...]` with `default_wire_api: str`, and membership
+rather than equality at binding. `pinned_identity` is an untyped string, so a
+non-trainable instance cannot say whether it is a frozen checkpoint, an
+external model, or a scripted baseline; today that has to be smuggled into a
+string prefix. It should be typed: `PinnedIdentity(kind, identity, revision)`
+over the three declared kinds. Neither blocks the MARL gate as fixtured -- one
+wire suffices, and a four-trainable roster pins nobody -- but the second is
+reached the moment an opponent appears, which is the competitive topology.
+
+**Tokenizer identity belongs to the deployment, not the image.** Banking77 and
+Craftax capture the sampler's token ids rather than rendering their own, which
+is better training evidence and means neither can declare a tokenizer. Both
+fail closed: absent the declaration the target is not installed and all
+seventeen routes answer a typed 501. On a multi-turn container a wrong
+tokenizer identity is worse than no identity.
+
+**A container cannot receipt the same-policy reduction it was trained under.**
+DungeonGrid publishes per-instance token counts and per-episode segments, so a
+reduction is computable, but the contract has no field in which the container
+can record which one the executor applied. The rule that a chatty role must not
+dominate by token count is therefore auditable only from the executor's side.
+
+**One image found a second stop condition hiding inside a horizon.** Craftax
+counts policy calls as its horizon while the engine independently limits
+environment ticks. Folding the two into one number would have made the horizon
+mean two different things; it declares the horizon and reports the engine limit
+separately on the receipt.
+
 ### Success criteria
 
 #### Common gates for all acceptance runs

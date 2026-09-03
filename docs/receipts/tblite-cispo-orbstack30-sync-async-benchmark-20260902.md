@@ -420,6 +420,19 @@ validates:
 | `schedule` | weight mode, policy span count, packing | `sync_pin`, `policy_span_count = 1` |
 | `context_views` | which conversation view each learner sees | `actor` |
 
+One measured discrepancy is now on the record. This repository's existing
+`group_advantages` is mean-centering, which is the plan's `group_mean` credit
+and not the `length_weighted_leave_one_out` that Tito's `cispo` preset names.
+At equal segment lengths the two differ by exactly `n/(n-1)`, with identical
+signs and ordering, and the zero-advantage skip verdict is identical in every
+case, which is why the existing runs behaved sensibly. The normalized legacy
+variant has no exact plan equivalent: it divides by an unbiased deviation plus
+`1e-6`, where the plan's standardized estimator divides by the population
+deviation and returns exact zero on a tie. Reproducing the old normalized
+numbers bit-for-bit needs a new credit kind in both planes; adopting the plan
+definition is the recommendation, and either way that choice belongs in the
+plan rather than in the executor.
+
 Consequences the implementation must honor:
 
 - The plan hash is part of group identity. A group whose members were produced
@@ -598,7 +611,7 @@ The container answers per clause, never with a bare boolean:
     "deferred_scoring": true,
     "quiescence": false,
     "settlement_window_seconds": 150,
-    "horizon": {"horizon_kind": "wall_clock", "value_seconds": 5400, "time_dilation": 4.0}
+    "horizon": {"horizon_kind": "wall_clock", "value": 5400, "time_dilation": 4.0}
   },
   "taskset_resolution": [
     {"task_id": "task_id", "content_digest": "sha256:...", "topology_ref": "runite-race-4x6"}
@@ -703,7 +716,7 @@ but it must not contain a hard-coded allowlist.
 - Advertised maximum concurrency.
 - Preservation of opaque correlation metadata supplied by CISPO:
   `run_id`, `group_id`, `sample_index`, `seed`, `policy_revision`, and, for a
-  joint episode, `agent_instance_id`, `team_id`, and `policy_set_revision`.
+  joint episode, `agent_instance_id`, `team_id`, and `policy_set_revision_id`.
 - Exactly one terminal result per accepted attempt: episode, failure, or
   cancellation.
 - A declared episode horizon and a declared wall-clock ceiling. An episode that
@@ -935,7 +948,7 @@ The container declares, in its capability response:
       {"channel_id": "team_pm", "scope": "intra_team", "trainable_for_author": true},
       {"channel_id": "public", "scope": "cross_team", "trainable_for_author": true}
     ],
-    "horizon": {"horizon_kind": "wall_clock", "value_seconds": 5400, "time_dilation": 4.0}
+    "horizon": {"horizon_kind": "wall_clock", "value": 5400, "time_dilation": 4.0}
   }
 }
 ```

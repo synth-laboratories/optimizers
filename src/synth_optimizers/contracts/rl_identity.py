@@ -69,6 +69,9 @@ class GroupPin:
     policy_set_revision_id: str | None = None
     match_set_revision_id: str | None = None
     topology_id: str | None = None
+    # The queue counts revisions; the catalog names them. Carry both so a pin
+    # bridges to an immutable checkpoint identity without a lookup convention.
+    policy_revision_id: str | None = None
     policy_span_count: int = 1
     schema_version: str = GROUP_PIN_SCHEMA_VERSION
 
@@ -182,25 +185,35 @@ class Horizon:
     value: float
     time_dilation: float = 1.0
     grace_seconds: float = 0.0
-    # A step or tick horizon carries no duration of its own, so leases and queue
-    # timeouts cannot be derived from it without a declared conversion.
-    seconds_per_unit: float = 1.0
+    # A step or tick horizon carries no duration of its own, so a lease cannot
+    # be derived from it without a declared conversion. Undeclared stays None so
+    # it fails closed: silently reading 500 steps as 500 seconds is exactly the
+    # guess the note forbids. Deriving the two clocks a lease needs — heartbeat
+    # TTL and straggler deadline, which are not the same thing — belongs to the
+    # lease sizing that also knows the quiescence and collection budgets.
+    seconds_per_unit: float | None = None
 
     def __post_init__(self) -> None:
         if self.horizon_kind not in HORIZON_KINDS:
             raise TopologyError(f"unknown horizon_kind {self.horizon_kind!r}")
         if self.value <= 0:
             raise TopologyError("horizon value must be positive")
-        if self.seconds_per_unit <= 0:
-            raise TopologyError("seconds_per_unit must be positive")
+        if self.seconds_per_unit is not None and self.seconds_per_unit <= 0:
+            raise TopologyError("seconds_per_unit must be positive when declared")
+        if self.time_dilation <= 0:
+            raise TopologyError("time_dilation must be positive")
 
-    @property
-    def lease_seconds(self) -> float:
-        """Wall-clock budget a lease must cover, including the declared grace."""
+    def declared_seconds_per_unit(self) -> float:
+        """The conversion, or a refusal. Never a default."""
 
         if self.horizon_kind == "wall_clock":
-            return self.value + self.grace_seconds
-        return self.value * self.seconds_per_unit + self.grace_seconds
+            return 1.0
+        if self.seconds_per_unit is None:
+            raise TopologyError(
+                f"a {self.horizon_kind} horizon must declare seconds_per_unit; "
+                "a lease may not be guessed from a unit with no duration"
+            )
+        return self.seconds_per_unit
 
 
 @dataclass(frozen=True, slots=True)
@@ -371,6 +384,15 @@ class RolloutReceipt:
     team_id: str | None = None
     probe: bool = False
     replaced_attempt_id: str | None = None
+    # A receipt should be self-describing about why it exists, so cost is
+    # attributable without joining the queue journal.
+    replacement_index: int = 0
+    replacement_reason: str | None = None
+    # An attempt must be able to name the immutable artifacts it sampled from,
+    # rather than leaving the run receipt to infer them from a fingerprint.
+    checkpoint_id: str | None = None
+    policy_set_revision_id: str | None = None
+    match_set_revision_id: str | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
     schema_version: str = ROLLOUT_RECEIPT_SCHEMA_VERSION
 

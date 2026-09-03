@@ -317,13 +317,16 @@ def test_probe_derived_episode_may_not_enter_a_group_or_batch() -> None:
         TrainableEpisode(**kwargs, probe=True).validate()
 
 
-def test_horizon_lease_covers_step_and_tick_budgets() -> None:
-    wall = Horizon("wall_clock", 5400.0, 4.0, grace_seconds=120.0)
-    assert wall.lease_seconds == 5520.0
-    ticks = Horizon("env_ticks", 1000.0, seconds_per_unit=0.6, grace_seconds=30.0)
-    assert ticks.lease_seconds == 630.0
-    with pytest.raises(TopologyError, match="seconds_per_unit"):
+def test_a_unit_horizon_without_a_declared_conversion_fails_closed() -> None:
+    assert Horizon("wall_clock", 5400.0, 4.0).declared_seconds_per_unit() == 1.0
+    assert Horizon("env_ticks", 1000.0, seconds_per_unit=0.6).declared_seconds_per_unit() == 0.6
+    # 500 steps must not silently read as 500 seconds.
+    with pytest.raises(TopologyError, match="may not be guessed"):
+        Horizon("steps", 500.0).declared_seconds_per_unit()
+    with pytest.raises(TopologyError, match="positive when declared"):
         Horizon("env_ticks", 1000.0, seconds_per_unit=0.0)
+    with pytest.raises(TopologyError, match="time_dilation"):
+        Horizon("wall_clock", 5400.0, time_dilation=0.0)
 
 
 def test_foreign_authored_span_may_not_carry_trainable_tokens() -> None:

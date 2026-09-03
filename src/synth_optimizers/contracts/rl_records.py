@@ -28,6 +28,13 @@ WIRE_APIS = frozenset({"chat_completions", "responses"})
 SAMPLING_TRANSPORTS = frozenset({"message_in_capture_out", "tokens_in_tokens_out"})
 FINISH_REASONS = frozenset({"stop_token", "length_cap", "container_abort"})
 ARTIFACT_ROLES = frozenset({"sampler_weights", "training_state"})
+TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
+
+# Foreign authorship must be declared, never implied by a zero mask.
+AUTHOR_KINDS = frozenset(
+    {"policy", "foreign_agent", "opponent", "verifier", "judge", "harness"}
+)
+TRAINABLE_AUTHOR_KINDS = frozenset({"policy"})
 
 # Tokens and logprobs must come from under the public wire. Anything derived by
 # detokenizing then retokenizing wire JSON is not a training record.
@@ -333,13 +340,19 @@ def assert_strict_prefix(previous: InferenceCall, following: InferenceCall) -> N
             )
         return
     if following.compaction is None:
-        divergence = next(
+        content_divergence = next(
             (i for i, (a, b) in enumerate(zip(sequence, prompt, strict=False)) if a != b),
-            min(len(sequence), len(prompt)),
+            None,
         )
+        if content_divergence is None:
+            raise EvidenceError(
+                f"call {following.call_id} truncates {previous.call_id}: its prompt agrees for "
+                f"{len(prompt)} tokens but the previous sequence is {len(sequence)} long, "
+                "with no branch record and no declared compaction"
+            )
         raise EvidenceError(
-            f"call {following.call_id} diverges from {previous.call_id} at token {divergence} "
-            "with no branch record and no declared compaction"
+            f"call {following.call_id} diverges from {previous.call_id} at token "
+            f"{content_divergence} with no branch record and no declared compaction"
         )
     if following.parent_branch_id != previous.branch_id:
         raise EvidenceError(
@@ -363,6 +376,14 @@ class TrainableSegment:
     parameter_group_id: str | None = None
     agent_instance_id: str | None = None
     call_ids: tuple[str, ...] = ()
+    author_kind: str = "policy"
+    role_id: str | None = None
+    policy_type_id: str | None = None
+    team_id: str | None = None
+    policy_revision: int | None = None
+    policy_set_revision_id: str | None = None
+    effect_tick_start: int | None = None
+    effect_tick_end: int | None = None
 
     def __post_init__(self) -> None:
         if not self.token_ids:
@@ -371,10 +392,27 @@ class TrainableSegment:
             raise RecordError("segment loss mask length mismatch")
         if len(self.behavior_logprobs) != len(self.token_ids):
             raise RecordError("segment behavior logprob length mismatch")
+        if self.author_kind not in AUTHOR_KINDS:
+            raise RecordError(f"unknown author_kind {self.author_kind!r}")
+        if self.author_kind not in TRAINABLE_AUTHOR_KINDS and self.trainable_tokens:
+            raise RecordError(
+                f"segment authored by {self.author_kind!r} carries trainable tokens; "
+                "foreign authorship is never trainable"
+            )
+        if (
+            self.effect_tick_start is not None
+            and self.effect_tick_end is not None
+            and self.effect_tick_end < self.effect_tick_start
+        ):
+            raise RecordError("segment effect interval ends before it starts")
 
     @property
     def trainable_tokens(self) -> int:
         return sum(1 for flag in self.loss_mask if flag)
+
+    @property
+    def trainable(self) -> bool:
+        return self.author_kind in TRAINABLE_AUTHOR_KINDS and bool(self.trainable_tokens)
 
 
 @dataclass(frozen=True, slots=True)
@@ -392,6 +430,9 @@ class TrainableEpisode:
     agent_instance_id: str | None = None
     team_id: str | None = None
     policy_set_revision_id: str | None = None
+    # Branch fan-out weighting needs to know which segments share one
+    # environment attempt; a branch is not an independent episode.
+    root_rollout_id: str | None = None
     trace_digest: str = ""
     probe: bool = False
     schema_version: str = TRAINABLE_EPISODE_SCHEMA_VERSION
@@ -445,14 +486,17 @@ class HorizonEvidence:
     credited_settlement_seconds: float = 0.0
 
     def validate(self) -> None:
-        if self.scored_at_offset_seconds > self.settlement_window_seconds and not self.clipped:
-            raise EvidenceError(
-                "reward was read past the horizon and settlement window without clipping"
-            )
         if not self.quiescence_attested and not self.clipped:
             raise EvidenceError(
                 "reward has neither a quiescence attestation nor a horizon-clipped snapshot"
             )
+        if self.credited_settlement_seconds > self.settlement_window_seconds:
+            raise EvidenceError(
+                f"reward credited {self.credited_settlement_seconds}s of settlement beyond "
+                f"its declared {self.settlement_window_seconds}s window"
+            )
+        if self.credited_settlement_seconds < 0 or self.scored_at_offset_seconds < 0:
+            raise EvidenceError("settlement and scored-read offsets must be non-negative")
 
 
 @dataclass(frozen=True, slots=True)
@@ -471,6 +515,12 @@ class RewardRecord:
     schema_version: str = REWARD_RECORD_SCHEMA_VERSION
 
     def validate(self, *, episode_trace_digest: str | None = None) -> None:
+        if not self.rollout_id.strip():
+            raise EvidenceError(f"reward {self.reward_id} names no rollout")
+        if self.terminal_status not in TERMINAL_STATUSES:
+            raise EvidenceError(
+                f"reward {self.reward_id} claims non-terminal status {self.terminal_status!r}"
+            )
         if not self.channels:
             raise EvidenceError(f"reward {self.reward_id} carries no channel; absent is not zero")
         if not self.trace_digest:
@@ -493,3 +543,19 @@ class RewardRecord:
             if channel.channel_id == wanted:
                 return channel.measure
         raise RecordError(f"reward {self.reward_id} has no channel {wanted!r}")
+
+    def channel_for(self, team_id: str) -> RewardChannel:
+        """The one channel belonging to a team. Ambiguity is an error."""
+
+        matches = [channel for channel in self.channels if channel.team_id == team_id]
+        if not matches:
+            raise RecordError(f"reward {self.reward_id} has no channel for team {team_id!r}")
+        if len(matches) > 1:
+            raise RecordError(
+                f"reward {self.reward_id} carries {len(matches)} channels for team "
+                f"{team_id!r}; a team's measure must be unambiguous"
+            )
+        return matches[0]
+
+    def value_for_team(self, team_id: str) -> float:
+        return self.channel_for(team_id).measure

@@ -11,7 +11,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from .rl_records import RecordError, digest
+from .rl_records import TERMINAL_STATUSES, RecordError, digest
 
 GROUP_PIN_SCHEMA_VERSION = "cispo.group_pin.v1"
 TOPOLOGY_SCHEMA_VERSION = "cispo.topology.v1"
@@ -35,7 +35,9 @@ ATTEMPT_STATES = (
     "failed",
     "cancelled",
 )
-TERMINAL_ATTEMPT_STATES = frozenset({"completed", "failed", "cancelled"})
+# One definition, so a reward receipt and an attempt receipt cannot disagree
+# about what "terminal" means.
+TERMINAL_ATTEMPT_STATES = TERMINAL_STATUSES
 
 
 class MixedGroupError(RecordError):
@@ -274,10 +276,16 @@ class Topology:
                 seen.append(group)
         return tuple(seen)
 
-    def check_roster(
+    def roster_disposition(
         self, live_instance_ids: Iterable[str], *, disposition: str
-    ) -> tuple[str, ...]:
-        """Apply the declared partial-roster disposition. Returns dropped ids."""
+    ) -> "RosterOutcome":
+        """Apply the declared partial-roster disposition.
+
+        ``refuse`` fails the episode on any absence. ``drop_instance`` trains on
+        the survivors but fails a team that fell below its minimum viable
+        roster. ``refuse_team`` excludes such a team and leaves the rest of the
+        episode valid, which is the whole point of naming it separately.
+        """
 
         if disposition not in PARTIAL_ROSTER_DISPOSITIONS:
             raise TopologyError(f"unknown partial roster disposition {disposition!r}")
@@ -288,25 +296,43 @@ class Topology:
             if instance.agent_instance_id not in live
         )
         if not missing:
-            return ()
+            return RosterOutcome((), ())
         if disposition == "refuse":
             raise TopologyError(f"topology {self.topology_id} is missing instances: {missing}")
+        below: list[str] = []
         for team in self.teams:
-            roster = [
-                instance
-                for instance in self.agent_instances
-                if instance.team_id == team.team_id
-            ]
             surviving = sum(
-                1 for instance in roster if instance.agent_instance_id in live
+                1
+                for instance in self.agent_instances
+                if instance.team_id == team.team_id and instance.agent_instance_id in live
             )
             if surviving < team.minimum_viable_roster:
-                if disposition == "drop_instance":
-                    raise TopologyError(
-                        f"team {team.team_id} fell below its minimum viable roster "
-                        f"({surviving} < {team.minimum_viable_roster})"
-                    )
-        return missing
+                below.append(team.team_id)
+        if below and disposition == "drop_instance":
+            raise TopologyError(
+                f"teams {tuple(below)} fell below their minimum viable roster; "
+                "disposition 'drop_instance' cannot proceed"
+            )
+        return RosterOutcome(missing, tuple(below))
+
+    def check_roster(
+        self, live_instance_ids: Iterable[str], *, disposition: str
+    ) -> tuple[str, ...]:
+        """Missing instance ids under the declared disposition."""
+
+        return self.roster_disposition(live_instance_ids, disposition=disposition).missing_instances
+
+
+@dataclass(frozen=True, slots=True)
+class RosterOutcome:
+    """What survived a partial roster, and which teams were excluded."""
+
+    missing_instances: tuple[str, ...]
+    refused_teams: tuple[str, ...]
+
+    @property
+    def degraded(self) -> bool:
+        return bool(self.missing_instances or self.refused_teams)
 
 
 @dataclass(frozen=True, slots=True)

@@ -324,3 +324,136 @@ def test_horizon_lease_covers_step_and_tick_budgets() -> None:
     assert ticks.lease_seconds == 630.0
     with pytest.raises(TopologyError, match="seconds_per_unit"):
         Horizon("env_ticks", 1000.0, seconds_per_unit=0.0)
+
+
+def test_foreign_authored_span_may_not_carry_trainable_tokens() -> None:
+    from synth_optimizers.contracts.rl_records import TrainableSegment
+
+    kwargs = {
+        "token_ids": (1, 2, 3),
+        "loss_mask": (0, 1, 1),
+        "behavior_logprobs": (0.0, -0.5, -0.25),
+    }
+    assert TrainableSegment(**kwargs).trainable
+    for author in ("foreign_agent", "opponent", "verifier", "judge", "harness"):
+        with pytest.raises(RecordError, match="never trainable"):
+            TrainableSegment(**kwargs, author_kind=author)
+        masked = TrainableSegment(
+            token_ids=(1, 2, 3),
+            loss_mask=(0, 0, 0),
+            behavior_logprobs=(0.0, 0.0, 0.0),
+            author_kind=author,
+        )
+        assert not masked.trainable
+    with pytest.raises(RecordError, match="unknown author_kind"):
+        TrainableSegment(**kwargs, author_kind="mystery")
+
+
+def test_effect_interval_must_not_end_before_it_starts() -> None:
+    from synth_optimizers.contracts.rl_records import TrainableSegment
+
+    with pytest.raises(RecordError, match="ends before it starts"):
+        TrainableSegment(
+            token_ids=(1,),
+            loss_mask=(1,),
+            behavior_logprobs=(-0.5,),
+            effect_tick_start=90,
+            effect_tick_end=12,
+        )
+
+
+def test_team_channel_lookup_refuses_absence_and_ambiguity() -> None:
+    from synth_optimizers.contracts.rl_records import RewardChannel, RewardRecord
+
+    def record(*channels: RewardChannel) -> RewardRecord:
+        return RewardRecord(
+            reward_id="reward_1",
+            rollout_id="rollout_1",
+            trace_digest="sha256:trace",
+            channels=channels,
+            optimized_channel="team_rank",
+            terminal_status="completed",
+            evaluation_plan_id="plan_1",
+        )
+
+    ranked = record(
+        RewardChannel("team_rank", "terra", 14.0, rank=1),
+        RewardChannel("team_rank_rival", "gemini37", 13.0, rank=2),
+    )
+    assert ranked.value_for_team("terra") == 14.0
+    assert ranked.channel_for("gemini37").rank == 2
+    with pytest.raises(RecordError, match="no channel for team"):
+        ranked.value_for_team("grok46")
+    doubled = record(
+        RewardChannel("team_rank", "terra", 14.0),
+        RewardChannel("team_margin", "terra", 1.0),
+    )
+    with pytest.raises(RecordError, match="must be unambiguous"):
+        doubled.value_for_team("terra")
+
+
+def test_quiescent_container_is_not_penalised_for_reading_the_reward() -> None:
+    from synth_optimizers.contracts.rl_records import HorizonEvidence
+
+    # The failure the runite run actually had: still moving, read late, no clip.
+    with pytest.raises(EvidenceError, match="neither a quiescence attestation"):
+        HorizonEvidence("wall_clock", 5400.0, 1560.0, clipped=False,
+                        quiescence_attested=False).validate()
+    # Quiesced then read at leisure is harmless: nothing was moving.
+    HorizonEvidence("wall_clock", 5400.0, 90.0, clipped=False,
+                    quiescence_attested=True).validate()
+    # Clipped to the horizon is equally fine without an attestation.
+    HorizonEvidence("wall_clock", 5400.0, 1560.0, clipped=True,
+                    quiescence_attested=False).validate()
+    # What the window bounds is credited settlement, not read latency.
+    with pytest.raises(EvidenceError, match="beyond"):
+        HorizonEvidence("wall_clock", 5400.0, 200.0, clipped=False, quiescence_attested=True,
+                        settlement_window_seconds=150.0,
+                        credited_settlement_seconds=200.0).validate()
+
+
+def test_reward_must_claim_a_terminal_status_and_name_its_rollout() -> None:
+    from synth_optimizers.contracts.rl_records import RewardChannel, RewardRecord
+
+    def record(**overrides: object) -> RewardRecord:
+        payload: dict[str, object] = {
+            "reward_id": "reward_1",
+            "rollout_id": "rollout_1",
+            "trace_digest": "sha256:trace",
+            "channels": (RewardChannel("reward", None, 1.0),),
+            "optimized_channel": "reward",
+            "terminal_status": "completed",
+            "evaluation_plan_id": "plan_1",
+        }
+        payload.update(overrides)
+        return RewardRecord(**payload)  # type: ignore[arg-type]
+
+    record().validate()
+    with pytest.raises(EvidenceError, match="non-terminal status"):
+        record(terminal_status="running").validate()
+    with pytest.raises(EvidenceError, match="names no rollout"):
+        record(rollout_id="  ").validate()
+
+
+def test_refuse_team_actually_refuses_the_team_it_is_named_for() -> None:
+    topology = runite_topology()
+    live = [
+        i.agent_instance_id
+        for i in topology.agent_instances
+        if not i.agent_instance_id.startswith("terra_") or i.agent_instance_id == "terra_a"
+    ]
+    outcome = topology.roster_disposition(live, disposition="refuse_team")
+    assert outcome.refused_teams == ("terra",)
+    assert outcome.degraded
+    with pytest.raises(TopologyError, match="minimum viable roster"):
+        topology.roster_disposition(live, disposition="drop_instance")
+
+
+def test_a_truncated_prompt_reads_differently_from_a_content_divergence() -> None:
+    first = call()
+    truncated = call(call_id="call_2", prompt_token_ids=(1, 2))
+    with pytest.raises(EvidenceError, match="truncates"):
+        assert_strict_prefix(first, truncated)
+    diverged = call(call_id="call_3", prompt_token_ids=(1, 9, 3, 4, 5))
+    with pytest.raises(EvidenceError, match="diverges from"):
+        assert_strict_prefix(first, diverged)

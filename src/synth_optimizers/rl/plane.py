@@ -805,6 +805,28 @@ def _policy_types(
     return {group: tuple(sorted(types)) for group, types in inverted.items()}
 
 
+#: What the plan calls an objective and what a provider calls the loss that
+#: implements it are different names for different things: the plan names a
+#: family and a variant, the provider names the one implementation it ships. A
+#: plan whose objective no provider here implements is refused by name, rather
+#: than sent as a string the provider rejects three layers down after the
+#: rollouts are already paid for.
+PROVIDER_LOSS_NAMES: Mapping[str, str] = {"cispo": "cispo.slime.v1"}
+
+
+def provider_loss_name(plan: Any) -> str:
+    """The provider's loss for this plan's objective, or a named refusal."""
+
+    kind = str(plan.objective.kind)
+    loss = PROVIDER_LOSS_NAMES.get(kind)
+    if loss is None:
+        raise UnsupportedProviderError(
+            f"objective {kind!r} (variant {plan.objective.variant!r}) has no loss "
+            f"implemented by this provider; it ships {sorted(PROVIDER_LOSS_NAMES)}"
+        )
+    return loss
+
+
 def _build_binder(
     config: RunConfig,
     *,
@@ -827,7 +849,7 @@ def _build_binder(
         policy_set_id=f"{config.run_id}::policy_set",
         wire_api=config.model.wire_api,
         sampling_transport=config.model.sampling_transport,
-        loss_name=f"{plan.objective.kind}.{plan.objective.variant}",
+        loss_name=provider_loss_name(plan),
         policy_types=_policy_types(config, document),
         sampling=sampling,
         rank=config.model.rank,

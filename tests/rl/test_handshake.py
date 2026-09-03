@@ -531,8 +531,17 @@ def test_clock_skew_beyond_tolerance_is_a_rejected_clause() -> None:
 
 
 def test_step_horizon_does_not_reject_on_skew() -> None:
+    # A step horizon has to declare its conversion, or nothing can say whether
+    # it covers a plan measured in seconds. 5400 steps at one second each is
+    # the same duration the wall-clock fixture uses.
     payload = capability_payload(
-        topology={"horizon": {"horizon_kind": "steps", "value_seconds": 5400.0}}
+        topology={
+            "horizon": {
+                "horizon_kind": "steps",
+                "value": 5400.0,
+                "seconds_per_unit": 1.0,
+            }
+        }
     )
     container = FakeContainer(capability=payload, skew_seconds=9.5)
     _, _, _, decision = _evaluate(container, plan=run_plan(groups_per_step=1))
@@ -947,3 +956,44 @@ def test_a_container_may_omit_a_clause_that_does_not_apply_to_this_run() -> None
         item.clause_id for item in _unanswered_clauses(without_idempotency, horizon_kind="steps")
     }
     assert ids == {"lifecycle.idempotency"}
+
+
+def test_a_horizon_is_compared_in_seconds_not_in_its_own_units() -> None:
+    """`Horizon.value` is a magnitude; a run plan asks for seconds.
+
+    Comparing the two directly made a one-step horizon look shorter than any
+    plan — so a clause that was in fact satisfied came back degraded, and
+    lowering the plan could never fix it because the units never met. Banking77
+    declares exactly that shape: one step of five minutes.
+    """
+
+    from synth_optimizers.rl.capabilities import _horizon_seconds
+
+    payload = capability_payload(
+        topology={
+            "horizon": {
+                "horizon_kind": "steps",
+                "value": 1.0,
+                "seconds_per_unit": 300.0,
+            }
+        }
+    )
+    payload["capability_hash"] = canonical_capability_hash(payload)
+    document = CapabilityDocument.from_payload(payload)
+    assert document.horizon.value == 1.0
+    assert _horizon_seconds(document.horizon) == 300.0
+
+    # A wall-clock horizon is already seconds.
+    wall = capability_payload(
+        topology={"horizon": {"horizon_kind": "wall_clock", "value": 5400.0}}
+    )
+    wall["capability_hash"] = canonical_capability_hash(wall)
+    assert _horizon_seconds(CapabilityDocument.from_payload(wall).horizon) == 5400.0
+
+    # A unit horizon with no declared conversion covers nothing, rather than
+    # covering whatever its magnitude happens to look like.
+    bare = capability_payload(
+        topology={"horizon": {"horizon_kind": "steps", "value": 5400.0}}
+    )
+    bare["capability_hash"] = canonical_capability_hash(bare)
+    assert _horizon_seconds(CapabilityDocument.from_payload(bare).horizon) == 0.0

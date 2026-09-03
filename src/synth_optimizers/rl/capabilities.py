@@ -543,6 +543,24 @@ def _clause(
     return ClauseResult(clause_id=clause_id, verdict="rejected", reason=reason)
 
 
+def _horizon_seconds(horizon: Horizon) -> float:
+    """A horizon in seconds, whatever unit it was declared in.
+
+    `Horizon.value` is a magnitude in the horizon's own units -- one step, a
+    thousand ticks -- and a run plan asks for seconds. Comparing the two
+    directly makes a one-step horizon look shorter than any plan, which
+    degrades a clause that is in fact satisfied, and lowering the plan cannot
+    fix it because the units never met.
+    """
+
+    try:
+        return float(horizon.value) * horizon.declared_seconds_per_unit()
+    except TopologyError:
+        # A unit horizon that declared no conversion. It fails closed later,
+        # where a lease is actually sized; here it simply covers nothing.
+        return 0.0
+
+
 def check_requirements(
     document: CapabilityDocument,
     requirements: ExecutorRequirements,
@@ -682,15 +700,16 @@ def _lifecycle_clauses(
     # A lease shorter than the horizon is fine only if it renews.
     lease_covers = (
         lifecycle.supports_lease_renewal and lifecycle.lease_ttl_seconds > 0
-    ) or lifecycle.lease_ttl_seconds >= horizon.value
-    horizon_covers_plan = horizon.value >= requirements.horizon_seconds
+    ) or lifecycle.lease_ttl_seconds >= _horizon_seconds(horizon)
+    horizon_covers_plan = _horizon_seconds(horizon) >= requirements.horizon_seconds
     if not lease_covers:
         lease = ClauseResult(
             clause_id="lifecycle.lease_renewal",
             verdict="rejected",
             reason=(
                 f"lease ttl {lifecycle.lease_ttl_seconds}s does not cover the declared "
-                f"{horizon.horizon_kind} horizon {horizon.value} and renewal is unsupported"
+                f"{horizon.horizon_kind} horizon of {_horizon_seconds(horizon)}s and renewal "
+                "is unsupported"
             ),
         )
     elif not horizon_covers_plan:
@@ -698,7 +717,7 @@ def _lifecycle_clauses(
             clause_id="lifecycle.lease_renewal",
             verdict="degraded",
             reason=(
-                f"declared horizon {horizon.value}s is shorter than the requested "
+                f"declared horizon {_horizon_seconds(horizon)}s is shorter than the requested "
                 f"{requirements.horizon_seconds}s; lower the run plan horizon"
             ),
         )

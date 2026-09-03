@@ -1948,6 +1948,56 @@ unchanged, and a second permanently maintained estimator buys only the ability
 to reproduce old normalized numbers exactly. Runs before this change are
 reproducible from their own receipts, not from this code path.
 
+### What building the container half revealed
+
+The container side was built against the optimizer client rather than against
+this document, which is the only way the two halves were ever going to agree.
+Four things surfaced that reading the note alone would not have found.
+
+**Three executor bugs, each invisible from one side.** The capability parser
+read the horizon magnitude under one spelling and never read the declared
+`seconds_per_unit` at all, so a step or tick horizon parsed cleanly and then
+raised at the first lease sizing — a parse bug wearing a queue bug's clothes.
+The unanswered-clause check demanded a verdict for every mandatory clause
+without asking whether it applied, so a container that correctly omitted the
+conditional skew clause would have been refused before spend. And a call could
+not declare its author while a segment could, so two independent
+implementations re-derived authorship from role and policy type.
+
+**The route surface collides with what a container already serves.** Ten of the
+seventeen canonical paths already exist on the reference app with blocking,
+GEPA-era semantics, and a blocking rollout result is not a lease-bearing 202.
+A container therefore mounts the CISPO surface under its own prefix; the
+contract permits it because the executor calls only declared routes, and the
+canonical table stays the declaration.
+
+**Existing runtime machinery is close but not sufficient**, and the gaps are
+worth recording rather than papering over:
+
+- The target runtime's only entry point is one-shot and synchronous, with no
+  submit/poll pair, no cancellation, no quiescence, and no horizon snapshot.
+  A rollout runtime is a new protocol, not a subtype of it.
+- The token capture model holds ids and logprobs and nothing else the training
+  record needs — no sampled mask, finish reason, stop tokens, renderer
+  fingerprint, behavior revision, branch provenance, or joint-episode identity.
+  Those ride in a single reserved metadata namespace until the capture models
+  grow the fields.
+- Capture provenance is coarser than the contract's: only provider-observed
+  capture maps to engine metadata, so harness-observed, imported, and
+  retokenized capture all collapse to untrainable. That is the safe direction
+  to be wrong in.
+- Binding minting stamps the current time, so a rebuilt trace sealed a
+  different digest each time. A digest a reward binds to may not depend on when
+  it was computed; the minting path needs the creation time passed in.
+- The log sealer requires a closed log, so it cannot be the digest a deferred
+  reward binds to. Reward binds to the sealed trace document's own digest.
+
+**A capability document has one author.** Two builders existed briefly, one on
+each side of the handshake. They were bridged rather than merged: the container
+publishes the document, and everything else parses that document and treats its
+hash as authoritative. Two builders that agree today are two builders that
+disagree later.
+
 ### Success criteria
 
 #### Common gates for all acceptance runs

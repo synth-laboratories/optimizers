@@ -460,3 +460,15 @@ def test_a_truncated_prompt_reads_differently_from_a_content_divergence() -> Non
     diverged = call(call_id="call_3", prompt_token_ids=(1, 9, 3, 4, 5))
     with pytest.raises(EvidenceError, match="diverges from"):
         assert_strict_prefix(first, diverged)
+
+
+def test_a_call_declares_its_author_rather_than_leaving_it_to_be_inferred() -> None:
+    assert call().author_kind == "policy"
+    call().validate_for_training()
+    for author in ("foreign_agent", "opponent", "verifier", "judge", "harness"):
+        record = call(author_kind=author)
+        assert record.author_kind == author
+        with pytest.raises(EvidenceError, match="only the policy's own generations"):
+            record.validate_for_training()
+    with pytest.raises(RecordError, match="unknown author_kind"):
+        call(author_kind="mystery")

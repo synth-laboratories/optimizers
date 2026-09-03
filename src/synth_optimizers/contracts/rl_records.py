@@ -245,6 +245,10 @@ class InferenceCall:
     finish_reason: str
     stop_token_ids: tuple[int, ...] = ()
     content_mask: tuple[int, ...] = ()
+    # Two independent implementations had to re-derive authorship from role and
+    # policy type because the call could not declare it. Foreign authorship is
+    # declared at the call, not inferred downstream from a zero mask.
+    author_kind: str = "policy"
     # The behavior fingerprint is a digest, so a call alone cannot say which
     # renderer produced it. Stamp the profile fingerprint too: the note requires
     # the trace to identify the renderer that produced the tokens.
@@ -276,12 +280,19 @@ class InferenceCall:
             raise RecordError(f"unknown provenance {self.token_capture_provenance!r}")
         if self.finish_reason not in FINISH_REASONS:
             raise RecordError(f"unknown finish_reason {self.finish_reason!r}")
+        if self.author_kind not in AUTHOR_KINDS:
+            raise RecordError(f"unknown author_kind {self.author_kind!r}")
 
     def validate_for_training(self) -> None:
         """Every reason a call may not enter a batch. Raises, never degrades."""
 
         if not self.trainable:
             raise EvidenceError(f"call {self.call_id} is marked non-trainable")
+        if self.author_kind not in TRAINABLE_AUTHOR_KINDS:
+            raise EvidenceError(
+                f"call {self.call_id} was authored by {self.author_kind!r}; "
+                "only the policy's own generations are trainable"
+            )
         if self.token_capture_provenance not in TRAINABLE_PROVENANCE:
             raise EvidenceError(
                 f"call {self.call_id} captured via {self.token_capture_provenance}; "

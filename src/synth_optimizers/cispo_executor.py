@@ -368,6 +368,7 @@ class TinkerCispoExecutor:
                     digest=str(parent.get("digest") or "sha256:" + "0" * 64),
                     kind=str(parent.get("kind") or "training"),
                     resume_token=str(parent.get("resume_token") or parent["provider_reference"]),
+                    model_id=str(parent.get("model_id") or model_id),
                 ),
                 request_id=new_request_id(job_id, "restore"),
             )

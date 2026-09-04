@@ -242,8 +242,21 @@ def branch_aware_root_coefficients(
     return tuple(coefficients)
 
 
+def sequence_mean_coefficients(
+    *, per_item_tokens: Sequence[int], **_: Any
+) -> tuple[float, ...]:
+    """One sequence vote, divided uniformly over that sequence's tokens."""
+
+    live = sum(tokens > 0 for tokens in per_item_tokens)
+    return tuple(
+        (1.0 / (live * tokens)) if tokens > 0 and live else 0.0
+        for tokens in per_item_tokens
+    )
+
+
 COEFFICIENT_KERNELS: Mapping[str, Callable[..., tuple[float, ...]]] = {
     "branch_aware_root_mean": branch_aware_root_coefficients,
+    "sequence_mean": sequence_mean_coefficients,
 }
 
 

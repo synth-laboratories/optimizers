@@ -859,6 +859,8 @@ def _build_binder(
         sampling=sampling,
         rank=config.model.rank,
         learning_rate=config.model.learning_rate,
+        eps_low=plan.objective.eps_low,
+        eps_high=plan.objective.eps_high,
         save_training_state=config.artifacts.retain_training_state,
     )
 

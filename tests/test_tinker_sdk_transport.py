@@ -8,6 +8,7 @@ import pytest
 
 from synth_optimizers.providers.protocols import (
     ProviderError,
+    ProviderCheckpoint,
     ProviderSession,
     SampleRequest,
     TrainingStepRequest,
@@ -158,8 +159,8 @@ def test_sdk_consumes_the_executor_cispo_payload_and_applies_reduction_weights()
         "cispo",
     )
 
-    # The reduced sequence advantage is broadcast over trainable target tokens.
-    assert datum.loss_fn_inputs["advantages"].data == pytest.approx([0.1, 0.1, 0.0])
+    # The reduced sequence share is divided across trainable target tokens.
+    assert datum.loss_fn_inputs["advantages"].data == pytest.approx([0.05, 0.05, 0.0])
 
 
 def test_sdk_rejects_a_cispo_payload_without_advantage() -> None:
@@ -186,6 +187,35 @@ def test_sdk_saves_training_state_with_the_resumable_api(monkeypatch) -> None:
     trainer = transport.sessions[handle.session_id]["training"]
     assert saved["provider_reference"] == "tinker://state"
     assert trainer.last_state_name == tinker_checkpoint_name("training_state", "resume")
+
+
+def test_sdk_sampler_checkpoint_is_not_advertised_as_resumable(monkeypatch) -> None:
+    transport = _transport(monkeypatch)
+    handle = transport.create_lora_training_client("openai/gpt-oss-20b", rank=4, seed=1)
+
+    saved = transport.save_checkpoint(
+        handle.session_id, step=0, kind="sampler_weights", request_id="sample"
+    )
+
+    assert saved["resume_token"] is None
+
+
+def test_sdk_restore_preserves_base_model_for_renderer(monkeypatch) -> None:
+    transport = _transport(monkeypatch)
+    checkpoint = ProviderCheckpoint(
+        "state",
+        "tinker://state",
+        3,
+        "sha256:state",
+        "training_state",
+        resume_token="tinker://state",
+        model_id="openai/gpt-oss-20b",
+    )
+
+    restored = transport.load_checkpoint(checkpoint, request_id="restore")
+
+    assert restored["model_id"] == "openai/gpt-oss-20b"
+    assert transport.sessions[restored["session_id"]]["model_id"] == "openai/gpt-oss-20b"
 
 
 def test_sdk_samples_and_parses_the_final_channel(monkeypatch) -> None:

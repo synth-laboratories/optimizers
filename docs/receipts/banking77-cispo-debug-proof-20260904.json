@@ -1,0 +1,50 @@
+{
+  "schema_version": "synth.banking77-cispo-debug-proof.v1",
+  "root_cause": "executor emitted advantage while Tinker consumed advantages and substituted zero",
+  "repairs": [
+    "fail_closed_advantage_schema",
+    "materialized_loss_reducer_coefficient",
+    "same_policy_share_composition",
+    "configured_clip_propagation",
+    "selected_token_usage_accounting",
+    "training_state_role_routing",
+    "role_closed_restore",
+    "restored_model_renderer_identity",
+    "single_live_sampler_client",
+    "resource_bound_idempotency",
+    "declared_poll_cadence"
+  ],
+  "gradient_canary": {
+    "passed": true,
+    "optimizer_calls": 1,
+    "maximum_absolute_logprob_change": 0.677635669708252,
+    "target_sequence_sum_change": 3.253283547020146,
+    "maximum_restore_error": 0.0,
+    "receipt_sha256": "9c56565eb11005b971fb0ed543f9101f27acf5490b56d94724397cabec11f1db"
+  },
+  "socket_gate": {
+    "run_id": "b77_variance8_gate_15",
+    "effective_updates": 8,
+    "sampled_groups": 9,
+    "zero_variance_groups": 1,
+    "stale_groups": 0,
+    "baseline_mean": 0.6666666666666666,
+    "trained_mean": 0.8,
+    "mean_delta": 0.13333333333333333,
+    "wins": 3,
+    "losses": 1,
+    "ties": 11,
+    "evaluation_sha256": "8345de53002972a6ad3aa1c271b923e6b61f3748f7e4ccf79028b47e8a04801e"
+  },
+  "current_code_proof": {
+    "run_id": "b77_objective_proof_17",
+    "effective_updates": 1,
+    "sampled_groups": 1,
+    "training_examples": 16,
+    "selected_training_tokens": 1151,
+    "loss_sum": -0.06367802526801825,
+    "sampler_checkpoint_id": "ckpt_afb9ffae23d99bb2a1ee0f1f",
+    "provider_usage_sha256": "d368fbc49955a13eab229b2801ecbaf6fac3dc12fbf6a4fe846a35ab4cf60325"
+  },
+  "provider_cost_missing": true
+}

@@ -119,7 +119,7 @@ def register(subcommands: argparse._SubParsersAction) -> None:
     run = commands.add_parser("run", help="Execute a training run from a config file.")
     run.add_argument("--config", required=True, help="Path to a run config file.")
     run.add_argument("--receipts", help="Directory the run leaves its receipt in.")
-    run.add_argument("--max-ticks", type=int, default=256)
+    run.add_argument("--max-ticks", type=int, default=10_000)
     run.add_argument(
         "--plane",
         metavar="MODULE:FACTORY",
@@ -313,10 +313,10 @@ def _run(args: argparse.Namespace) -> int:
             plan=ExecutionPlan(
                 receipts=Path(args.receipts),
                 max_ticks=args.max_ticks,
-                # Socket containers submit asynchronously. A short wall-clock
-                # cadence prevents the bounded tick budget from hot-spinning
-                # before their provider workers can finish.
-                poll_interval_seconds=0.05,
+                # Socket containers submit asynchronously. Honor the declared
+                # cadence so the bounded tick budget measures real polling,
+                # rather than hot-spinning past a still-running provider call.
+                poll_interval_seconds=config.pipeline.poll_interval_seconds,
             ),
         )
     finally:

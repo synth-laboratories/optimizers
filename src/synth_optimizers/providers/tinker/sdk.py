@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 import threading
 from collections.abc import Mapping, Sequence
@@ -209,26 +210,38 @@ class TinkerSdkTransport:
             self._samplers[session_id] = self._service.create_sampling_client(model_path=path)
         else:
             raise ProviderError("checkpoint_kind", f"unsupported Tinker checkpoint kind {kind!r}")
+        is_training_state = kind in {"training", "training_state"}
         digest = "sha256:" + hashlib.sha256(path.encode("utf-8")).hexdigest()
         return {
             "checkpoint_id": f"{kind}-{step}-{digest[-12:]}",
             "provider_reference": path,
             "step": step,
             "digest": digest,
-            "resume_token": path,
+            "resume_token": path if is_training_state else None,
+            "model_id": str(self.sessions.get(session_id, {}).get("model_id") or ""),
         }
 
     def load_checkpoint(self, checkpoint: ProviderCheckpoint, *, request_id: str) -> dict[str, Any]:
-        path = checkpoint.resume_token or checkpoint.provider_reference
+        if checkpoint.kind not in {"training", "training_state"} or not checkpoint.resume_token:
+            raise ProviderError(
+                "checkpoint_not_resumable",
+                f"checkpoint kind {checkpoint.kind!r} is not resumable training state",
+            )
+        path = checkpoint.resume_token
         trainer = self._service.create_training_client_from_state(path)
         session_id = str(getattr(trainer, "model_id", request_id))
+        model_id = checkpoint.model_id
+        if not model_id:
+            raise ProviderError(
+                "checkpoint_model_missing", "restored training state needs its base model identity"
+            )
         self.sessions[session_id] = {
             "training": trainer,
-            "model_id": checkpoint.kind,
+            "model_id": model_id,
             "step": checkpoint.step,
         }
-        self._bind_tokenizer(trainer, str(getattr(trainer, "model_id", checkpoint.kind)))
-        return {"session_id": session_id, "model_id": str(self.sessions[session_id].get("model_id") or "")}
+        self._bind_tokenizer(trainer, model_id)
+        return {"session_id": session_id, "model_id": model_id}
 
     def cancel(self, session_id: str) -> None:
         self.cancelled.add(session_id)
@@ -265,17 +278,13 @@ class TinkerSdkTransport:
             # Training invalidates the cached sampler after each optimizer
             # step. Scope the implicit live sampler to that step so later
             # updates never collide with an earlier persisted checkpoint.
-            saved = self.save_checkpoint(
+            self.save_checkpoint(
                 session_id,
                 step=step,
                 kind="inference",
                 request_id=f"{session_id}-live-{step}",
             )
-            sampler = self._service.create_sampling_client(
-                model_path=saved["provider_reference"]
-            )
-            self._samplers[session_id] = sampler
-            return sampler
+            return self._samplers[session_id]
 
     def _ce_datum(self, tokens: Sequence[int], mask: Sequence[bool]) -> Any:
         ids = list(tokens)
@@ -354,6 +363,7 @@ def _train_datum(tinker_module: Any, item: Mapping[str, Any], loss_fn: str) -> A
     )
     if len(shifted) != len(ids) - 1:
         raise ProviderError("cispo_mask_alignment", "CISPO loss mask must align with full token sequence")
+    trained = sum(shifted)
     behavior = list(item.get("behavior_logprobs") or ())
     if "advantage" in item:
         advantage = item["advantage"]
@@ -366,11 +376,23 @@ def _train_datum(tinker_module: Any, item: Mapping[str, Any], loss_fn: str) -> A
     if isinstance(advantage, Sequence) and not isinstance(advantage, (str, bytes)):
         if not advantage:
             raise ProviderError("cispo_advantage_missing", "CISPO advantage cannot be empty")
-        scalar = float(advantage[0])
+        values = [float(value) for value in advantage]
+        if any(value != values[0] for value in values[1:]):
+            raise ProviderError(
+                "cispo_advantage_shape",
+                "CISPO executor datum needs one sequence advantage, not a varying vector",
+            )
+        scalar = values[0]
     else:
         scalar = float(advantage)
-    scalar *= float(item.get("root_rollout_weight", 1.0))
-    scalar *= float(item.get("same_policy_weight", 1.0))
+    if "loss_weight" in item:
+        scalar *= float(item["loss_weight"])
+    else:
+        # Legacy direct callers have no assembled reducer coefficient.
+        scalar *= float(item.get("root_rollout_weight", 1.0))
+        scalar *= float(item.get("same_policy_weight", 1.0)) / max(trained, 1)
+    if not math.isfinite(scalar):
+        raise ProviderError("cispo_advantage_nonfinite", "CISPO advantage must be finite")
     logprobs, advantages = [], []
     if full_sequence and len(behavior) != len(ids):
         raise ProviderError("cispo_logprob_alignment", "full-sequence behavior logprobs must align with tokens")
@@ -380,9 +402,8 @@ def _train_datum(tinker_module: Any, item: Mapping[str, Any], loss_fn: str) -> A
             float(behavior[position]) if full_sequence and enabled
             else (next(completion_logprobs, 0.0) if enabled else 0.0)
         )
-        # CISPO consumes a sequence-level advantage broadcast over its selected
-        # tokens. Tinker's loss reducer performs the token normalization; doing
-        # it here as well would shrink updates by the completion length.
+        # Tinker's CISPO objective sums token losses, so divide a stream's
+        # allocated update share across its selected tokens.
         advantages.append(scalar if enabled else 0.0)
     return tinker_module.Datum(
         model_input=tinker_module.ModelInput.from_ints(ids[:-1]),
@@ -401,6 +422,9 @@ def _train_datum(tinker_module: Any, item: Mapping[str, Any], loss_fn: str) -> A
 
 
 def _token_count(item: Mapping[str, Any]) -> int:
+    mask = item.get("loss_mask")
+    if mask:
+        return sum(bool(value) for value in mask)
     tokens = item.get("target_tokens") or item.get("token_ids") or item.get("input_ids") or ()
     return max(1, len(tokens))
 

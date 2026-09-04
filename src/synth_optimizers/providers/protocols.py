@@ -138,6 +138,7 @@ class ProviderCheckpoint:
     digest: str
     kind: str
     resume_token: str | None = None
+    model_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

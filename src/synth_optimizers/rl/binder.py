@@ -123,6 +123,8 @@ class CatalogPolicyBinder:
         sampling: SamplingProfile | None = None,
         rank: int = 8,
         learning_rate: float = 2e-5,
+        eps_low: float = 1.0,
+        eps_high: float = 4.0,
         seed: int = 0,
         save_training_state: bool = False,
         health_check: Callable[[Any], bool] | None = None,
@@ -153,6 +155,8 @@ class CatalogPolicyBinder:
         self._learning_rate = float(learning_rate)
         if self._learning_rate <= 0:
             raise BinderError("learning_rate must be positive")
+        self._eps_low = float(eps_low)
+        self._eps_high = float(eps_high)
         self._seed = int(seed)
         self._save_training_state = bool(save_training_state)
         self._health_check = health_check
@@ -285,6 +289,8 @@ class CatalogPolicyBinder:
                     "parameter_group_id": group,
                     "plan_hash": plan,
                     "learning_rate": self._learning_rate,
+                    "eps_clip": self._eps_low,
+                    "eps_clip_high": self._eps_high,
                 },
             ),
         )

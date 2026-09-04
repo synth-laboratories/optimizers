@@ -1614,6 +1614,7 @@ def _item_payload(item: Any) -> dict[str, Any]:
         "advantage": item.advantage,
         "root_rollout_weight": item.root_rollout_weight,
         "same_policy_weight": item.same_policy_weight,
+        "loss_weight": item.loss_weight,
         "trainable_tokens": item.trainable_tokens,
         "policy_revision": item.policy_revision,
         "staleness_steps": item.staleness_steps,

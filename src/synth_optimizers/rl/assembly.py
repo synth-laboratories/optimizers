@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from ..contracts.rl_identity import GroupPin, Topology, assert_uniform_group
@@ -37,6 +37,7 @@ from .credit import (
     reduce_same_policy,
 )
 from .plan import AlgorithmPlan
+from .reducer import coefficients
 
 #: The parameter group a single-policy run trains. A solo run still names its
 #: parameter group, so a solo batch and a joint batch have the same shape.
@@ -117,6 +118,8 @@ class SpanBatchItem:
     root_rollout_weight: float
     #: Share of the parameter group's update, from the same-policy reduction.
     same_policy_weight: float
+    #: Final scalar applied to each selected token after all declared reducers.
+    loss_weight: float
     trainable_tokens: int
     policy_revision: int
     staleness_steps: int
@@ -139,6 +142,7 @@ class SpanBatchItem:
             "advantage": repr(self.advantage),
             "root_rollout_weight": repr(self.root_rollout_weight),
             "same_policy_weight": repr(self.same_policy_weight),
+            "loss_weight": repr(self.loss_weight),
             "trainable_tokens": self.trainable_tokens,
             "policy_revision": self.policy_revision,
             "staleness_steps": self.staleness_steps,
@@ -704,12 +708,37 @@ def assemble(
             ),
             root_rollout_weight=1.0 / len(branches),
             same_policy_weight=reduction.weight_for(bundle.episode.rollout_id, instance),
+            loss_weight=0.0,
             trainable_tokens=span.segment.trainable_tokens,
             policy_revision=bundle.episode.policy_revision,
             staleness_steps=bundle.staleness_steps,
             call_ids=tuple(span.segment.call_ids),
         )
         items_by_pg.setdefault(parameter_group_id, {}).setdefault(bundle.group_id, []).append(item)
+
+    # Materialize the declared loss reducer as an explicit per-token
+    # coefficient, then adjust it by the same-policy target-share ratio. This
+    # makes the two normalization dimensions composable and provider-visible.
+    for parameter_group_id, grouped in items_by_pg.items():
+        flat = [item for group_id in sorted(grouped) for item in grouped[group_id]]
+        reduction = reductions[parameter_group_id]
+        base = coefficients(
+            plan.reducer.kind,
+            per_item_tokens=[item.trainable_tokens for item in flat],
+            root_ids=[item.root_rollout_id for item in flat],
+            root_weights=[item.root_rollout_weight for item in flat],
+        )
+        total_tokens = reduction.total_tokens
+        weighted: list[SpanBatchItem] = []
+        for item, coefficient in zip(flat, base, strict=True):
+            naive_share = item.trainable_tokens / total_tokens if total_tokens else 0.0
+            multiplier = item.same_policy_weight / naive_share if naive_share else 0.0
+            weighted.append(replace(item, loss_weight=coefficient * multiplier))
+        cursor = 0
+        for group_id in sorted(grouped):
+            size = len(grouped[group_id])
+            grouped[group_id] = weighted[cursor : cursor + size]
+            cursor += size
 
     parameter_groups = tuple(
         ParameterGroupBatch(

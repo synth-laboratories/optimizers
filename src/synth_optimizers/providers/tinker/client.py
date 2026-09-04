@@ -65,6 +65,7 @@ class TinkerAdapter:
         self._sleep = sleep
         self._sessions: dict[str, Any] = {}
         self._completed_requests: dict[str, Any] = {}
+        self._request_fingerprints: dict[str, tuple[Any, ...]] = {}
         self._cancelled: set[str] = set()
 
     def discover_capabilities(self, model_id: str) -> ProviderCapabilities:
@@ -93,6 +94,7 @@ class TinkerAdapter:
     def create_session(
         self, model_id: str, *, rank: int, seed: int, request_id: str
     ) -> ProviderSession:
+        self._claim(request_id, "create_session", model_id, rank, seed)
         cached = self._completed_requests.get(request_id)
         if isinstance(cached, ProviderSession):
             return cached
@@ -108,6 +110,18 @@ class TinkerAdapter:
     def restore_session(
         self, checkpoint: ProviderCheckpoint, *, request_id: str
     ) -> ProviderSession:
+        if checkpoint.kind not in {"training", "training_state"} or not checkpoint.resume_token:
+            raise ProviderError(
+                "checkpoint_not_resumable",
+                f"checkpoint kind {checkpoint.kind!r} is not resumable training state",
+            )
+        self._claim(
+            request_id,
+            "restore_session",
+            checkpoint.checkpoint_id,
+            checkpoint.resume_token,
+            checkpoint.digest,
+        )
         cached = self._completed_requests.get(request_id)
         if isinstance(cached, ProviderSession):
             return cached
@@ -121,6 +135,7 @@ class TinkerAdapter:
 
     def sample(self, session: ProviderSession, request: SampleRequest) -> SampleResult:
         self._ensure_active(session)
+        self._claim(request.request_id, "sample", session.session_id, request)
         cached = self._completed_requests.get(request.request_id)
         if isinstance(cached, SampleResult):
             return cached
@@ -133,6 +148,7 @@ class TinkerAdapter:
 
     def forward(self, session: ProviderSession, request: ForwardRequest) -> ForwardResult:
         self._ensure_active(session)
+        self._claim(request.request_id, "forward", session.session_id, request)
         cached = self._completed_requests.get(request.request_id)
         if isinstance(cached, ForwardResult):
             return cached
@@ -147,6 +163,7 @@ class TinkerAdapter:
         self, session: ProviderSession, request: TrainingStepRequest
     ) -> TrainingStepResult:
         self._ensure_active(session)
+        self._claim(request.request_id, "train_step", session.session_id, request)
         cached = self._completed_requests.get(request.request_id)
         if isinstance(cached, TrainingStepResult):
             return cached
@@ -161,6 +178,7 @@ class TinkerAdapter:
         self, session: ProviderSession, *, step: int, kind: str, request_id: str
     ) -> ProviderCheckpoint:
         self._ensure_active(session)
+        self._claim(request_id, "save_checkpoint", session.session_id, step, kind)
         cached = self._completed_requests.get(request_id)
         if isinstance(cached, ProviderCheckpoint):
             return cached
@@ -174,6 +192,14 @@ class TinkerAdapter:
     def sample_checkpoint(
         self, checkpoint: ProviderCheckpoint, request: SampleRequest
     ) -> SampleResult:
+        self._claim(
+            request.request_id,
+            "sample_checkpoint",
+            checkpoint.checkpoint_id,
+            checkpoint.provider_reference,
+            checkpoint.digest,
+            request,
+        )
         cached = self._completed_requests.get(request.request_id)
         if isinstance(cached, SampleResult):
             return cached
@@ -223,6 +249,18 @@ class TinkerAdapter:
 
     def classify_error(self, error: BaseException) -> ProviderError:
         return classify_tinker_error(error)
+
+    def _claim(self, request_id: str, *fingerprint: Any) -> None:
+        """Bind an idempotency key to exactly one operation and resource."""
+
+        claimed = tuple(fingerprint)
+        previous = self._request_fingerprints.get(request_id)
+        if previous is not None and previous != claimed:
+            raise ProviderError(
+                "idempotency_conflict",
+                f"request id {request_id!r} was reused for a different Tinker operation",
+            )
+        self._request_fingerprints[request_id] = claimed
 
     def receipt_from_usage(
         self,

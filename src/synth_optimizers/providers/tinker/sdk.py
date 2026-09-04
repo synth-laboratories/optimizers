@@ -202,11 +202,13 @@ class TinkerSdkTransport:
     ) -> dict[str, Any]:
         trainer = self._trainer(session_id)
         name = tinker_checkpoint_name(kind, request_id)
-        if kind == "training":
+        if kind in {"training", "training_state"}:
             path = str(trainer.save_state(name, ttl_seconds=30 * 86400).result().path)
-        else:
+        elif kind in {"inference", "sampler_weights"}:
             path = str(trainer.save_weights_for_sampler(name, ttl_seconds=30 * 86400).result().path)
             self._samplers[session_id] = self._service.create_sampling_client(model_path=path)
+        else:
+            raise ProviderError("checkpoint_kind", f"unsupported Tinker checkpoint kind {kind!r}")
         digest = "sha256:" + hashlib.sha256(path.encode("utf-8")).hexdigest()
         return {
             "checkpoint_id": f"{kind}-{step}-{digest[-12:]}",
@@ -352,13 +354,23 @@ def _train_datum(tinker_module: Any, item: Mapping[str, Any], loss_fn: str) -> A
     )
     if len(shifted) != len(ids) - 1:
         raise ProviderError("cispo_mask_alignment", "CISPO loss mask must align with full token sequence")
-    trained = sum(shifted)
     behavior = list(item.get("behavior_logprobs") or ())
-    advantage = item.get("advantages")
-    if isinstance(advantage, Sequence) and not isinstance(advantage, (str, bytes)):
-        scalar = float(advantage[0]) if advantage else 0.0
+    if "advantage" in item:
+        advantage = item["advantage"]
+    elif "advantages" in item:
+        # Compatibility with callers predating the executor's canonical
+        # provider-facing schema.  New executor payloads use the singular key.
+        advantage = item["advantages"]
     else:
-        scalar = float(advantage or 0.0)
+        raise ProviderError("cispo_advantage_missing", "CISPO datum needs an advantage")
+    if isinstance(advantage, Sequence) and not isinstance(advantage, (str, bytes)):
+        if not advantage:
+            raise ProviderError("cispo_advantage_missing", "CISPO advantage cannot be empty")
+        scalar = float(advantage[0])
+    else:
+        scalar = float(advantage)
+    scalar *= float(item.get("root_rollout_weight", 1.0))
+    scalar *= float(item.get("same_policy_weight", 1.0))
     logprobs, advantages = [], []
     if full_sequence and len(behavior) != len(ids):
         raise ProviderError("cispo_logprob_alignment", "full-sequence behavior logprobs must align with tokens")
@@ -368,7 +380,10 @@ def _train_datum(tinker_module: Any, item: Mapping[str, Any], loss_fn: str) -> A
             float(behavior[position]) if full_sequence and enabled
             else (next(completion_logprobs, 0.0) if enabled else 0.0)
         )
-        advantages.append(scalar / trained if enabled and trained else 0.0)
+        # CISPO consumes a sequence-level advantage broadcast over its selected
+        # tokens. Tinker's loss reducer performs the token normalization; doing
+        # it here as well would shrink updates by the completion length.
+        advantages.append(scalar if enabled else 0.0)
     return tinker_module.Datum(
         model_input=tinker_module.ModelInput.from_ints(ids[:-1]),
         loss_fn_inputs={

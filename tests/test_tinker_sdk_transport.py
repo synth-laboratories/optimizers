@@ -14,6 +14,7 @@ from synth_optimizers.providers.protocols import (
 )
 from synth_optimizers.providers.tinker.sdk import (
     TinkerSdkTransport,
+    _train_datum,
     _tinker_loss,
     tinker_checkpoint_name,
 )
@@ -141,6 +142,50 @@ def test_sdk_maps_slime_to_tinker_cispo_and_refuses_generic_is(monkeypatch) -> N
     assert trainer.last_config == {"clip_low_threshold": 0.0, "clip_high_threshold": 5.0}
     assert trainer.last_lr == 5e-6
     assert result["step"] == 1
+
+
+def test_sdk_consumes_the_executor_cispo_payload_and_applies_reduction_weights() -> None:
+    datum = _train_datum(
+        _Tinker,
+        {
+            "token_ids": (1, 2, 3, 4),
+            "loss_mask": (0, 1, 1, 0),
+            "behavior_logprobs": (-0.4, -0.3, -0.2, -0.1),
+            "advantage": 0.8,
+            "root_rollout_weight": 0.5,
+            "same_policy_weight": 0.25,
+        },
+        "cispo",
+    )
+
+    # The reduced sequence advantage is broadcast over trainable target tokens.
+    assert datum.loss_fn_inputs["advantages"].data == pytest.approx([0.1, 0.1, 0.0])
+
+
+def test_sdk_rejects_a_cispo_payload_without_advantage() -> None:
+    with pytest.raises(ProviderError, match="needs an advantage"):
+        _train_datum(
+            _Tinker,
+            {
+                "token_ids": (1, 2, 3),
+                "loss_mask": (0, 1, 1),
+                "behavior_logprobs": (-0.3, -0.2, -0.1),
+            },
+            "cispo",
+        )
+
+
+def test_sdk_saves_training_state_with_the_resumable_api(monkeypatch) -> None:
+    transport = _transport(monkeypatch)
+    handle = transport.create_lora_training_client("openai/gpt-oss-20b", rank=4, seed=1)
+
+    saved = transport.save_checkpoint(
+        handle.session_id, step=3, kind="training_state", request_id="resume"
+    )
+
+    trainer = transport.sessions[handle.session_id]["training"]
+    assert saved["provider_reference"] == "tinker://state"
+    assert trainer.last_state_name == tinker_checkpoint_name("training_state", "resume")
 
 
 def test_sdk_samples_and_parses_the_final_channel(monkeypatch) -> None:

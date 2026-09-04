@@ -1,6 +1,13 @@
 {
   "schema_version": "synth.banking77-variance-screen-uplift.v1",
   "run_id": "b77_variance60_uplift_13",
+  "validity": {
+    "effective_training": false,
+    "classification": "invalid_zero_gradient_run",
+    "root_cause": "executor emitted advantage while Tinker adapter read advantages and substituted zero",
+    "provider_calls_with_zero_loss_sum": 60,
+    "interpretation": "does not establish that 60 effective updates are insufficient"
+  },
   "screening": {
     "checkpoint_id": "ckpt_cc7549684479d00ab6ac661c",
     "candidate_rows": 56,
@@ -19,7 +26,8 @@
     "trained_groups": 60,
     "zero_variance_groups": 6,
     "stale_groups": 0,
-    "optimizer_updates": 60,
+    "optimizer_calls": 60,
+    "effective_optimizer_updates": 0,
     "stop_reason": "target_train_updates_reached",
     "training_examples": 960,
     "training_tokens": 690698,

@@ -214,6 +214,7 @@ class EvaluationRequest:
     reward_channel: str | None = None
     metric_name: str = "mean_reward"
     poll_limit: int = DEFAULT_POLL_LIMIT
+    concurrency: int = 1
 
     def __post_init__(self) -> None:
         if not str(self.evaluation_id).strip():
@@ -234,6 +235,8 @@ class EvaluationRequest:
             )
         if self.poll_limit < 1:
             raise EvaluationError("poll_limit must be positive")
+        if self.concurrency < 1:
+            raise EvaluationError("concurrency must be positive")
 
     @property
     def task_ids(self) -> tuple[str, ...]:
@@ -753,6 +756,9 @@ class PairedEvaluation:
         tasks: Mapping[str, TaskSpec],
         match_set_revision_id: str | None,
     ) -> None:
+        if request.concurrency > 1:
+            self._run_arm_concurrent(bound, request, tasks, match_set_revision_id)
+            return
         primary = request.roster[0]
         revision = bound.revisions[primary.parameter_group_id]
         group_id = f"{request.evaluation_id}::{bound.arm}"
@@ -782,6 +788,80 @@ class PairedEvaluation:
                 for origin in origins.values():
                     self._gateway.close(origin.proxy_request_id)
             bound.attempts.append(row)
+
+    def _run_arm_concurrent(
+        self, bound: _BoundArm, request: EvaluationRequest,
+        tasks: Mapping[str, TaskSpec], match_set_revision_id: str | None,
+    ) -> None:
+        """Multiplex asynchronous rollouts on the owning thread.
+
+        Catalog/session/gateway state never crosses threads. Completion order
+        may vary; the returned receipt always follows the frozen seed order.
+        """
+        primary = request.roster[0]
+        revision = bound.revisions[primary.parameter_group_id]
+        group_id = f"{request.evaluation_id}::{bound.arm}"
+        active: dict[str, tuple[int, HeldOutSeed, Mapping[str, SamplerOrigin], int]] = {}
+        completed: dict[int, AttemptRow] = {}
+        index = 0
+        limit = min(request.concurrency, self._session.obligations.max_concurrency)
+        if limit < 1:
+            raise EvaluationError("container permits no concurrent attempts")
+        try:
+            while index < len(request.seeds) or active:
+                while index < len(request.seeds) and len(active) < limit:
+                    held = request.seeds[index]
+                    pin = request.pin.pin(
+                        group_id=group_id, behavior_fingerprint=revision.behavior_fingerprint,
+                        policy_revision=revision.revision, policy_revision_id=revision.revision_id,
+                        cardinality=len(request.seeds),
+                        handshake_agreement_digest=self._session.agreement_digest,
+                        policy_set_revision_id=bound.resolution.policy_set_revision_id,
+                        match_set_revision_id=match_set_revision_id,
+                    )
+                    origins = self._bind_roster(bound, request, group_id, index, pin, held)
+                    try:
+                        rollout_id = self._session.submit(
+                            tasks[held.task_id], origins[primary.parameter_group_id], pin=pin,
+                            sample_index=index,
+                            idempotency_key=_idempotency_key(request.evaluation_id, bound.arm, held, index),
+                        )
+                    except BaseException:
+                        for origin in origins.values():
+                            self._gateway.close(origin.proxy_request_id)
+                        raise
+                    active[rollout_id] = (index, held, origins, 0)
+                    index += 1
+                moved = False
+                for rollout_id, (sample_index, held, origins, polls) in list(active.items()):
+                    state = self._session.poll(rollout_id)
+                    if not state.get("terminal") and str(state.get("state") or "") not in FINALIZABLE_STATES:
+                        polls += 1
+                        if polls >= request.poll_limit:
+                            raise AttemptFailedError(f"attempt {rollout_id} exceeded evaluation poll limit")
+                        active[rollout_id] = (sample_index, held, origins, polls)
+                        continue
+                    self._session.finalize(rollout_id)
+                    episode, reward = self._session.evidence(rollout_id)
+                    completed[sample_index] = self._row(
+                        bound, held, sample_index, rollout_id,
+                        origins[primary.parameter_group_id], episode, reward, request,
+                    )
+                    for origin in origins.values():
+                        self._gateway.close(origin.proxy_request_id)
+                    del active[rollout_id]
+                    moved = True
+                if active and not moved:
+                    time.sleep(DEFAULT_POLL_INTERVAL_SECONDS)
+        finally:
+            for rollout_id, (_, _, origins, _) in active.items():
+                try:
+                    self._session.terminate(rollout_id, reason="evaluation_aborted")
+                except Exception:
+                    pass
+                for origin in origins.values():
+                    self._gateway.close(origin.proxy_request_id)
+        bound.attempts.extend(completed[i] for i in range(len(request.seeds)))
 
     def _bind_roster(
         self,

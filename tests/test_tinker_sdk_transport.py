@@ -83,6 +83,25 @@ class _Service:
         return _Trainer()
 
 
+def test_checkpoint_sampler_is_created_once_under_concurrent_calls():
+    calls = []
+
+    def create(**kwargs):
+        time.sleep(0.01)
+        calls.append(kwargs)
+        return object()
+
+    transport = TinkerSdkTransport(SimpleNamespace(create_sampling_client=create), tinker_module=None)
+    checkpoint = ProviderCheckpoint('checkpoint', 'tinker://fixed', 24, 'sha256:fixed', 'inference')
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        samplers = list(pool.map(lambda _: transport._sampler_for(checkpoint), range(32)))
+    assert len(calls) == 1
+    assert all(sampler is samplers[0] for sampler in samplers)
+    other = ProviderCheckpoint('other', 'tinker://other', 25, 'sha256:other', 'inference')
+    assert transport._sampler_for(other) is not samplers[0]
+    assert len(calls) == 2
+
+
 class _Tinker:
     class ModelInput:
         @staticmethod

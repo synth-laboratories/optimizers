@@ -356,6 +356,7 @@ class ContainerRunExecutor:
         self._rollouts: dict[str, str] = {}
         self._attempts: dict[str, str] = {}
         self._origins: dict[str, tuple[str, ...]] = {}
+        self._pending_declarations: dict[str, tuple[Mapping[str, SamplerOrigin], TaskSpec]] = {}
         self._submitted_at: dict[str, float] = {}
         self._pending_groups: list[str] = []
         self._pending_recycled: list[GateRejection] = []
@@ -618,7 +619,9 @@ class ContainerRunExecutor:
             except SessionError as error:
                 self.queues.fail(attempt.attempt_id, reason=f"submit_refused: {error}")
                 continue
-            self._declare(origins, rollout_id=rollout_id, task=task)
+            # Declaring while the provider call holds its route lock would
+            # serialize dispatch. Settle the provisional ID after completion.
+            self._pending_declarations[attempt.attempt_id] = (origins, task)
             self._rollouts[attempt.attempt_id] = rollout_id
             self._attempts[rollout_id] = attempt.attempt_id
             self._origins[attempt.attempt_id] = tuple(
@@ -646,6 +649,7 @@ class ContainerRunExecutor:
             )
 
     def _close_origin(self, attempt_id: str) -> None:
+        self._pending_declarations.pop(attempt_id, None)
         proxy_request_ids = self._origins.pop(attempt_id, ())
         for proxy_request_id in proxy_request_ids:
             self.gateway.close(proxy_request_id)
@@ -697,6 +701,10 @@ class ContainerRunExecutor:
             self._close_origin(attempt_id)
             return True
         attempt = self.store.attempt(attempt_id)
+        pending = self._pending_declarations.pop(attempt_id, None)
+        if pending is not None:
+            origins, task = pending
+            self._declare(origins, rollout_id=rollout_id, task=task)
         payload = dict(self.session.reward_payload(rollout_id))
         self.queues.report_scored(attempt_id, payload={"rollout_id": rollout_id})
         self.evidence[attempt_id] = AttemptEvidence(

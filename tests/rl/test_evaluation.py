@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -653,6 +654,60 @@ def test_paired_arms_run_identical_seeds_and_produce_a_comparable_summary(world:
         "eval_0001::trained",
     }
     assert sorted(gateway.closed) == sorted(item[0] for item in gateway.bound)
+
+
+def test_concurrent_eval_preserves_order_and_caps_inflight(world: World) -> None:
+    class DelayedSession(FakeSession):
+        obligations = SimpleNamespace(max_concurrency=2)
+
+        def __init__(self):
+            super().__init__(seeds={TASK_A: 3, TASK_B: 5})
+            self.active = set()
+            self.peak = 0
+            self.observations = {}
+            self.finished = []
+
+        def submit(self, *args, **kwargs):
+            rid = super().submit(*args, **kwargs)
+            self.active.add(rid)
+            self.peak = max(self.peak, len(self.active))
+            return rid
+
+        def poll(self, rid):
+            self.observations[rid] = self.observations.get(rid, 0) + 1
+            if self._by_rollout[rid]["sample_index"] == 0 and self.observations[rid] == 1:
+                return {"state": "running"}
+            return super().poll(rid)
+
+        def finalize(self, rid):
+            self.active.remove(rid)
+            self.finished.append(self._by_rollout[rid]["sample_index"])
+            return super().finalize(rid)
+
+    session = DelayedSession()
+    request = replace(request_for(trained="ckpt_primary_u1", baseline="ckpt_baseline_primary"), concurrency=8)
+    receipt, _, gateway, _ = run_evaluation(world, request, session=session)
+    assert session.peak == 2
+    assert session.finished == [1, 0, 1, 0]
+    assert [r.sample_index for r in receipt.baseline.attempts] == [0, 1]
+    assert [r.sample_index for r in receipt.trained.attempts] == [0, 1]
+    assert not session.active
+    assert len(gateway.closed) == 4
+
+
+def test_concurrent_eval_cleans_up_on_failure(world: World) -> None:
+    class BrokenSession(FakeSession):
+        obligations = SimpleNamespace(max_concurrency=2)
+
+        def poll(self, rid):
+            raise RuntimeError("transport failed")
+
+    session = BrokenSession(seeds={TASK_A: 3, TASK_B: 5})
+    gateway = FakeGateway()
+    with pytest.raises(RuntimeError, match="transport failed"):
+        run_evaluation(world, replace(request_for(trained="ckpt_primary_u1", baseline="ckpt_baseline_primary"), concurrency=2), session=session, gateway=gateway)
+    assert len(session.terminated) == 2
+    assert len(gateway.closed) == 2
 
 
 def test_evaluation_receipt_records_exact_injected_timing_and_throughput(world: World) -> None:

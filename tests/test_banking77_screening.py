@@ -136,7 +136,8 @@ def _config():
     )
 
 
-def test_screen_runs_single_arm_with_bound_and_writes_durable_receipts(tmp_path: Path) -> None:
+@pytest.mark.parametrize("concurrency", [3, 12])
+def test_screen_runs_single_arm_with_bound_and_writes_durable_receipts(tmp_path: Path, concurrency: int) -> None:
     config = _config()
     tasks = tuple(
         TaskSpec(
@@ -158,7 +159,12 @@ def test_screen_runs_single_arm_with_bound_and_writes_durable_receipts(tmp_path:
         behavior_fingerprint="fingerprint-1",
     )
     session = FakeSession(tasks)
-    gateway = FakeGateway()
+    class CompletedOnlyGateway(FakeGateway):
+        def declare_attempt(self, proxy_request_id, **kwargs):
+            assert kwargs['rollout_id'] not in session.active
+            super().declare_attempt(proxy_request_id, **kwargs)
+
+    gateway = CompletedOnlyGateway()
     plane = SimpleNamespace(session=session, gateway=gateway, binder=FakeBinder(revision))
 
     manifest = screen.run_screen(
@@ -167,7 +173,7 @@ def test_screen_runs_single_arm_with_bound_and_writes_durable_receipts(tmp_path:
         selector="checkpoint-1",
         output=tmp_path,
         samples=8,
-        concurrency=3,
+        concurrency=concurrency,
         poll_interval=0,
         wall_clock=iter((100.0, 104.0)).__next__,
         monotonic_clock=iter((20.0, 24.0)).__next__,
@@ -185,7 +191,7 @@ def test_screen_runs_single_arm_with_bound_and_writes_durable_receipts(tmp_path:
         "total_tokens": 232,
     }
     assert manifest["selected_train_ids"] == ["banking77/train/10"]
-    assert session.max_active == 3
+    assert session.max_active == concurrency
     assert len(gateway.declared) == len(gateway.closed) == 16
     # Samples repeat the exact task instance. The sample index/idempotency key,
     # not a fabricated dataset seed, distinguishes stochastic rollouts.

@@ -98,6 +98,26 @@ def test_a_small_run_reaches_a_train_call_and_publishes_a_revision(tmp_path) -> 
         assert published.checkpoint_id != plane.binder.baselines["pg_primary"].checkpoint_id
 
 
+def test_rollout_id_settlement_does_not_serialize_dispatch(tmp_path, monkeypatch) -> None:
+    with build_plane(_solo(), tmp_path) as plane:
+        executor = _executor(plane, tmp_path, group_size=2, target_train_updates=1)
+        original = executor._declare
+        settled = []
+
+        def declare(origins, *, rollout_id, task):
+            # Both asynchronous attempts must have been submitted before any
+            # settlement is allowed to wait on a provider's route lock.
+            assert len(executor._rollouts) >= 2
+            settled.append(rollout_id)
+            return original(origins, rollout_id=rollout_id, task=task)
+
+        monkeypatch.setattr(executor, '_declare', declare)
+        report = executor.run(max_ticks=20, on_tick=_advance(plane))
+        assert report.stop_reason == 'target_train_updates_reached'
+        assert len(settled) == 2
+        assert not executor._pending_declarations
+
+
 def test_group_samples_keep_the_declared_task_seed(tmp_path) -> None:
     with build_plane(_solo(), tmp_path) as plane:
         executor = _executor(plane, tmp_path, group_size=4, target_train_updates=1)

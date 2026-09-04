@@ -55,6 +55,7 @@ class TinkerSdkTransport:
         self.validation_receipt = validation_receipt
         self.sessions: dict[str, dict[str, Any]] = {}
         self._samplers: dict[str, Any] = {}
+        self._checkpoint_samplers: dict[tuple[str, str], Any] = {}
         self._sampler_lock = threading.Lock()
         self._tokenizer: Any | None = None
         self._renderer: Any | None = None
@@ -261,7 +262,13 @@ class TinkerSdkTransport:
 
     def _sampler_for(self, handle: Any) -> Any:
         if isinstance(handle, ProviderCheckpoint):
-            return self._service.create_sampling_client(model_path=handle.provider_reference)
+            key = (handle.provider_reference, handle.digest)
+            with self._sampler_lock:
+                if key not in self._checkpoint_samplers:
+                    self._checkpoint_samplers[key] = self._service.create_sampling_client(
+                        model_path=handle.provider_reference
+                    )
+                return self._checkpoint_samplers[key]
         session_id = getattr(handle, "session_id", None) or (
             handle.session_id if isinstance(handle, ProviderSession) else None
         )

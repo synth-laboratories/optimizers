@@ -105,8 +105,8 @@ def run_screen(
 ) -> Mapping[str, Any]:
     if samples < 2:
         raise ValueError("screening needs at least two samples per task")
-    if concurrency < 1 or concurrency > samples:
-        raise ValueError("concurrency must be between one and samples")
+    if concurrency < 1:
+        raise ValueError("concurrency must be positive")
     revisions = dict(plane.binder.resolve(selector))
     if len(revisions) != 1:
         raise ValueError(f"Banking77 screening requires one policy revision, got {sorted(revisions)}")
@@ -120,106 +120,117 @@ def run_screen(
     attempts: list[dict[str, Any]] = []
     started = wall_clock()
     monotonic_started = monotonic_clock()
-    for task_number, task_id in enumerate(config.taskset.train_ids):
-        base_task = by_id[task_id]
-        group_id = f"{config.run_id}::screen::{task_number:04d}"
-        pin = _pin(config, plane, revision, base_task, group_id, samples)
-        pending = list(range(samples))
-        active: dict[str, tuple[int, TaskSpec, Any, int]] = {}
-        try:
-            while pending or active:
-                while pending and len(active) < concurrency:
-                    sample_index = pending.pop(0)
-                    # Eight stochastic samples of one declared task instance:
-                    # sample_index and idempotency differ, its dataset seed does not.
-                    task = replace(base_task, group_id=group_id)
-                    attempt_id = f"{group_id}::s{sample_index}"
-                    proxy_request_id = f"{attempt_id}::{parameter_group}"
-                    origin = plane.gateway.bind(
-                        revision,
+    pending = [
+        (number, task_id, sample)
+        for number, task_id in enumerate(config.taskset.train_ids)
+        for sample in range(samples)
+    ]
+    active: dict[str, tuple[int, TaskSpec, Any, int]] = {}
+    try:
+        while pending or active:
+            while pending and len(active) < concurrency:
+                task_number, task_id, sample_index = pending.pop(0)
+                base_task = by_id[task_id]
+                group_id = f"{config.run_id}::screen::{task_number:04d}"
+                pin = _pin(config, plane, revision, base_task, group_id, samples)
+                # Eight stochastic samples of one declared task instance:
+                # sample_index and idempotency differ, its dataset seed does not.
+                task = replace(base_task, group_id=group_id)
+                attempt_id = f"{group_id}::s{sample_index}"
+                proxy_request_id = f"{attempt_id}::{parameter_group}"
+                origin = plane.gateway.bind(
+                    revision,
+                    pin=pin,
+                    sample_index=sample_index,
+                    proxy_request_id=proxy_request_id,
+                    attempt=AttemptFacts(rollout_id=attempt_id, task_id=task.task_id, seed=task.seed),
+                )
+                try:
+                    rollout_id = plane.session.submit(
+                        task,
+                        origin,
                         pin=pin,
                         sample_index=sample_index,
-                        proxy_request_id=proxy_request_id,
-                        attempt=AttemptFacts(rollout_id=attempt_id, task_id=task.task_id, seed=task.seed),
+                        idempotency_key=attempt_id,
                     )
-                    try:
-                        rollout_id = plane.session.submit(
-                            task,
-                            origin,
-                            pin=pin,
-                            sample_index=sample_index,
-                            idempotency_key=attempt_id,
-                        )
-                        plane.gateway.declare_attempt(
-                            proxy_request_id, rollout_id=rollout_id, task_id=task.task_id, seed=task.seed
-                        )
-                    except BaseException:
-                        plane.gateway.close(proxy_request_id)
-                        raise
-                    active[rollout_id] = (sample_index, task, origin, 0)
+                except BaseException:
+                    plane.gateway.close(proxy_request_id)
+                    raise
+                active[rollout_id] = (sample_index, task, origin, 0)
 
-                moved = False
-                for rollout_id, (sample_index, task, origin, seen) in list(active.items()):
-                    state = plane.session.poll(rollout_id)
-                    name = str(state.get("state") or "")
-                    if not state.get("terminal") and name not in FINALIZABLE:
-                        seen += 1
-                        if seen >= poll_limit:
-                            raise RuntimeError(f"screening attempt {rollout_id} exceeded its poll limit")
-                        active[rollout_id] = (sample_index, task, origin, seen)
-                        continue
-                    try:
-                        if name in {"failed", "cancelled"}:
-                            raise RuntimeError(
-                                f"screening attempt {rollout_id} ended in terminal state {name!r}"
-                            )
-                        plane.session.finalize(rollout_id)
-                        episode, reward = plane.session.evidence(rollout_id)
-                        reward.validate()
-                        if reward.terminal_status not in {"completed", "scored"}:
-                            raise RuntimeError(
-                                f"screening attempt {rollout_id} has reward terminal status "
-                                f"{reward.terminal_status!r}"
-                            )
-                        channel = reward.optimized_channel
-                        value = reward.value(channel)
-                        attempts.append(
-                            {
-                                "task_id": task.task_id,
-                                "base_seed": base_task.seed,
-                                "sample_index": sample_index,
-                                "seed": task.seed,
-                                "reward": value,
-                                "reward_channel": channel,
-                                "rollout_id": rollout_id,
-                                "trace_digest": episode.trace_digest,
-                                "usage": dict(episode.usage),
-                                "terminal_status": reward.terminal_status,
-                                "checkpoint_id": revision.checkpoint_id,
-                                "policy_revision_id": revision.revision_id,
-                                "sampler_reference": revision.sampler_reference,
-                            }
+            moved = False
+            for rollout_id, (sample_index, task, origin, seen) in list(active.items()):
+                state = plane.session.poll(rollout_id)
+                name = str(state.get("state") or "")
+                if not state.get("terminal") and name not in FINALIZABLE:
+                    seen += 1
+                    if seen >= poll_limit:
+                        raise RuntimeError(f"screening attempt {rollout_id} exceeded its poll limit")
+                    active[rollout_id] = (sample_index, task, origin, seen)
+                    continue
+                try:
+                    if name in {"failed", "cancelled"}:
+                        raise RuntimeError(
+                            f"screening attempt {rollout_id} ended in terminal state {name!r}"
                         )
-                    except BaseException:
-                        raise
-                    else:
-                        plane.gateway.close(origin.proxy_request_id)
-                        del active[rollout_id]
-                    moved = True
-                if active and not moved:
-                    time.sleep(poll_interval)
-        except BaseException:
-            for rollout_id, (_, _, origin, _) in list(active.items()):
-                try:
-                    plane.session.terminate(rollout_id, reason="screening_aborted")
-                except Exception:
-                    pass
-                try:
+                    plane.session.finalize(rollout_id)
+                    # Settle the provisional ID only after sampling finishes:
+                    # declaration takes the same route lock as the live call.
+                    plane.gateway.declare_attempt(
+                        origin.proxy_request_id, rollout_id=rollout_id,
+                        task_id=task.task_id, seed=task.seed,
+                    )
+                    episode, reward = plane.session.evidence(rollout_id)
+                    reward.validate()
+                    if reward.terminal_status not in {"completed", "scored"}:
+                        raise RuntimeError(
+                            f"screening attempt {rollout_id} has reward terminal status "
+                            f"{reward.terminal_status!r}"
+                        )
+                    channel = reward.optimized_channel
+                    value = reward.value(channel)
+                    attempts.append(
+                        {
+                            "task_id": task.task_id,
+                            "base_seed": task.seed,
+                            "sample_index": sample_index,
+                            "seed": task.seed,
+                            "reward": value,
+                            "reward_channel": channel,
+                            "rollout_id": rollout_id,
+                            "trace_digest": episode.trace_digest,
+                            "usage": dict(episode.usage),
+                            "terminal_status": reward.terminal_status,
+                            "checkpoint_id": revision.checkpoint_id,
+                            "policy_revision_id": revision.revision_id,
+                            "sampler_reference": revision.sampler_reference,
+                        }
+                    )
+                except BaseException:
+                    raise
+                else:
                     plane.gateway.close(origin.proxy_request_id)
-                except Exception:
-                    pass
-            active.clear()
-            raise
+                    del active[rollout_id]
+                moved = True
+            if moved:
+                _write_json(output / "progress.json", {
+                    "completed": len(attempts), "total": len(config.taskset.train_ids) * samples,
+                    "active": len(active), "usage_totals": _usage_totals(attempts),
+                })
+            if active and not moved:
+                time.sleep(poll_interval)
+    except BaseException:
+        for rollout_id, (_, _, origin, _) in list(active.items()):
+            try:
+                plane.session.terminate(rollout_id, reason="screening_aborted")
+            except Exception:
+                pass
+            try:
+                plane.gateway.close(origin.proxy_request_id)
+            except Exception:
+                pass
+        active.clear()
+        raise
 
     attempts.sort(key=lambda row: (config.taskset.train_ids.index(row["task_id"]), row["sample_index"]))
     summary = []

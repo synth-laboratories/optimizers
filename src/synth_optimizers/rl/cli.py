@@ -181,6 +181,7 @@ def register(subcommands: argparse._SubParsersAction) -> None:
         help="Overrides the default assembly of the session, gateway, and binder.",
     )
     evaluate.add_argument("--receipts-dir", help="Where to write the evaluation receipt.")
+    evaluate.add_argument("--concurrency", type=int, default=1, help="Maximum in-flight attempts, capped by the container.")
     evaluate.add_argument(
         "--resolve-only",
         action="store_true",
@@ -687,6 +688,7 @@ def _request(args: argparse.Namespace, baseline_selector: str) -> EvaluationRequ
         scope=_scope(args),
         reward_channel=args.reward_channel,
         metric_name=args.metric,
+        concurrency=getattr(args, "concurrency", 1),
     )
 
 

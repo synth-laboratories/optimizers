@@ -1057,7 +1057,11 @@ class CheckpointCatalog:
         return record
 
     def register_baseline(
-        self, record: CheckpointRecord, *, alias: str = "baseline"
+        self,
+        record: CheckpointRecord,
+        *,
+        alias: str = "baseline",
+        resumed: bool = False,
     ) -> CheckpointRecord:
         """Register the imported baseline and point ``baseline`` aliases at it.
 
@@ -1065,14 +1069,17 @@ class CheckpointCatalog:
         happen before the first attempt is admitted.
         """
 
-        if record.parent_checkpoint_id:
+        if record.parent_checkpoint_id and not resumed:
             raise LineageError("the imported baseline has no parent checkpoint")
+        if resumed and not record.parent_checkpoint_id:
+            raise LineageError("a resumed baseline requires its exact parent checkpoint")
         if record.artifacts.sampler_weights is None:
             raise ArtifactRoleError("a baseline must carry a sampler_weights artifact")
         with self.transaction():
             self.register_checkpoint(record)
             if record.publication_status != "published":
-                self.record_publication(record.checkpoint_id, "published", reason="baseline_import")
+                reason = "baseline_resume" if resumed else "baseline_import"
+                self.record_publication(record.checkpoint_id, "published", reason=reason)
             self.put_alias(f"{alias}:{record.run_id}", "checkpoint", record.checkpoint_id)
             if self.alias(alias) is None:
                 self.put_alias(alias, "checkpoint", record.checkpoint_id)

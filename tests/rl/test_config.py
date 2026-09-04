@@ -32,6 +32,7 @@ provider = "tinker"
 id = "openai/gpt-oss-20b"
 family = "gpt_oss"
 rank = 8
+resume_from_checkpoint = "ckpt_parent_immutable"
 
 [plan]
 preset = "cispo"
@@ -148,6 +149,7 @@ def test_the_notes_configuration_surface_loads_and_expands() -> None:
     assert config.opponents.match_set_revision == "match-set-0007"
     assert config.reward.optimized_channel == "team_rank"
     assert config.evaluation.paired is True
+    assert config.model.resume_from_checkpoint == "ckpt_parent_immutable"
 
     plan = config.expanded_plan()
     assert plan.preset == "cispo"

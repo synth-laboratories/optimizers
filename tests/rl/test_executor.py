@@ -98,6 +98,20 @@ def test_a_small_run_reaches_a_train_call_and_publishes_a_revision(tmp_path) -> 
         assert published.checkpoint_id != plane.binder.baselines["pg_primary"].checkpoint_id
 
 
+def test_group_samples_keep_the_declared_task_seed(tmp_path) -> None:
+    with build_plane(_solo(), tmp_path) as plane:
+        executor = _executor(plane, tmp_path, group_size=4, target_train_updates=1)
+        executor.register_baseline()
+
+        group_id = executor.admit_group()
+
+        assert group_id is not None
+        attempts = executor.store.attempts_in_group(group_id)
+        assert [row.sample_index for row in attempts] == [0, 1, 2, 3]
+        assert {row.seed for row in attempts} == {executor.tasks[0].seed}
+        assert len({row.idempotency_key for row in attempts}) == 4
+
+
 def test_a_second_preset_runs_through_the_identical_code_path(tmp_path) -> None:
     with build_plane(_solo(), tmp_path) as plane:
         executor = _executor(

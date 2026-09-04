@@ -65,6 +65,7 @@ class FakeProvider:
     train_calls: list[TrainingStepRequest] = field(default_factory=list)
     failing_sessions: set[str] = field(default_factory=set)
     step: int = 0
+    restore_calls: list[ProviderCheckpoint] = field(default_factory=list)
 
     # ------------------------------------------------------------- sessions
 
@@ -82,8 +83,14 @@ class FakeProvider:
 
     def restore_session(
         self, checkpoint: ProviderCheckpoint, *, request_id: str
-    ) -> ProviderSession:  # pragma: no cover - unused by the binder
-        raise NotImplementedError
+    ) -> ProviderSession:
+        self.restore_calls.append(checkpoint)
+        session = ProviderSession(
+            provider="fake", session_id=f"restored_{len(self.sessions) + 1}",
+            model_id=checkpoint.model_id or BASE_MODEL, request_id=request_id,
+        )
+        self.sessions.append(session)
+        return session
 
     # ------------------------------------------------------------- training
 
@@ -255,6 +262,53 @@ def test_baseline_is_idempotent_per_parameter_group(tmp_path: Path) -> None:
     assert len(harness.provider.sampler_saves()) == 1
 
 
+def test_baseline_can_restore_verified_training_state_with_exact_parent_lineage(
+    tmp_path: Path,
+) -> None:
+    source = build(tmp_path)
+    source.binder.baseline(run_id="run_source", parameter_group_id=GROUP_A)
+    outcome = train_round(source, "update_0001", (GROUP_A,))
+    published = source.binder.publish(
+        run_id="run_source", update_id="update_0001",
+        parameter_groups=(GROUP_A,), outcome=outcome,
+    )
+    parent_id = published[GROUP_A].checkpoint_id
+
+    resumed = CatalogPolicyBinder(
+        source.provider, PolicySetPublisher(source.catalog), source.resolver,
+        base_model=BASE_MODEL, model_family="family_a", renderer_profile=profile(),
+        container_contract_hash=CONTRACT, policy_set_id="set_resumed",
+        wire_api="chat_completions", sampling_transport="message_in_capture_out",
+        loss_name="declared.loss.v1", policy_types={GROUP_A: ("type_alpha",)},
+        save_training_state=True, resume_from_checkpoint=parent_id,
+    )
+    baseline = resumed.baseline(run_id="run_resumed", parameter_group_id=GROUP_A)
+    repeated = resumed.baseline(run_id="run_resumed", parameter_group_id=GROUP_A)
+
+    assert repeated == baseline
+    assert len(source.provider.restore_calls) == 1
+    assert source.provider.restore_calls[-1].checkpoint_id == parent_id
+    assert source.provider.restore_calls[-1].kind == TRAINING_STATE_KIND
+    assert source.provider.save_calls[-1][0].startswith("restored_")
+    assert source.provider.save_calls[-1][1] == published[GROUP_A].revision
+    assert source.catalog.get_checkpoint(baseline.checkpoint_id).parent_checkpoint_id == parent_id
+    assert baseline.revision == published[GROUP_A].revision
+    assert baseline.revision_id == published[GROUP_A].revision_id
+    assert resumed.resolution_receipts()[-1]["role"] == TRAINING_STATE_KIND
+    next_outcome = resumed.train(
+        parameter_group_id=GROUP_A, batch=batch(), update_id="update_0002",
+        plan_hash="sha256:" + "aa" * 32,
+    )
+    child = resumed.publish(
+        run_id="run_resumed", update_id="update_0002",
+        parameter_groups=(GROUP_A,), outcome={GROUP_A: next_outcome},
+    )[GROUP_A]
+    assert child.revision == published[GROUP_A].revision + 1
+    assert source.catalog.get_checkpoint(child.checkpoint_id).parent_checkpoint_id == baseline.checkpoint_id
+    with pytest.raises(BinderError, match="cannot be re-imported"):
+        resumed.baseline(run_id="run_resumed", parameter_group_id=GROUP_A)
+
+
 def test_a_binder_serves_one_run(tmp_path: Path) -> None:
     harness = build(tmp_path)
     harness.binder.baseline(run_id="run_a", parameter_group_id=GROUP_A)
@@ -310,6 +364,26 @@ def test_train_calls_the_provider_once_per_parameter_group(tmp_path: Path) -> No
     assert outcome[GROUP_A].tokens == 17 * len(PACKED)
     assert outcome[GROUP_A].provider_cost == 0.25
     assert outcome[GROUP_A].metrics["packed_group_ids"] == list(PACKED)
+
+
+def test_train_receipts_loss_weight_magnitude(tmp_path: Path) -> None:
+    harness = build(tmp_path)
+    harness.binder.baseline(run_id="run_a", parameter_group_id=GROUP_A)
+    outcome = harness.binder.train(
+        parameter_group_id=GROUP_A,
+        batch=[
+            {"group_id": "g1", "token_ids": [1, 2], "loss_weight": 0.25},
+            {"group_id": "g1", "token_ids": [1, 2], "loss_weight": -0.5},
+        ],
+        update_id="update_0001",
+        plan_hash="sha256:" + "aa" * 32,
+    )
+
+    assert outcome.metrics["loss_weight_nonzero"] == 2
+    assert outcome.metrics["loss_weight_l1"] == pytest.approx(0.75)
+    assert outcome.metrics["loss_weight_l2_squared"] == pytest.approx(0.3125)
+    assert outcome.metrics["loss_weight_min"] == pytest.approx(-0.5)
+    assert outcome.metrics["loss_weight_max"] == pytest.approx(0.25)
 
 
 def test_an_empty_batch_is_refused(tmp_path: Path) -> None:

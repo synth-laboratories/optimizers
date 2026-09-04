@@ -80,6 +80,8 @@ RUN_ARTIFACTS: Mapping[str, str] = {
     "append-only checkpoint catalog": "checkpoint_catalog.jsonl",
     "sampler-weight and training-state references with digests": "checkpoint_artifacts.jsonl",
     "checkpoint lineage edges": "checkpoint_lineage.jsonl",
+    "verified resume source resolution": "resume_resolution.json",
+    "independently verified resume artifact identity": "resume_artifact_identity.json",
     "evaluation manifests referencing immutable ids": "evaluation_manifest.json",
     "resolved topology, channels, rosters and partial-roster disposition": "topology.json",
     "match-set manifest naming every opponent's pinned identity": "match_set.json",
@@ -491,7 +493,10 @@ class ContainerRunExecutor:
                 pin=pin,
                 sample_index=sample_index,
                 task_id=task.task_id,
-                seed=task.seed + sample_index,
+                # The seed identifies the declared task instance. Group
+                # samples repeat that same instance; sample_index,
+                # idempotency, and the sampler provide rollout diversity.
+                seed=task.seed,
                 metadata={"task_family": task.task_family, "split": task.split},
             )
             self.queues.admit(request)
@@ -1141,6 +1146,13 @@ class ContainerRunExecutor:
         self._write("checkpoint_catalog.jsonl", self._catalog_payload())
         self._write("checkpoint_artifacts.jsonl", self._artifact_payload())
         self._write("checkpoint_lineage.jsonl", self._lineage_payload())
+        resolution_receipts = getattr(self.binder, "resolution_receipts", lambda: ())
+        artifact_identity = getattr(self.binder, "resume_artifact_identity", lambda: {})
+        self._write(
+            "resume_resolution.json",
+            {"resolutions": [dict(row) for row in resolution_receipts()]},
+        )
+        self._write("resume_artifact_identity.json", artifact_identity())
         self._write(
             "evaluation_manifest.json",
             {
@@ -1488,7 +1500,14 @@ class ContainerRunExecutor:
                 "policy_revision_id": revision.revision_id,
                 "revision": revision.revision,
                 "publication_status": "published",
-                "role": "baseline" if revision.revision == 0 else "trained",
+                "role": "baseline",
+                "run_id": revision.metadata.get("run_id"),
+                "update_id": revision.metadata.get("update_id"),
+                "parent_checkpoint_id": revision.metadata.get("parent_checkpoint_id"),
+                "sampler_reference": revision.sampler_reference,
+                "sampler_digest": revision.metadata.get("sampler_digest"),
+                "training_state_reference": revision.training_state_reference,
+                "training_state_digest": revision.metadata.get("training_state_digest"),
                 "policy_set_revision_id": revision.policy_set_revision_id,
             }
             for name, revision in sorted(self._baseline_revisions().items())
@@ -1503,6 +1522,12 @@ class ContainerRunExecutor:
                         "revision": revision.revision,
                         "publication_status": "published",
                         "role": "trained",
+                        "run_id": revision.metadata.get("run_id"),
+                        "parent_checkpoint_id": revision.metadata.get("parent_checkpoint_id"),
+                        "sampler_reference": revision.sampler_reference,
+                        "sampler_digest": revision.metadata.get("sampler_digest"),
+                        "training_state_reference": revision.training_state_reference,
+                        "training_state_digest": revision.metadata.get("training_state_digest"),
                         "update_id": record.update_id,
                         "policy_set_revision_id": revision.policy_set_revision_id,
                     }
@@ -1542,6 +1567,22 @@ class ContainerRunExecutor:
         if self._lineage_rows is not None:
             return [dict(row) for row in self._lineage_rows()]
         rows: list[Mapping[str, Any]] = []
+        for name, revision in sorted(self._baseline_revisions().items()):
+            parent = revision.metadata.get("parent_checkpoint_id")
+            if parent:
+                rows.append(
+                    {
+                        "child_checkpoint_id": revision.checkpoint_id,
+                        "parent_checkpoint_id": parent,
+                        "relation": "resumed_from",
+                        "run_id": self.run_id,
+                        "update_id": revision.metadata.get("update_id"),
+                        "parameter_group_id": name,
+                        "policy_type_ids": list(revision.metadata.get("policy_type_ids") or ()),
+                        "train_call_ids": [],
+                        "policy_set_revision_id": revision.policy_set_revision_id,
+                    }
+                )
         parents = {
             name: revision.checkpoint_id
             for name, revision in self._baseline_revisions().items()

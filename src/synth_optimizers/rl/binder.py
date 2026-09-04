@@ -127,6 +127,7 @@ class CatalogPolicyBinder:
         eps_high: float = 4.0,
         seed: int = 0,
         save_training_state: bool = False,
+        resume_from_checkpoint: str | None = None,
         health_check: Callable[[Any], bool] | None = None,
         clock: Callable[[], str] = utc_now,
     ) -> None:
@@ -159,6 +160,9 @@ class CatalogPolicyBinder:
         self._eps_high = float(eps_high)
         self._seed = int(seed)
         self._save_training_state = bool(save_training_state)
+        self._resume_from_checkpoint = resume_from_checkpoint
+        if resume_from_checkpoint is not None:
+            selectors_are_immutable((resume_from_checkpoint,))
         self._health_check = health_check
         self._clock = clock
         self._run_id: str | None = None
@@ -191,6 +195,18 @@ class CatalogPolicyBinder:
 
         return tuple(self._receipts)
 
+    def resume_artifact_identity(self) -> Mapping[str, str]:
+        """Exact independently verified training-state identity used to resume."""
+
+        payload = getattr(self._provider, "_resume_artifact_identity", {})
+        if not isinstance(payload, Mapping):
+            return {}
+        reference = payload.get("ref")
+        artifact_digest = payload.get("digest")
+        if not isinstance(reference, str) or not isinstance(artifact_digest, str):
+            return {}
+        return {"ref": reference, "digest": artifact_digest}
+
     # ------------------------------------------------------------- baseline
 
     def baseline(self, *, run_id: str, parameter_group_id: str) -> PolicyRevision:
@@ -206,17 +222,57 @@ class CatalogPolicyBinder:
             )
         existing = self._revisions.get(group)
         if existing is not None:
-            if existing.revision != 0:
+            if existing.metadata.get("update_id") != BASELINE_UPDATE_ID:
                 raise BinderError(
                     f"parameter group {group} is already at revision {existing.revision}; "
                     "a baseline cannot be re-imported under a trained run"
                 )
             return existing
-        session = self._session_for(group)
+        parent_checkpoint_id: str | None = None
+        baseline_revision = 0
+        if self._resume_from_checkpoint is not None:
+            resolution = self._resolver.resolve_training_state(
+                self._resume_from_checkpoint,
+                scope=ResolutionScope(parameter_group_id=group),
+                compatibility=CompatibilityRequirement.from_renderer_profile(
+                    self._profile, container_contract_hash=self._contract_hash
+                ),
+            )
+            policy = resolution.policy_for_group(group)
+            if policy.base_model != self._base_model:
+                raise BinderError(
+                    f"resume checkpoint base model {policy.base_model!r} does not match "
+                    f"configured model {self._base_model!r}"
+                )
+            artifact = policy.artifact
+            restored = ProviderCheckpoint(
+                checkpoint_id=policy.checkpoint_id,
+                provider_reference=artifact.ref,
+                step=revision_number_of(policy.policy_revision_id),
+                digest=artifact.digest,
+                kind=TRAINING_STATE_KIND,
+                resume_token=artifact.ref,
+                model_id=policy.base_model,
+            )
+            request_id = "restore-" + digest(
+                {"run_id": run, "parameter_group_id": group, "checkpoint_id": policy.checkpoint_id},
+                length=32,
+            )
+            session = self._provider.restore_session(restored, request_id=request_id)
+            self._sessions[group] = session
+            parent_checkpoint_id = policy.checkpoint_id
+            baseline_revision = revision_number_of(policy.policy_revision_id)
+            self._receipts.append(resolution.to_receipt())
+        else:
+            session = self._session_for(group)
         checkpoint = self._save(
-            session, group, step=0, kind=SAMPLER_KIND, update_id=BASELINE_UPDATE_ID
+            session,
+            group,
+            step=baseline_revision,
+            kind=SAMPLER_KIND,
+            update_id=BASELINE_UPDATE_ID,
         )
-        policy_revision_id = f"{group}@0"
+        policy_revision_id = f"{group}@{baseline_revision}"
         record = self._record(
             run_id=run,
             update_id=BASELINE_UPDATE_ID,
@@ -224,16 +280,20 @@ class CatalogPolicyBinder:
             policy_revision_id=policy_revision_id,
             sampler=checkpoint,
             training_state=None,
-            parent_checkpoint_id=None,
+            parent_checkpoint_id=parent_checkpoint_id,
             train_call_ids=(),
             evidence=TrainingEvidence(),
         )
-        self.catalog.register_baseline(record, alias=f"{BASELINE_ALIAS}.{group}")
+        self.catalog.register_baseline(
+            record,
+            alias=f"{BASELINE_ALIAS}.{group}",
+            resumed=parent_checkpoint_id is not None,
+        )
         if self.catalog.alias(f"{BASELINE_ALIAS}:{run}") is None:
             self.catalog.put_alias(f"{BASELINE_ALIAS}:{run}", "checkpoint", record.checkpoint_id)
         revision = self._revision(
             record=record,
-            revision=0,
+            revision=baseline_revision,
             sampler=checkpoint,
             training_state=None,
             policy_set_revision_id=None,
@@ -300,6 +360,7 @@ class CatalogPolicyBinder:
             self._packed_groups.get((update, group), ()) + packed
         )
         usage = result.usage
+        loss_weights = [float(row.get("loss_weight", 0.0)) for row in rows]
         return TrainOutcome(
             request_ids=(request_id,),
             examples=len(rows),
@@ -311,6 +372,11 @@ class CatalogPolicyBinder:
                 "plan_hash": plan,
                 "packed_group_ids": list(packed),
                 "cost_missing": usage.cost_missing,
+                "loss_weight_nonzero": sum(weight != 0.0 for weight in loss_weights),
+                "loss_weight_l1": sum(abs(weight) for weight in loss_weights),
+                "loss_weight_l2_squared": sum(weight * weight for weight in loss_weights),
+                "loss_weight_min": min(loss_weights),
+                "loss_weight_max": max(loss_weights),
             },
         )
 
@@ -683,6 +749,7 @@ class CatalogPolicyBinder:
                 "provider_training_state_id": None
                 if training_state is None
                 else training_state.checkpoint_id,
+                "parent_checkpoint_id": record.parent_checkpoint_id,
                 "schema_version": BINDER_SCHEMA_VERSION,
             },
         )

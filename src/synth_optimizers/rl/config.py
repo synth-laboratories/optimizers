@@ -289,6 +289,7 @@ class ModelBinding:
     policy_kind: str = "declared_policy"
     wire_api: str = "chat_completions"
     sampling_transport: str = "message_in_capture_out"
+    resume_from_checkpoint: str | None = None
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -300,6 +301,7 @@ class ModelBinding:
             "policy_kind": self.policy_kind,
             "wire_api": self.wire_api,
             "sampling_transport": self.sampling_transport,
+            "resume_from_checkpoint": self.resume_from_checkpoint,
         }
 
 
@@ -664,6 +666,7 @@ def _model_section(payload: Mapping[str, Any] | None) -> ModelBinding:
         policy_kind=reader.text("policy_kind", "declared_policy"),
         wire_api=reader.text("wire_api", "chat_completions"),
         sampling_transport=reader.text("sampling_transport", "message_in_capture_out"),
+        resume_from_checkpoint=reader.optional_text("resume_from_checkpoint"),
     )
     reader.done()
     return binding

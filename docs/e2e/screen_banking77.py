@@ -113,7 +113,9 @@ def run_screen(
             while pending or active:
                 while pending and len(active) < concurrency:
                     sample_index = pending.pop(0)
-                    task = replace(base_task, seed=base_task.seed + sample_index, group_id=group_id)
+                    # Eight stochastic samples of one declared task instance:
+                    # sample_index and idempotency differ, its dataset seed does not.
+                    task = replace(base_task, group_id=group_id)
                     attempt_id = f"{group_id}::s{sample_index}"
                     proxy_request_id = f"{attempt_id}::{parameter_group}"
                     origin = plane.gateway.bind(

@@ -167,7 +167,9 @@ def test_screen_runs_single_arm_with_bound_and_writes_durable_receipts(tmp_path:
     assert manifest["selected_train_ids"] == ["banking77/train/10"]
     assert session.max_active == 3
     assert len(gateway.declared) == len(gateway.closed) == 16
-    assert sorted(session.seeds.values()) == sorted(list(range(100, 108)) * 2)
+    # Samples repeat the exact task instance. The sample index/idempotency key,
+    # not a fabricated dataset seed, distinguishes stochastic rollouts.
+    assert list(session.seeds.values()) == [100] * 16
     attempts = json.loads((tmp_path / "attempts.json").read_text())
     summary = json.loads((tmp_path / "summary.json").read_text())
     persisted = json.loads((tmp_path / "manifest.json").read_text())
@@ -175,6 +177,46 @@ def test_screen_runs_single_arm_with_bound_and_writes_durable_receipts(tmp_path:
     assert summary["tasks"][0]["successes"] == 4
     assert summary["tasks"][1]["successes"] == 8
     assert persisted == manifest
+
+
+def test_screen_receipt_keeps_declared_task_seed_constant(tmp_path: Path) -> None:
+    config = replace(
+        _config(), taskset=replace(_config().taskset, train_ids=("banking77/train/10",))
+    )
+    task = TaskSpec(
+        task_id="banking77/train/10",
+        split="train",
+        seed=407,
+        group_id="source",
+        task_family="banking77",
+        content_digest="digest-task",
+    )
+    revision = PolicyRevision(
+        revision=20,
+        revision_id="pg-0@20",
+        checkpoint_id="checkpoint-1",
+        parameter_group_id="pg-0",
+        sampler_reference="tinker://sampler",
+        behavior_fingerprint="fingerprint-1",
+    )
+    plane = SimpleNamespace(
+        session=FakeSession((task,)), gateway=FakeGateway(), binder=FakeBinder(revision)
+    )
+
+    screen.run_screen(
+        config,
+        plane,
+        selector="checkpoint-1",
+        output=tmp_path,
+        samples=8,
+        concurrency=4,
+        poll_interval=0,
+    )
+
+    attempts = json.loads((tmp_path / "attempts.json").read_text())
+    assert [row["sample_index"] for row in attempts] == list(range(8))
+    assert {row["base_seed"] for row in attempts} == {407}
+    assert {row["seed"] for row in attempts} == {407}
 
 
 def test_selected_task_ids_excludes_zero_and_all_correct() -> None:

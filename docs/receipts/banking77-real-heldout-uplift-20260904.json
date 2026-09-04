@@ -97,6 +97,10 @@
             "effective_updates": 8,
             "examples": 128,
             "training_tokens": 11956,
+            "sampling_rollouts": 144,
+            "sampling_generated_tokens": 14353,
+            "sampling_seconds": 0.0,
+            "weighted_aggregate_tps": null,
             "revision_start": 0,
             "revision_end": 8
         },
@@ -119,6 +123,10 @@
             "effective_updates": 8,
             "examples": 128,
             "training_tokens": 14447,
+            "sampling_rollouts": 224,
+            "sampling_generated_tokens": 20561,
+            "sampling_seconds": 0.0,
+            "weighted_aggregate_tps": null,
             "revision_start": 8,
             "revision_end": 16
         },
@@ -151,6 +159,10 @@
             "effective_updates": 8,
             "examples": 128,
             "training_tokens": 14160,
+            "sampling_rollouts": 576,
+            "sampling_generated_tokens": 51424,
+            "sampling_seconds": 0.0,
+            "weighted_aggregate_tps": null,
             "revision_start": 16,
             "revision_end": 24
         },
@@ -167,7 +179,12 @@
         "totals_from_original_baseline": {
             "effective_updates": 24,
             "examples": 384,
-            "training_tokens": 40563
+            "training_tokens": 40563,
+            "sampling_rollouts": 944,
+            "sampling_generated_tokens": 86338,
+            "sampling_seconds": 0.0,
+            "weighted_aggregate_tps": null,
+            "throughput_interpretation": "unavailable because the transport reported zero sampling seconds for every call; do not interpret null TPS as zero"
         }
     },
     "final_test": {

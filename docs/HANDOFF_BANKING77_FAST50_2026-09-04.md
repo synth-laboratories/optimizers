@@ -67,7 +67,11 @@ phase refuses to overwrite an already frozen experiment.
 training, checks that all 50 new revisions exist and the target stop reason
 was reached, evaluates the five validation checkpoints, and performs the two
 final comparisons. It writes status, phase logs, selection, and final results
-under the durable root. Each phase gets a fresh owned server on port 8254.
+under the durable root. Training gets a fresh owned server on port 8254.
+Validation comparisons use distinct ports 8254–8258, with at most four
+comparisons active (32 sampling slots total). The two final comparisons run
+concurrently on ports 8254–8255. Completion order cannot alter the selection
+rule: ties still select the earliest revision.
 
 Screening servers use ports 8250–8253. No macOS Keychain access is used:
 credentials come from the previously authorized frontend `.env.local` through
@@ -103,3 +107,9 @@ slots, and still accumulates four completed groups per optimizer update. This
 avoids wasting work on stale prefetch at policy lag zero. The validation and
 final-selection rules are unchanged. Recovery records and the original SQLite
 queue journal remain under the durable experiment root.
+
+The host entered clamshell sleep at 17:11:19 EDT and fully woke at 17:50:57
+EDT, a 39m38s wall-clock interruption. Training recovered after wake. An
+idle-sleep assertion was attached to the run; it does not override lid closure.
+Wall-clock training duration must disclose this interruption rather than be
+presented as uninterrupted compute time.

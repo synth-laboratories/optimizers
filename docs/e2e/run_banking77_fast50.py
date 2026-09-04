@@ -10,6 +10,7 @@ import subprocess
 import time
 import urllib.request
 from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from freeze_banking77_panel import _atomic_json
 from prepare_banking77_fast50 import CONFIGS, PARENT, PREVIOUS, REPO, ROOT, config_text, curriculum
@@ -27,17 +28,17 @@ def environment():
 
 
 @contextmanager
-def server(name, temperature):
+def server(name, temperature, port=PORT):
     env = environment()
     env.update(SYNTH_BANKING77_SOURCE='hf', SYNTH_BANKING77_DECLARED_ROWS_PER_SPLIT='10003', SYNTH_CISPO_RENDERER_CANARY_DIGEST='43e18d1c29ee9cc6a849f8fc77c9efee', SYNTH_BANKING77_TEMPERATURE=str(temperature), SYNTH_BANKING77_HANDSHAKE_TTL_SECONDS='14400')
     with (ROOT / f'{name}.server.log').open('w') as log:
-        proc = subprocess.Popen(['uv', 'run', '--with', 'pytest', '--with', 'uvicorn', 'python', 'docs/e2e/serve_banking77.py', str(PORT)], cwd=REPO, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+        proc = subprocess.Popen(['uv', 'run', '--with', 'pytest', '--with', 'uvicorn', 'python', 'docs/e2e/serve_banking77.py', str(port)], cwd=REPO, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         try:
             for _ in range(120):
                 if proc.poll() is not None:
                     raise RuntimeError(f'{name}: server exited {proc.returncode}')
                 try:
-                    with urllib.request.urlopen(f'http://127.0.0.1:{PORT}/cispo/health', timeout=1) as response:
+                    with urllib.request.urlopen(f'http://127.0.0.1:{port}/cispo/health', timeout=1) as response:
                         assert json.load(response)['status'] == 'ok'
                     break
                 except OSError:
@@ -89,12 +90,12 @@ def train():
     _atomic_json(ROOT / 'status.json', {'phase': 'training', 'state': 'completed', 'additional_updates': 50, 'final_revision': 74})
 
 
-def evaluate(name, selected, baseline, panel_name):
+def evaluate(name, selected, baseline, panel_name, port=PORT):
     panel_path = ROOT / f'{panel_name}_panel.json'
     panel = json.loads(panel_path.read_text())
     ids = json.loads((ROOT / 'curriculum.json').read_text())['selected_train_ids']
     config_path = CONFIGS / f'{name}.toml'
-    config_path.write_text(config_text(name, ids, [r['task_id'] for r in panel['rows']], PORT))
+    config_path.write_text(config_text(name, ids, [r['task_id'] for r in panel['rows']], port))
     config = load(config_path)
     pin = json.loads((PREVIOUS / 'confirmatory_5x/evaluation_pin.json').read_text())
     pin.update(run_id=name, algorithm_plan_hash=config.expanded_plan().plan_hash)
@@ -103,7 +104,7 @@ def evaluate(name, selected, baseline, panel_name):
     args = ['evaluate', '--config', str(config_path), '--plane', 'paid_plane:paid', '--catalog', str(CATALOG), '--selector', selected, '--baseline', baseline, '--evaluation-id', name, '--roster', 'instance-0=pg-0:policy-0', '--split', 'heldout', '--scope-parameter-group', 'pg-0', '--scope-policy-type', 'policy-0', '--metric', 'mean_reward', '--artifact-digests', str(ROOT / 'artifact_digests.json'), '--pin', str(directory / 'pin.json'), '--receipts-dir', str(directory), '--concurrency', '8']
     for row in panel['rows']:
         args.extend(['--seed', f'{row["task_id"]}={row["seed"]}'])
-    with server(name, 0):
+    with server(name, 0, port):
         command(name, args)
     receipt = directory / f'{name}.evaluation.json'
     validation_args = ['uv', 'run', 'python', 'docs/e2e/validate_banking77_eval.py', '--panel', str(panel_path), '--receipt', str(receipt), '--baseline', baseline, '--trained', selected, '--train-config', str(CONFIGS / 'run_b77_fast50_19.toml'), '--bootstrap-seed', '20260904', '--output', str(directory / 'result.json')]
@@ -148,17 +149,34 @@ def resume25():
 
 
 def heldout():
-    by_revision = {int(r['policy_revision_id'].split('@')[-1]): r for r in checkpoints()}
+    rows = checkpoints()
+    by_revision = {int(r['policy_revision_id'].split('@')[-1]): r for r in rows}
+    assert set(range(25, 75)).issubset(by_revision) and max(by_revision) == 74
+    manifest_path = ROOT / 'training_resume25/manifest.json'
+    if not manifest_path.exists():
+        manifest_path = ROOT / 'training/manifest.json'
+    assert json.loads(manifest_path.read_text())['stop_reason'] == 'target_train_updates_reached'
+    digests = json.loads((ROOT / 'artifact_digests.json').read_text())
+    for row in rows:
+        for artifact in row['artifacts'].values():
+            digests[artifact['ref']] = artifact['digest']
+    _atomic_json(ROOT / 'artifact_digests.json', digests)
     validation = []
-    for revision in [34, 44, 54, 64, 74]:
-        result = evaluate(f'b77_fast50_19_val_{revision}', by_revision[revision]['checkpoint_id'], PARENT, 'validation')
-        validation.append({'revision': revision, **result})
-        _atomic_json(ROOT / 'validation_results.json', {'results': validation})
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        pending = {
+            pool.submit(evaluate, f'b77_fast50_19_val_{revision}', by_revision[revision]['checkpoint_id'], PARENT, 'validation', PORT + index): revision
+            for index, revision in enumerate([34, 44, 54, 64, 74])
+        }
+        for future in as_completed(pending):
+            validation.append({'revision': pending[future], **future.result()})
+            _atomic_json(ROOT / 'validation_results.json', {'results': sorted(validation, key=lambda r: r['revision'])})
     best = max(validation, key=lambda r: (r['trained_mean'], -r['revision']))
     _atomic_json(ROOT / 'selection.json', best)
     selected = best['trained_checkpoint_id']
-    original = evaluate('b77_fast50_19_final_original', selected, BASELINE, 'final')
-    incremental = evaluate('b77_fast50_19_final_incremental', selected, PARENT, 'final')
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(evaluate, 'b77_fast50_19_final_original', selected, BASELINE, 'final', PORT)
+        second = pool.submit(evaluate, 'b77_fast50_19_final_incremental', selected, PARENT, 'final', PORT + 1)
+        original, incremental = first.result(), second.result()
     _atomic_json(ROOT / 'final_results.json', {'selected_revision': best['revision'], 'original_baseline': original, 'update24_baseline': incremental})
     _atomic_json(ROOT / 'status.json', {'phase': 'complete', 'state': 'completed', 'selected_revision': best['revision']})
 

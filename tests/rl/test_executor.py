@@ -217,6 +217,19 @@ def test_the_sampled_group_bound_ends_a_run_that_never_finds_an_ordering(tmp_pat
         assert plane.binder.published == []
 
 
+def test_multiple_groups_keep_their_admitted_revision_across_updates(tmp_path) -> None:
+    with build_plane(_solo(), tmp_path) as plane:
+        executor = _executor(plane, tmp_path, group_size=2, groups_per_step=2,
+                             slots=2, max_open_groups=2, target_train_updates=3,
+                             maximum_sampled_groups=30)
+        report = executor.run(max_ticks=100, on_tick=_advance(plane))
+        assert report.stop_reason == 'target_train_updates_reached'
+        assert len(report.updates) == 3
+        for group_id, pin in executor._pins.items():
+            revisions = executor._group_revisions[group_id]
+            assert all(revision.revision == pin.policy_revision for revision in revisions.values())
+
+
 def test_a_stale_group_is_discarded_at_the_dequeue_gate(tmp_path) -> None:
     config = _solo()
     with build_plane(config, tmp_path) as plane:

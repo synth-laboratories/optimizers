@@ -80,3 +80,26 @@ the whole 50-update run or expand the budget automatically.
 
 This document records the predeclared design. Measured throughput, training
 completion, cost estimates, and heldout results will be appended after execution.
+
+## Live execution findings
+
+Screening completed: 12,320 valid samples in 1,142.71 seconds (19.05 minutes),
+averaging 646.88 samples/minute across four shards. Of 1,540 candidates,
+1,165 were 8/8, 195 were 0/8, and 180 across 57 intents passed the mixed-outcome
+rule. Counted uncached sampling cost is approximately $1.739; actual caching
+and invoiced dollars remain unknown.
+
+The first training attempt published revision 25, then refused a queued
+revision-24 group trying to bind revision-25 weights. Admission now snapshots
+each group's immutable policy revisions for later dispatch. The completed
+update is preserved at `ckpt_0278ebdd569252e2f583b9a0`.
+
+An explicit recovery (`run_banking77_fast50.py resume25`) resumes that exact
+training state for the remaining 49 updates, under run ID
+`b77_fast50_19_resume25`. Ten groups were admitted in the interrupted run;
+the remaining cap is 790, and the frozen task order advances by ten slots.
+The resumed run uses one open eight-rollout group, filling all eight execution
+slots, and still accumulates four completed groups per optimizer update. This
+avoids wasting work on stale prefetch at policy lag zero. The validation and
+final-selection rules are unchanged. Recovery records and the original SQLite
+queue journal remain under the durable experiment root.

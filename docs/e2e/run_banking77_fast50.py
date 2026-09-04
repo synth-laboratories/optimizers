@@ -63,7 +63,7 @@ def command(name, args):
 
 def checkpoints():
     with sqlite3.connect(f'file:{CATALOG}?mode=ro', uri=True) as db:
-        return [json.loads(row[0]) for row in db.execute('SELECT payload FROM checkpoints WHERE run_id=? ORDER BY seq', ('b77_fast50_19',))]
+        return [json.loads(row[0]) for row in db.execute('SELECT payload FROM checkpoints WHERE run_id IN (?, ?) ORDER BY seq', ('b77_fast50_19', 'b77_fast50_19_resume25'))]
 
 
 def train():
@@ -113,6 +113,40 @@ def evaluate(name, selected, baseline, panel_name):
     return json.loads((directory / 'result.json').read_text())
 
 
+def resume25():
+    """Explicit recovery of the observed one-update dispatch failure."""
+    rows = checkpoints()
+    parent = next(r for r in rows if r['checkpoint_id'] == 'ckpt_0278ebdd569252e2f583b9a0')
+    assert max(int(r['policy_revision_id'].split('@')[-1]) for r in rows) == 25
+    assert not any(r['run_id'] == 'b77_fast50_19_resume25' for r in rows)
+    digests = json.loads((ROOT / 'artifact_digests.json').read_text())
+    for row in rows:
+        for artifact in row['artifacts'].values():
+            digests[artifact['ref']] = artifact['digest']
+    _atomic_json(ROOT / 'artifact_digests.json', digests)
+    original = load(CONFIGS / 'run_b77_fast50_19.toml')
+    ids = list(original.taskset.train_ids)
+    # The failed run admitted ten groups. Continue the frozen task order.
+    ids = ids[10:] + ids[:10]
+    text = config_text('b77_fast50_19_resume25', ids, list(original.taskset.evaluation_ids), PORT, train=True)
+    text = text.replace(PARENT, parent['checkpoint_id']).replace('target_train_updates = 50', 'target_train_updates = 49').replace('maximum_sampled_groups = 800', 'maximum_sampled_groups = 790').replace('max_open_groups = 4', 'max_open_groups = 1')
+    path = CONFIGS / 'run_b77_fast50_19_resume25.toml'
+    path.write_text(text)
+    load(path).expanded_plan()
+    _atomic_json(ROOT / 'recovery.json', {'parent_checkpoint': parent['checkpoint_id'], 'completed_updates': 1, 'remaining_updates': 49, 'already_admitted_groups': 10, 'remaining_group_cap': 790, 'reason': 'fix admitted-revision binding; prevent stale prefetch'})
+    with server('training_resume25', 1):
+        command('training_resume25', ['run', '--config', str(path), '--plane', 'paid_plane:paid', '--receipts', str(ROOT / 'training_resume25'), '--max-ticks', '200000', '--json'])
+    rows = checkpoints()
+    revisions = {int(r['policy_revision_id'].split('@')[-1]) for r in rows}
+    assert set(range(25, 75)).issubset(revisions) and max(revisions) == 74
+    assert json.loads((ROOT / 'training_resume25/manifest.json').read_text())['stop_reason'] == 'target_train_updates_reached'
+    for row in rows:
+        for artifact in row['artifacts'].values():
+            digests[artifact['ref']] = artifact['digest']
+    _atomic_json(ROOT / 'artifact_digests.json', digests)
+    _atomic_json(ROOT / 'status.json', {'phase': 'training', 'state': 'completed', 'additional_updates': 50, 'final_revision': 74})
+
+
 def heldout():
     by_revision = {int(r['policy_revision_id'].split('@')[-1]): r for r in checkpoints()}
     validation = []
@@ -131,12 +165,14 @@ def heldout():
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('phase', choices=['train', 'heldout', 'all'])
+    parser.add_argument('phase', choices=['train', 'heldout', 'all', 'resume25'])
     args = parser.parse_args()
     try:
         if args.phase in {'train', 'all'}:
             train()
-        if args.phase in {'heldout', 'all'}:
+        if args.phase == 'resume25':
+            resume25()
+        if args.phase in {'heldout', 'all', 'resume25'}:
             heldout()
     except BaseException as error:
         _atomic_json(ROOT / 'status.json', {'state': 'failed', 'error': str(error), 'phase': args.phase})

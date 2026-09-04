@@ -353,6 +353,7 @@ class ContainerRunExecutor:
         self.group_outcomes: list[GroupOutcome] = []
         self.evidence: dict[str, AttemptEvidence] = {}
         self._pins: dict[str, GroupPin] = {}
+        self._group_revisions: dict[str, Mapping[str, PolicyRevision]] = {}
         self._rollouts: dict[str, str] = {}
         self._attempts: dict[str, str] = {}
         self._origins: dict[str, tuple[str, ...]] = {}
@@ -488,6 +489,7 @@ class ContainerRunExecutor:
         group_id = f"{self.run_id}::g{index:04d}"
         pin = self._pin_for(group_id, task)
         self._pins[group_id] = pin
+        self._group_revisions[group_id] = dict(self.revisions)
         for sample_index in range(pin.cardinality):
             request = AttemptRequest(
                 idempotency_key=f"{group_id}::s{sample_index}",
@@ -525,6 +527,7 @@ class ContainerRunExecutor:
         group_id = f"{self.run_id}::g{index:04d}"
         pin = self._pin_for(group_id, task)
         self._pins[group_id] = pin
+        self._group_revisions[group_id] = dict(self.revisions)
         for slot in rejection.slots:
             self.queues.admit(
                 AttemptRequest(
@@ -572,7 +575,7 @@ class ContainerRunExecutor:
             else tuple((group, group) for group in self.revisions)
         )
         for route_key, parameter_group in route_keys:
-            revision = self.revisions[parameter_group]
+            revision = self._group_revisions.get(pin.group_id, self.revisions)[parameter_group]
             proxy_request_id = f"{pin.group_id}::s{sample_index}::{route_key}"
             origins[route_key] = self.gateway.bind(
                 revision,

@@ -1025,7 +1025,13 @@ def start_session(
     assert_preflight_passed(clauses)
 
     taskset = client.taskset()
-    task_ids = config.taskset.train_ids
+    # A training run consumes the train rows; the paired-evaluation command
+    # consumes the held-out rows through this same admitted session. Resolve
+    # both allowlists up front so a disjoint held-out set is actually reachable,
+    # while preserving first-seen order and never exposing either row's gold.
+    task_ids = tuple(
+        dict.fromkeys((*config.taskset.train_ids, *config.taskset.evaluation_ids))
+    )
     rows_payload = client.taskset_tasks(
         {"ids": list(task_ids), "split": config.taskset.train_split}
     )

@@ -122,6 +122,7 @@ class CatalogPolicyBinder:
         policy_types: Mapping[str, Sequence[str]] | None = None,
         sampling: SamplingProfile | None = None,
         rank: int = 8,
+        learning_rate: float = 2e-5,
         seed: int = 0,
         save_training_state: bool = False,
         health_check: Callable[[Any], bool] | None = None,
@@ -149,6 +150,9 @@ class CatalogPolicyBinder:
         }
         self._sampling = sampling or SamplingProfile()
         self._rank = int(rank)
+        self._learning_rate = float(learning_rate)
+        if self._learning_rate <= 0:
+            raise BinderError("learning_rate must be positive")
         self._seed = int(seed)
         self._save_training_state = bool(save_training_state)
         self._health_check = health_check
@@ -280,6 +284,7 @@ class CatalogPolicyBinder:
                     "update_id": update,
                     "parameter_group_id": group,
                     "plan_hash": plan,
+                    "learning_rate": self._learning_rate,
                 },
             ),
         )

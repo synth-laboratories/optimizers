@@ -129,6 +129,7 @@ def main() -> int:
             image_digest="sha256:banking77-socket-run",
         ),
         transport=HttpSampler(),
+        temperature=float(os.environ.get("SYNTH_BANKING77_TEMPERATURE", "1.0")),
     )
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
     return 0

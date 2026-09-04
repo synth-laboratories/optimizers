@@ -14,6 +14,10 @@ opposite ends of a socket.
 - `configs/` — a `cispo.container.v1` document per container. The `*_paid`
   configs run the three-groups-per-step operational floor and are bounded to
   one update and three sampled groups. Widening them costs real money.
+- `configs/run_b77_throughput_paid.toml` — the Banking77 eight-wide throughput
+  experiment. It is intentionally bounded to five updates and twelve sampled
+  groups, and therefore spends money. Use a fresh `run_id` and fresh artifact
+  paths before repeating it.
 - Runtime artifacts and logs go under `/tmp/synth-container-first-e2e`; no
   checked-in command depends on the original session scratch directory.
 
@@ -27,3 +31,6 @@ Two things that will bite:
   `$SYNTH_CISPO_RENDERER_CANARY_DIGEST`. TBLite's paid conformance run also
   sets `$SYNTH_E2E_MAX_CONTEXT_TOKENS=32768` so the gateway declares and
   records its compaction policy before the provider's context limit.
+- Banking77's full corpus is selected with `SYNTH_BANKING77_SOURCE=hf`; declare
+  its actual split width with `SYNTH_BANKING77_DECLARED_ROWS_PER_SPLIT=10003`.
+  `SYNTH_BANKING77_TEMPERATURE` controls the sampler temperature.

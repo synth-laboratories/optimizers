@@ -310,7 +310,14 @@ def _run(args: argparse.Namespace) -> int:
             plane.gateway,
             plane.binder,
             clock=plane.clock or RunClock(),
-            plan=ExecutionPlan(receipts=Path(args.receipts), max_ticks=args.max_ticks),
+            plan=ExecutionPlan(
+                receipts=Path(args.receipts),
+                max_ticks=args.max_ticks,
+                # Socket containers submit asynchronously. A short wall-clock
+                # cadence prevents the bounded tick budget from hot-spinning
+                # before their provider workers can finish.
+                poll_interval_seconds=0.05,
+            ),
         )
     finally:
         if callable(release):

@@ -858,6 +858,7 @@ def _build_binder(
         policy_types=_policy_types(config, document),
         sampling=sampling,
         rank=config.model.rank,
+        learning_rate=config.model.learning_rate,
         save_training_state=config.artifacts.retain_training_state,
     )
 

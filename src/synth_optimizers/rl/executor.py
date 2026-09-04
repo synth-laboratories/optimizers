@@ -31,6 +31,7 @@ boundaries, and resume re-handshakes before a single attempt is re-admitted.
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -971,9 +972,12 @@ class ContainerRunExecutor:
         *,
         max_ticks: int = 256,
         on_tick: Callable[["ContainerRunExecutor", Mapping[str, Any]], None] | None = None,
+        poll_interval_seconds: float = 0.0,
     ) -> RunReport:
         """Drive to the target update count, the group budget, or a control."""
 
+        if poll_interval_seconds < 0:
+            raise ExecutorError("poll_interval_seconds cannot be negative")
         self.register_baseline()
         reason = ""
         for _index in range(max_ticks):
@@ -983,6 +987,11 @@ class ContainerRunExecutor:
             reason = self._finished()
             if reason:
                 break
+            if poll_interval_seconds:
+                # Real HTTP containers may return from submission before their
+                # provider worker has completed. Pace observation without
+                # advancing the injected logical clock used by leases/tests.
+                time.sleep(poll_interval_seconds)
         else:
             reason = "no_progress"
         return self.finish(reason or "no_progress")
@@ -1618,6 +1627,7 @@ class ExecutionPlan:
 
     receipts: Path
     max_ticks: int = 256
+    poll_interval_seconds: float = 0.0
     on_tick: Callable[[ContainerRunExecutor, Mapping[str, Any]], None] | None = None
     catalog_rows: Callable[[], Sequence[Mapping[str, Any]]] | None = None
     lineage_rows: Callable[[], Sequence[Mapping[str, Any]]] | None = None
@@ -1645,4 +1655,8 @@ def execute(
         catalog_rows=plan.catalog_rows,
         lineage_rows=plan.lineage_rows,
     )
-    return executor.run(max_ticks=plan.max_ticks, on_tick=plan.on_tick)
+    return executor.run(
+        max_ticks=plan.max_ticks,
+        on_tick=plan.on_tick,
+        poll_interval_seconds=plan.poll_interval_seconds,
+    )

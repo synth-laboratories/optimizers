@@ -59,11 +59,50 @@ Two boundaries remain intentionally unresolved rather than faked:
   proven no-opponent matrix; adding an opponent or a dual-wire image should be
   gated on that migration.
 
-Final verification: optimizers 1,039 passed; container worktree 802 passed,
-8 skipped, with four pre-existing C2-01 failures; image CISPO suites Banking77
-59, HealthBench2 42, Craftax 38, Harbor-TBLite 42, DungeonGrid 34. The known
-Banking77 metadata assertion and TBLite missing-corpus capacity test still fail
-outside the CISPO scope.
+Final verification after the throughput follow-on: optimizers 1,039 passed;
+container worktree 801 passed and 8 skipped, with four pre-existing C2-01
+failures plus one load-test flake that passed alone on rerun. Its directly
+changed contract surface passed 53 tests. Banking77 passed 60 tests with its
+known metadata assertion still failing; its directly changed CISPO suite passed
+29. The earlier image results remain HealthBench2 42, Craftax 38,
+Harbor-TBLite 42, and DungeonGrid 34. TBLite's missing-corpus capacity test
+also remains outside the CISPO scope.
+
+## Banking77 throughput experiment
+
+The follow-on paid experiment made Banking77 attempt execution genuinely
+asynchronous and exercised groups of eight over a socket. The strongest run,
+`b77_throughput_uplift_04`, completed 272 attempts across 34 sampled groups in
+a 283.11-second terminal-completion span: **0.957 completed attempts/second**.
+It produced three training updates from 12 trained groups (22 zero-advantage
+groups were skipped) with no stale-policy discards. A rendezvous sampler test
+independently proves that eight submitted attempts overlap rather than merely
+being queued in an eight-wide group.
+
+This demonstrates high-throughput execution, not quality uplift. Paired
+heldout results were:
+
+- run 04, 32 examples: 0.6875 baseline, 0.6875 trained (32 ties);
+- run 05, 32 examples: 0.7500 baseline, 0.71875 trained (one loss, 31 ties);
+- run 06, one targeted example: 0.0 baseline, 0.0 trained (tie).
+
+Further paid tuning was stopped because the evidence did not support an
+accuracy-uplift claim. Run 05 completed ten updates and run 06 five updates;
+neither reversed that conclusion.
+
+The cumulative receipted lower bound, including the earlier conformance runs,
+is **653,384 token-events**: 351,295 prompt, 51,178 generated, and 250,911
+training tokens. It covers 694 successful paid attempts and 778 sampling
+calls. Evaluation-token usage and failed/retried calls are not available in
+the receipts, so they are deliberately excluded. At the published uncached
+gpt-oss-20b rates, the counted portion estimates to $0.186; Tinker's billing
+feed had not yet ingested the relevant hours, so that is not an actual charge.
+The experiment remained well below its declared $10 maximum.
+
+Artifacts are under `/tmp/synth-container-first-e2e`, specifically
+`receipts_banking77_throughput_paid_{04,05,06}` and
+`receipts_banking77_throughput_eval_{04,05,06}`. The reproducible bounded
+configuration is `docs/e2e/configs/run_b77_throughput_paid.toml`.
 
 ## Original snapshot
 
@@ -186,25 +225,22 @@ and `renew` 500s. Use a fresh `run_id` per run.
 
 ## How to run it
 
-Free socket run, any image (serve scripts and configs are in the scratchpad at
-`/private/tmp/claude-501/-Users-joshuapurtell-GitHub/
-fae9821e-2959-4ca8-9924-c68492de7d19/scratchpad/e2e/`;
-copy them somewhere durable — that directory is session-scoped):
+Free socket run, any image (serve scripts and configs are in `docs/e2e/`):
 
 ```
 # 1. serve the container (from the containers worktree, or the image's dir)
-uv run --with pytest --with uvicorn python .../e2e/serve_banking77.py 8231
+uv run --with pytest --with uvicorn python docs/e2e/serve_banking77.py 8231
 
 # 2. drive it (from ~/GitHub/optimizers)
 PYTHONPATH=.../e2e uv run synth-optimizers rl run \
-  --config .../e2e/work/run_b77.toml \
+  --config docs/e2e/configs/run_banking77.toml \
   --receipts /abs/path/receipts --plane e2e_plane:unpaid
 ```
 
-Paid: `--plane paid_plane:paid`. That plane reads `TINKER_API_KEY` from
-`~/GitHub/frontend/.env.local` because it is not in the shell environment;
-point it wherever the key actually lives. The config is bounded — one update,
-group size 2, at most three sampled groups — and **widening it costs money**.
+Paid: `--plane paid_plane:paid`. That plane reads `TINKER_API_KEY` from the
+project-local file named by `$SYNTH_TINKER_ENV_FILE`. The ordinary paid config
+is bounded to one update, group size 2, and at most three sampled groups;
+**widening it costs money**.
 
 Read the container's traceback from its server log, not the 500 the client
 reports: `http_adapter._cispo_call` types only one error, so every other

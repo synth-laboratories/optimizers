@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import statistics
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -67,7 +68,10 @@ TERMINAL_STATES = frozenset({"completed", "failed", "cancelled"})
 #: never a fabricated zero.
 FINALIZABLE_STATES = TERMINAL_STATES | {"scored", "awaiting_score"}
 
-DEFAULT_POLL_LIMIT = 32
+# The shipped container configs declare a 60-second expected attempt horizon.
+# At the default 250 ms cadence, 240 observations cover that envelope.
+DEFAULT_POLL_LIMIT = 240
+DEFAULT_POLL_INTERVAL_SECONDS = 0.25
 
 
 class EvaluationError(EvidenceError):
@@ -789,6 +793,10 @@ class PairedEvaluation:
             state = self._session.poll(rollout_id)
             if state.get("terminal") or str(state.get("state") or "") in FINALIZABLE_STATES:
                 break
+            # Async containers return from submission before their provider
+            # worker. Pace observation so the bounded poll count represents a
+            # real opportunity to finish instead of a localhost hot spin.
+            time.sleep(DEFAULT_POLL_INTERVAL_SECONDS)
         else:
             self._session.terminate(rollout_id, reason="evaluation_poll_limit")
             raise AttemptFailedError(

@@ -285,6 +285,7 @@ class ModelBinding:
     id: str
     family: str
     rank: int = 8
+    learning_rate: float = 2e-5
     policy_kind: str = "declared_policy"
     wire_api: str = "chat_completions"
     sampling_transport: str = "message_in_capture_out"
@@ -295,6 +296,7 @@ class ModelBinding:
             "id": self.id,
             "family": self.family,
             "rank": self.rank,
+            "learning_rate": self.learning_rate,
             "policy_kind": self.policy_kind,
             "wire_api": self.wire_api,
             "sampling_transport": self.sampling_transport,
@@ -658,6 +660,7 @@ def _model_section(payload: Mapping[str, Any] | None) -> ModelBinding:
         id=reader.text("id"),
         family=reader.text("family"),
         rank=reader.count("rank", 8),
+        learning_rate=reader.number("learning_rate", 2e-5, minimum=1e-12),
         policy_kind=reader.text("policy_kind", "declared_policy"),
         wire_api=reader.text("wire_api", "chat_completions"),
         sampling_transport=reader.text("sampling_transport", "message_in_capture_out"),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -21,21 +22,32 @@ freeze = _module("freeze_banking77_panel")
 validate = _module("validate_banking77_eval")
 
 
-def corpus() -> list[dict]:
+def corpus(*, choices: int = 2) -> list[dict]:
     return [
-        {"task_id": f"banking77/heldout/{label * 2 + choice}", "seed": label * 2 + choice, "label": f"label-{label:02d}"}
+        {
+            "task_id": f"banking77/heldout/{label * choices + choice}",
+            "seed": label * choices + choice,
+            "label": f"label-{label:02d}",
+        }
         for label in range(77)
-        for choice in range(2)
+        for choice in range(choices)
     ]
 
 
-def frozen(*, excluded: set[str] | None = None, seed: str = "panel-1") -> dict:
+def frozen(
+    *,
+    excluded: set[str] | None = None,
+    seed: str = "panel-1",
+    examples_per_intent: int = 1,
+) -> dict:
+    rows = corpus(choices=max(2, examples_per_intent + 1))
     return freeze.freeze_panel(
-        corpus(),
+        rows,
         excluded=excluded or set(),
         panel_seed=seed,
-        source={"path": "fixture", "sha256": "sha256:source", "rows": 154},
+        source={"path": "fixture", "sha256": "sha256:source", "rows": len(rows)},
         exclusion_inventory=[],
+        examples_per_intent=examples_per_intent,
     )
 
 
@@ -47,7 +59,10 @@ def receipt(panel: dict) -> dict:
         ("baseline", "base", "tinker://base"),
         ("trained", "trained", "tinker://trained"),
     ):
-        arm_rewards = [float((index + (arm == "trained")) % 3 != 0) for index in range(77)]
+        arm_rewards = [
+            float((index + (arm == "trained")) % 3 != 0)
+            for index in range(len(panel["rows"]))
+        ]
         rewards[arm] = arm_rewards
         attempts = [
             {
@@ -70,7 +85,7 @@ def receipt(panel: dict) -> dict:
             "resolved_id": checkpoint,
             "catalogued_sampler_references": [reference],
             "loaded_sampler_references": [reference],
-            "attempt_count": 77,
+            "attempt_count": len(panel["rows"]),
             "attempts": attempts,
         }
     return {
@@ -101,6 +116,27 @@ def test_panel_selection_is_deterministic_and_respects_exclusions() -> None:
     assert len(first["rows"]) == len({row["label"] for row in first["rows"]}) == 77
     assert selected not in second["task_ids"]
     assert first["panel_digest"] != second["panel_digest"]
+
+
+def test_panel_can_freeze_multiple_balanced_examples_per_intent() -> None:
+    panel = frozen(seed="confirmatory", examples_per_intent=5)
+
+    assert panel["examples_per_intent"] == 5
+    assert len(panel["rows"]) == len(set(panel["task_ids"])) == 385
+    assert set(Counter(row["label"] for row in panel["rows"]).values()) == {5}
+
+    result = validate.validate(
+        panel,
+        receipt(panel),
+        expected_baseline="base",
+        expected_trained="trained",
+        train_ids=set(),
+        prior_ids=set(),
+        receipt_sha256="sha256:receipt",
+        bootstrap_seed=4,
+        bootstrap_replicates=100,
+    )
+    assert result["pairs"] == 385
 
 
 def test_panel_refuses_less_than_77_labels() -> None:

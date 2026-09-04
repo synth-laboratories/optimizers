@@ -1,4 +1,4 @@
-"""Freeze a deterministic, audited one-example-per-intent Banking77 panel."""
+"""Freeze a deterministic, audited balanced Banking77 panel."""
 
 from __future__ import annotations
 
@@ -107,7 +107,10 @@ def freeze_panel(
     panel_seed: str,
     source: Mapping[str, Any],
     exclusion_inventory: Sequence[Mapping[str, Any]],
+    examples_per_intent: int = 1,
 ) -> dict[str, Any]:
+    if examples_per_intent < 1:
+        raise ValueError("examples_per_intent must be positive")
     by_label: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     all_ids: set[str] = set()
     for row in rows:
@@ -122,9 +125,12 @@ def freeze_panel(
     labels = sorted({str(row["label"]) for row in rows})
     if len(labels) != 77:
         raise ValueError(f"expected exactly 77 Banking77 labels, found {len(labels)}")
-    missing = [label for label in labels if not by_label[label]]
+    missing = [label for label in labels if len(by_label[label]) < examples_per_intent]
     if missing:
-        raise ValueError(f"exclusions leave no heldout candidate for labels: {missing}")
+        raise ValueError(
+            f"exclusions leave fewer than {examples_per_intent} heldout candidates "
+            f"for labels: {missing}"
+        )
 
     selected: list[dict[str, Any]] = []
     for label in labels:
@@ -134,21 +140,36 @@ def freeze_panel(
                 f"{panel_seed}\0{label}\0{row['task_id']}".encode()
             ).hexdigest(),
         )
-        row = ranked[0]
-        selection_hash = sha256_bytes(f"{panel_seed}\0{label}\0{row['task_id']}".encode())
-        selected.append(
-            {"label": label, "task_id": str(row["task_id"]), "seed": int(row["seed"]), "selection_hash": selection_hash}
-        )
+        for row in ranked[:examples_per_intent]:
+            selection_hash = sha256_bytes(
+                f"{panel_seed}\0{label}\0{row['task_id']}".encode()
+            )
+            selected.append(
+                {
+                    "label": label,
+                    "task_id": str(row["task_id"]),
+                    "seed": int(row["seed"]),
+                    "selection_hash": selection_hash,
+                }
+            )
     ids = [row["task_id"] for row in selected]
-    if len(set(ids)) != 77 or set(ids) & excluded:
+    expected_rows = 77 * examples_per_intent
+    if len(ids) != expected_rows or len(set(ids)) != expected_rows or set(ids) & excluded:
         raise AssertionError("panel uniqueness/exclusion invariant failed")
     exclusion_ids = sorted(excluded)
     panel_core = [{key: row[key] for key in ("label", "task_id", "seed")} for row in selected]
     return {
         "schema_version": SCHEMA_VERSION,
         "panel_seed": panel_seed,
-        "selection_algorithm": "minimum sha256(panel_seed\\0label\\0task_id) among nonexcluded rows",
-        "estimand": "macro intent accuracy: one deterministically selected heldout example per Banking77 intent",
+        "selection_algorithm": (
+            "lowest N sha256(panel_seed\\0label\\0task_id) among nonexcluded rows"
+        ),
+        "estimand": (
+            "macro intent accuracy on a balanced, deterministically selected "
+            f"{examples_per_intent}-example-per-intent Banking77 panel"
+        ),
+        "examples_per_intent": examples_per_intent,
+        "unique_labels": 77,
         "source": dict(source),
         "exclusion_inventory": [dict(item) for item in exclusion_inventory],
         "excluded_task_ids": exclusion_ids,
@@ -166,6 +187,7 @@ def main() -> int:
     parser.add_argument("--cache", default="/tmp/banking77-cache/banking77-heldout.csv")
     parser.add_argument("--exclude", action="append", default=[], help="File or directory to inventory; repeatable")
     parser.add_argument("--panel-seed", required=True)
+    parser.add_argument("--examples-per-intent", type=int, default=1)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     if bool(args.source) == bool(args.download_hf):
@@ -185,9 +207,19 @@ def main() -> int:
         panel_seed=args.panel_seed,
         source=source,
         exclusion_inventory=inventory,
+        examples_per_intent=args.examples_per_intent,
     )
     _atomic_json(output, payload)
-    print(json.dumps({"output": str(output), "panel_digest": payload["panel_digest"], "rows": 77}, indent=2))
+    print(
+        json.dumps(
+            {
+                "output": str(output),
+                "panel_digest": payload["panel_digest"],
+                "rows": len(payload["rows"]),
+            },
+            indent=2,
+        )
+    )
     return 0
 
 

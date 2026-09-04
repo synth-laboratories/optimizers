@@ -4,6 +4,16 @@ Date: 2026-09-04
 
 ## Result
 
+**Latest confirmation:** the fresh 385-example panel completed with baseline
+309/385 (80.26%) and trained 313/385 (81.30%): **+1.04 percentage points**,
+12 wins / 8 losses / 365 ties, 95% paired-bootstrap interval −1.30 to +3.38
+points, exact McNemar p=0.5034. Reliable population uplift remains unproven.
+See the [confirmation receipt and remaining work](receipts/banking77-confirmatory-5x-20260904.md).
+It took 63.57 minutes (12.11 attempts/minute), with $0.036–$0.106 estimated
+sampling cost. All 1,086 tests pass after the balanced-panel extension.
+
+The following records the earlier 77-example result and training history.
+
 The experiment is complete. Sixteen additional effective Tinker optimizer
 updates, in two curriculum stages resumed from run 15, produced a positive
 result on the sealed final 77-intent Banking77 panel:
@@ -218,9 +228,11 @@ one run without guessing.
 
 ## Optional remaining work
 
-No further work is required to establish this experiment's honest result. The
-only scientifically useful follow-up is a predeclared, larger confirmatory
-heldout panel (or multiple independently frozen panels) to obtain more
-discordant pairs and enough power for a significance claim. It must preserve
-the immutable baseline/final checkpoint identities above and must not be used
-to tune the already completed training sequence.
+The larger confirmatory evaluation is now complete; its positive point
+estimate did not establish significance. Both the original final panel and
+the new 385-row panel are observed. Further progress requires a predeclared
+training/validation experiment with broader task coverage and a new untouched
+confirmation set, rather than repeatedly testing this checkpoint until a
+panel passes. The confirmation receipt above lists the training, evaluation
+throughput, observability, and billing work that remains. No further paid
+training or evaluation was started after this result.

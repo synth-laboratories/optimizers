@@ -9,6 +9,7 @@ import math
 import random
 import statistics
 import tomllib
+from collections import Counter
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -96,8 +97,19 @@ def validate(
     panel_ids = [str(row.get("task_id")) for row in rows]
     labels = [str(row.get("label")) for row in rows]
     seeds = [(str(row.get("task_id")), int(row.get("seed"))) for row in rows]
-    if len(rows) != 77 or len(set(panel_ids)) != 77 or len(set(labels)) != 77:
-        errors.append("panel must contain exactly 77 unique task ids and 77 unique labels")
+    examples_per_intent = int(panel.get("examples_per_intent", 1))
+    expected_attempts = 77 * examples_per_intent
+    label_counts = Counter(labels)
+    if (
+        examples_per_intent < 1
+        or len(rows) != expected_attempts
+        or len(set(panel_ids)) != expected_attempts
+        or len(label_counts) != 77
+        or set(label_counts.values()) != {examples_per_intent}
+    ):
+        errors.append(
+            "panel must be balanced across exactly 77 labels with unique task ids"
+        )
     panel_core = [
         {"label": row.get("label"), "task_id": row.get("task_id"), "seed": row.get("seed")}
         for row in rows
@@ -137,8 +149,10 @@ def validate(
         loaded = list(arm_payload.get("loaded_sampler_references") or ())
         if not catalogued or catalogued != loaded:
             errors.append(f"{arm} catalogued and loaded sampler references differ or are empty")
-        if len(attempts) != 77 or int(arm_payload.get("attempt_count", -1)) != 77:
-            errors.append(f"{arm} must contain exactly 77 attempts")
+        if len(attempts) != expected_attempts or int(
+            arm_payload.get("attempt_count", -1)
+        ) != expected_attempts:
+            errors.append(f"{arm} must contain exactly {expected_attempts} attempts")
         order = [(str(row.get("task_id")), int(row.get("seed"))) for row in attempts]
         if order != seeds:
             errors.append(f"{arm} attempt order does not match frozen panel")
@@ -172,9 +186,13 @@ def validate(
             errors.append(f"baseline/trained {kind} identities overlap: {sorted(overlap)}")
 
     summary_rows = list((receipt.get("paired_summary") or {}).get("rows") or ())
-    if len(summary_rows) != 77:
-        errors.append("paired summary must contain exactly 77 rows")
-    elif len(attempts_by_arm.get("baseline", ())) == len(attempts_by_arm.get("trained", ())) == 77:
+    if len(summary_rows) != expected_attempts:
+        errors.append(f"paired summary must contain exactly {expected_attempts} rows")
+    elif (
+        len(attempts_by_arm.get("baseline", ()))
+        == len(attempts_by_arm.get("trained", ()))
+        == expected_attempts
+    ):
         for index, (summary, baseline, trained) in enumerate(
             zip(
                 summary_rows,

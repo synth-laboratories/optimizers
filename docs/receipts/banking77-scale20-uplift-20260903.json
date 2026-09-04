@@ -1,0 +1,86 @@
+{
+  "schema_version": "synth.banking77-scale-uplift.v1",
+  "run_id": "b77_scale20_uplift_10",
+  "training": {
+    "sampled_groups": 56,
+    "group_size": 8,
+    "rollouts": 448,
+    "trained_groups": 28,
+    "skipped_zero_variance_groups": 28,
+    "stale_groups": 0,
+    "optimizer_updates": 14,
+    "target_optimizer_updates": 20,
+    "stop_reason": "sampled_group_budget_exhausted",
+    "prompt_tokens": 282936,
+    "completion_tokens": 27448,
+    "training_tokens": 158793
+  },
+  "throughput": {
+    "execution_window_seconds": 898.9216705420113,
+    "terminal_completion_span_seconds": 894.4625927090237,
+    "observed_rollouts_per_minute": 29.90249415590628,
+    "terminal_rollouts_per_minute": 29.98448478294807,
+    "summed_provider_duration_seconds": 1618.3656735455443,
+    "serial_equivalent_rollouts_per_minute": 16.6093488260356,
+    "overlap_uplift_ratio": 1.800341149379277,
+    "overlap_uplift_percent": 80.0341149379277,
+    "peak_concurrency": 8
+  },
+  "train_ema": {
+    "alpha": 0.2,
+    "definition": "EMA over chronological policy-revision batch mean rewards; uplift is final EMA minus revision-zero batch mean",
+    "policy_revision_batch_means": [
+      0.8125,
+      0.75,
+      0.825,
+      0.5625,
+      0.775,
+      0.8125,
+      0.78125,
+      0.75,
+      0.75,
+      0.84375,
+      0.875,
+      0.7,
+      0.875,
+      0.78125
+    ],
+    "ema_series": [
+      0.8125,
+      0.8,
+      0.8050000000000002,
+      0.7565000000000002,
+      0.7602000000000002,
+      0.7706600000000002,
+      0.7727780000000002,
+      0.7682224000000002,
+      0.7645779200000002,
+      0.7804123360000002,
+      0.7993298688000002,
+      0.7794638950400002,
+      0.7985711160320003,
+      0.7951068928256002
+    ],
+    "initial_batch_mean": 0.8125,
+    "final_ema": 0.7951068928256002,
+    "uplift": -0.01739310717439979
+  },
+  "heldout": {
+    "pairs": 77,
+    "intent_coverage": 77,
+    "baseline_mean": 0.8181818181818182,
+    "trained_mean": 0.8051948051948052,
+    "mean_uplift": -0.012987012987012988,
+    "wins": 3,
+    "losses": 4,
+    "ties": 70
+  },
+  "checkpoints": {
+    "baseline": "ckpt_3cf7d5aab0ecb8c43ef5122c",
+    "trained": "ckpt_00a8e1cbfe0688b23624ba42"
+  },
+  "artifacts": {
+    "training_receipts": "/tmp/synth-container-first-e2e/receipts_banking77_scale20_paid_10",
+    "paired_evaluation": "/tmp/synth-container-first-e2e/receipts_banking77_scale20_eval_10/b77_scale20_uplift_10_heldout_77.evaluation.json"
+  }
+}

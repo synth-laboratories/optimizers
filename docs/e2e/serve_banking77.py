@@ -129,6 +129,9 @@ def main() -> int:
             image_digest="sha256:banking77-socket-run",
         ),
         transport=HttpSampler(),
+        handshake_ttl_seconds=float(
+            os.environ.get("SYNTH_BANKING77_HANDSHAKE_TTL_SECONDS", "900")
+        ),
         temperature=float(os.environ.get("SYNTH_BANKING77_TEMPERATURE", "1.0")),
     )
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")

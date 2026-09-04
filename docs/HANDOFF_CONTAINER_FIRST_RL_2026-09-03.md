@@ -104,6 +104,13 @@ Artifacts are under `/tmp/synth-container-first-e2e`, specifically
 `receipts_banking77_throughput_eval_{04,05,06}`. The reproducible bounded
 configuration is `docs/e2e/configs/run_b77_throughput_paid.toml`.
 
+The later scale run is recorded separately in
+`docs/receipts/banking77-scale20-uplift-20260903.md` and its machine-readable
+companion. It completed 448 rollouts at 29.90/minute, a measured 1.80x overlap
+uplift over serializing the same call durations. Fourteen optimizer updates did
+not improve quality: heldout moved 81.82% to 80.52%, and the fixed-alpha train
+EMA moved 81.25% to 79.51%.
+
 ## Original snapshot
 
 The design document is

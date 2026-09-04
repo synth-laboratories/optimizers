@@ -33,4 +33,6 @@ Two things that will bite:
   records its compaction policy before the provider's context limit.
 - Banking77's full corpus is selected with `SYNTH_BANKING77_SOURCE=hf`; declare
   its actual split width with `SYNTH_BANKING77_DECLARED_ROWS_PER_SPLIT=10003`.
-  `SYNTH_BANKING77_TEMPERATURE` controls the sampler temperature.
+  `SYNTH_BANKING77_TEMPERATURE` controls the sampler temperature. Runs longer
+  than the default 900-second handshake window must explicitly raise
+  `SYNTH_BANKING77_HANDSHAKE_TTL_SECONDS` before starting the server.

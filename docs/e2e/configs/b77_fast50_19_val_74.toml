@@ -1,0 +1,61 @@
+schema_version = "cispo.container.v1"
+run_id = "b77_fast50_19_val_74"
+
+[container]
+url = "http://127.0.0.1:8258"
+
+[taskset]
+train_split = "train"
+evaluation_split = "heldout"
+train_ids = ["banking77/train/5712", "banking77/train/9712", "banking77/train/4601", "banking77/train/1124", "banking77/train/8683", "banking77/train/3325", "banking77/train/7146", "banking77/train/2199", "banking77/train/4", "banking77/train/1067", "banking77/train/283", "banking77/train/1254", "banking77/train/2657", "banking77/train/3532", "banking77/train/513", "banking77/train/8882", "banking77/train/4534", "banking77/train/1793", "banking77/train/9913", "banking77/train/5860", "banking77/train/4922", "banking77/train/5619", "banking77/train/4754", "banking77/train/8998", "banking77/train/1396", "banking77/train/607", "banking77/train/7449", "banking77/train/963", "banking77/train/8398", "banking77/train/7835", "banking77/train/3014", "banking77/train/1528", "banking77/train/5277", "banking77/train/8120", "banking77/train/4861", "banking77/train/766", "banking77/train/2055", "banking77/train/6104", "banking77/train/1734", "banking77/train/7422", "banking77/train/2969", "banking77/train/1878", "banking77/train/9089", "banking77/train/3255", "banking77/train/4266", "banking77/train/7243", "banking77/train/7666", "banking77/train/2867", "banking77/train/6643", "banking77/train/3905", "banking77/train/9849", "banking77/train/6560", "banking77/train/8198", "banking77/train/4204", "banking77/train/3863", "banking77/train/2366", "banking77/train/8306", "banking77/train/9666", "banking77/train/4627", "banking77/train/8623", "banking77/train/3450", "banking77/train/7064", "banking77/train/137", "banking77/train/1030", "banking77/train/232", "banking77/train/2591", "banking77/train/455", "banking77/train/8840", "banking77/train/4461", "banking77/train/9988", "banking77/train/5836", "banking77/train/5037", "banking77/train/1366", "banking77/train/698", "banking77/train/7474", "banking77/train/988", "banking77/train/8440", "banking77/train/3023", "banking77/train/1540", "banking77/train/8146", "banking77/train/1981", "banking77/train/6006", "banking77/train/1705", "banking77/train/7334", "banking77/train/2912", "banking77/train/1821", "banking77/train/3182", "banking77/train/4322", "banking77/train/7595", "banking77/train/6682", "banking77/train/3966", "banking77/train/9843", "banking77/train/6585", "banking77/train/8173", "banking77/train/4151", "banking77/train/2367", "banking77/train/8251", "banking77/train/9694", "banking77/train/8778", "banking77/train/7072", "banking77/train/48", "banking77/train/1068", "banking77/train/249", "banking77/train/2532", "banking77/train/440", "banking77/train/8811", "banking77/train/4524", "banking77/train/9942", "banking77/train/583", "banking77/train/7526", "banking77/train/999", "banking77/train/3088", "banking77/train/1531", "banking77/train/8077", "banking77/train/1931", "banking77/train/7345", "banking77/train/2971", "banking77/train/1863", "banking77/train/3257", "banking77/train/4255", "banking77/train/7605", "banking77/train/6710", "banking77/train/3979", "banking77/train/9850", "banking77/train/6525", "banking77/train/8182", "banking77/train/8648", "banking77/train/1082", "banking77/train/2632", "banking77/train/8933", "banking77/train/4538", "banking77/train/9890", "banking77/train/609", "banking77/train/7435", "banking77/train/919", "banking77/train/3002", "banking77/train/8131", "banking77/train/7368", "banking77/train/1890", "banking77/train/4281", "banking77/train/7648", "banking77/train/9827", "banking77/train/8752", "banking77/train/1114", "banking77/train/2575", "banking77/train/8871", "banking77/train/9908", "banking77/train/666", "banking77/train/7530", "banking77/train/906", "banking77/train/3037", "banking77/train/7392", "banking77/train/4330", "banking77/train/7620", "banking77/train/9866", "banking77/train/8677", "banking77/train/1057", "banking77/train/9881", "banking77/train/605", "banking77/train/7344", "banking77/train/4309", "banking77/train/7669", "banking77/train/8728", "banking77/train/1025", "banking77/train/644", "banking77/train/7416", "banking77/train/7658", "banking77/train/8751", "banking77/train/1020", "banking77/train/655", "banking77/train/7386", "banking77/train/7565", "banking77/train/1019", "banking77/train/704", "banking77/train/7426", "banking77/train/7638", "banking77/train/690", "banking77/train/7637", "banking77/train/7580", "banking77/train/7572"]
+evaluation_ids = ["banking77/heldout/1796", "banking77/heldout/1794", "banking77/heldout/2848", "banking77/heldout/2854", "banking77/heldout/496", "banking77/heldout/485", "banking77/heldout/2978", "banking77/heldout/2983", "banking77/heldout/1477", "banking77/heldout/1466", "banking77/heldout/351", "banking77/heldout/325", "banking77/heldout/2691", "banking77/heldout/2699", "banking77/heldout/1072", "banking77/heldout/1073", "banking77/heldout/2184", "banking77/heldout/2166", "banking77/heldout/694", "banking77/heldout/699", "banking77/heldout/2943", "banking77/heldout/2936", "banking77/heldout/984", "banking77/heldout/987", "banking77/heldout/8", "banking77/heldout/27", "banking77/heldout/310", "banking77/heldout/313", "banking77/heldout/50", "banking77/heldout/65", "banking77/heldout/387", "banking77/heldout/392", "banking77/heldout/830", "banking77/heldout/815", "banking77/heldout/1086", "banking77/heldout/1090", "banking77/heldout/125", "banking77/heldout/148", "banking77/heldout/1947", "banking77/heldout/1950", "banking77/heldout/2913", "banking77/heldout/2894", "banking77/heldout/2746", "banking77/heldout/2734", "banking77/heldout/2141", "banking77/heldout/2129", "banking77/heldout/1419", "banking77/heldout/1413", "banking77/heldout/575", "banking77/heldout/591", "banking77/heldout/3078", "banking77/heldout/3063", "banking77/heldout/1836", "banking77/heldout/1827", "banking77/heldout/1595", "banking77/heldout/1598", "banking77/heldout/1749", "banking77/heldout/1745", "banking77/heldout/1488", "banking77/heldout/1503", "banking77/heldout/1371", "banking77/heldout/1383", "banking77/heldout/1131", "banking77/heldout/1150", "banking77/heldout/2770", "banking77/heldout/2789", "banking77/heldout/104", "banking77/heldout/97", "banking77/heldout/411", "banking77/heldout/425", "banking77/heldout/183", "banking77/heldout/199", "banking77/heldout/2317", "banking77/heldout/2287", "banking77/heldout/257", "banking77/heldout/249", "banking77/heldout/2639", "banking77/heldout/2629", "banking77/heldout/1277", "banking77/heldout/1251", "banking77/heldout/2425", "banking77/heldout/2421", "banking77/heldout/941", "banking77/heldout/945", "banking77/heldout/467", "banking77/heldout/451", "banking77/heldout/1662", "banking77/heldout/1648", "banking77/heldout/2509", "banking77/heldout/2496", "banking77/heldout/1527", "banking77/heldout/1536", "banking77/heldout/1622", "banking77/heldout/1609", "banking77/heldout/211", "banking77/heldout/221", "banking77/heldout/646", "banking77/heldout/657", "banking77/heldout/1869", "banking77/heldout/1861", "banking77/heldout/535", "banking77/heldout/547", "banking77/heldout/2272", "banking77/heldout/2247", "banking77/heldout/1717", "banking77/heldout/1711", "banking77/heldout/2104", "banking77/heldout/2090", "banking77/heldout/914", "banking77/heldout/916", "banking77/heldout/1896", "banking77/heldout/1908", "banking77/heldout/630", "banking77/heldout/635", "banking77/heldout/2838", "banking77/heldout/2819", "banking77/heldout/2466", "banking77/heldout/2447", "banking77/heldout/2677", "banking77/heldout/2652", "banking77/heldout/729", "banking77/heldout/753", "banking77/heldout/1036", "banking77/heldout/1017", "banking77/heldout/1349", "banking77/heldout/1337", "banking77/heldout/1991", "banking77/heldout/1987", "banking77/heldout/2205", "banking77/heldout/2219", "banking77/heldout/2359", "banking77/heldout/2327", "banking77/heldout/867", "banking77/heldout/878", "banking77/heldout/2070", "banking77/heldout/2065", "banking77/heldout/1210", "banking77/heldout/1228", "banking77/heldout/3030", "banking77/heldout/3014", "banking77/heldout/2023", "banking77/heldout/2026", "banking77/heldout/2372", "banking77/heldout/2374", "banking77/heldout/2534", "banking77/heldout/2556", "banking77/heldout/1298", "banking77/heldout/1295", "banking77/heldout/1190", "banking77/heldout/1170", "banking77/heldout/775", "banking77/heldout/786", "banking77/heldout/2584", "banking77/heldout/2592"]
+
+[model]
+provider = "tinker"
+id = "openai/gpt-oss-20b"
+family = "gpt_oss"
+policy_kind = "banking77_classify"
+learning_rate = 0.00005
+
+[plan]
+preset = "cispo"
+group_size = 8
+groups_per_step = 4
+target_train_updates = 50
+steps_per_round = 50
+maximum_sampled_groups = 800
+
+[pipeline]
+max_execution_slots = 8
+rollout_queue_capacity = 128
+score_queue_capacity = 256
+scored_result_queue_capacity = 256
+train_ready_capacity = 1
+maximum_policy_lag = 0
+max_open_groups = 4
+expected_horizon_seconds = 120.0
+stale_disposition = "discard"
+
+[topology]
+expected_topology_id = "banking77.classify.solo.v1"
+trainable_teams = ["team-0"]
+partial_roster = "refuse"
+
+[opponents]
+match_set_revision = "match-set-0001"
+
+[reward]
+optimized_channel = "score"
+
+[evaluation]
+paired = false
+
+[lifecycle]
+resume_requires_rehandshake = true
+
+[offline]
+mode = "off"
+
+[artifacts]
+catalog = "/Users/joshuapurtell/Documents/ChatGPT/Synth Prod/b77_variance8_gate_15/checkpoints.sqlite3"
+directory = "/Users/joshuapurtell/Documents/ChatGPT/Synth Prod/b77_fast50_19/b77_fast50_19_val_74/runs"

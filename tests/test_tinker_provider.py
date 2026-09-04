@@ -13,6 +13,45 @@ from synth_optimizers.providers.protocols import (
 )
 
 
+def test_adapter_forwards_user_metadata_when_it_lazily_connects(monkeypatch) -> None:
+    captured = {}
+
+    def connect(api_key, *, base_url=None, user_metadata=None):
+        captured.update(
+            api_key=api_key, base_url=base_url, user_metadata=user_metadata
+        )
+        return FakeTinkerProvider()
+
+    monkeypatch.setattr(
+        "synth_optimizers.providers.tinker.sdk.TinkerSdkTransport.connect", connect
+    )
+    adapter = TinkerAdapter(
+        TinkerCredentials(api_key="fixture", base_url="https://tinker.invalid"),
+        user_metadata={"project": "synth-optimizers", "task": "rl", "run_id": "run-1"},
+    )
+
+    adapter.discover_capabilities("openai/gpt-oss-20b")
+
+    assert captured == {
+        "api_key": "fixture",
+        "base_url": "https://tinker.invalid",
+        "user_metadata": {
+            "project": "synth-optimizers",
+            "task": "rl",
+            "run_id": "run-1",
+        },
+    }
+
+
+def test_adapter_preserves_default_metadata_for_direct_callers() -> None:
+    adapter = TinkerAdapter(TinkerCredentials(api_key="fixture"), transport=object())
+
+    assert adapter.user_metadata == {
+        "project": "synth-optimizers",
+        "task": "sft-cispo",
+    }
+
+
 def test_adapter_is_idempotent_and_does_not_duplicate_paid_work() -> None:
     transport = FakeTinkerProvider()
     adapter = TinkerAdapter(TinkerCredentials(api_key="fixture"), transport=transport)

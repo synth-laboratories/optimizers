@@ -101,6 +101,11 @@
             "sampling_generated_tokens": 14353,
             "sampling_seconds": 0.0,
             "weighted_aggregate_tps": null,
+            "recovered_service_time_seconds": 678.2762199609951,
+            "recovered_service_time_generated_tps": 21.16099544345721,
+            "recovered_training_window_seconds": 306.380093,
+            "recovered_training_window_rollouts_per_minute": 28.200265609293357,
+            "recovered_training_window_generated_tps": 46.84703845951245,
             "revision_start": 0,
             "revision_end": 8
         },
@@ -109,6 +114,8 @@
             "samples_per_task": 8,
             "attempts": 448,
             "maximum_concurrency": 8,
+            "recovered_window_seconds": 690.3560881614685,
+            "recovered_attempts_per_minute": 38.93642782464025,
             "selected_tasks": 9,
             "checkpoint_id": "ckpt_acfd561eda65c74c9fa351ab",
             "attempts_digest": "83760b4b953612e0af65ba4596a5f42dec30da70b735f24eda7defbd47f7ac6f",
@@ -127,6 +134,11 @@
             "sampling_generated_tokens": 20561,
             "sampling_seconds": 0.0,
             "weighted_aggregate_tps": null,
+            "recovered_service_time_seconds": 847.7162321790292,
+            "recovered_service_time_generated_tps": 24.254578619013305,
+            "recovered_training_window_seconds": 556.669756,
+            "recovered_training_window_rollouts_per_minute": 24.143578585217767,
+            "recovered_training_window_generated_tps": 36.935723161507624,
             "revision_start": 8,
             "revision_end": 16
         },
@@ -145,6 +157,8 @@
             "samples_per_task": 8,
             "attempts": 448,
             "maximum_concurrency": 8,
+            "recovered_window_seconds": 554.7146596908569,
+            "recovered_attempts_per_minute": 48.45734564682363,
             "selected_tasks": 6,
             "checkpoint_id": "ckpt_3b5660b22f8a8de4b82cadea",
             "attempts_digest": "595125941eea1fed398df50c31e4cea54661ca386e8ca8edbffcadadc985229b",
@@ -163,6 +177,11 @@
             "sampling_generated_tokens": 51424,
             "sampling_seconds": 0.0,
             "weighted_aggregate_tps": null,
+            "recovered_service_time_seconds": 1964.4392965439765,
+            "recovered_service_time_generated_tps": 26.177444164586742,
+            "recovered_training_window_seconds": 1019.073514,
+            "recovered_training_window_rollouts_per_minute": 33.91315692657674,
+            "recovered_training_window_generated_tps": 50.46152146389706,
             "revision_start": 16,
             "revision_end": 24
         },
@@ -184,7 +203,12 @@
             "sampling_generated_tokens": 86338,
             "sampling_seconds": 0.0,
             "weighted_aggregate_tps": null,
-            "throughput_interpretation": "unavailable because the transport reported zero sampling seconds for every call; do not interpret null TPS as zero"
+            "recovered_service_time_seconds": 3490.431748684001,
+            "recovered_service_time_generated_tps": 24.735621899082272,
+            "recovered_training_window_seconds": 1882.123363,
+            "recovered_training_window_rollouts_per_minute": 30.093670326539584,
+            "recovered_training_window_generated_tps": 45.87265728553628,
+            "throughput_interpretation": "The legacy sampling_seconds and weighted_aggregate_tps fields are invalid because live execution used a deterministic clock. Recovered service time comes from environment-authored per-call durations; recovered training-window rates use provider baseline-save to final-save timestamps and include optimization/checkpoint overhead."
         }
     },
     "final_test": {
@@ -209,10 +233,34 @@
         "valid": true
     },
     "cost": {
-        "provider_reported_usd": 0.0,
+        "provider_reported_usd": null,
         "cost_missing": true,
         "actual_cost_usd": null,
-        "interpretation": "unknown; provider-reported zero is not treated as zero cost"
+        "counted_training_usage": {
+            "prompt_tokens": 599520,
+            "completion_tokens": 86338,
+            "training_tokens": 40563
+        },
+        "rate_card_usd_per_million_tokens": {
+            "prefill_uncached": 0.18,
+            "prefill_cached": 0.036,
+            "sample": 0.45,
+            "train": 0.396,
+            "model": "openai/gpt-oss-20b",
+            "source": "https://tinker-docs.thinkingmachines.ai/tinker/models.json",
+            "observed_date": "2026-09-04"
+        },
+        "counted_training_estimate_usd": {
+            "all_prefill_cached": 0.076497768,
+            "all_prefill_uncached": 0.162828648
+        },
+        "excluded_from_estimate": [
+            "896 screening attempts",
+            "616 paired-evaluation attempts",
+            "failed or retried provider calls not represented in successful receipts",
+            "checkpoint storage"
+        ],
+        "interpretation": "Actual total cost remains unknown because immediate Tinker responses do not contain dollars and delayed billing usage for this experiment was not yet ingested. The range is a partial rate-card estimate for the three successful training runs only, not an invoice or whole-experiment bound."
     },
     "artifacts": {
         "root": "/Users/joshuapurtell/Documents/ChatGPT/Synth Prod/b77_real_uplift_18",

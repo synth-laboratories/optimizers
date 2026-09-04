@@ -17,6 +17,7 @@ could dial, which is not the same fact as the address the listener bound.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,7 @@ from synth_optimizers.rl.plane import (
     plan_origin,
 )
 from synth_optimizers.rl.resolver import ArtifactMissingError
+from synth_optimizers.rl.session import RunClock
 
 #: A port nothing serves. Refused immediately rather than after a timeout.
 DEAD_URL = "http://127.0.0.1:1/"
@@ -140,10 +142,15 @@ def sampling_for(running: RunningContainer) -> SamplingProfile:
     return SamplingProfile(temperature=1.0, top_p=1.0, seed=running.config.seed)
 
 
+def run_clock() -> RunClock:
+    return RunClock(epoch=datetime(2026, 9, 2, 12, tzinfo=UTC))
+
+
 def assemble(running: RunningContainer, tmp_path: Path, **options: Any) -> Plane:
     options.setdefault("provider", StubProvider())
     options.setdefault("environ", {})
     options.setdefault("sampling", sampling_for(running))
+    options.setdefault("clock", run_clock())
     config = options.pop("config", None) or write_config(running, tmp_path)
     return build_plane(config, **options)
 
@@ -243,6 +250,11 @@ def test_a_credential_is_read_from_the_environment_and_never_from_the_config(
     provider = build_provider(config, environ={"TINKER_API_KEY": "  key-from-env  "})
 
     assert provider.credentials.api_key == "key-from-env"
+    assert provider.user_metadata == {
+        "project": "synth-optimizers",
+        "task": "rl",
+        "run_id": config.run_id,
+    }
     assert "key-from-env" not in str(config.redacted_payload())
 
 
@@ -382,6 +394,7 @@ def test_the_context_manager_closes_the_gateway_server_on_success(
         provider=StubProvider(),
         environ={},
         sampling=sampling_for(container),
+        clock=run_clock(),
     ) as plane:
         assert not is_closed(plane.server)
         server = plane.server
@@ -401,6 +414,7 @@ def test_the_context_manager_closes_the_gateway_server_when_the_body_fails(
             provider=StubProvider(),
             environ={},
             sampling=sampling_for(container),
+            clock=run_clock(),
         ) as plane:
             server = plane.server
             raise RuntimeError("the body failed")
@@ -425,6 +439,7 @@ def test_a_failed_later_step_closes_the_listener_an_earlier_step_opened(
                 provider=StubProvider(),
                 environ={},
                 sampling=sampling_for(running),
+                clock=run_clock(),
             )
     finally:
         running.shutdown()

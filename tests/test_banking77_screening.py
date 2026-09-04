@@ -110,7 +110,15 @@ class FakeSession:
         task = rollout_id.split("-")[-2]
         # task 10 is mixed (4/8); task 20 is solved (8/8).
         value = float(sample < 4) if task == "10" else 1.0
-        return SimpleNamespace(trace_digest=f"trace-{rollout_id}"), FakeReward(value)
+        return SimpleNamespace(
+            trace_digest=f"trace-{rollout_id}",
+            usage={
+                "calls": 1,
+                "prompt_tokens": 10,
+                "completion_tokens": sample + 1,
+                "provider_request_ids": [f"request-{rollout_id}"],
+            },
+        ), FakeReward(value)
 
     def terminate(self, _rollout_id: str, **_kwargs) -> None:
         self.terminated.append(_rollout_id)
@@ -161,9 +169,21 @@ def test_screen_runs_single_arm_with_bound_and_writes_durable_receipts(tmp_path:
         samples=8,
         concurrency=3,
         poll_interval=0,
+        wall_clock=iter((100.0, 104.0)).__next__,
+        monotonic_clock=iter((20.0, 24.0)).__next__,
     )
 
     assert manifest["attempt_count"] == 16
+    assert manifest["started_at_unix"] == 100.0
+    assert manifest["finished_at_unix"] == 104.0
+    assert manifest["duration_seconds"] == 4.0
+    assert manifest["attempts_per_second"] == 4.0
+    assert manifest["usage_totals"] == {
+        "calls": 16,
+        "prompt_tokens": 160,
+        "completion_tokens": 72,
+        "total_tokens": 232,
+    }
     assert manifest["selected_train_ids"] == ["banking77/train/10"]
     assert session.max_active == 3
     assert len(gateway.declared) == len(gateway.closed) == 16
@@ -174,9 +194,58 @@ def test_screen_runs_single_arm_with_bound_and_writes_durable_receipts(tmp_path:
     summary = json.loads((tmp_path / "summary.json").read_text())
     persisted = json.loads((tmp_path / "manifest.json").read_text())
     assert len(attempts) == 16
+    assert attempts[0]["usage"] == {
+        "calls": 1,
+        "prompt_tokens": 10,
+        "completion_tokens": 1,
+        "provider_request_ids": ["request-rollout-10-0"],
+    }
     assert summary["tasks"][0]["successes"] == 4
     assert summary["tasks"][1]["successes"] == 8
     assert persisted == manifest
+
+
+@pytest.mark.parametrize("finished", [100.0, 99.0])
+def test_screen_manifest_has_null_rate_for_nonpositive_duration(
+    tmp_path: Path, finished: float
+) -> None:
+    config = replace(
+        _config(), taskset=replace(_config().taskset, train_ids=("banking77/train/10",))
+    )
+    task = TaskSpec(
+        task_id="banking77/train/10",
+        split="train",
+        seed=100,
+        group_id="source",
+        task_family="banking77",
+        content_digest="digest-task",
+    )
+    revision = PolicyRevision(
+        revision=20,
+        revision_id="pg-0@20",
+        checkpoint_id="checkpoint-1",
+        parameter_group_id="pg-0",
+        sampler_reference="tinker://sampler",
+        behavior_fingerprint="fingerprint-1",
+    )
+    plane = SimpleNamespace(
+        session=FakeSession((task,)), gateway=FakeGateway(), binder=FakeBinder(revision)
+    )
+
+    manifest = screen.run_screen(
+        config,
+        plane,
+        selector="checkpoint-1",
+        output=tmp_path,
+        samples=2,
+        concurrency=2,
+        poll_interval=0,
+        wall_clock=iter((100.0, finished)).__next__,
+        monotonic_clock=iter((100.0, finished)).__next__,
+    )
+
+    assert manifest["duration_seconds"] == finished - 100.0
+    assert manifest["attempts_per_second"] is None
 
 
 def test_screen_receipt_keeps_declared_task_seed_constant(tmp_path: Path) -> None:

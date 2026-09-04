@@ -74,6 +74,19 @@ DEFAULT_POLL_LIMIT = 240
 DEFAULT_POLL_INTERVAL_SECONDS = 0.25
 
 
+def _usage_totals(attempts: Sequence["AttemptRow"]) -> dict[str, int]:
+    """Sum portable provider usage counters without inventing missing values."""
+
+    totals = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0}
+    for attempt in attempts:
+        for key in totals:
+            value = attempt.usage.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                totals[key] += int(value)
+    totals["total_tokens"] = totals["prompt_tokens"] + totals["completion_tokens"]
+    return totals
+
+
 class EvaluationError(EvidenceError):
     """The evaluation cannot produce a comparable number. Never degraded."""
 
@@ -247,6 +260,7 @@ class AttemptRow:
     checkpoint_ids: tuple[str, ...]
     sampler_references: tuple[str, ...]
     trace_digest: str = ""
+    usage: Mapping[str, Any] = field(default_factory=dict)
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -262,6 +276,7 @@ class AttemptRow:
             "checkpoint_ids": list(self.checkpoint_ids),
             "sampler_references": list(self.sampler_references),
             "trace_digest": self.trace_digest,
+            "usage": dict(self.usage),
         }
 
 
@@ -306,6 +321,7 @@ class ArmResult:
             "loaded_sampler_references": list(self.loaded_sampler_references),
             "attempts": [attempt.to_payload() for attempt in self.attempts],
             "attempt_count": len(self.attempts),
+            "usage_totals": _usage_totals(self.attempts),
             "mean_reward": self.mean_reward,
         }
 
@@ -409,6 +425,11 @@ class EvaluationReceipt:
     handshake_id: str = ""
     agreement_digest: str = ""
     created_at: str = ""
+    started_at: str = ""
+    finished_at: str = ""
+    duration_seconds: float = 0.0
+    attempt_count: int = 0
+    attempts_per_second: float | None = None
     schema_version: str = EVALUATION_RECEIPT_SCHEMA_VERSION
 
     @property
@@ -420,10 +441,17 @@ class EvaluationReceipt:
         )
 
     def to_payload(self) -> dict[str, Any]:
+        attempts = self.baseline.attempts + self.trained.attempts
         return {
             "schema_version": self.schema_version,
             "evaluation_id": self.evaluation_id,
             "created_at": self.created_at,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "duration_seconds": self.duration_seconds,
+            "attempt_count": self.attempt_count,
+            "attempts_per_second": self.attempts_per_second,
+            "usage_totals": _usage_totals(attempts),
             "split": self.split,
             "metric_name": self.metric_name,
             "handshake_id": self.handshake_id,
@@ -477,17 +505,22 @@ class PairedEvaluation:
         gateway: SamplerGateway,
         binder: PolicyBinder,
         clock: Any = utc_now,
+        monotonic_clock: Any = time.monotonic,
     ) -> None:
         self._resolver = resolver
         self._session = session
         self._gateway = gateway
         self._binder = binder
         self._clock = clock
+        self._monotonic_clock = monotonic_clock
 
     # ------------------------------------------------------------------ run
 
     def run(self, request: EvaluationRequest) -> EvaluationReceipt:
         """Resolve, verify, then run both arms. Refusals happen before attempts."""
+
+        started_at = self._clock()
+        monotonic_started = self._monotonic_clock()
 
         requirement = CompatibilityRequirement.from_renderer_profile(
             self._gateway.renderer_profile,
@@ -533,6 +566,9 @@ class PairedEvaluation:
             )
         )
         bindings = self._record(request, results, summary)
+        finished_at = self._clock()
+        duration_seconds = self._monotonic_clock() - monotonic_started
+        attempt_count = sum(len(result.attempts) for result in results.values())
         return EvaluationReceipt(
             evaluation_id=request.evaluation_id,
             split=request.split,
@@ -548,7 +584,14 @@ class PairedEvaluation:
             metric_name=request.metric_name,
             handshake_id=self._session.handshake_id,
             agreement_digest=self._session.agreement_digest,
-            created_at=self._clock(),
+            created_at=finished_at,
+            started_at=started_at,
+            finished_at=finished_at,
+            duration_seconds=duration_seconds,
+            attempt_count=attempt_count,
+            attempts_per_second=(
+                attempt_count / duration_seconds if duration_seconds > 0 else None
+            ),
         )
 
     # ----------------------------------------------------- resolve / verify
@@ -840,6 +883,7 @@ class PairedEvaluation:
             checkpoint_ids=bound.resolution.checkpoint_ids,
             sampler_references=bound.loaded_refs,
             trace_digest=episode.trace_digest,
+            usage=dict(episode.usage),
         )
 
     # ------------------------------------------------------------ recording
@@ -892,11 +936,18 @@ def evaluate(
     gateway: SamplerGateway,
     binder: PolicyBinder,
     receipts_dir: str | Path | None = None,
+    clock: Any = utc_now,
+    monotonic_clock: Any = time.monotonic,
 ) -> EvaluationReceipt:
     """Run one paired evaluation and, when asked, persist its receipt."""
 
     receipt = PairedEvaluation(
-        resolver, session=session, gateway=gateway, binder=binder
+        resolver,
+        session=session,
+        gateway=gateway,
+        binder=binder,
+        clock=clock,
+        monotonic_clock=monotonic_clock,
     ).run(request)
     if receipts_dir is not None:
         receipt.write(receipts_dir)

@@ -8,6 +8,7 @@ Nothing sleeps, nothing reaches a network beyond loopback, and nothing spends.
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import UTC, datetime
 
 import pytest
 from fakes import scenarios
@@ -17,7 +18,27 @@ from synth_optimizers.rl import config as config_module
 from synth_optimizers.rl.capabilities import PreflightRejected
 from synth_optimizers.rl.handshake import ClauseRejected
 from synth_optimizers.rl.probe import ProbeError
-from synth_optimizers.rl.session import SessionError, start_session
+from synth_optimizers.rl import session as session_module
+from synth_optimizers.rl.session import LiveRunClock, RunClock, SessionError, start_session
+
+
+def test_live_clock_advances_while_explicit_run_clock_remains_deterministic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    readings = iter((102.5, 104.0))
+    monkeypatch.setattr(session_module.time, "monotonic", lambda: next(readings))
+    live = LiveRunClock(
+        _monotonic_origin=100.0,
+        _utc_origin=datetime(2026, 9, 4, tzinfo=UTC),
+    )
+
+    assert live.now() == pytest.approx(2.5)
+    assert live.utc() == datetime(2026, 9, 4, 0, 0, 4, tzinfo=UTC)
+
+    deterministic = RunClock()
+    assert deterministic.now() == 0.0
+    deterministic.advance(3.0)
+    assert deterministic.now() == 3.0
 
 def _sampling(config) -> SamplingProfile:
     return SamplingProfile(temperature=1.0, top_p=1.0, seed=config.seed)

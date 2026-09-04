@@ -541,6 +541,12 @@ class FakeSession:
             segments=(segment(revision),),
             terminal_status="completed",
             trace_digest=trace_digest,
+            usage={
+                "calls": 1,
+                "prompt_tokens": 10 + int(record["seed"]),
+                "completion_tokens": 2,
+                "provider_request_ids": [str(record["proxy_request_id"])],
+            },
         )
         reward = RewardRecord(
             reward_id=f"reward_{rollout_id}",
@@ -647,6 +653,56 @@ def test_paired_arms_run_identical_seeds_and_produce_a_comparable_summary(world:
         "eval_0001::trained",
     }
     assert sorted(gateway.closed) == sorted(item[0] for item in gateway.bound)
+
+
+def test_evaluation_receipt_records_exact_injected_timing_and_throughput(world: World) -> None:
+    utc_values = iter(("2026-09-04T12:00:00Z", "2026-09-04T12:00:08Z"))
+    monotonic_values = iter((100.0, 108.0))
+    receipt = PairedEvaluation(
+        world.resolver,
+        session=session_for(),
+        gateway=FakeGateway(),
+        binder=FakeBinder(world.catalog),
+        clock=lambda: next(utc_values),
+        monotonic_clock=lambda: next(monotonic_values),
+    ).run(request_for(trained="ckpt_primary_u1", baseline="ckpt_baseline_primary"))
+
+    assert receipt.started_at == "2026-09-04T12:00:00Z"
+    assert receipt.finished_at == receipt.created_at == "2026-09-04T12:00:08Z"
+    assert receipt.duration_seconds == 8.0
+    assert receipt.attempt_count == 4
+    assert receipt.attempts_per_second == 0.5
+    assert receipt.to_payload()["attempts_per_second"] == 0.5
+    assert receipt.baseline.attempts[0].usage["provider_request_ids"]
+    assert receipt.to_payload()["usage_totals"] == {
+        "calls": 4,
+        "prompt_tokens": 56,
+        "completion_tokens": 8,
+        "total_tokens": 64,
+    }
+    assert receipt.to_payload()["arms"][BASELINE_ARM]["usage_totals"] == {
+        "calls": 2,
+        "prompt_tokens": 28,
+        "completion_tokens": 4,
+        "total_tokens": 32,
+    }
+
+
+@pytest.mark.parametrize("finished", [100.0, 99.0])
+def test_evaluation_receipt_has_null_rate_for_nonpositive_duration(
+    world: World, finished: float
+) -> None:
+    monotonic_values = iter((100.0, finished))
+    receipt = PairedEvaluation(
+        world.resolver,
+        session=session_for(),
+        gateway=FakeGateway(),
+        binder=FakeBinder(world.catalog),
+        clock=lambda: "2026-09-04T12:00:00Z",
+        monotonic_clock=lambda: next(monotonic_values),
+    ).run(request_for(trained="ckpt_primary_u1", baseline="ckpt_baseline_primary"))
+
+    assert receipt.attempts_per_second is None
 
 
 def test_every_origin_is_bound_with_the_task_and_seed_it_will_run(world: World) -> None:

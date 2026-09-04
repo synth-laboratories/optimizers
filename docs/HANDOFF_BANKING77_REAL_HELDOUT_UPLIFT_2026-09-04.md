@@ -75,9 +75,28 @@ stop with `target_train_updates_reached` rather than counting zero-variance
 groups as updates.
 
 Across run 15 and the two resumed stages, sampling produced 86,338 tokens over
-944 rollouts. The transport recorded `sampling_seconds: 0.0` and
-`weighted_aggregate_tps: null` for all three runs, so throughput is unavailable;
-null TPS must not be reported as zero throughput.
+944 rollouts. The legacy `sampling_seconds: 0.0` and
+`weighted_aggregate_tps: null` fields are invalid: live assembly accidentally
+used the deterministic replay clock. Throughput was recovered independently
+from environment-authored call durations and provider checkpoint timestamps:
+
+| Phase | Rollouts | Training window | Rollouts/min | Generated tokens/s | Service-time tokens/s |
+|---|---:|---:|---:|---:|---:|
+| Run 15, revisions 0–8 | 144 | 306.380 s | 28.20 | 46.85 | 21.16 |
+| Stage 1, revisions 8–16 | 224 | 556.670 s | 24.14 | 36.94 | 24.25 |
+| Stage 2, revisions 16–24 | 576 | 1,019.074 s | 33.91 | 50.46 | 26.18 |
+| Combined training phases | 944 | 1,882.123 s | **30.09** | **45.87** | **24.74** |
+
+“Training window” means the provider baseline-save-to-final-save interval, so
+it includes sampling, optimizer calls, and checkpoint overhead. “Service-time”
+divides generated tokens by the sum of each concurrent call's duration; it is a
+latency-oriented rate and must not be mistaken for end-to-end system throughput.
+
+The two eight-sample curriculum screens each executed 448 attempts at maximum
+concurrency eight. Stage 1 took 690.356 seconds (**38.94 attempts/min**); Stage 2
+took 554.715 seconds (**48.46 attempts/min**). Historical evaluation receipts
+did not record a start time, so evaluation throughput cannot be recovered
+without inventing one.
 
 Durable training receipts:
 
@@ -143,6 +162,14 @@ The evaluation-specific immutable digest maps are in `evaluation_stage1/`,
   ref/digest rather than an arbitrary digest map;
 - recorded cross-run lineage, full checkpoint fields, resume resolution, and
   per-update loss-weight summaries in durable receipts.
+- replaced the deterministic live clock with a monotonic production clock and
+  made future sampling receipts distinguish summed service time from true
+  earliest-submit-to-latest-score makespan;
+- retained per-attempt usage and real duration in future screening/evaluation
+  receipts, while attaching project/task/run IDs to new Tinker sessions for
+  delayed billing reconciliation;
+- changed provider-usage receipts so a missing dollar amount is `null` with
+  `cost_missing: true`; a known zero remains distinguishable from an unknown.
 
 Run 13 remains invalid evidence: its 60 optimizer calls had zero effective
 gradients because advantages were lost at the provider boundary. Run 15 is
@@ -152,12 +179,34 @@ above is the first sealed positive final-panel result.
 
 ## Cost and operational status
 
-Tinker reports `provider_cost: 0.0`, but every train call carries
-`cost_missing: true`. Therefore monetary cost is **unknown**, not zero. Token
-and call counts above are authoritative; cost attribution is not.
+Tinker's immediate SDK responses do not contain dollar amounts. The old receipt
+binder converted that absence to `provider_cost: 0.0`, even while retaining
+`cost_missing: true`; that zero was not a provider quote and must not be treated
+as spend. The receipt path now serializes the amount as `null` whenever any
+component is missing.
+
+The three successful training runs do have authoritative counted usage: 599,520
+prompt tokens, 86,338 sampled tokens, and 40,563 training tokens. Using Tinker's
+2026-09-04 `openai/gpt-oss-20b` rates—$0.18/M uncached prefill, $0.036/M cached
+prefill, $0.45/M sampled, and $0.396/M trained—the counted training portion is
+estimated at **$0.0765 if every prompt token was cached** through **$0.1628 if
+none was cached**. Rate source:
+<https://tinker-docs.thinkingmachines.ai/tinker/models.json>.
+
+This is intentionally not labeled total experiment cost. It excludes 896
+screening attempts, 616 paired-evaluation attempts, failed/retried calls not in
+the successful receipts, and checkpoint storage. The authenticated billing feed
+was checked read-only, but it had not yet ingested this experiment's time range;
+Tinker documents billing as usage events rather than immediate per-response
+dollars: <https://tinker-docs.thinkingmachines.ai/tinker/api-reference/types/billingusageevent/>.
+Old sessions also lacked run IDs, preventing safe whole-experiment attribution
+from the partial feed. New sessions carry `project`, `task`, and `run_id`, and
+screen/evaluation receipts retain tokens, so a delayed feed can now be joined to
+one run without guessing.
 
 - Focused resume/binder/executor regressions: 48 passed; Ruff passed.
-- Final repository-wide test status: **1,073 passed in 156.61 seconds**.
+- Final repository-wide test status after the telemetry/cost follow-up:
+  **1,085 passed in 158.30 seconds**.
 - Ruff passes across every file changed by this experiment. A repository-wide
   Ruff invocation still finds unrelated pre-existing findings in `.live-qa/`,
   `temp/`, and `tests/test_gsm8k_eval_target.py`; none of those files was

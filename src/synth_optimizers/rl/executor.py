@@ -1435,11 +1435,18 @@ class ContainerRunExecutor:
     def _provider_usage(self) -> Mapping[str, Any]:
         rows = []
         cost = 0.0
+        cost_missing = False
         tokens = 0
         examples = 0
         for record in self.updates:
             for parameter_group, outcome in record.outcomes.items():
-                cost += outcome.provider_cost
+                outcome_cost_missing = bool(outcome.metrics.get("cost_missing", False))
+                if outcome_cost_missing:
+                    cost_missing = True
+                    receipted_cost: float | None = None
+                else:
+                    receipted_cost = outcome.provider_cost
+                    cost += outcome.provider_cost
                 tokens += outcome.tokens
                 examples += outcome.examples
                 rows.append(
@@ -1449,14 +1456,16 @@ class ContainerRunExecutor:
                         "request_ids": list(outcome.request_ids),
                         "examples": outcome.examples,
                         "training_tokens": outcome.tokens,
-                        "provider_cost": outcome.provider_cost,
+                        "provider_cost": receipted_cost,
+                        "cost_missing": outcome_cost_missing,
                         "metrics": dict(outcome.metrics),
                     }
                 )
         return {
             "train_calls": rows,
             "totals": {
-                "provider_cost": cost,
+                "provider_cost": None if cost_missing else cost,
+                "cost_missing": cost_missing,
                 "training_tokens": tokens,
                 "examples": examples,
                 "train_calls": len(rows),
@@ -1467,12 +1476,16 @@ class ContainerRunExecutor:
     def _sampling_tps(self) -> Mapping[str, Any]:
         rows = []
         total_tokens = 0
-        total_seconds = 0.0
+        service_seconds = 0.0
+        submitted: list[float] = []
+        scored: list[float] = []
         for record in self._records():
             seconds = record.seconds
             tokens = record.generated_tokens
             total_tokens += tokens
-            total_seconds += seconds
+            service_seconds += seconds
+            submitted.append(record.submitted_at)
+            scored.append(record.scored_at)
             rows.append(
                 {
                     "rollout_id": record.rollout_id,
@@ -1481,13 +1494,34 @@ class ContainerRunExecutor:
                     "tokens_per_second": (tokens / seconds) if seconds > 0 else None,
                 }
             )
+        makespan_seconds = (
+            max(max(scored) - min(submitted), 0.0) if submitted and scored else 0.0
+        )
+        rollout_count = len(rows)
         return {
             "by_call": rows,
+            "clock_source": type(self.clock).__name__,
+            "service_time_semantics": "sum_of_per_call_submit_to_score_seconds",
+            "makespan_semantics": "earliest_submit_to_latest_score_seconds",
+            "service_time_generated_tps": (
+                (total_tokens / service_seconds) if service_seconds > 0 else None
+            ),
+            # Backward-compatible aliases. These have always described summed
+            # per-call service time, not concurrent wall-clock throughput.
             "weighted_aggregate_tps": (
-                (total_tokens / total_seconds) if total_seconds > 0 else None
+                (total_tokens / service_seconds) if service_seconds > 0 else None
             ),
             "generated_tokens": total_tokens,
-            "sampling_seconds": total_seconds,
+            "sampling_seconds": service_seconds,
+            "service_time_seconds": service_seconds,
+            "makespan_seconds": makespan_seconds,
+            "rollout_count": rollout_count,
+            "end_to_end_generated_tps": (
+                (total_tokens / makespan_seconds) if makespan_seconds > 0 else None
+            ),
+            "end_to_end_rollouts_per_second": (
+                (rollout_count / makespan_seconds) if makespan_seconds > 0 else None
+            ),
         }
 
     def _catalog_payload(self) -> list[Mapping[str, Any]]:

@@ -21,6 +21,7 @@ No task, harness, environment or algorithm name appears in this module.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -114,6 +115,20 @@ class RunClock:
             raise SessionError("a monotone clock cannot go backwards")
         self.elapsed += float(seconds)
         return self.elapsed
+
+
+@dataclass(slots=True)
+class LiveRunClock:
+    """Production clock: process-monotone durations and real UTC timestamps."""
+
+    _monotonic_origin: float = field(default_factory=time.monotonic)
+    _utc_origin: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+    def now(self) -> float:
+        return time.monotonic() - self._monotonic_origin
+
+    def utc(self) -> datetime:
+        return self._utc_origin + timedelta(seconds=self.now())
 
 
 # --------------------------------------------------------------------------- #

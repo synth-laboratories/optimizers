@@ -75,7 +75,7 @@ from .gateway import (
 from .policy_sets import PolicySetPublisher
 from .ports import PortError
 from .resolver import ArtifactMissingError, EvaluationResolver
-from .session import ContractContainerSession, RunClock, start_session
+from .session import ContractContainerSession, LiveRunClock, RunClock, start_session
 
 PLANE_SCHEMA_VERSION = "cispo.plane.v1"
 
@@ -352,7 +352,14 @@ def build_provider(config: RunConfig, *, environ: Mapping[str, str] | None = Non
     base_url = str(source.get(PROVIDER_BASE_URL_ENV.get(name, ""), "") or "").strip() or None
     from ..providers.tinker.client import TinkerAdapter, TinkerCredentials
 
-    return TinkerAdapter(TinkerCredentials(api_key=credential, base_url=base_url))
+    return TinkerAdapter(
+        TinkerCredentials(api_key=credential, base_url=base_url),
+        user_metadata={
+            "project": "synth-optimizers",
+            "task": "rl",
+            "run_id": config.run_id,
+        },
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -674,7 +681,9 @@ def build_plane(
     closes whatever the earlier steps opened before it propagates.
     """
 
-    run_clock = clock or RunClock()
+    # A deterministic RunClock is injected by tests and replay. Live assembly
+    # must advance without an operator manually ticking it.
+    run_clock = clock if clock is not None else LiveRunClock()
     sampling_profile = sampling or SamplingProfile()
     with ExitStack() as stack:
         # 1. The container client, and with it the declared contract.

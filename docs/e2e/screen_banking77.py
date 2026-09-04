@@ -28,6 +28,20 @@ FINALIZABLE = frozenset({"completed", "failed", "cancelled", "scored", "awaiting
 SCHEMA_VERSION = "banking77.screening.v1"
 
 
+def _usage_totals(attempts: list[Mapping[str, Any]]) -> dict[str, int]:
+    totals = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0}
+    for attempt in attempts:
+        usage = attempt.get("usage")
+        if not isinstance(usage, Mapping):
+            continue
+        for key in totals:
+            value = usage.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                totals[key] += int(value)
+    totals["total_tokens"] = totals["prompt_tokens"] + totals["completion_tokens"]
+    return totals
+
+
 def selected_task_ids(summary: list[Mapping[str, Any]]) -> list[str]:
     """Return rows with mixed binary outcomes, preserving input order."""
 
@@ -86,6 +100,8 @@ def run_screen(
     concurrency: int = 8,
     poll_limit: int = 240,
     poll_interval: float = 0.25,
+    wall_clock: Any = time.time,
+    monotonic_clock: Any = time.monotonic,
 ) -> Mapping[str, Any]:
     if samples < 2:
         raise ValueError("screening needs at least two samples per task")
@@ -102,7 +118,8 @@ def run_screen(
         raise ValueError(f"container did not resolve train task(s): {missing}")
 
     attempts: list[dict[str, Any]] = []
-    started = time.time()
+    started = wall_clock()
+    monotonic_started = monotonic_clock()
     for task_number, task_id in enumerate(config.taskset.train_ids):
         base_task = by_id[task_id]
         group_id = f"{config.run_id}::screen::{task_number:04d}"
@@ -176,6 +193,7 @@ def run_screen(
                                 "reward_channel": channel,
                                 "rollout_id": rollout_id,
                                 "trace_digest": episode.trace_digest,
+                                "usage": dict(episode.usage),
                                 "terminal_status": reward.terminal_status,
                                 "checkpoint_id": revision.checkpoint_id,
                                 "policy_revision_id": revision.revision_id,
@@ -215,6 +233,8 @@ def run_screen(
     summary_path = output / "summary.json"
     _write_json(attempts_path, attempts)
     _write_json(summary_path, {"tasks": summary, "selected_train_ids": selected})
+    finished = wall_clock()
+    duration_seconds = monotonic_clock() - monotonic_started
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "run_id": config.run_id,
@@ -230,10 +250,15 @@ def run_screen(
         "maximum_concurrency": concurrency,
         "task_count": len(summary),
         "attempt_count": len(attempts),
+        "duration_seconds": duration_seconds,
+        "attempts_per_second": (
+            len(attempts) / duration_seconds if duration_seconds > 0 else None
+        ),
+        "usage_totals": _usage_totals(attempts),
         "selected_count": len(selected),
         "selected_train_ids": selected,
         "started_at_unix": started,
-        "finished_at_unix": time.time(),
+        "finished_at_unix": finished,
         "attempts_file": attempts_path.name,
         "attempts_digest": digest(attempts),
         "summary_file": summary_path.name,

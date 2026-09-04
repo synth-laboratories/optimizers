@@ -56,11 +56,19 @@ class TinkerAdapter:
         credentials: TinkerCredentials,
         *,
         transport: Any | None = None,
+        user_metadata: Mapping[str, str] | None = None,
         max_attempts: int = 3,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.credentials = credentials
         self._transport = transport
+        # Preserve the adapter's historical attribution for existing direct
+        # SFT/CISPO callers. RL assembly supplies its own run-scoped metadata.
+        self.user_metadata = dict(
+            user_metadata
+            if user_metadata is not None
+            else {"project": "synth-optimizers", "task": "sft-cispo"}
+        )
         self.max_attempts = max(1, max_attempts)
         self._sleep = sleep
         self._sessions: dict[str, Any] = {}
@@ -283,7 +291,9 @@ class TinkerAdapter:
         from .sdk import TinkerSdkTransport
 
         self._transport = TinkerSdkTransport.connect(
-            self.credentials.api_key, base_url=self.credentials.base_url
+            self.credentials.api_key,
+            base_url=self.credentials.base_url,
+            user_metadata=self.user_metadata,
         )
         return self._transport
 

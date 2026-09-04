@@ -368,6 +368,70 @@ def test_a_one_sided_save_leaves_the_prior_set_live(tmp_path) -> None:
 # --------------------------------------------------------------------------- #
 
 
+def test_provider_usage_preserves_known_zero_cost(tmp_path: Path) -> None:
+    with build_plane(_solo(), tmp_path) as plane:
+        executor = _executor(plane, tmp_path, group_size=2, target_train_updates=1)
+        executor.run(max_ticks=20, on_tick=_advance(plane))
+
+        usage = executor._provider_usage()
+
+        assert usage["train_calls"][0]["provider_cost"] == 0.0
+        assert usage["train_calls"][0]["cost_missing"] is False
+        assert usage["totals"]["provider_cost"] == 0.0
+        assert usage["totals"]["cost_missing"] is False
+
+
+def test_provider_usage_preserves_missing_cost_as_null(tmp_path: Path) -> None:
+    with build_plane(_solo(), tmp_path) as plane:
+        executor = _executor(plane, tmp_path, group_size=2, target_train_updates=1)
+        executor.run(max_ticks=20, on_tick=_advance(plane))
+        update = executor.updates[0]
+        outcome = update.outcomes["pg_primary"]
+        executor.updates[0] = replace(
+            update,
+            outcomes={
+                "pg_primary": replace(
+                    outcome,
+                    provider_cost=0.0,
+                    metrics={**outcome.metrics, "cost_missing": True},
+                )
+            },
+        )
+
+        usage = executor._provider_usage()
+
+        assert usage["train_calls"][0]["provider_cost"] is None
+        assert usage["train_calls"][0]["cost_missing"] is True
+        assert usage["totals"]["provider_cost"] is None
+        assert usage["totals"]["cost_missing"] is True
+
+
+def test_provider_usage_mixed_known_and_missing_cost_has_unknown_total(
+    tmp_path: Path,
+) -> None:
+    with build_plane(_solo(), tmp_path) as plane:
+        executor = _executor(plane, tmp_path, group_size=2, target_train_updates=1)
+        executor.run(max_ticks=20, on_tick=_advance(plane))
+        update = executor.updates[0]
+        original = update.outcomes["pg_primary"]
+        known = replace(original, provider_cost=1.25, metrics={**original.metrics})
+        missing = replace(
+            original,
+            provider_cost=0.0,
+            metrics={**original.metrics, "cost_missing": True},
+        )
+        executor.updates[0] = replace(
+            update, outcomes={"pg_known": known, "pg_missing": missing}
+        )
+
+        usage = executor._provider_usage()
+
+        assert [row["provider_cost"] for row in usage["train_calls"]] == [1.25, None]
+        assert [row["cost_missing"] for row in usage["train_calls"]] == [False, True]
+        assert usage["totals"]["provider_cost"] is None
+        assert usage["totals"]["cost_missing"] is True
+
+
 def test_the_receipt_directory_carries_every_artifact_the_note_lists(tmp_path) -> None:
     with build_plane(scenarios.competitive_realtime(), tmp_path) as plane:
         executor = _executor(plane, tmp_path, group_size=2, target_train_updates=1)
@@ -419,7 +483,11 @@ def test_the_receipt_directory_carries_every_artifact_the_note_lists(tmp_path) -
 
         usage = json.loads((directory / "provider_usage.json").read_text())
         assert usage["totals"]["train_calls"] == 2
+        assert usage["totals"]["provider_cost"] == 0.0
+        assert usage["totals"]["cost_missing"] is False
         assert usage["train_calls"][0]["request_ids"]
+        assert usage["train_calls"][0]["provider_cost"] == 0.0
+        assert usage["train_calls"][0]["cost_missing"] is False
 
         catalog = _rows(directory / "checkpoint_catalog.jsonl")
         assert len(catalog) >= 4  # two baselines plus two trained components
@@ -447,12 +515,48 @@ def test_the_receipt_directory_carries_every_artifact_the_note_lists(tmp_path) -
 
         tps = json.loads((directory / "sampling_tps.json").read_text())
         assert tps["by_call"] and tps["generated_tokens"] > 0
+        assert tps["clock_source"] == "RunClock"
+        assert tps["service_time_semantics"] == "sum_of_per_call_submit_to_score_seconds"
+        assert tps["makespan_semantics"] == "earliest_submit_to_latest_score_seconds"
+        assert tps["service_time_seconds"] == tps["sampling_seconds"]
+        assert tps["service_time_generated_tps"] == tps["weighted_aggregate_tps"]
+        assert tps["makespan_seconds"] >= 0
+        assert tps["rollout_count"] == len(tps["by_call"])
+        if tps["makespan_seconds"] == 0:
+            assert tps["end_to_end_generated_tps"] is None
+            assert tps["end_to_end_rollouts_per_second"] is None
 
         traces = _rows(directory / "traces.jsonl")
         assert traces[0]["trace_digest"]
         receipts = _rows(directory / "reward_receipts.jsonl")
         assert receipts[0]["reward_id"]
 
+
+def test_sampling_tps_distinguishes_service_time_from_concurrent_makespan(
+    tmp_path: Path,
+) -> None:
+    with build_plane(_solo(), tmp_path) as plane:
+        executor = _executor(plane, tmp_path, group_size=2, target_train_updates=1)
+        executor.run(max_ticks=20, on_tick=_advance(plane))
+        for index, (key, record) in enumerate(executor.evidence.items()):
+            executor.evidence[key] = replace(
+                record,
+                submitted_at=float(index),
+                scored_at=float(index + 2),
+            )
+
+        tps = executor._sampling_tps()
+
+        assert tps["service_time_seconds"] == 4.0
+        assert tps["makespan_seconds"] == 3.0
+        assert tps["rollout_count"] == 2
+        assert tps["service_time_generated_tps"] == pytest.approx(
+            tps["generated_tokens"] / 4.0
+        )
+        assert tps["end_to_end_generated_tps"] == pytest.approx(
+            tps["generated_tokens"] / 3.0
+        )
+        assert tps["end_to_end_rollouts_per_second"] == pytest.approx(2.0 / 3.0)
 
 def test_the_receipt_says_whether_the_renderer_was_ever_verified() -> None:
     """Identity is not agreement, and a receipt must not conflate them.

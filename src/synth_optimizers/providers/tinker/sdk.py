@@ -61,7 +61,13 @@ class TinkerSdkTransport:
         self.cancelled: set[str] = set()
 
     @classmethod
-    def connect(cls, api_key: str, *, base_url: str | None = None) -> "TinkerSdkTransport":
+    def connect(
+        cls,
+        api_key: str,
+        *,
+        base_url: str | None = None,
+        user_metadata: Mapping[str, str] | None = None,
+    ) -> "TinkerSdkTransport":
         apply_macos_tls()
         try:
             import tinker
@@ -70,10 +76,7 @@ class TinkerSdkTransport:
         kwargs: dict[str, Any] = {"api_key": api_key}
         if base_url:
             kwargs["base_url"] = base_url
-        service = tinker.ServiceClient(
-            user_metadata={"project": "synth-optimizers", "task": "sft-cispo"},
-            **kwargs,
-        )
+        service = tinker.ServiceClient(user_metadata=dict(user_metadata or {}), **kwargs)
         return cls(service, tinker_module=tinker, validation_receipt=default_receipt_path())
 
     def capabilities(self, model_id: str) -> dict[str, Any]:

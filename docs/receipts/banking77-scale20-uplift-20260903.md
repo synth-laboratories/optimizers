@@ -1,5 +1,10 @@
 # Banking77 scaled throughput and uplift run
 
+> Follow-up: run 11 subsequently demonstrated +2.60 percentage-point uplift
+> on a new untouched 77-intent heldout panel. See
+> `banking77-hard20-uplift-20260904.md`. The negative run-10 result below is
+> retained as development evidence rather than overwritten.
+
 Run `b77_scale20_uplift_10` is the terminal scaled experiment. It used the
 container's declared ceiling of eight concurrent attempts, group size eight,
 two trainable groups per optimizer update, a fixed `2e-4` learning rate, and a

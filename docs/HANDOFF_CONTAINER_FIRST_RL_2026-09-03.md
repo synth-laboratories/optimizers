@@ -111,6 +111,15 @@ uplift over serializing the same call durations. Fourteen optimizer updates did
 not improve quality: heldout moved 81.82% to 80.52%, and the fixed-alpha train
 EMA moved 81.25% to 79.51%.
 
+Run 11 then used those misses to select separate training rows and evaluated on
+a new untouched 77-intent panel at temperature zero. It demonstrated genuine
+heldout uplift: 74.03% baseline to 76.62% trained, +2.60 percentage points,
+with 2 wins, 0 losses and 75 ties. Its 640 training rollouts completed at
+40.08/minute, a measured 2.03x overlap uplift. The fixed-alpha train EMA was
+still negative (63.54% to 55.26%) because 66/80 exact-match groups had zero
+variance. Full evidence is in
+`docs/receipts/banking77-hard20-uplift-20260904.md`.
+
 ## Original snapshot
 
 The design document is

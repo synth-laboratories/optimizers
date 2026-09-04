@@ -1,0 +1,76 @@
+{
+  "schema_version": "synth.banking77-hard-intent-uplift.v1",
+  "run_id": "b77_hard20_uplift_11",
+  "training": {
+    "temperature": 1.3,
+    "learning_rate": 0.00005,
+    "sampled_groups": 80,
+    "group_size": 8,
+    "rollouts": 640,
+    "trained_groups": 14,
+    "skipped_zero_variance_groups": 66,
+    "stale_groups": 0,
+    "optimizer_updates": 7,
+    "target_optimizer_updates": 20,
+    "stop_reason": "sampled_group_budget_exhausted",
+    "prompt_tokens": 406224,
+    "completion_tokens": 39592,
+    "training_tokens": 80844
+  },
+  "throughput": {
+    "execution_window_seconds": 958.0657292910037,
+    "observed_rollouts_per_minute": 40.08075732801455,
+    "summed_provider_duration_seconds": 1946.0471498771803,
+    "serial_equivalent_rollouts_per_minute": 19.732307103876447,
+    "overlap_uplift_ratio": 2.031225092789105,
+    "overlap_uplift_percent": 103.12250927891048,
+    "peak_concurrency": 8
+  },
+  "train_ema": {
+    "alpha": 0.2,
+    "definition": "EMA over chronological policy-revision batch mean rewards; uplift is final EMA minus revision-zero batch mean",
+    "policy_revision_batch_means": [
+      0.6354166666666666,
+      0.4083333333333333,
+      0.6875,
+      0.525,
+      0.5,
+      0.6964285714285714,
+      0.6428571428571429,
+      0.3333333333333333
+    ],
+    "ema_series": [
+      0.6354166666666666,
+      0.59,
+      0.6094999999999999,
+      0.5926,
+      0.57408,
+      0.5985497142857144,
+      0.6074112,
+      0.5525956266666667
+    ],
+    "initial_batch_mean": 0.6354166666666666,
+    "final_ema": 0.5525956266666667,
+    "uplift": -0.0828210399999999
+  },
+  "heldout": {
+    "temperature": 0.0,
+    "pairs": 77,
+    "intent_coverage": 77,
+    "panel_reused_from_prior_evaluations": false,
+    "baseline_mean": 0.7402597402597403,
+    "trained_mean": 0.7662337662337663,
+    "mean_uplift": 0.025974025974025976,
+    "wins": 2,
+    "losses": 0,
+    "ties": 75
+  },
+  "checkpoints": {
+    "baseline": "ckpt_994a88c0b011509cf2ead24b",
+    "trained": "ckpt_6513c3ac97d6ce4a3a89cc5e"
+  },
+  "artifacts": {
+    "training_receipts": "/tmp/synth-container-first-e2e/receipts_banking77_hard20_paid_11",
+    "paired_evaluation": "/tmp/synth-container-first-e2e/receipts_banking77_hard20_eval_11/b77_hard20_uplift_11_fresh_heldout_77.evaluation.json"
+  }
+}

@@ -60,10 +60,12 @@ ARMS: tuple[str, str] = (BASELINE_ARM, TRAINED_ARM)
 #: Terminal states a container may report. Anything else is still in flight.
 TERMINAL_STATES = frozenset({"completed", "failed", "cancelled"})
 
-#: A scored attempt is ready to finalize even though it is not yet terminal.
-#: ``awaiting_score`` deliberately is not here: a deferred verifier has not
-#: produced a measure yet, and polling stops only when there is one.
-FINALIZABLE_STATES = TERMINAL_STATES | {"scored"}
+#: Scored and awaiting-score attempts are ready for the explicit finalization
+#: barrier.  Immediate scorers may expose ``awaiting_score`` until that barrier
+#: seals the episode and publishes its reward.  Deferred scorers may still
+#: refuse evidence after finalization; that remains a typed evidence failure,
+#: never a fabricated zero.
+FINALIZABLE_STATES = TERMINAL_STATES | {"scored", "awaiting_score"}
 
 DEFAULT_POLL_LIMIT = 32
 

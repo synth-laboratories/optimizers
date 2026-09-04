@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
 import tempfile
 import threading
@@ -34,6 +35,9 @@ from test_harbor_tblite_cispo_contract import TRIALS, StubSubstrate  # noqa: E40
 
 RENDER_VOCAB_BASE = 100_000
 RENDER_VOCAB_SIZE = 50_000
+E2E_CANARY_DIGEST = os.environ.get(
+    "SYNTH_CISPO_RENDERER_CANARY_DIGEST", "96db06cead43f00b514724ef74c58fdf"
+)
 
 
 def render_tokens(text: str) -> tuple[int, ...]:
@@ -148,11 +152,16 @@ def main() -> int:
                 tokenizer_id="openai/gpt-oss-20b",
                 tokenizer_digest="sha256:gpt-oss-20b-tokenizer-unpinned",
                 stop_token_ids=(200002, 199999),
+                canary_digest=E2E_CANARY_DIGEST,
             ),
             image_digest="sha256:harbor-tblite-socket-run",
         ),
         substrate=ReportingSubstrate(root),
         transport=HttpSampler(),
+        # The paid conformance run needs a real multi-turn episode, not the
+        # production harness's full 30-step solve budget.
+        max_steps=3,
+        max_tokens=1024,
     )
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
     return 0

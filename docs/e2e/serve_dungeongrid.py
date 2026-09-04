@@ -38,6 +38,9 @@ from synth_containers.platform.app import create_compat_app  # noqa: E402
 
 RENDER_VOCAB_BASE = 100_000
 RENDER_VOCAB_SIZE = 50_000
+E2E_CANARY_DIGEST = os.environ.get(
+    "SYNTH_CISPO_RENDERER_CANARY_DIGEST", "96db06cead43f00b514724ef74c58fdf"
+)
 
 
 def render_tokens(text: str) -> tuple[int, ...]:
@@ -150,6 +153,12 @@ def engine_server() -> str:
 def main() -> int:
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8245
     engine_url = engine_server()
+    os.environ["SYNTH_CISPO_RENDERER_CANARY_DIGEST"] = E2E_CANARY_DIGEST
+    # The compatibility target's health check reads the same environment
+    # contract used by the image entrypoint.  The CISPO target receives the
+    # URL directly below, but without this the outer /health route reports a
+    # false negative and the optimizer correctly refuses to start.
+    os.environ["SYNTH_DUNGEONGRID_URL"] = engine_url
     target = cispo.DungeonGridCispoTarget(
         engine=cispo.HttpDungeonGridEngine(base_url=engine_url),
         transport=HttpSampler(),

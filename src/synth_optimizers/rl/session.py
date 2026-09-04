@@ -547,7 +547,11 @@ class ContractContainerSession:
         for instance in topology.agent_instances:
             if instance.trainable:
                 group = topology.parameter_group_for(instance.agent_instance_id)
-                origin = origins.get(group, first)
+                # Multi-agent rosters need one conversation route per seat,
+                # even when two seats share weights.  Sharing the parameter
+                # group's route makes the second seat look like an edited
+                # history of the first seat's conversation.
+                origin = origins.get(instance.agent_instance_id) or origins.get(group, first)
                 policy_ref = origin.credential
                 instance_origin = _origin_payload(origin)
             else:

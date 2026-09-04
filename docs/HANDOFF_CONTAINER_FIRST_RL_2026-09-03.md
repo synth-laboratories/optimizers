@@ -1,11 +1,75 @@
 # Container-first RL: handoff
 
-Written 2026-09-03. Everything below is committed except where it says
-otherwise. Nothing is pushed.
+Written 2026-09-03 and completed later that day. Nothing is pushed. The
+original snapshot remains below the completion record so failed attempts and
+the reasons for the final design are not erased.
+
+## Completion record
+
+The runnable milestone is complete across the five real images:
+
+- Free socket matrix: Banking77, HealthBench2, Craftax, Harbor-TBLite, and
+  DungeonGrid all reached one update. DungeonGrid published both trainable
+  parameter groups, proving the multi-policy route and roster binding.
+- Paid floor: Banking77, HealthBench2, Craftax, and Harbor-TBLite each ran
+  exactly three groups against Tinker with renderer agreement proven by the
+  real gpt-oss canary (`cad55fad220833fbcddf19ad833e1f53`). HealthBench2
+  reached one update over 12 examples / 12,038 training tokens and published
+  `pg-answer@1`. The other three correctly skipped three zero-advantage groups
+  apiece; they sampled real policies but did not fabricate a training update.
+- Paired evaluation: `b77-paired-free-01` compared immutable baseline and
+  trained checkpoints on the same task/seed and wrote a durable receipt. Both
+  arms scored 0.0, so the recorded result is a tie rather than missing data.
+
+Durable evidence is under `/tmp/synth-container-first-e2e`, notably
+`receipts_healthbench2_paid_02`, `receipts_banking77_paid`,
+`receipts_craftax_paid_02`, `receipts_tblite_paid_05`, and
+`evaluation-b77-paired-free-01`. Tinker's adapter did not return a monetary
+cost (the receipt marks `cost_missing`), so the run cannot honestly state an
+actual dollar total; execution remained inside the declared $20 aggregate cap.
+
+Defects fixed during completion:
+
+- origin-backed probe policies are dispatchable but forcibly non-trainable;
+- multi-agent seats get distinct routes even when they share weights;
+- multi-policy pins no longer claim one component's revision as the whole set;
+- image evidence uses authoritative gateway prompt ids and gateway-declared
+  branch/compaction provenance;
+- the renderer canary now compares actual provider tokens;
+- paired evaluation finalizes `awaiting_score`, verifies artifacts in the live
+  plane, closes that plane, and writes the receipt;
+- the harness is durable, returns the real CLI exit code, and keeps artifacts
+  outside the repository;
+- paid Tinker assembly warms a named session before renderer verification;
+  TBLite additionally uses a declared 32K prompt-compaction budget and a
+  three-step conformance horizon.
+
+The TBLite decision is to exercise its external bound-policy route. That route
+preserves raw Tinker text/tokens and does not call MiniSwe's direct
+`_complete_tinker_sampler` rewrite. The direct harness rewrite remains
+incompatible with strict-prefix training evidence and is not represented as
+tested.
+
+Two boundaries remain intentionally unresolved rather than faked:
+
+- DungeonGrid's Rust wire still has no party-message verb, so authored party
+  communication cannot be demonstrated until the upstream engine supports it.
+- `wire_apis/default_wire_api` and typed `PinnedIdentity` require a versioned
+  contract migration. The v1 scalar/string fields remain compatible for the
+  proven no-opponent matrix; adding an opponent or a dual-wire image should be
+  gated on that migration.
+
+Final verification: optimizers 1,039 passed; container worktree 802 passed,
+8 skipped, with four pre-existing C2-01 failures; image CISPO suites Banking77
+59, HealthBench2 42, Craftax 38, Harbor-TBLite 42, DungeonGrid 34. The known
+Banking77 metadata assertion and TBLite missing-corpus capacity test still fail
+outside the CISPO scope.
+
+## Original snapshot
 
 The design document is
 `docs/receipts/tblite-cispo-orbstack30-sync-async-benchmark-20260902.md`
-(2,498 lines, untracked — see "What to commit"). It is the specification; this
+(2,498 lines, committed). It is the specification; this
 file is the state of the work against it.
 
 ## What exists

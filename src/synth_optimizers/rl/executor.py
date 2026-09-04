@@ -352,7 +352,7 @@ class ContainerRunExecutor:
         self._pins: dict[str, GroupPin] = {}
         self._rollouts: dict[str, str] = {}
         self._attempts: dict[str, str] = {}
-        self._origins: dict[str, str] = {}
+        self._origins: dict[str, tuple[str, ...]] = {}
         self._submitted_at: dict[str, float] = {}
         self._pending_groups: list[str] = []
         self._pending_recycled: list[GateRejection] = []
@@ -458,7 +458,13 @@ class ContainerRunExecutor:
             policy_set_revision_id=revision.policy_set_revision_id,
             match_set_revision_id=self.config.opponents.match_set_revision,
             topology_id=capability.topology.topology_id,
-            policy_revision_id=revision.revision_id,
+            # A roster-wide group pin names the immutable policy-set revision.
+            # Its component revision id is only meaningful for a one-component
+            # set; carrying the first component's id into every gateway route
+            # makes a valid second parameter group look like a rebind.
+            policy_revision_id=(
+                revision.revision_id if len(self.parameter_groups) == 1 else None
+            ),
         )
 
     def _next_task(self) -> TaskSpec:
@@ -548,9 +554,20 @@ class ContainerRunExecutor:
 
         facts = AttemptFacts(rollout_id=attempt_id, task_id=task.task_id, seed=task.seed)
         origins: dict[str, SamplerOrigin] = {}
-        for parameter_group, revision in self.revisions.items():
-            proxy_request_id = f"{pin.group_id}::s{sample_index}::{parameter_group}"
-            origins[parameter_group] = self.gateway.bind(
+        trainable_instances = tuple(
+            item for item in self.session.topology.agent_instances if item.trainable
+        )
+        route_keys = (
+            tuple((item.agent_instance_id, self.session.topology.parameter_group_for(
+                item.agent_instance_id
+            )) for item in trainable_instances)
+            if len(self.session.topology.agent_instances) > 1
+            else tuple((group, group) for group in self.revisions)
+        )
+        for route_key, parameter_group in route_keys:
+            revision = self.revisions[parameter_group]
+            proxy_request_id = f"{pin.group_id}::s{sample_index}::{route_key}"
+            origins[route_key] = self.gateway.bind(
                 revision,
                 pin=pin,
                 sample_index=sample_index,
@@ -598,7 +615,9 @@ class ContainerRunExecutor:
             self._declare(origins, rollout_id=rollout_id, task=task)
             self._rollouts[attempt.attempt_id] = rollout_id
             self._attempts[rollout_id] = attempt.attempt_id
-            self._origins[attempt.attempt_id] = next(iter(origins.values())).proxy_request_id
+            self._origins[attempt.attempt_id] = tuple(
+                origin.proxy_request_id for origin in origins.values()
+            )
             self._submitted_at[attempt.attempt_id] = self.clock.now()
             sent += 1
         return sent
@@ -621,8 +640,8 @@ class ContainerRunExecutor:
             )
 
     def _close_origin(self, attempt_id: str) -> None:
-        proxy_request_id = self._origins.pop(attempt_id, None)
-        if proxy_request_id is not None:
+        proxy_request_ids = self._origins.pop(attempt_id, ())
+        for proxy_request_id in proxy_request_ids:
             self.gateway.close(proxy_request_id)
 
     # -- progress ----------------------------------------------------------
@@ -1300,7 +1319,9 @@ class ContainerRunExecutor:
             {
                 "removed": [
                     {"kind": "sampler_origin", "id": proxy}
-                    for proxy in sorted(self._origins)
+                    for proxy in sorted(
+                        item for origins in self._origins.values() for item in origins
+                    )
                 ],
                 "retained": [
                     {"kind": "queue_journal", "path": "queue_journal.sqlite3"},

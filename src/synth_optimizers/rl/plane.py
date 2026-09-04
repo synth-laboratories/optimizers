@@ -663,6 +663,8 @@ def build_plane(
     provider: Any | None = None,
     origin: OriginPlan | None = None,
     sampling: SamplingProfile | None = None,
+    artifact_probe: Any | None = None,
+    prompt_budget: Any | None = None,
 ) -> Plane:
     """Assemble the live plane this configuration describes.
 
@@ -690,7 +692,10 @@ def build_plane(
         training_provider = (
             provider if provider is not None else build_provider(config, environ=environ)
         )
-        resolver = EvaluationResolver(catalog, probe=ProviderArtifactProbe(training_provider))
+        resolver = EvaluationResolver(
+            catalog,
+            probe=artifact_probe or ProviderArtifactProbe(training_provider),
+        )
 
         # 4. The renderer the container declared, the gateway, its listener,
         #    and the origin root the container will be handed.
@@ -701,7 +706,7 @@ def build_plane(
         gateway = SamplerGatewayService(
             renderer,
             training_provider,
-            prompt_budget=UNBOUNDED_BUDGET,
+            prompt_budget=prompt_budget or UNBOUNDED_BUDGET,
             credential_salt=secrets.token_hex(16),
             now=run_clock.utc,
         )

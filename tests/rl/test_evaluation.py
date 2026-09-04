@@ -664,6 +664,30 @@ def test_every_origin_is_bound_with_the_task_and_seed_it_will_run(world: World) 
     assert len({fact.rollout_id for fact in gateway.facts}) == 4
 
 
+def test_awaiting_score_reaches_the_finalize_barrier(world: World) -> None:
+    class AwaitingScoreSession(FakeSession):
+        def __init__(self, *, seeds: Mapping[str, int]) -> None:
+            super().__init__(seeds=seeds)
+            self.finalized: list[str] = []
+
+        def poll(self, rollout_id: str) -> Mapping[str, Any]:
+            return {"rollout_id": rollout_id, "state": "awaiting_score", "terminal": False}
+
+        def finalize(self, rollout_id: str) -> Mapping[str, Any]:
+            self.finalized.append(rollout_id)
+            return super().finalize(rollout_id)
+
+    session = AwaitingScoreSession(seeds={TASK_A: 3, TASK_B: 5})
+    receipt, _, _, _ = run_evaluation(
+        world,
+        request_for(trained="ckpt_primary_u1", baseline="ckpt_baseline_primary"),
+        session=session,
+    )
+
+    assert receipt.summary.pairs == 2
+    assert session.finalized == ["ro_0000", "ro_0001", "ro_0002", "ro_0003"]
+
+
 def test_receipt_carries_selector_resolution_refs_seeds_and_rewards(world: World) -> None:
     receipt, _, _, _ = run_evaluation(
         world,

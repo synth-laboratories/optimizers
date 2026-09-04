@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import inspect
 import json
 import sys
 from collections.abc import Sequence
@@ -170,7 +171,7 @@ def register(subcommands: argparse._SubParsersAction) -> None:
     evaluate.add_argument("--reward-channel")
     evaluate.add_argument(
         "--artifact-digests",
-        help="JSON object of provider reference -> observed digest.",
+        help="JSON file containing provider reference -> observed digest.",
     )
     evaluate.add_argument("--pin", help="JSON file carrying the run-invariant group pin fields.")
     evaluate.add_argument("--config", help="Run config describing the container to evaluate in.")
@@ -379,13 +380,26 @@ def _evaluate(args: argparse.Namespace) -> int:
                 print("resolved and verified; no attempt was run (--resolve-only)")
             return 0
         request = _request(args, baseline_selector)
-        plane = _open_plane(args, _optional_run_config(args))
-        receipt = PairedEvaluation(
-            resolver,
-            session=plane.session,
-            gateway=plane.gateway,
-            binder=plane.binder,
-        ).run(request)
+        plane = _open_plane(
+            args,
+            _optional_run_config(args),
+            artifact_probe=(
+                MappingArtifactProbe(digests=_digest_map(args.artifact_digests))
+                if args.artifact_digests
+                else None
+            ),
+        )
+        try:
+            receipt = PairedEvaluation(
+                resolver,
+                session=plane.session,
+                gateway=plane.gateway,
+                binder=plane.binder,
+            ).run(request)
+        finally:
+            close = getattr(plane, "close", None)
+            if close is not None:
+                close()
         if args.receipts_dir:
             print(f"receipt: {receipt.write(args.receipts_dir)}")
         if args.json:
@@ -742,7 +756,7 @@ def _rehandshake_hook(args: argparse.Namespace) -> Any:
     return lambda: identity
 
 
-def _default_plane(config: Any) -> Plane:
+def _default_plane(config: Any, **options: Any) -> Plane:
     """No ``--plane``: assemble the real one from the parsed configuration.
 
     Every construction failure arrives here as a typed refusal naming what was
@@ -753,7 +767,7 @@ def _default_plane(config: Any) -> Plane:
     from .plane import PlaneError, build_plane
 
     try:
-        return build_plane(config)
+        return build_plane(config, **options)
     except PlaneError as error:
         raise SystemExit(
             f"cannot assemble the container plane from this configuration: {error}. "
@@ -762,7 +776,7 @@ def _default_plane(config: Any) -> Plane:
         ) from error
 
 
-def _open_plane(args: argparse.Namespace, config: Any) -> Plane:
+def _open_plane(args: argparse.Namespace, config: Any, **factory_options: Any) -> Plane:
     """The live session, sampler gateway, and binder.
 
     ``--plane MODULE:FACTORY`` names an assembly and overrides everything. In
@@ -774,7 +788,7 @@ def _open_plane(args: argparse.Namespace, config: Any) -> Plane:
     spec = getattr(args, "plane", None)
     if not spec:
         if config is not None:
-            return _default_plane(config)
+            return _default_plane(config, **factory_options)
         raise SystemExit(
             "no container plane can be assembled without a run configuration: pass "
             "--config so the default plane has a container to build against, name one "
@@ -790,7 +804,15 @@ def _open_plane(args: argparse.Namespace, config: Any) -> Plane:
     factory = getattr(module, attribute, None)
     if factory is None:
         raise SystemExit(f"--plane {spec}: {module_name} declares no {attribute}")
-    plane = factory(config=config)
+    parameters = inspect.signature(factory).parameters.values()
+    accepts_options = any(item.kind is inspect.Parameter.VAR_KEYWORD for item in parameters)
+    named = {item.name for item in parameters}
+    supported_options = (
+        factory_options
+        if accepts_options
+        else {name: value for name, value in factory_options.items() if name in named}
+    )
+    plane = factory(config=config, **supported_options)
     ports = ("session", "gateway", "binder")
     missing = [name for name in ports if getattr(plane, name, None) is None]
     if missing:

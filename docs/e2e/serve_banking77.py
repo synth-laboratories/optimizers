@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
 import threading
 import urllib.error
@@ -32,6 +33,9 @@ from synth_containers.platform.app import create_compat_app  # noqa: E402
 #: capture is rendered by the same rule the run's one renderer uses.
 RENDER_VOCAB_BASE = 100_000
 RENDER_VOCAB_SIZE = 50_000
+E2E_CANARY_DIGEST = os.environ.get(
+    "SYNTH_CISPO_RENDERER_CANARY_DIGEST", "96db06cead43f00b514724ef74c58fdf"
+)
 
 
 def render_tokens(text: str) -> tuple[int, ...]:
@@ -120,6 +124,7 @@ def main() -> int:
                 tokenizer_id="openai/gpt-oss-20b",
                 tokenizer_digest="sha256:gpt-oss-20b-tokenizer-unpinned",
                 stop_token_ids=(200002, 199999),
+                canary_digest=E2E_CANARY_DIGEST,
             ),
             image_digest="sha256:banking77-socket-run",
         ),

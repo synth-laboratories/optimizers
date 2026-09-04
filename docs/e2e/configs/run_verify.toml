@@ -60,5 +60,5 @@ mode = "off"
 # which is the optimizers checkout, and a catalog left there is both shared
 # between runs (a second run collides on its own checkpoint ids) and written
 # into a repository this work does not own.
-catalog = "/private/tmp/claude-501/-Users-joshuapurtell-GitHub/fae9821e-2959-4ca8-9924-c68492de7d19/scratchpad/e2e/work/checkpoints.sqlite3"
-directory = "/private/tmp/claude-501/-Users-joshuapurtell-GitHub/fae9821e-2959-4ca8-9924-c68492de7d19/scratchpad/e2e/work/runs"
+catalog = "/tmp/synth-container-first-e2e/reference-verify/checkpoints.sqlite3"
+directory = "/tmp/synth-container-first-e2e/reference-verify/runs"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -33,3 +34,11 @@ def test_missing_usage_keeps_reservation(tmp_path, monkeypatch):
         budget.reserve('next', .01)
     with pytest.raises(RuntimeError):
         budget.settle(key, 49, {})
+
+
+def test_low_disk_refuses_before_reserving_paid_work(tmp_path, monkeypatch):
+    monkeypatch.setattr(budget, 'ROOT', tmp_path)
+    monkeypatch.setattr(budget.shutil, 'disk_usage', lambda _: SimpleNamespace(free=1024**3))
+    with pytest.raises(RuntimeError, match='less than 2 GiB'):
+        budget.reserve('must not execute', .01)
+    assert not (tmp_path / 'budget.sqlite3').exists()

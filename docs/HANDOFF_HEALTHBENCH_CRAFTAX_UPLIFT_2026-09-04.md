@@ -96,7 +96,7 @@ The new `serve_dual_benchmark.py` uses the real judge and Rust binary.
 
 ## Disk-full interruption and recovery
 
-The full-suite rerun exhausted local disk (1088 tests passed; two failures and
+Local disk filled during the full-suite rerun (1088 tests passed; two failures and
 13 setup errors included `ENOSPC`). Training stopped during publication of the
 next update. Revision 22 is the last published checkpoint:
 `ckpt_965fb2c7899ae2148734b8a9`. Its catalog passes `PRAGMA integrity_check`.
@@ -112,6 +112,8 @@ and refuses to overwrite prior recovery evidence. Metadata alignment therefore
 starts at recovered revision 23, not revision 26. Six budget/async tests pass
 using an explicit GitHub-local temporary directory. Do not repeat the full
 suite with its default external temporary directory.
+The budget guard additionally refuses new paid calls below 2 GiB free, before
+reservation/provider execution. Three budget tests pass, including this refusal.
 
 ## Observed pilot and interrupted work
 

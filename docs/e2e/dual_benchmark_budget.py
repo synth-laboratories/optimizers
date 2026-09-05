@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
 import time
 import uuid
@@ -21,6 +22,10 @@ def connect():
 def reserve(lane, upper):
     if upper < 0:
         raise ValueError('negative reservation')
+    # Leave room to flush local evidence if concurrent work fills this disk.
+    # Refuse before the paid call, not after its checkpoint publication fails.
+    if shutil.disk_usage(ROOT).free < 2 * 1024**3:
+        raise RuntimeError('paid call refused: less than 2 GiB free for durable evidence')
     key = uuid.uuid4().hex
     with connect() as db:
         db.execute('BEGIN IMMEDIATE')

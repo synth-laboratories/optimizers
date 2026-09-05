@@ -4,8 +4,48 @@
 
 User request: demonstrate high-throughput pipelined real-training uplift on
 both benchmarks. **Craftax has positive heldout return uplift after 50 real
-updates. HealthBench remains blocked by its grader credential.** This is not
+updates. HealthBench's real-grader pilot now works, but the full run needs
+fresh budget authorization.** This is not
 completion of both benchmarks. All owned Craftax processes are stopped.
+
+## HealthBench credential and pilot follow-up
+
+The user explicitly authorized checking/using `evals/.env`. Its OpenRouter key
+returned HTTP 200 and was then used for actual rubric grading. No credential
+value was printed, copied into the repository, or stored in receipts. Tinker
+continues to use the previously authorized frontend credential source; no
+Keychain access occurred.
+
+The real pilot completed 32 answers (four frozen training tasks × eight) in
+119.170 seconds: **16.11 answers/minute** with 12 episode slots. All four tasks
+had nonzero reward range. The pilot added **$2.084076** to the conservative
+ledger, now **$21.923190922 combined**. The 548 completed real rubric calls
+averaged $0.00377517 per criterion; policy sampling was about $0.0153.
+This is working real grading and screening, not HealthBench training or uplift.
+
+Frozen partitions contain 374 training, 301 validation, and 1,476 final rubric
+criteria. At the observed mean criterion price, the full original design
+(8x screen, minimum 600 training answers, three paired validation comparisons,
+and final paired evaluation) projects **$55.73 in grading alone**, including
+the pilot. With Craftax and allowance for skipped groups / answer-length
+variation, expected combined spend is approximately **$80–95**. This exceeds
+the original $49 cap. All owned HealthBench processes are stopped; no further
+paid work is authorized by this estimate. A **$100 combined cap** is proposed,
+not applied. The existing guard remains at $48 token charges plus $1 overhead.
+
+The next server version uses one shared 32-worker rubric pool. Each criterion
+still gets the same separate model call/prompt and verdicts are recorded in
+original order. The pilot above used the older serial-within-answer grader;
+do not attribute its throughput to the new pool. Existing 25 image contract
+tests pass both normally and with the batch hook exercised; four budget and
+credential-routing tests pass. No evals test files were added or changed.
+
+Pilot evidence: `healthbench/pilot/{manifest,attempts,summary}.json` under the
+artifact root. Attempt digest:
+`498225d91a5759b53e1e962526e29ab3a11765c3e9dbb2d868e0cf0f38df21fa`.
+Once a larger budget is authorized, screen the remaining 28 training tasks,
+then run the frozen training/validation/final design. Do not repeat the pilot
+or alter the final panel.
 
 ## Completed Craftax result
 
@@ -84,7 +124,7 @@ All 128 full traces are in `craftax/final/traces/`; engine-authored achievement
 and termination details are in `craftax/final/reward_details.json`.
 The committed compact result is [CRAFTAX_HELDOUT_2026-09-04.json](CRAFTAX_HELDOUT_2026-09-04.json).
 
-### Remaining HealthBench work
+### Earlier HealthBench blocker (resolved by the follow-up above)
 
 The real dataset, disjoint frozen panels, rubric-backed runtime, screening,
 training, evaluation, and shared budget guard are implemented. The authorized

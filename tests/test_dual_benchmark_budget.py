@@ -42,3 +42,16 @@ def test_low_disk_refuses_before_reserving_paid_work(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match='less than 2 GiB'):
         budget.reserve('must not execute', .01)
     assert not (tmp_path / 'budget.sqlite3').exists()
+
+
+def test_authorized_grader_source_does_not_replace_tinker_source(tmp_path, monkeypatch):
+    grader = tmp_path / 'evals.env'
+    frontend = tmp_path / 'frontend.env'
+    grader.write_text('export OPENROUTER_API_KEY="test-grader"\n')
+    frontend.write_text('TINKER_API_KEY=test-trainer\nOPENROUTER_API_KEY=test-rejected\n')
+    monkeypatch.setattr(budget, 'Path', lambda value: grader if value.endswith('evals/.env') else frontend)
+    monkeypatch.setenv('OPENROUTER_API_KEY', 'test-stale-ambient')
+    monkeypatch.delenv('TINKER_API_KEY', raising=False)
+    budget.load_credentials('OPENROUTER_API_KEY', 'TINKER_API_KEY')
+    assert budget.os.environ['OPENROUTER_API_KEY'] == 'test-grader'
+    assert budget.os.environ['TINKER_API_KEY'] == 'test-trainer'

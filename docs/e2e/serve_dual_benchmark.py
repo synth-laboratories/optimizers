@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from dual_benchmark_budget import ROOT, load_credentials, reserve, settle
@@ -34,6 +35,14 @@ def healthbench(args):
     os.environ['SYNTH_HEALTHBENCH_DATASET_PATH'] = str(ROOT / 'healthbench_dataset.jsonl')
 
     class BoundedJudge(cispo.ProviderRubricJudge):
+        # One shared pool caps paid rubric concurrency across every episode.
+        _pool = ThreadPoolExecutor(max_workers=32, thread_name_prefix='healthbench-rubric')
+
+        def grade_many(self, *, conversation, rubrics):
+            futures = [self._pool.submit(self.grade, conversation=conversation, rubric=rubric, index=index)
+                       for index, rubric in enumerate(rubrics)]
+            return [future.result() for future in futures]
+
         def grade(self, *, conversation, rubric, index):
             # UTF-8 bytes bound text BPE tokens, with ample framing allowance.
             upper_input = len(conversation.encode()) + len(json.dumps(rubric).encode()) + 1024

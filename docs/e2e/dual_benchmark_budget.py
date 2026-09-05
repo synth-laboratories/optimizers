@@ -46,16 +46,15 @@ def settle(key, counted, usage):
 
 
 def load_credentials(*names):
-    # Only the project-local file already authorized by the user. No Keychain.
-    path = Path('/Users/joshuapurtell/GitHub/frontend/.env.local')
+    # Both project-local sources are explicitly authorized. No Keychain.
     values = {}
-    for line in path.read_text().splitlines():
-        if '=' in line:
-            name, value = line.split('=', 1)
-            if name in names:
-                values[name] = value.strip().strip('\"\'')
     for name in names:
-        if not os.environ.get(name):
+        path = Path('/Users/joshuapurtell/GitHub/evals/.env' if name == 'OPENROUTER_API_KEY' else '/Users/joshuapurtell/GitHub/frontend/.env.local')
+        for line in path.read_text().splitlines():
+            key, separator, value = line.strip().removeprefix('export ').partition('=')
+            if separator and key.strip() == name:
+                values[name] = value.strip().strip('\"\'')
+        if name == 'OPENROUTER_API_KEY' or not os.environ.get(name):
             os.environ[name] = values.get(name, '')
         if not os.environ[name]:
             raise RuntimeError(f'authorized credential unavailable: {name}')

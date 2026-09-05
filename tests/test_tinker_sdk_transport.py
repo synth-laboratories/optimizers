@@ -139,6 +139,15 @@ def _transport(monkeypatch) -> TinkerSdkTransport:
     return TinkerSdkTransport(_Service(), tinker_module=_Tinker())
 
 
+@pytest.mark.parametrize('completion', ['Seek urgent in-person care.\nDo not drive yourself.', '["move_left", "do"]'])
+def test_generic_sampling_preserves_prose_and_json(monkeypatch, completion):
+    transport = _transport(monkeypatch)
+    handle = transport.create_lora_training_client('openai/gpt-oss-20b', rank=8, seed=0)
+    transport._renderer.parse_response = lambda tokens: SimpleNamespace(content=completion)
+    result = transport.sample(handle, SampleRequest(request_id='preserve-text', prompt_token_ids=(1, 2), max_tokens=64))
+    assert result['text'] == completion
+
+
 def test_sdk_maps_slime_to_tinker_cispo_and_refuses_generic_is(monkeypatch) -> None:
     transport = _transport(monkeypatch)
     handle = transport.create_lora_training_client("openai/gpt-oss-20b", rank=8, seed=0)

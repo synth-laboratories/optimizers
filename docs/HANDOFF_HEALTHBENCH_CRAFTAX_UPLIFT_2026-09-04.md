@@ -1,5 +1,56 @@
 # Real HealthBench and Craftax RL experiments
 
+## Transport-integrity correction (current)
+
+A later audit found that the generic Tinker SDK transport called the Banking77
+label normalizer on every sampled completion. This lowercased prose and replaced
+spaces/hyphens with underscores before the benchmark consumed it. HealthBench
+training was stopped at revision 17; that screening/training is diagnostic only.
+Earlier Craftax numbers below describe the old wrapper, not yet a clean-text
+transport proof. Do not silently carry them forward as a clean result.
+
+The SDK now preserves parsed completion text; task-specific label normalization
+stays in task evaluators. Prose and JSON-whitespace regression tests pass, along
+with 20 targeted transport/budget/persistence tests. Evaluation now persists
+each observed row, reward and full trace immediately, and refuses blind reruns
+even after an incomplete panel.
+
+Clean artifacts are isolated at
+`/Users/joshuapurtell/GitHub/optimizers/temp/healthbench_craftax_clean_transport_20260904`.
+The budget ledger remains at the original root, so this does not reset spend.
+Craftax revision 50 and its original baseline are being compared on new seeds
+99001–99064, frozen before that corrected evaluation. HealthBench's validation
+and final tasks remain unobserved; its clean restart will use fresh screening
+and fresh base-model training, not the affected 17-update state.
+
+The user explicitly approved **$120 total**. The shared ledger enforces $119
+in token reservations plus $1 overhead, including all affected prior work.
+Expected combined cost is $100–115. The clean HealthBench restart is active;
+20 targeted tests and lint passed before launch.
+
+The corrected-transport Craftax recheck completed on all 64 fresh seeds:
+baseline **0.203125**, trained **1.181250**, paired delta **+0.978125**,
+95% paired bootstrap interval **[0.768750, 1.1859375]**; 56 wins, five losses,
+three ties. The fixed revision-50 checkpoint was not reselected. Evaluation
+took 232.040 seconds for 128 episodes / 1,011 policy calls (33.10 episodes/min,
+261.42 calls/min). Receipt SHA-256:
+`13b7c680347d847cb8eb20680193c49ef445ecb32aa3c37dd48dcadbe3245c9d`.
+Evidence is in the clean root's `craftax/transport_recheck_final/` directory.
+This is GameBench Rust Craftax, not the official JAX benchmark.
+All 128 persisted sealed traces match their receipt/reward digest fields and
+the frozen seeds. Baseline had one illegal-action termination; trained had
+none. Sapling collection occurred in 7 baseline versus 63 trained worlds;
+mean environment ticks were 12.859375 versus 62.03125. The gain remains largely
+basic collection and better use of the action budget, not broad game mastery.
+
+Clean HealthBench screening completed 256 answers in 198.596 seconds
+(77.34 answers/min with 24 slots), selecting 28/32 tasks by nonzero reward
+range. Full traces retain natural spaces/capitalization. Training starts
+from a separate fresh base checkpoint, not the screening or old training state.
+
+The sections below retain the historical sequence and old-wrapper results;
+their older budget/status statements are superseded by this section.
+
 ## Status and scope
 
 User request: demonstrate high-throughput pipelined real-training uplift on
@@ -19,6 +70,19 @@ earlier pause described below; the frozen panels are not rewritten.
 24 episode slots and the shared 32-worker rubric pool, then invokes the frozen
 50-update / validation / final procedure. It refuses existing screening output
 and checks disk headroom before launch. Four budget/credential tests pass.
+
+Protocol audit: the image uses the public HealthBench data and the same
+per-example achieved-points / positive-possible-points formula, but its
+`ProviderRubricJudge` prompt is shorter than the full
+[reference grader template](https://github.com/openai/simple-evals/blob/main/healthbench_eval.py).
+It lacks the reference prompt's detailed multi-clause/example guidance.
+The prompt remains fixed across screening, training, validation, and final
+evaluation; no mid-run scorer change is made. Report this as a **fixed-judge
+HealthBench research-panel comparison**, not an official HealthBench score.
+The image's legacy `canonical_healthbench_grader` flag identifies its grader
+model configuration, not exact prompt conformance; it must not be used to
+claim full protocol equivalence. An official-template replication remains
+separate work and is not silently substituted into this run.
 
 ## HealthBench credential and pilot follow-up
 

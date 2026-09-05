@@ -21,7 +21,7 @@ from ..protocols import (
 from .capabilities import KNOWN_CAPABILITIES
 from .models import resolve_tinker_model
 from .prime import bridge_with_renderer, create_prime_renderer, parse_completion
-from .tokenize import extract_final_label, tokenize_live
+from .tokenize import tokenize_live
 from .validation import default_receipt_path, is_cispo_validated
 
 
@@ -158,7 +158,9 @@ class TinkerSdkTransport:
         logprobs = [float(value) for value in (sequence.logprobs or [0.0] * len(tokens))]
         raw = self.decode(tokens)
         parsed = parse_completion(self._renderer, tokens) if self._renderer is not None else ""
-        text = extract_final_label(parsed or raw) or raw
+        # This transport serves prose, action JSON, and other domains too.
+        # Task-specific label normalization belongs in the task evaluator.
+        text = parsed or raw
         return {
             "token_ids": tokens,
             "logprobs": logprobs,

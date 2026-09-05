@@ -16,6 +16,21 @@ from synth_optimizers.rl.resolver import EvaluationResolver, MappingArtifactProb
 from synth_optimizers.rl.catalog import CheckpointCatalog
 
 
+class PersistedEvaluation(PairedEvaluation):
+    """Persist each observed outcome before another task can fail."""
+
+    def __init__(self, *args, output, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._output = output
+
+    def _row(self, *args, **kwargs):
+        row = super()._row(*args, **kwargs)
+        _write_json(self._output/'attempts'/f'{row.arm}_{row.sample_index}.json', row.to_payload())
+        _write_json(self._output/'rewards'/f'{row.rollout_id}.json', self._session.reward_payload(row.rollout_id))
+        _write_json(self._output/'traces'/f'{row.rollout_id}.json', self._session.trace(row.rollout_id))
+        return row
+
+
 def main(args):
     name = args.benchmark
     directory = ROOT / name
@@ -24,7 +39,7 @@ def main(args):
     os.environ['SYNTH_E2E_PARAMETER_GROUP'] = group
     config = load(directory / f'{args.phase}.toml')
     output = directory / args.phase
-    if list(output.glob('*.evaluation.json')):
+    if list(output.glob('*.evaluation.json')) or (output/'evaluation_started.json').exists() or list((output/'attempts').glob('*.json')):
         raise RuntimeError('evaluation evidence already exists; refusing to overwrite an observed panel')
     rows = json.loads((ROOT/'panels.json').read_text())[name][args.panel]
     plane = paid(config=config)
@@ -41,7 +56,8 @@ def main(args):
                 container_image_digest=capability.container_image_digest,container_contract_hash=plane.session.startup.contract.contract_hash,
                 task_family=tasks[0].task_family,topology_id=capability.topology.topology_id),
             split=config.taskset.evaluation_split,scope=ResolutionScope(parameter_group_id=group),poll_limit=3600,concurrency=args.concurrency)
-        receipt = PairedEvaluation(resolver,session=plane.session,gateway=plane.gateway,binder=plane.binder).run(request)
+        _write_json(output/'evaluation_started.json', {'evaluation_id':config.run_id, 'baseline':args.baseline, 'selected':args.selected, 'panel':args.panel})
+        receipt = PersistedEvaluation(resolver,output=output,session=plane.session,gateway=plane.gateway,binder=plane.binder).run(request)
         receipt_path = receipt.write(output)
         payload = receipt.to_payload()
         details = {}
@@ -49,8 +65,7 @@ def main(args):
             details[arm] = []
             for attempt in payload['arms'][arm]['attempts']:
                 rollout = attempt['rollout_id']
-                details[arm].append(plane.session.reward_payload(rollout))
-                _write_json(output/'traces'/f'{rollout}.json',plane.session.trace(rollout))
+                details[arm].append(json.loads((output/'rewards'/f'{rollout}.json').read_text()))
         _write_json(output/'reward_details.json',details)
         paired = payload['paired_summary']
         differences = np.asarray([r['delta'] for r in paired['rows']],dtype=float)

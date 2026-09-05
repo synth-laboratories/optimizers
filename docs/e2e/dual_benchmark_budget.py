@@ -9,13 +9,14 @@ import time
 import uuid
 from pathlib import Path
 
-ROOT = Path('/Users/joshuapurtell/GitHub/optimizers/temp/healthbench_craftax_uplift_20260904')
-TOKEN_CAP_USD = 99  # User approved $100 combined; retain $1 for overhead.
+LEDGER_ROOT = Path('/Users/joshuapurtell/GitHub/optimizers/temp/healthbench_craftax_uplift_20260904')
+ROOT = Path(os.environ.get('DUAL_BENCHMARK_ROOT', str(LEDGER_ROOT)))
+TOKEN_CAP_USD = 119  # User approved $120 combined; retain $1 for overhead.
 
 
 def connect():
-    ROOT.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(ROOT / 'budget.sqlite3', timeout=60)
+    LEDGER_ROOT.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(LEDGER_ROOT / 'budget.sqlite3', timeout=60)
     db.execute('CREATE TABLE IF NOT EXISTS charges (id TEXT PRIMARY KEY, lane TEXT, reserved REAL, counted REAL, usage TEXT, started REAL, finished REAL)')
     return db
 
@@ -105,6 +106,17 @@ def paid(config=None, **kwargs):
     original = paid_plane.build_provider
     paid_plane.build_provider = lambda cfg: guard_provider(original(cfg), observed, path)
     try:
-        return paid_plane.paid(config=config, **kwargs)
+        plane = paid_plane.paid(config=config, **kwargs)
+        if os.environ.get('DUAL_PERSIST_EVIDENCE') == '1':
+            from screen_banking77 import _write_json
+            evidence = plane.session.evidence
+            directory = Path(config.artifacts.catalog).parent/'evidence'/config.run_id
+            def persisted_evidence(rollout_id):
+                result = evidence(rollout_id)
+                _write_json(directory/'traces'/f'{rollout_id}.json', plane.session.trace(rollout_id))
+                _write_json(directory/'rewards'/f'{rollout_id}.json', plane.session.reward_payload(rollout_id))
+                return result
+            plane.session.evidence = persisted_evidence
+        return plane
     finally:
         paid_plane.build_provider = original

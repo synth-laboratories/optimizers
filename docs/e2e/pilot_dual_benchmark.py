@@ -11,12 +11,12 @@ from screen_banking77 import _write_json, run_screen
 from synth_optimizers.rl.config import load
 
 
-def main(name):
+def main(name, phase='pilot', concurrency=12):
     directory = ROOT / name
-    if (directory / 'pilot/manifest.json').exists():
+    if (directory / phase / 'manifest.json').exists():
         raise RuntimeError('pilot already complete; refusing duplicate')
     os.environ['SYNTH_E2E_PARAMETER_GROUP'] = 'pg-answer' if name == 'healthbench' else 'pg-0'
-    config = load(directory / 'pilot.toml')
+    config = load(directory / f'{phase}.toml')
     plane = paid(config=config)
     try:
         if (directory / 'baseline.json').exists():
@@ -29,7 +29,7 @@ def main(name):
         row = next(row for row in rows if row['checkpoint_id'] == selector)
         _write_json(directory / 'baseline.json', row)
         _write_json(directory / 'artifact_digests.json', {a['ref']:a['digest'] for r in rows for a in r['artifacts'].values()})
-        result = run_screen(config, plane, selector=selector, output=directory/'pilot',samples=8,concurrency=12,poll_limit=3600,selection_mode='reward_variance')
+        result = run_screen(config, plane, selector=selector, output=directory/phase,samples=8,concurrency=concurrency,poll_limit=3600,selection_mode='reward_variance')
         print(json.dumps(result,indent=2))
     finally:
         plane.close()
@@ -38,4 +38,7 @@ def main(name):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('benchmark', choices=['healthbench','craftax'])
-    main(parser.parse_args().benchmark)
+    parser.add_argument('--phase', default='pilot')
+    parser.add_argument('--concurrency', type=int, default=12)
+    args = parser.parse_args()
+    main(args.benchmark, args.phase, args.concurrency)

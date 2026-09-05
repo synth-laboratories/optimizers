@@ -35,6 +35,7 @@
   "final_receipt_sha256": "da36ad571b44d41d7a63ced21c2ebef59be1495684ea74ade278934ab6be2ab5",
   "artifact_root": "/Users/joshuapurtell/GitHub/optimizers/temp/healthbench_craftax_uplift_20260904",
   "caveats": [
+    "This result used a generic-transport label-normalization bug. A fresh clean-transport panel is required before calling it a clean result.",
     "Gain is mainly sapling collection and fuller action-budget use, not broad game mastery.",
     "Custom research panels and horizons; not an official Craftax leaderboard result.",
     "Repeated validation baseline arms varied despite recorded temperature zero.",

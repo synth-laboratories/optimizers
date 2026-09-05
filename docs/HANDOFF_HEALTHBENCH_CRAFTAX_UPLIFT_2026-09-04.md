@@ -39,6 +39,7 @@ different working authorized credential. No Keychain access is permitted.
 - Screen every training candidate eight times at temperature 1; retain
   nonzero within-task reward range. Do not apply binary 1–7/8 to graded scores.
 - Start fresh from `openai/gpt-oss-20b`, not the Banking77-trained checkpoint.
+  Learning rate is explicitly 0.00005, chosen before training.
   Each update packs three four-sample groups. Fifty updates are segmented as
   10 + 15 + 15 + 10, resuming exact training-state artifacts between segments.
   Never load sampler weights as training weights.
@@ -97,6 +98,17 @@ capacity failure. `craftax/screen_remaining/` preserves 73 completed incremental
 attempts before the illegal-action failure. Neither contributes selections.
 The replacement `craftax/screen_full/` samples all 32 frozen training seeds,
 eight times each, at 24 episode slots after both fixes.
+
+The clean full screen completed **256 episodes / 1,987 policy calls in 228.40
+seconds**: **67.25 episodes/minute and 521.97 policy calls/minute**. Sixteen
+worlds had nonzero reward range and were admitted. All 256 receipt seeds match
+the actual world IDs. Live Rust sessions stayed at 23–24 after more than 168
+completed episodes, proving the old 128-session accumulation failure was fixed.
+The driver has started its first real 10-update training segment from a fresh
+base-model checkpoint, `ckpt_087dbe3d9cb9c46fc080b573`.
+
+Implementation commits: optimizers `dddcbd6`; evals `a2253fc95`. The evals fixes
+are limited to actual seed declaration and preserving illegal-action evidence.
 
 ## Entry points and verification
 

@@ -27,6 +27,7 @@ evaluation_ids = {json.dumps([r['task_id'] for r in evaluation_rows])}
 provider = "tinker"
 id = "openai/gpt-oss-20b"
 family = "gpt_oss"
+learning_rate = 0.00005
 policy_kind = "{'healthbench_chat' if hb else 'craftax_react'}"
 '''
     if resume:

@@ -3,9 +3,98 @@
 ## Status and scope
 
 User request: demonstrate high-throughput pipelined real-training uplift on
-both benchmarks. **No uplift result is available yet.** Training and final
-evaluation remain to be completed. The intended endpoint is 50 real updates
-per benchmark and paired evaluation on separately frozen unused tasks.
+both benchmarks. **Craftax has positive heldout return uplift after 50 real
+updates. HealthBench remains blocked by its grader credential.** This is not
+completion of both benchmarks. All owned Craftax processes are stopped.
+
+## Completed Craftax result
+
+On the untouched 64-world final panel, baseline mean environment return was
+**0.256250** and revision 50 mean was **1.221875**: paired gain **+0.965625**,
+with a task-level bootstrap 95% interval **[0.790625, 1.1421875]**.
+There were 54 wins, two losses, and eight ties. Both arms used the same 64
+world seeds, temperature 0, 384-token completion cap, eight policy calls and
+64 environment ticks maximum. All 128 sealed traces match their receipt hashes;
+all 1,023 captured calls carry the intended temperature/cap and aligned
+nonempty token/logprob arrays. Neither arm had an illegal-action termination.
+
+Validation selected revision 50 by the frozen highest-trained-mean rule:
+
+| Revision | Validation trained mean | Repeated baseline mean |
+| --- | ---: | ---: |
+| 10 | 1.462500 | 0.537500 |
+| 25 | 0.887500 | 0.475000 |
+| 50 | 1.481250 | 0.600000 |
+
+The winning validation margin over revision 10 was small. Repeated baseline
+arms varied despite recorded temperature 0; do not claim bitwise deterministic
+execution or that revision 50 is conclusively the optimal checkpoint.
+No final-panel result was used for selection or further training.
+
+### What improved—and what did not
+
+Mean achievement count increased from 0.265625 to 1.281250. The gain is narrow:
+`collect_sapling` appeared on 3 baseline worlds versus 63 trained worlds, while
+`collect_wood` decreased from 10 to four. Mean executed environment ticks rose
+from 13.109375 to 63.656250. The trained policy makes fuller use of the allowed
+action/tick budget and repeatedly collects saplings. This is real environment
+return uplift, not broad Craftax mastery, an official Craftax leaderboard
+result, or proof of longer-horizon generalization. This run uses the local
+GameBench Rust implementation and custom short horizons.
+
+### Training, throughput, and cost
+
+- 50 durable training revisions, 4,555 trainable policy-call examples, and
+  543,556 reported training tokens in their catalog evidence. The provider
+  executed 51 train calls: one update was abandoned after disk-full publication
+  failure and is not part of the final 50-update lineage.
+- The 38 updates in fully closed segments have preserved nonzero-loss metrics.
+  The interrupted segment's 12 durable updates retain checkpoint/training-token
+  evidence, but not the same complete end-of-segment metric export.
+- Screening: 256 episodes in 228.40 seconds, **67.25 episodes/minute**.
+- Training: 716 sampled episodes across about **59.02 minutes** of measured
+  active windows, **12.13 episodes/minute**. This sums completed segments'
+  submit-to-score windows plus the interrupted journal window; it excludes the
+  user/disk-recovery pause and is not total wall-clock elapsed time.
+- Final evaluation: 128 episodes / 1,023 model calls in **144.41 seconds**,
+  **53.18 episodes/minute**, **425.03 policy calls/minute**.
+- Combined ledger: **$19.839114922 counted/reserved**, including diagnostics,
+  interrupted calls, and the rejected HealthBench grading attempt. Uncertain
+  reservations remain charged to the guard; these are conservative estimates,
+  not reconciled provider invoices. The original aggregate ceiling remains $49.
+
+### Durable identities and evidence
+
+Baseline checkpoint: `ckpt_087dbe3d9cb9c46fc080b573`.
+Selected checkpoint: `ckpt_4bfc308872dc44019328ac96` (revision 50).
+
+Selected sampler:
+`tinker://d77430ff-b8de-5ace-ad44-6c444058f25f:train:0/sampler_weights/optimizers-sampler_weights-save-27a4cc6ee1ae7f5a2477e0f41848d0fa`.
+
+Selected resumable training state:
+`tinker://d77430ff-b8de-5ace-ad44-6c444058f25f:train:0/weights/optimizers-training_state-save-0dcd921a0f8ab22e07605c5e5b004478`.
+Use training state for further optimization, never sampler weights.
+The SDK's artifact digests hash provider reference strings, not downloaded
+weight bytes; do not describe them as independently verified weight checksums.
+
+Final receipt under the artifact root:
+`craftax/final/dual_craftax_final_20260904.evaluation.json`.
+SHA-256: `da36ad571b44d41d7a63ced21c2ebef59be1495684ea74ade278934ab6be2ab5`.
+All 128 full traces are in `craftax/final/traces/`; engine-authored achievement
+and termination details are in `craftax/final/reward_details.json`.
+The committed compact result is [CRAFTAX_HELDOUT_2026-09-04.json](CRAFTAX_HELDOUT_2026-09-04.json).
+
+### Remaining HealthBench work
+
+The real dataset, disjoint frozen panels, rubric-backed runtime, screening,
+training, evaluation, and shared budget guard are implemented. The authorized
+frontend OpenRouter key returned 401. Permission to inspect/use
+`/Users/joshuapurtell/GitHub/evals/.env` has been requested but not received.
+No HealthBench uplift is established. Once a working authorized credential is
+available, measure a bounded real-grader pilot and re-estimate all remaining
+judge costs before launching the full 50-update experiment. Do not exceed the
+original aggregate cap without fresh authorization or reuse observed final
+panels to tune models.
 
 All new artifacts are under
 `/Users/joshuapurtell/GitHub/optimizers/temp/healthbench_craftax_uplift_20260904`.

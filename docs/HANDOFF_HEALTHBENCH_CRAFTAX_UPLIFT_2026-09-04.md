@@ -1,5 +1,72 @@
 # Real HealthBench and Craftax RL experiments
 
+## Final clean-run outcome (supersedes historical status below)
+
+The user added OpenRouter credits; the read-only balance check confirmed the
+top-up and recovery completed the remaining 14 updates from exact revision-36
+training state. **All 50 HealthBench updates and all frozen evaluations are
+complete. All owned benchmark processes have stopped.**
+
+| Clean evaluation | Baseline | Trained | Paired gain | 95% paired bootstrap interval |
+| --- | ---: | ---: | ---: | --- |
+| GameBench Rust Craftax, 64 fresh worlds | 0.203125 | 1.181250 | +0.978125 | +0.768750 to +1.185938 |
+| Fixed-judge HealthBench research panel, 128 tasks | 0.475275 | 0.505258 | +0.029984 | -0.009151 to +0.070515 |
+
+**Craftax uplift is supported. HealthBench's +3.00 percentage-point estimate
+is inconclusive; its interval includes zero. Do not claim demonstrated uplift
+on both benchmarks.** HealthBench had 47 wins, 45 losses and 36 ties. Its
+validation comparisons did not show uplift; revision 50 was selected by the
+frozen highest-trained-mean rule (10: 0.394491; 25: 0.382024; 50: 0.397553),
+not by looking at the final panel. Baseline validation scores varied across
+repeated arms despite recorded temperature zero; the inference/judge stack
+is not perfectly deterministic.
+
+HealthBench training: 50 distinct durable revisions, 600 training examples,
+503,506 reported training tokens. Screening sustained 77.34 answers/min;
+the completed 15-update segment sustained 18.01 graded training answers/min
+and 249.94 aggregate generated tokens/s. Final evaluation took 305.799 seconds
+for 256 answers, **50.23 answers/min**, including real rubric grading.
+
+Final combined counted/reserved cost: **$90.287938058**, including affected
+old work and uncertain calls. The approved maximum remains $120; the ledger
+limits token reservations to $119 with $1 overhead. This is not invoice-reconciled.
+No further paid experiments have been launched.
+
+Evidence audit: all 256 HealthBench final traces are sealed with matching
+receipt/reward digest fields, correct frozen task IDs and episode seeds,
+temperature 0 and 1,024-token caps. Every one of 2,952 rubric-judge calls
+contains the exact saved policy answer; judge outputs are nontrainable.
+Train/validation/final task identities are disjoint. Baseline reached the
+token cap on 59/128 answers versus 38/128 trained answers; this horizon is a
+material protocol limitation. HealthBench is a fixed-judge research-panel
+comparison, not an official benchmark score or evidence of clinical readiness.
+
+HealthBench selected checkpoint: `ckpt_5734fd6c5fb2530c85e1257e` (revision 50).
+Exact training state:
+`tinker://ad8358e9-64fc-50e3-aa6e-3c8ba9d5b252:train:0/weights/optimizers-training_state-save-1a8c9aad47397cae87c630df9556a0ba`.
+Clean baseline sampler:
+`tinker://6b0e89d2-1de2-596d-a48f-5a36eca6721b:train:0/sampler_weights/optimizers-sampler_weights-save-ac7fbc574ce1e594ea3d4c3950804ff2`.
+The baseline checkpoint ID repeats across isolated catalogs because run IDs
+were reused; its clean provider reference was verified different from the
+old affected run. Always resolve using the clean catalog and provider reference.
+Provider-reference digests are not downloaded weight-file checksums.
+
+Final HealthBench receipt SHA-256:
+`575a7000b1f477086b89802734640e2a2e9e40a065005a4ac51ed01071c4467d`.
+Full artifacts: clean root `healthbench/final/`; compact combined result:
+`docs/HEALTHBENCH_CRAFTAX_CLEAN_RESULTS_2026-09-04.json`.
+
+### What remains
+
+- HealthBench reliable uplift remains unproven. Preserve this final panel as
+  observed; do not tune on it or repeatedly re-evaluate it as fresh evidence.
+- Any next experiment should freeze a new independent test panel and a
+  powered evaluation design, inspect answer truncation and grader variance,
+  and explicitly decide whether to adopt the official rubric prompt before
+  training. That is a new experiment, not a silent alteration of this result.
+- Craftax's demonstrated gain is mainly basic collection and fuller action
+  budget use; broader skills and official-JAX replication remain untested.
+
 ## Transport-integrity correction (current)
 
 **Latest status:** clean HealthBench stopped at **36/50 durable updates** on

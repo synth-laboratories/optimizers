@@ -94,6 +94,25 @@ The new `serve_dual_benchmark.py` uses the real judge and Rust binary.
    servers use aligned metadata. Do not interpret the early request cap as the
    actual provider cap.
 
+## Disk-full interruption and recovery
+
+The full-suite rerun exhausted local disk (1088 tests passed; two failures and
+13 setup errors included `ENOSPC`). Training stopped during publication of the
+next update. Revision 22 is the last published checkpoint:
+`ckpt_965fb2c7899ae2148734b8a9`. Its catalog passes `PRAGMA integrity_check`.
+The unpublished update is not counted as durable progress. Original logs and
+receipts remain untouched.
+
+The user authorized removal of the disposable pytest-371 directory. On checking,
+it was already absent and 76 GiB was free; the agent deleted nothing.
+`recover_craftax_22.py` resumes revision 22's exact training state and runs
+3 + 15 + 10 updates in distinct recovery directories before the original
+validation/final procedure. It checks for at least 10 GiB free before segments
+and refuses to overwrite prior recovery evidence. Metadata alignment therefore
+starts at recovered revision 23, not revision 26. Six budget/async tests pass
+using an explicit GitHub-local temporary directory. Do not repeat the full
+suite with its default external temporary directory.
+
 ## Observed pilot and interrupted work
 
 Craftax's first real pilot completed 32 episodes / 253 model calls in 73.93

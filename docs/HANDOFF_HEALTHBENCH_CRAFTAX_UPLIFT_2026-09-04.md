@@ -4,9 +4,21 @@
 
 User request: demonstrate high-throughput pipelined real-training uplift on
 both benchmarks. **Craftax has positive heldout return uplift after 50 real
-updates. HealthBench's real-grader pilot now works, but the full run needs
-fresh budget authorization.** This is not
+updates. HealthBench's real-grader pilot works, and the user has now approved
+the full run under a $100 combined cap.** This is not
 completion of both benchmarks. All owned Craftax processes are stopped.
+
+### Current HealthBench authorization
+
+The user answered “yeop” to the explicit $100 combined-cap request. The guard
+now reserves at most $99 of token charges with $1 held for overhead, preserving
+all prior spend. Expected combined cost remains $80–95. This supersedes the
+earlier pause described below; the frozen panels are not rewritten.
+`budget_authorization_100.json` records the approval under the artifact root.
+`run_healthbench_authorized.py` continues the remaining 28 tasks × eight using
+24 episode slots and the shared 32-worker rubric pool, then invokes the frozen
+50-update / validation / final procedure. It refuses existing screening output
+and checks disk headroom before launch. Four budget/credential tests pass.
 
 ## HealthBench credential and pilot follow-up
 

@@ -10,6 +10,7 @@ import uuid
 from pathlib import Path
 
 ROOT = Path('/Users/joshuapurtell/GitHub/optimizers/temp/healthbench_craftax_uplift_20260904')
+TOKEN_CAP_USD = 99  # User approved $100 combined; retain $1 for overhead.
 
 
 def connect():
@@ -30,9 +31,8 @@ def reserve(lane, upper):
     with connect() as db:
         db.execute('BEGIN IMMEDIATE')
         used = db.execute('SELECT COALESCE(SUM(COALESCE(counted,reserved)),0) FROM charges').fetchone()[0]
-        # One dollar of the $49 aggregate is held aside for non-token overhead.
-        if used + upper > 48:
-            raise RuntimeError(f'aggregate paid budget exhausted: {used:.4f} + {upper:.4f} > 48 token dollars')
+        if used + upper > TOKEN_CAP_USD:
+            raise RuntimeError(f'aggregate paid budget exhausted: {used:.4f} + {upper:.4f} > {TOKEN_CAP_USD} token dollars')
         db.execute('INSERT INTO charges VALUES (?,?,?,?,?,?,?)', (key,lane,upper,None,None,time.time(),None))
     return key
 

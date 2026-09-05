@@ -15,25 +15,25 @@ def test_concurrent_reservations_cannot_cross_cap(tmp_path, monkeypatch):
     monkeypatch.setattr(budget, 'ROOT', tmp_path)
     def claim(_):
         try:
-            return budget.reserve('test', 10)
+            return budget.reserve('test', 20)
         except RuntimeError:
             return None
     with ThreadPoolExecutor(max_workers=8) as pool:
         keys = [k for k in pool.map(claim, range(8)) if k]
     assert len(keys) == 4
     with budget.connect() as db:
-        assert db.execute('SELECT SUM(reserved) FROM charges').fetchone()[0] == 40
+        assert db.execute('SELECT SUM(reserved) FROM charges').fetchone()[0] == 80
     budget.settle(keys[0], 1, {'test':True})
-    assert budget.reserve('test', 10)
+    assert budget.reserve('test', 20)
 
 
 def test_missing_usage_keeps_reservation(tmp_path, monkeypatch):
     monkeypatch.setattr(budget, 'ROOT', tmp_path)
-    key = budget.reserve('unknown outcome', 48)
+    key = budget.reserve('unknown outcome', budget.TOKEN_CAP_USD)
     with pytest.raises(RuntimeError):
         budget.reserve('next', .01)
     with pytest.raises(RuntimeError):
-        budget.settle(key, 49, {})
+        budget.settle(key, budget.TOKEN_CAP_USD + 1, {})
 
 
 def test_low_disk_refuses_before_reserving_paid_work(tmp_path, monkeypatch):

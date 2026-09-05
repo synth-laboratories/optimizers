@@ -2,6 +2,38 @@
 
 ## Transport-integrity correction (current)
 
+**Latest status:** clean HealthBench stopped at **36/50 durable updates** on
+OpenRouter `402 Payment Required`. Read-only `/api/v1/credits` confirmed
+account credits 1119.97 and usage 1120.328489891 (about $0.36 exhausted);
+the key has no separate limit. This is account-wide usage, not experiment spend.
+The shared experiment ledger is **$69.345383132 counted/reserved**, including
+uncertain requests and all old work, under the approved $120 total cap.
+All owned benchmark processes stopped. No HealthBench validation/final tasks
+have been evaluated; **HealthBench uplift is not yet established**.
+
+Recovery checkpoint: `ckpt_3b2b2e1626446de48f68587b`, revision 36.
+Exact training state:
+`tinker://d116981c-d8a8-5b88-96ef-b15f81004f58:train:0/weights/optimizers-training_state-save-e950c7fe38e2c5d74220b1d97f6613c2`.
+Do not resume sampler weights. Preserve the interrupted `train_40` directory.
+Once the authorized OpenRouter source has balance, run:
+
+```sh
+DUAL_BENCHMARK_ROOT=/Users/joshuapurtell/GitHub/optimizers/temp/healthbench_craftax_clean_transport_20260904 DUAL_PERSIST_EVIDENCE=1 caffeinate -i uv run python docs/e2e/recover_healthbench_36.py
+```
+
+The recovery refuses a changed latest checkpoint or existing recovery output,
+checks credit availability without spending, then runs 4 + 10 updates using
+exact saved training state, followed by frozen validation and final evaluation.
+It does not reset the shared budget or repeat screening. The script passes lint
+and checkpoint publication was checked read-only; recovery execution has not
+been live-tested while the account is exhausted. The 20 targeted tests still pass.
+
+The first 25 clean updates have complete segment receipts: the second segment
+sustained 18.01 graded answers/min and 249.94 aggregate generated tokens/s.
+All first 25 provider updates have nonzero loss. Sampled exact-answer auditing
+verified 332 traces / 3,928 judge prompts; policy text was unchanged and judge
+outputs were nontrainable.
+
 A later audit found that the generic Tinker SDK transport called the Banking77
 label normalizer on every sampled completion. This lowercased prose and replaced
 spaces/hyphens with underscores before the benchmark consumed it. HealthBench

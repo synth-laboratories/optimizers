@@ -44,16 +44,12 @@ def healthbench(args):
                 settle(key, (usage['prompt_tokens']*2+usage['completion_tokens']*8)/1e6, usage)
             return verdict
 
-    class Sampler(HttpSampler):
-        def post(self, url, *, headers, body):
-            return super().post(url, headers=headers, body={**body, 'temperature': args.temperature, 'max_tokens': 1024})
-
     manifest = json.loads((ROOT / 'panels.json').read_text())['healthbench']
     ids = {r['task_id'] for split in ('train', 'validation', 'final') for r in manifest[split]}
     tasks = tuple(t for t in cispo.declared_tasks(count=5000) if t.task_id in ids)
     assert len(tasks) == len(ids)
     judge = BoundedJudge()
-    target = cispo.HealthBenchCispoTarget.install(tasks=tasks, judge=judge, transport=Sampler(), handshake_ttl_seconds=14400)
+    target = cispo.HealthBenchCispoTarget.install(tasks=tasks, judge=judge, transport=HttpSampler(), handshake_ttl_seconds=14400, max_answer_tokens=1024, temperature=args.temperature)
     cispo.set_installed_target(target)
     app = create_compat_app(HEALTHBENCH_CHAT)
     cispo.mount_cispo_routes(app)
@@ -108,15 +104,12 @@ def craftax(args):
                 response['logprobs']['completion'] = [-.1]*len(tokens)
                 return response
 
-            def post(self, url, *, headers, body):
-                return super().post(url, headers=headers, body={**body, 'max_tokens': 384})
-
         app = create_compat_app(CRAFTAX_REACT)
         extend_app(app, declaration=cispo.craftax_cispo_declaration(
             profile=cispo.renderer_profile(tokenizer_id='openai/gpt-oss-20b', tokenizer_digest='sha256:gpt-oss-20b-tokenizer-unpinned', stop_token_ids=(200002,199999), canary_digest=os.environ['SYNTH_CISPO_RENDERER_CANARY_DIGEST']),
             image_digest='sha256:'+binary_digest, policy_calls=8, advertised_concurrency=24),
             transport=Sampler(), world_factory=lambda:cispo.gold_world(base_url=url, steps=64),
-            temperature=args.temperature, handshake_ttl_seconds=14400)
+            temperature=args.temperature, max_completion_tokens=384, handshake_ttl_seconds=14400)
         return app, engine
     except BaseException:
         engine.terminate()

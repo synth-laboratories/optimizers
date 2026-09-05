@@ -85,6 +85,14 @@ The new `serve_dual_benchmark.py` uses the real judge and Rust binary.
    mixed groups before admission. This avoids speculative old-policy groups
    becoming stale as soon as the packed update is published, while preserving
    parallel execution within the upcoming batch.
+9. The transport capped completion tokens after the runtime had captured its
+   wire request. Actual Craftax sampling used 384 tokens, but early traces named
+   the image default; HealthBench had an analogous temperature/cap mismatch.
+   Image constructors now accept these settings and put them in the original
+   request. This preserves actual sampling behavior. The running Craftax
+   segments through revision 25 retain the old metadata; subsequent fresh
+   servers use aligned metadata. Do not interpret the early request cap as the
+   actual provider cap.
 
 ## Observed pilot and interrupted work
 
@@ -106,6 +114,13 @@ the actual world IDs. Live Rust sessions stayed at 23–24 after more than 168
 completed episodes, proving the old 128-session accumulation failure was fixed.
 The driver has started its first real 10-update training segment from a fresh
 base-model checkpoint, `ckpt_087dbe3d9cb9c46fc080b573`.
+
+The first segment completed 10 real updates, all with nonzero loss, 953
+trainable policy-call examples and 71,575 reported training tokens. It sampled
+132 episodes in 571.63 seconds (13.86 episodes/minute including update gaps),
+training 30 groups and skipping three zero-advantage groups. This throughput
+is distinct from the faster screening throughput above. Exact-state resume
+into the next 15-update segment is running; heldout outcomes remain unobserved.
 
 Implementation commits: optimizers `dddcbd6`; evals `a2253fc95`. The evals fixes
 are limited to actual seed declaration and preserving illegal-action evidence.

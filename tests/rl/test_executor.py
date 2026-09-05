@@ -58,6 +58,19 @@ def _advance(plane):
     return _tick
 
 
+def test_bounded_on_policy_admission_counts_pending_credit_groups(tmp_path):
+    with build_plane(_solo(), tmp_path) as plane:
+        executor = _executor(plane, tmp_path, group_size=2, target_train_updates=1)
+        executor.config = replace(executor.config, pipeline=replace(executor.config.pipeline, bounded_on_policy_batch=True, max_open_groups=3))
+        executor.register_baseline()
+        # A dequeued mixed group no longer counts as OPEN, but must still stop
+        # speculative old-policy admission when it fills the upcoming batch.
+        executor._pending_groups = ['pending'] * executor.plan.groups_per_step
+        assert executor.admit_group() is None
+        executor._pending_groups.clear()
+        assert executor.admit_group() is not None
+
+
 def _solo(**overrides) -> ContainerConfig:
     return replace(scenarios.multi_turn_environment_reward(), **overrides)
 

@@ -44,6 +44,23 @@ def _sampling(config) -> SamplingProfile:
     return SamplingProfile(temperature=1.0, top_p=1.0, seed=config.seed)
 
 
+def test_probe_accepts_unchanged_event_snapshots(tmp_path, monkeypatch):
+    original = session_module.ContractContainerSession.poll
+    polls = 0
+    def delayed(self, rollout_id):
+        nonlocal polls
+        result = original(self, rollout_id)
+        polls += 1
+        if polls <= 2:
+            return {**result, 'state':'running', 'terminal':False}
+        return result
+    monkeypatch.setattr(session_module.ContractContainerSession, 'poll', delayed)
+    with build_plane(scenarios.multi_turn_environment_reward(), tmp_path) as plane:
+        session = open_session(plane)
+        assert session.startup.probe is not None
+        assert polls >= 3
+
+
 def open_session(plane, *, run_config=None, renderer_profile=None, **config_kwargs):
     """Run the ordered startup against a wired plane."""
 

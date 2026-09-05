@@ -56,6 +56,7 @@ from .ports import (
 from .queues import AttemptRequest, GateRejection, QueueCapacities, QueueEngine, QueuePolicy
 from .session import ContractContainerSession, EvidenceNotReady, RunClock, SessionError
 from .store import (
+    GROUP_COMPLETE,
     GROUP_TRAIN_READY,
     JournalStore,
     RunIdentity,
@@ -475,10 +476,20 @@ class ContainerRunExecutor:
     def _next_task(self) -> TaskSpec:
         return self.tasks[self.sampled_groups % len(self.tasks)]
 
+    def _policy_batch_full(self) -> bool:
+        if not self.config.pipeline.bounded_on_policy_batch:
+            return False
+        outstanding = len(self.queues.open_groups()) + len(self._pending_groups)
+        outstanding += len(self.store.groups_in_state(GROUP_COMPLETE, run_id=self.run_id))
+        outstanding += len(self.store.groups_in_state(GROUP_TRAIN_READY, run_id=self.run_id))
+        return outstanding >= self.plan.groups_per_step
+
     def admit_group(self) -> str | None:
         """Open one group and admit every one of its samples, per sample."""
 
         if not self.lifecycle.gates.admit:
+            return None
+        if self._policy_batch_full():
             return None
         if self.sampled_groups >= self.config.maximum_sampled_groups:
             return None
@@ -514,6 +525,8 @@ class ContainerRunExecutor:
         identity and neither may this loop.
         """
 
+        if self._policy_batch_full():
+            return None
         if self.sampled_groups >= self.config.maximum_sampled_groups:
             return None
         if len(self.queues.open_groups()) >= self.config.pipeline.max_open_groups:

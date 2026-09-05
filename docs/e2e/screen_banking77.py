@@ -98,6 +98,7 @@ def run_screen(
     output: Path,
     samples: int = 8,
     concurrency: int = 8,
+    selection_mode: str = "binary",
     poll_limit: int = 240,
     poll_interval: float = 0.25,
     wall_clock: Any = time.time,
@@ -107,6 +108,8 @@ def run_screen(
         raise ValueError("screening needs at least two samples per task")
     if concurrency < 1:
         raise ValueError("concurrency must be positive")
+    if selection_mode not in {"binary", "reward_variance"}:
+        raise ValueError("unknown selection mode")
     revisions = dict(plane.binder.resolve(selector))
     if len(revisions) != 1:
         raise ValueError(f"Banking77 screening requires one policy revision, got {sorted(revisions)}")
@@ -213,6 +216,7 @@ def run_screen(
                     del active[rollout_id]
                 moved = True
             if moved:
+                _write_json(output / "attempts.partial.json", attempts)
                 _write_json(output / "progress.json", {
                     "completed": len(attempts), "total": len(config.taskset.train_ids) * samples,
                     "active": len(active), "usage_totals": _usage_totals(attempts),
@@ -237,8 +241,11 @@ def run_screen(
     for task_id in config.taskset.train_ids:
         rows = [row for row in attempts if row["task_id"] == task_id]
         successes = sum(1 for row in rows if float(row["reward"]) > 0.0)
-        summary.append({"task_id": task_id, "samples": len(rows), "successes": successes, "selected": 0 < successes < len(rows)})
-    selected = selected_task_ids(summary)
+        values = [float(row["reward"]) for row in rows]
+        mixed = 0 < successes < len(rows) if selection_mode == "binary" else max(values) - min(values) > 1e-8
+        summary.append({"task_id": task_id, "samples": len(rows), "successes": successes, "selected": mixed,
+                        "reward_min": min(values), "reward_max": max(values), "reward_mean": sum(values)/len(values)})
+    selected = [row["task_id"] for row in summary if row["selected"]]
     output.mkdir(parents=True, exist_ok=True)
     attempts_path = output / "attempts.json"
     summary_path = output / "summary.json"
@@ -248,6 +255,7 @@ def run_screen(
     duration_seconds = monotonic_clock() - monotonic_started
     manifest = {
         "schema_version": SCHEMA_VERSION,
+        "selection_mode": selection_mode,
         "run_id": config.run_id,
         "selector": selector,
         "checkpoint_id": revision.checkpoint_id,
@@ -301,6 +309,8 @@ def main() -> int:
     )
     parser.add_argument("--samples", type=int, default=8)
     parser.add_argument("--concurrency", type=int, default=8)
+    parser.add_argument("--selection-mode", choices=["binary", "reward_variance"], default="binary")
+    parser.add_argument("--poll-limit", type=int, default=240)
     args = parser.parse_args()
     config = load_run_config(Path(args.config))
     factory = _factory(args.plane)
@@ -316,7 +326,8 @@ def main() -> int:
     plane = factory(config=config, **options) if parameters else factory()
     try:
         manifest = run_screen(
-            config, plane, selector=args.selector, output=Path(args.output), samples=args.samples, concurrency=args.concurrency
+            config, plane, selector=args.selector, output=Path(args.output), samples=args.samples, concurrency=args.concurrency,
+            selection_mode=args.selection_mode, poll_limit=args.poll_limit
         )
     finally:
         close = getattr(plane, "close", None)

@@ -371,6 +371,7 @@ class PipelineBounds:
     rollout_retries: int = 0
     score_retries: int = 0
     max_open_groups: int = 1
+    bounded_on_policy_batch: bool = False
     stale_disposition: str = "discard"
     heartbeat_interval_seconds: float = 30.0
     missed_heartbeats_allowed: int = 2
@@ -392,6 +393,7 @@ class PipelineBounds:
             "rollout_retries": self.rollout_retries,
             "score_retries": self.score_retries,
             "max_open_groups": self.max_open_groups,
+            "bounded_on_policy_batch": self.bounded_on_policy_batch,
             "stale_disposition": self.stale_disposition,
             "heartbeat_interval_seconds": self.heartbeat_interval_seconds,
             "missed_heartbeats_allowed": self.missed_heartbeats_allowed,
@@ -685,6 +687,7 @@ def _pipeline_section(payload: Mapping[str, Any] | None) -> PipelineBounds:
         rollout_retries=reader.count("rollout_retries", 0, minimum=0),
         score_retries=reader.count("score_retries", 0, minimum=0),
         max_open_groups=reader.count("max_open_groups", 1),
+        bounded_on_policy_batch=reader.flag("bounded_on_policy_batch", False),
         stale_disposition=reader.choice("stale_disposition", STALE_DISPOSITIONS, "discard"),
         heartbeat_interval_seconds=reader.number(
             "heartbeat_interval_seconds", 30.0, minimum=0.001
@@ -795,6 +798,8 @@ def _assert_startup_invariants(config: RunConfig) -> None:
     except plan_module.PlanValidationError as error:
         raise ConfigError(f"[plan] {error}") from error
     pipeline = config.pipeline
+    if pipeline.bounded_on_policy_batch and pipeline.maximum_policy_lag != 0:
+        raise ConfigError('[pipeline] bounded_on_policy_batch requires maximum_policy_lag = 0')
     lag = pipeline.train_ready_capacity - 1
     if lag > pipeline.maximum_policy_lag:
         raise ConfigError(

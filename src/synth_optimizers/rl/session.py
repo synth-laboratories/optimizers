@@ -1244,7 +1244,9 @@ def run_probe(
     )
     pin = _probe_pin(config, session, behavior.value)
     origin = _probe_origin(config, behavior)
-    task = session.tasks(split=config.taskset.train_split, task_ids=())[0]
+    # Some benchmarks expose one physical split with custom research partitions.
+    # A startup probe must not consume a validation/final task from that split.
+    task = session.tasks(split=config.taskset.train_split, task_ids=config.taskset.train_ids)[0]
     key = f"probe::{config.run_id}::0"
     operations: set[str] = set()
 
@@ -1262,7 +1264,11 @@ def run_probe(
         operations.add("events")
         rows = events.get("events") or ()
         if rows:
-            cursors.append(int(rows[-1]["cursor"]))
+            cursor = int(rows[-1]["cursor"])
+            # Events is a snapshot API. An unchanged snapshot while an async
+            # episode runs is not a second event with a duplicate cursor.
+            if not cursors or cursor != cursors[-1]:
+                cursors.append(cursor)
         if str(state.get("state")) in {"scored", "awaiting_score"} or state.get("terminal"):
             break
     session.renew(rollout_id)
@@ -1277,7 +1283,9 @@ def run_probe(
     events = session.events(rollout_id)
     rows = events.get("events") or ()
     if rows:
-        cursors.append(int(rows[-1]["cursor"]))
+        cursor = int(rows[-1]["cursor"])
+        if not cursors or cursor != cursors[-1]:
+            cursors.append(cursor)
     terminal_states = {"episode", "failure", "cancellation"}
     terminal_kinds = tuple(
         str(row["kind"]) for row in rows if str(row["kind"]) in terminal_states

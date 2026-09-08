@@ -59,7 +59,7 @@ def test_stale_owner_cannot_commit_after_takeover(tmp_path):
             with pytest.raises(JobStoreError, match="fenced"):
                 write()
     assert first.require("run").owner == "new"
-    assert not first.events("run")
+    assert [event["kind"] for event in first.events("run")] == ["training.lifecycle"]
     first.close()
     second.close()
 
@@ -437,4 +437,16 @@ def test_collection_cursor_pins_run_scope_and_sequence_after_restart(tmp_path):
         sft_collections(store, 'run', collection='checkpoints', after_key=first.next_key)
     with pytest.raises(ValueError, match='cursor'):
         sft_collections(store, 'run', collection='training_metrics', after_key=first.next_key, at_sequence=170)
+    store.close()
+
+
+def test_resumed_claim_state_is_in_the_historical_journal(tmp_path):
+    store = JobStore(tmp_path / 'jobs.sqlite')
+    prepare(store)
+    store.request_pause('run')
+    store.transition('run', 'paused')
+    store.resume_prepared('run')
+    store.claim('run', 'resumed')
+    sequence = store.events('run')[-1]['sequence']
+    assert reduce_summary(store, 'run', at_sequence=sequence)['state'] == 'running'
     store.close()

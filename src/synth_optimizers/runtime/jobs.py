@@ -284,6 +284,9 @@ class JobStore:
                 state = CASE WHEN state = 'prepared' THEN 'running' ELSE state END,
                 updated_at = ? WHERE job_id = ?""", (owner, now, now, job_id),
             )
+            if job.state == "prepared":
+                self._insert_event(job_id, "training.lifecycle", {"state": "running", "error": None}, "running")
+                self._events.notify_all()
             return self.require(job_id)
 
     def heartbeat(self, job_id: str, owner: str) -> None:

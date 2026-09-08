@@ -6,6 +6,7 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Any, Protocol
 
+from .contracts.checkpoint_plan import resolve_checkpoint_plan
 from .contracts.training_schemas import (
     SFT_ALGORITHM_ID,
     SFT_IMPLEMENTATION_VERSION,
@@ -55,11 +56,13 @@ class TinkerSftExecutor:
         *,
         owner: str = "sft-worker",
         sync: bool = True,
+        eval_authority: Any = None,
     ) -> None:
         self.store = store
         self.provider = provider
         self.owner = owner
         self.sync = sync
+        self.eval_authority = eval_authority
 
     @classmethod
     def local(cls, store: JobStore, *, fixture: bool = False) -> "TinkerSftExecutor":
@@ -68,8 +71,11 @@ class TinkerSftExecutor:
         return cls(store, TinkerAdapter(TinkerCredentials.from_env()))
 
     def estimate(self, config: Mapping[str, Any]) -> dict[str, Any]:
+        plan = resolve_checkpoint_plan(config)
+        model_id = self.provider.resolve_model(str(config.get("base_model") or config.get("model_id") or "openai/gpt-oss-20b"))
+        self.provider.prepare_renderer(model_id)
         dataset = self._dataset(config)
-        steps = _positive_int(config.get("training", {}).get("steps") or config.get("max_steps") or 2, "steps")
+        steps = plan["steps"]
         batch_size = _positive_int(config.get("training", {}).get("batch_size") or 1, "batch_size")
         prompt = system_prompt_from(config)
         tokens = sum(
@@ -82,6 +88,7 @@ class TinkerSftExecutor:
             "model_id": self.provider.resolve_model(str(config.get("base_model") or config.get("model_id") or "")),
             "train_examples": len(dataset.train),
             "estimated_training_tokens": tokens * steps,
+            "resolved_checkpoint_plan": plan,
             "cost_usd": None,
             "cost_missing": True,
         }
@@ -109,24 +116,26 @@ class TinkerSftExecutor:
 
     def status(self, job_id: str) -> dict[str, Any]:
         job = self.store.require(job_id)
-        events = self.store.events(job_id, after_sequence=0, limit=5_000)
+        events = self.store.status_events(job_id)
         return _public_status(job, events)
 
     def cancel(self, job_id: str) -> dict[str, Any]:
-        job = self.store.request_cancel(job_id)
-        self.store.append_event(job.job_id, "sft.cancelled", {"reason": "requested"}, phase="cancelled")
-        try:
-            # Best-effort provider cancel; the job is already terminal.
-            pass
-        except ProviderError:
-            pass
+        self.store.request_cancel(job_id)
+        return self.status(job_id)
+
+    def pause(self, job_id: str) -> dict[str, Any]:
+        self.store.request_pause(job_id)
         return self.status(job_id)
 
     def resume(self, job_id: str) -> dict[str, Any]:
-        job = self.store.require(job_id)
+        job = self.store.resume_prepared(job_id)
         if job.state in TERMINAL_STATES:
             return self.status(job_id)
-        return self._run(job_id)
+        if self.sync:
+            return self._run(job_id)
+        from .runtime import start_job_worker
+        start_job_worker(job_id, lambda: self._run(job_id))
+        return self.status(job_id)
 
     def _prepare(
         self,
@@ -135,13 +144,19 @@ class TinkerSftExecutor:
         job_id: str | None,
         idempotency_key_override: str | None = None,
     ) -> TrainingJob:
+        plan = resolve_checkpoint_plan(config)
+        if plan["mode"] in {"container", "both"}:
+            for evaluator in plan["evaluators"]:
+                self._authority().validate(evaluator)
+        from .runtime.training_budget import resolve_budget
+        budget = resolve_budget(config, self.provider)
         dataset = self._dataset(config)
         validate_dataset_manifest(dataset.manifest)
         model_id = self.provider.resolve_model(
             str(config.get("base_model") or config.get("model_id") or "openai/gpt-oss-20b")
         )
         training = dict(config.get("training") or {})
-        training.setdefault("steps", int(config.get("max_steps") or max(config.get("checkpoint_steps") or [1])))
+        training["steps"] = plan["steps"]
         training.setdefault("batch_size", 1)
         training.setdefault("learning_rate", 2e-5)
         training.setdefault("checkpoint_every_steps", int((config.get("checkpoint_steps") or [training["steps"]])[0]))
@@ -155,7 +170,9 @@ class TinkerSftExecutor:
             dataset_digest=str(dataset.manifest["digest"]),
             split_manifest_digest=digest_payload(dataset.manifest["split_digests"]),
             renderer_version=dataset.renderer_version,
-            training_config=training,
+            training_config={"training": training, "checkpoint_plan": plan,
+                             "evaluation": config.get("evaluation", {}),
+                             "system_prompt": system_prompt_from(config)},
             reward_version="sft.cross_entropy.v1",
             seed=seed,
             runner_version=str(config.get("runner_version") or RUNNER_VERSION),
@@ -169,6 +186,8 @@ class TinkerSftExecutor:
             "backend": "tinker",
             "training": training,
             "dataset_manifest": dataset.manifest,
+            "budget": budget,
+            "resolved_checkpoint_plan": plan,
             "seed": seed,
         }
         job = self.store.persist_prepared(
@@ -186,15 +205,44 @@ class TinkerSftExecutor:
         return split_dataset_from_config(config)
 
     def _run(self, job_id: str) -> dict[str, Any]:
+        from .runtime.worker import execute_owned
         try:
-            job = self.store.claim(job_id, self.owner)
+            result = execute_owned(self.store, job_id, self._execute)
+            return result or self.status(job_id)
         except JobStoreError:
             return self.status(job_id)
-        if job.state in TERMINAL_STATES:
-            return self.status(job_id)
+
+    def _execute(self, job: TrainingJob, owner: str) -> dict[str, Any]:
+        from copy import copy
+        from .runtime.worker import AdmissionProvider
+        executor = copy(self)
+        from .runtime.operations import DurableProvider, UncertainOperation
+        executor.provider = AdmissionProvider(
+            DurableProvider(self.provider, self.store, job.job_id, owner), self.store, job.job_id)
+        try:
+            executor.provider.provider.recovery_checkpoint()
+            result = executor._execute_body(job, owner)
+            if self.store.require(job.job_id).state == "stop_requested":
+                self.store.transition(job.job_id, "cancelled")
+                return self.status(job.job_id)
+            return result
+        except UncertainOperation as exc:
+            self.store.transition(job.job_id, "blocked_uncertain", error=str(exc))
+            return self.status(job.job_id)
+        except ProviderError as exc:
+            return executor._fail(job.job_id, str(exc))
+
+    def _execute_body(self, job: TrainingJob, owner: str) -> dict[str, Any]:
+        job_id = job.job_id
         config = json.loads(job.config_json)
+        if job.resume_token and not job.resume_token.startswith("{"):
+            from .runtime.operations import UncertainOperation
+            raise UncertainOperation("legacy resume has no verified operation journal; explicit migration required")
         dataset = self._dataset(config)
-        self.store.append_event(
+        if config.get("dataset_manifest") != dataset.manifest:
+            from .runtime.operations import UncertainOperation
+            raise UncertainOperation("dataset identity changed; exact resume refused")
+        self.store.append_event_once(
             job_id,
             "sft.dataset.validated",
             {"manifest": dataset.manifest, "labels": list(dataset.labels)},
@@ -202,7 +250,8 @@ class TinkerSftExecutor:
         )
         try:
             capabilities = self.provider.discover_capabilities(job.model_id)
-            capabilities.require(SFT_REQUIRED_CAPABILITIES)
+            capabilities.require(SFT_REQUIRED_CAPABILITIES if config["resolved_checkpoint_plan"]["mode"] != "none"
+                                 else frozenset({"sft.train"}))
         except UnsupportedCapability as exc:
             return self._fail(job_id, str(exc))
         session = self.provider.create_session(
@@ -211,7 +260,7 @@ class TinkerSftExecutor:
             seed=int(config.get("seed") or 0),
             request_id=new_request_id(job_id, "session"),
         )
-        self.store.append_event(
+        self.store.append_event_once(
             job_id,
             "sft.training.started",
             {"model_id": job.model_id, "session_id": session.session_id},
@@ -220,40 +269,35 @@ class TinkerSftExecutor:
         training = config["training"]
         prompt = system_prompt_from(config)
         max_tokens = eval_max_tokens(config)
-        start_step = _resume_step(job) + 1
+        start_step = 1  # Confirmed provider operations replay from durable results.
         checkpoints: list[dict[str, Any]] = []
+        plan = config["resolved_checkpoint_plan"]
         try:
-            baseline_checkpoint = self.provider.save_checkpoint(
-                session,
-                step=0,
-                kind="inference",
-                request_id=new_request_id(job_id, "baseline", "inference"),
-            )
-            baseline_record = {
-                "checkpoint_id": baseline_checkpoint.checkpoint_id,
-                "provider_reference": baseline_checkpoint.provider_reference,
-                "digest": baseline_checkpoint.digest,
-                "step": 0,
-            }
-            baseline = self._evaluate(
-                job_id,
-                baseline_record,
-                dataset.calibration,
-                phase="selection",
-                candidate="base",
-                prompt=prompt,
-                max_tokens=max_tokens,
-            )
-            self.store.append_event(
-                job_id,
-                "sft.baseline_eval.completed",
-                {**baseline_record, **public_evaluation(baseline), "role": "selection"},
-                phase="running",
-            )
+            baseline, baseline_record = {}, {}
+            if plan["mode"] != "none":
+                baseline_checkpoint = self.provider.save_checkpoint(
+                    session,
+                    step=0,
+                    kind="inference",
+                    request_id=new_request_id(job_id, "baseline", "inference"),
+                )
+                baseline_record = {
+                    "checkpoint_id": baseline_checkpoint.checkpoint_id,
+                    "provider_reference": baseline_checkpoint.provider_reference,
+                    "digest": baseline_checkpoint.digest,
+                    "step": 0,
+                }
+                if plan["baseline"]:
+                    if plan["mode"] in {"builtin", "both"}:
+                        baseline = self._evaluate(job_id, baseline_record, dataset.calibration,
+                            phase="selection", candidate="base", prompt=prompt, max_tokens=max_tokens)
+                        self.store.append_event_once(job_id, "sft.baseline_eval.completed",
+                            {**baseline_record, **public_evaluation(baseline), "role": "selection"}, phase="running")
+                    self._container_evaluate(job_id, baseline_record, "baseline")
             for step in range(start_step, int(training["steps"]) + 1):
-                if self.store.require(job_id).state == "cancelled":
-                    return self.status(job_id)
-                self.store.heartbeat(job_id, self.owner)
+                if self.store.cancellation_requested(job_id):
+                    return self._fail(job_id, "training cancellation requested")
+                self.store.heartbeat(job_id, owner)
                 batch = _batch(dataset.train, step, int(training["batch_size"]))
                 data = [
                     encode_example(self.provider, example, system_prompt=prompt) for example in batch
@@ -267,14 +311,14 @@ class TinkerSftExecutor:
                         metadata={"learning_rate": float(training.get("learning_rate") or 2e-5)},
                     ),
                 )
-                self.store.append_event(
+                self.store.append_event_once(
                     job_id,
                     "sft.step.metrics",
                     {"step": step, "metrics": dict(result.metrics), "tokens": sum(item["n_tokens"] for item in data)},
                     phase="running",
                 )
                 self._receipt(job_id, result.request_id, result.usage)
-                if step % int(training["checkpoint_every_steps"]) == 0 or step == int(training["steps"]):
+                if step in plan["save_steps"]:
                     checkpoint = self._checkpoint_and_eval(
                         job_id,
                         session,
@@ -285,48 +329,65 @@ class TinkerSftExecutor:
                         prompt=prompt,
                         max_tokens=max_tokens,
                     )
-                    self.store.set_resume_token(job_id, checkpoint["checkpoint_id"])
-            promoted = max(checkpoints, key=lambda item: item["calibration_accuracy"])
-            self.store.append_event(
-                job_id,
-                "sft.checkpoint.promoted",
-                promoted,
-                phase="evaluating",
-            )
-            self.store.transition(job_id, "evaluating")
-            heldout_base = self._evaluate(
-                job_id,
-                baseline_record,
-                dataset.heldout,
-                phase="heldout",
-                candidate="base",
-                prompt=prompt,
-                max_tokens=max_tokens,
-            )
-            heldout_trained = self._evaluate(
-                job_id,
-                promoted,
-                dataset.heldout,
-                phase="heldout",
-                candidate="selected",
-                prompt=prompt,
-                max_tokens=max_tokens,
-            )
-            heldout_uplift = self._paired(config, heldout_base, heldout_trained)
-            heldout = {
-                **public_evaluation(heldout_trained),
-                "role": "heldout",
-                "heldout_locked": True,
-                "baseline": public_evaluation(heldout_base),
-                "trained": public_evaluation(heldout_trained),
-                "paired_uplift": heldout_uplift,
-            }
-            self.store.append_event(
-                job_id,
-                "sft.heldout_eval.completed",
-                heldout,
-                phase="evaluating",
-            )
+                    self.store.set_resume_token(job_id, json.dumps({"step": step, "training_provider_reference": checkpoint["training_provider_reference"]}))
+                    if self.store.require(job_id).state == "pause_requested":
+                        self.store.transition(job_id, "paused")
+                        return self.status(job_id)
+            if plan["mode"] == "none":
+                promoted = checkpoints[-1]
+                heldout = {"status": "not_configured", "accuracy": None, "evaluated": False}
+                self.store.append_event_once(job_id, "sft.checkpoint.selected", promoted, phase="materializing")
+            else:
+                eligible = [item for item in checkpoints if item.get("selection_value") is not None]
+                if not eligible:
+                    raise ProviderError("selection_unavailable", "no checkpoint has a complete valid selection result")
+                direction = -1 if plan["selection"].get("direction") == "minimize" else 1
+                tie = 1 if plan["selection"].get("tie_break") == "latest_step" else -1
+                promoted = max(eligible, key=lambda item: (direction*item["selection_value"], tie*item["step"]))
+                self.store.append_event_once(
+                    job_id,
+                    "sft.checkpoint.promoted",
+                    promoted,
+                    phase="evaluating",
+                )
+                self.store.transition(job_id, "evaluating")
+                heldout = {"role": "heldout", "accuracy": None, "evaluated": False}
+                if plan["final"] and plan["mode"] in {"builtin", "both"}:
+                    heldout_base = self._evaluate(
+                        job_id,
+                        baseline_record,
+                        dataset.heldout,
+                        phase="heldout",
+                        candidate="base",
+                        prompt=prompt,
+                        max_tokens=max_tokens,
+                    )
+                    heldout_trained = self._evaluate(
+                        job_id,
+                        promoted,
+                        dataset.heldout,
+                        phase="heldout",
+                        candidate="selected",
+                        prompt=prompt,
+                        max_tokens=max_tokens,
+                    )
+                    heldout_uplift = self._paired(config, heldout_base, heldout_trained)
+                    heldout = {
+                        **public_evaluation(heldout_trained),
+                        "role": "heldout",
+                        "heldout_locked": True,
+                        "baseline": public_evaluation(heldout_base),
+                        "trained": public_evaluation(heldout_trained),
+                        "paired_uplift": heldout_uplift,
+                    }
+                    self.store.append_event_once(
+                        job_id,
+                        "sft.heldout_eval.completed",
+                        heldout,
+                        phase="evaluating",
+                    )
+                if plan["final"]:
+                    heldout["container_evaluations"] = self._container_evaluate(job_id, promoted, "final")
             self.store.transition(job_id, "materializing")
             bundle = {
                 "schema_version": "policy_bundle.v1",
@@ -340,13 +401,13 @@ class TinkerSftExecutor:
             digest = self.store.put_artifact(
                 job_id, "policy_bundle.json", json.dumps(bundle, sort_keys=True).encode(), content_type="application/json"
             )
-            self.store.append_event(
+            self.store.append_event_once(
                 job_id,
                 "sft.model.materialized",
                 {"digest": digest, "checkpoint_id": promoted["checkpoint_id"]},
                 phase="materializing",
             )
-            self.store.append_event(
+            self.store.append_event_once(
                 job_id,
                 "sft.completed",
                 {"selected_checkpoint_id": promoted["checkpoint_id"], "heldout_accuracy": heldout["accuracy"]},
@@ -354,6 +415,15 @@ class TinkerSftExecutor:
             )
             self.store.transition(job_id, "completed")
         except ProviderError as exc:
+            from .runtime.operations import UncertainOperation
+            if isinstance(exc, UncertainOperation):
+                raise
+            if getattr(exc, "code", "") in {"experiment_budget_exhausted", "reservation_exceeded", "pricing_reconciliation_required"}:
+                self.store.transition(job_id, "blocked_budget", error=str(exc))
+                return self.status(job_id)
+            if getattr(exc, "code", "") == "evaluation_blocked":
+                self.store.transition(job_id, "blocked_evaluation", error=str(exc))
+                return self.status(job_id)
             return self._fail(job_id, str(exc))
         return self.status(job_id)
 
@@ -380,32 +450,70 @@ class TinkerSftExecutor:
             "training_checkpoint_id": training.checkpoint_id,
             "provider_reference": inference.provider_reference,
             "training_provider_reference": training.provider_reference,
+            "training_digest": training.digest,
             "digest": inference.digest,
             "resume_token": training.resume_token,
             "step": step,
         }
-        self.store.append_event(job_id, "sft.checkpoint.created", record, phase="evaluating")
-        evaluation = self._evaluate(
-            job_id,
-            record,
-            dataset.calibration,
-            phase="selection",
-            candidate=f"checkpoint:{step}",
-            prompt=prompt,
-            max_tokens=max_tokens,
-        )
-        payload = {
-            **record,
-            **public_evaluation(evaluation),
-            "calibration_accuracy": evaluation["accuracy"],
-            "role": "selection",
-            "paired_uplift": self._paired(
-                json.loads(self.store.require(job_id).config_json), baseline, evaluation
-            ),
-        }
-        self.store.append_event(job_id, "sft.checkpoint_eval.completed", payload, phase="evaluating")
+        self.store.append_event_once(job_id, "sft.checkpoint.created", record, phase="evaluating")
+        plan = json.loads(self.store.require(job_id).config_json)["resolved_checkpoint_plan"]
+        if step not in plan["evaluation_steps"]:
+            record["evaluation_status"] = "not_configured" if plan["mode"] == "none" else "not_scheduled"
+            checkpoints.append(record)
+            return record
+        payload = {**record, "role": "selection"}
+        if plan["mode"] in {"builtin", "both"}:
+            evaluation = self._evaluate(job_id, record, dataset.calibration, phase="selection",
+                                       candidate=f"checkpoint:{step}", prompt=prompt, max_tokens=max_tokens)
+            payload.update({**public_evaluation(evaluation), "calibration_accuracy": evaluation["accuracy"],
+                            "paired_uplift": self._paired(json.loads(self.store.require(job_id).config_json), baseline, evaluation)})
+        payload["container_evaluations"] = self._container_evaluate(job_id, record, "selection")
+        selector = plan["selection"]["evaluator_id"]
+        payload["selection_value"] = (payload.get("calibration_accuracy") if selector == "builtin" else
+                                      payload["container_evaluations"].get(selector, {}).get("value"))
+        self.store.append_event_once(job_id, "sft.checkpoint_eval.completed", payload, phase="evaluating")
         checkpoints.append(payload)
         return payload
+
+    def _authority(self):
+        if self.eval_authority is None:
+            from pathlib import Path
+            from .eval.checkpoint_authority import CheckpointEvaluationAuthority
+            self.eval_authority = CheckpointEvaluationAuthority(Path(self.store.path).parent / "eval")
+        return self.eval_authority
+
+    def _container_evaluate(self, job_id, checkpoint, role):
+        from .eval.models import EvalContractError
+        config = json.loads(self.store.require(job_id).config_json)
+        results = {}
+        evaluation_owner = self.store.require(job_id).owner
+        for evaluator in config["resolved_checkpoint_plan"]["evaluators"]:
+            request_id = new_request_id(job_id, checkpoint["checkpoint_id"], evaluator["id"], role)
+            self.store.append_event_once(job_id, "sft.child_eval.requested",
+                {"request_id": request_id, "checkpoint_id": checkpoint["checkpoint_id"],
+                 "evaluator_id": evaluator["id"], "role": role}, phase="evaluating")
+            def event(value):
+                with self.store.owned(evaluation_owner):
+                    self.store.append_event_once(job_id, "sft.child_eval.progress", {
+                        **value, "evaluator_id": evaluator["id"], "checkpoint_id": checkpoint["checkpoint_id"],
+                        "step": checkpoint["step"], "role": role}, phase="evaluating")
+            try:
+                result = self._authority().evaluate(request_id, checkpoint, evaluator,
+                    provider=self.provider, model_id=config["model_id"], parent_run_id=job_id,
+                    role=role, on_event=event, should_stop=lambda: (self.store.cancellation_requested(job_id) or
+                        self.store.require(job_id).owner != evaluation_owner),
+                    renderer_profile=config["evaluation_renderer_profile"])
+                if not result["valid"]:
+                    raise EvalContractError("checkpoint evaluator returned incomplete or invalid evidence")
+                results[evaluator["id"]] = result
+                self.store.append_event_once(job_id, "sft.child_eval.completed", {**result, "evaluator_id": evaluator["id"], "role": role, "step": checkpoint["step"]}, phase="evaluating")
+            except EvalContractError as exc:
+                self.store.append_event_once(job_id, "sft.child_eval.failed", {"request_id": request_id,
+                    "evaluator_id": evaluator["id"], "checkpoint_id": checkpoint["checkpoint_id"], "reason": str(exc)}, phase="evaluating")
+                if evaluator.get("failure_policy", "block") == "block":
+                    raise ProviderError("evaluation_blocked", str(exc)) from exc
+                results[evaluator["id"]] = {"status": "failed", "value": None, "valid": False}
+        return results
 
     def _evaluate(
         self,
@@ -419,7 +527,7 @@ class TinkerSftExecutor:
         max_tokens: int,
     ) -> dict[str, Any]:
         def stream(record: Mapping[str, Any]) -> None:
-            self.store.append_event(
+            self.store.append_event_once(
                 job_id,
                 "sft.evaluation.example.completed",
                 {
@@ -445,6 +553,7 @@ class TinkerSftExecutor:
             system_prompt=prompt,
             max_tokens=max_tokens,
             on_example=stream,
+            on_usage=lambda request_id, usage: self._receipt(job_id, request_id, usage),
         )
 
     @staticmethod
@@ -481,7 +590,10 @@ class TinkerSftExecutor:
         )
 
     def _fail(self, job_id: str, reason: str) -> dict[str, Any]:
-        self.store.append_event(job_id, "sft.failed", {"reason": reason}, phase="failed")
+        if self.store.cancellation_requested(job_id):
+            self.store.transition(job_id, "cancelled")
+            return self.status(job_id)
+        self.store.append_event_once(job_id, "sft.failed", {"reason": reason}, phase="failed")
         self.store.transition(job_id, "failed", error=reason)
         return self.status(job_id)
 
@@ -494,8 +606,14 @@ def _batch(examples: Sequence[Example], step: int, size: int) -> list[Example]:
 def _resume_step(job: TrainingJob) -> int:
     if not job.resume_token:
         return 0
-    digits = "".join(ch for ch in job.resume_token if ch.isdigit())
-    return int(digits) if digits else 0
+    try:
+        progress = json.loads(job.resume_token)
+        step = progress["step"]
+        if isinstance(step, bool) or not isinstance(step, int) or step < 0:
+            raise ValueError("invalid progress")
+        return step
+    except (ValueError, TypeError, KeyError) as exc:
+        raise JobStoreError("legacy opaque resume token has no verified progress") from exc
 
 
 def _positive_int(value: Any, field: str) -> int:

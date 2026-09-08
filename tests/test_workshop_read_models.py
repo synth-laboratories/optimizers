@@ -54,3 +54,21 @@ def test_cispo_workshop_collections_and_clip_identity(tmp_path) -> None:
     assert batch["rollouts"]["items"]
     assert batch["candidates"]["items"]
     service.store.close()
+
+
+def test_container_evaluations_share_normal_collection_and_preserve_panel_ids(tmp_path):
+    service = SftService.from_fixture(tmp_path / "sft.sqlite")
+    service.submit({"run_id": "panels", "backend": "fixture", "base_model": "openai/gpt-oss-20b",
+                    "checkpoint_steps": [1], "training": {"steps": 1, "batch_size": 1}})
+    for role in ("selection", "final"):
+        service.store.append_event("panels", "sft.child_eval.completed", {
+            "eval_job_id": f"eval_{role}", "checkpoint_id": "checkpoint_same", "step": 1,
+            "evaluator_id": "gsm8k", "role": role, "value": 0.5, "metric_ref": "accuracy",
+            "rollouts": ["immutable-rollout-source"], "evidence_refs": ["trace-source"]}, phase="completed")
+    page = service.state_batch("panels", "evaluations")["evaluations"]
+    rows = [row for row in page["items"] if row.get("evaluation_id")]
+    assert [row["item_id"] for row in rows] == ["eval_selection", "eval_final"]
+    assert all(row["details"]["checkpointId"] == "checkpoint_same" for row in rows)
+    assert [row["details"]["phase"] for row in rows] == ["selection", "final"]
+    assert all(row["details"]["score"] == .5 and "rollouts" not in row["details"] for row in rows)
+    service.store.close()

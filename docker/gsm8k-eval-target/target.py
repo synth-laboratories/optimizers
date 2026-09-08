@@ -130,7 +130,7 @@ def resolve_route(trial: dict[str, Any]) -> dict[str, Any]:
 
 def read_policy(trial: dict[str, Any]) -> dict[str, Any]:
     candidate = trial.get("candidate") or {}
-    if candidate.get("kind") != POLICY_KIND:
+    if candidate.get("kind") not in {POLICY_KIND, "tinker-sampler.v1"}:
         raise CandidateError(f"the GSM8K target scores {POLICY_KIND} candidates, not {candidate.get('kind')!r}")
     snapshot_id = trial.get("policy_snapshot_id")
     if not isinstance(snapshot_id, str) or not snapshot_id.strip():
@@ -142,6 +142,11 @@ def read_policy(trial: dict[str, Any]) -> dict[str, Any]:
     if not manifest_path.is_file():
         raise CandidateError("an mlx-lora.v1 candidate must contain policy.json")
     policy = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if candidate.get("kind") == "tinker-sampler.v1":
+        if policy.get("schema_version") != "eval.tinker-sampler.v1" or policy.get("checkpoint_id") != snapshot_id:
+            raise CandidateError("immutable hosted checkpoint policy identity mismatch")
+        if not str(policy.get("sampler_reference") or "").startswith("tinker://"):
+            raise CandidateError("hosted checkpoint policy requires an immutable Tinker sampler reference")
     return {
         "snapshot_id": snapshot_id.strip(),
         "base_model": str(policy.get("base_model") or ""),

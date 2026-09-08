@@ -52,7 +52,7 @@ def dispatch(args: argparse.Namespace) -> int:
         return sft_submit(args)
     if command == "watch":
         return sft_watch(args)
-    if command == "cancel":
+    if command in {"cancel", "pause", "resume"}:
         return sft_cancel(args)
     if command == "service":
         return sft_service(args)
@@ -135,7 +135,7 @@ def sft_watch(args: argparse.Namespace) -> int:
 
 def sft_cancel(args: argparse.Namespace) -> int:
     try:
-        record = sft_service_client(args).cancel(args.run_id)
+        record = getattr(sft_service_client(args), args.sft_command)(args.run_id)
     except SftServiceError as exc:
         raise SystemExit(str(exc)) from exc
     print(

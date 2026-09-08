@@ -70,7 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use the unpaid fixture executor (same as SYNTH_OPTIMIZERS_CISPO_FIXTURE=1).",
     )
 
-    for command_name in ("submit", "watch", "cancel"):
+    for command_name in ("submit", "watch", "cancel", "pause", "resume"):
         command = commands.add_parser(command_name)
         command.add_argument(
             "--service-url",
@@ -90,8 +90,8 @@ def build_parser() -> argparse.ArgumentParser:
     watch.add_argument("--events", action="store_true")
     watch.add_argument("--after-seq", type=int, default=0)
     watch.add_argument("--limit", type=int, default=500)
-    cancel = commands.choices["cancel"]
-    cancel.add_argument("run_id")
+    for action in ("cancel", "pause", "resume"):
+        commands.choices[action].add_argument("run_id")
     return parser
 
 
@@ -103,7 +103,7 @@ def dispatch(args: argparse.Namespace) -> int:
         return cispo_submit(args)
     if command == "watch":
         return cispo_watch(args)
-    if command == "cancel":
+    if command in {"cancel", "pause", "resume"}:
         return cispo_cancel(args)
     raise SystemExit(f"unknown cispo command {command}")
 
@@ -170,7 +170,7 @@ def cispo_watch(args: argparse.Namespace) -> int:
 
 def cispo_cancel(args: argparse.Namespace) -> int:
     try:
-        record = cispo_service_client(args).cancel(args.run_id)
+        record = getattr(cispo_service_client(args), args.cispo_command)(args.run_id)
     except CispoServiceError as exc:
         raise SystemExit(str(exc)) from exc
     print(

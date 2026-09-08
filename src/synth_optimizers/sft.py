@@ -68,21 +68,14 @@ class SftConfig:
         slots = data.get("accelerator_slots", 1)
         if not isinstance(slots, int) or isinstance(slots, bool) or slots < 1:
             raise SftServiceError("accelerator_slots must be a positive integer")
-        raw_steps = data.get("checkpoint_steps") or list(
-            range(
-                int((data.get("training") or {}).get("checkpoint_every_steps") or 1),
-                int((data.get("training") or {}).get("steps") or 2) + 1,
-                int((data.get("training") or {}).get("checkpoint_every_steps") or 1),
-            )
-        )
-        if not isinstance(raw_steps, list) or not raw_steps:
-            raise SftServiceError("checkpoint_steps must be a non-empty list")
-        if any(
-            not isinstance(step, int) or isinstance(step, bool) or step < 1 for step in raw_steps
-        ):
-            raise SftServiceError("checkpoint_steps must contain positive integers")
-        if sorted(raw_steps) != raw_steps or len(set(raw_steps)) != len(raw_steps):
-            raise SftServiceError("checkpoint_steps must be strictly increasing")
+        from .contracts.checkpoint_plan import resolve_checkpoint_plan
+        from .contracts.training_schemas import SchemaError
+        try:
+            plan = resolve_checkpoint_plan(data)
+        except SchemaError as exc:
+            raise SftServiceError(str(exc)) from exc
+        raw_steps = plan["save_steps"]
+        data["training"] = {**(data.get("training") or {}), "steps": plan["steps"]}
         if backend == "tinker" and not _has_training_data(data):
             raise SftServiceError("Tinker SFT requires training_file_id, training_jsonl, examples, or dataset")
         data["run_id"] = resolved_run_id
@@ -90,7 +83,8 @@ class SftConfig:
         data["model_id"] = base_model
         data["backend"] = backend
         data["accelerator_slots"] = slots
-        data["checkpoint_steps"] = raw_steps
+        if "checkpoint_schedule" not in data:
+            data["checkpoint_steps"] = raw_steps
         return cls(
             run_id=resolved_run_id,
             base_model=base_model,
@@ -144,6 +138,9 @@ class SftPublicServiceClient:
 
     def cancel(self, run_id: str) -> dict[str, Any]:
         return self._request("POST", f"/v1/runs/{run_id}/cancel", {})
+
+    def pause(self, run_id: str) -> dict[str, Any]:
+        return self._request("POST", f"/v1/runs/{run_id}/pause", {})
 
     def resume(self, run_id: str) -> dict[str, Any]:
         return self._request("POST", f"/v1/runs/{run_id}/resume", {})
@@ -316,6 +313,9 @@ class SftService:
     def cancel(self, run_id: str) -> dict[str, Any]:
         return self._public_run(self.executor.cancel(run_id))
 
+    def pause(self, run_id: str) -> dict[str, Any]:
+        return self._public_run(self.executor.pause(run_id))
+
     def resume(self, run_id: str) -> dict[str, Any]:
         return self._public_run(self.executor.resume(run_id))
 
@@ -327,6 +327,26 @@ class SftService:
         return optimizer_event_page(
             self.store, run_id, after_sequence=after_sequence, limit=limit
         )
+
+    def checkpoint_evidence(self, run_id: str, child_id: str) -> dict[str, Any]:
+        """Materialize portable evidence from one owned child, without provider calls."""
+        import re
+        from pathlib import Path
+        if not re.fullmatch(r"eval_[0-9a-f]{32}", child_id):
+            raise SftServiceError("invalid child evaluation identity")
+        self.store.require(run_id)
+        authority = self.executor._authority()
+        path = authority.home.run_dir(child_id) / "result_manifest.json"
+        manifest = json.loads(path.read_text())
+        correlation = manifest["correlation"]
+        if correlation["parent_run_id"] != run_id:
+            raise SftServiceError("child evaluation belongs to another training run")
+        evaluator = correlation["evaluator"]
+        seeds = evaluator["final_seeds"] if correlation["role"] == "final" else evaluator["selection_seeds"]
+        expected = len(seeds) * len(authority.home.recipe(evaluator["recipe_id"]).scenarios)
+        result = authority.result(child_id, evaluator, correlation["checkpoint"], expected)
+        return {"eval_job_id": child_id, "parent_run_id": run_id,
+                "traces": [ref for ref in result["evidence_refs"] if ref.get("role") == "trace_v5_partial"]}
 
     def state_batch(self, run_id: str, slices: str) -> dict[str, Any]:
         from .runtime.workshop import state_batch
@@ -395,6 +415,23 @@ def create_sft_http_server(
                 query = urllib.parse.parse_qs(parsed.query)
                 if self.command == "GET" and parsed.path == "/health":
                     self._write(HTTPStatus.OK, {"status": "ok", "algorithm": SFT_ALGORITHM_ID})
+                elif self.command == "GET" and parts == ["v1", "capabilities"]:
+                    self._write(HTTPStatus.OK, {
+                        "schema_version": "sft_service_capabilities.v1",
+                        "implementation_version": "sft.tinker.v1",
+                        "checkpoint_plan_schema": "training.checkpoint_plan.v2",
+                        "evaluation_modes": ["none", "builtin", "container", "both"],
+                        "controls": ["cancel", "pause", "resume"],
+                        "pause_boundary": "configured_checkpoint_after_evaluation_drain",
+                        "uncertain_operation_recovery": "manual_reconciliation_required",
+                        "container_transport": "local_docker_host_gateway",
+                        "aggregate_budget_required": True,
+                        "release_stage": "preview",
+                    })
+                elif self.command == "POST" and parts == ["v1", "renderer-profile"]:
+                    payload = self._body()
+                    model = _non_empty_text(payload.get("model_id"), field="model_id")
+                    self._write(HTTPStatus.OK, service.executor.provider.renderer_profile(model))
                 elif self.command == "POST" and parts == ["v1", "runs", "estimate"]:
                     payload = self._body()
                     self._write(HTTPStatus.OK, service.estimate(_mapping(payload.get("config_json"), context="config_json")))
@@ -420,8 +457,12 @@ def create_sft_http_server(
                     run_id = parts[2]
                     if self.command == "GET" and len(parts) == 3:
                         self._write(HTTPStatus.OK, service.get(run_id))
+                    elif self.command == "POST" and len(parts) == 6 and parts[3] == "child-evaluations" and parts[5] == "evidence":
+                        self._write(HTTPStatus.OK, service.checkpoint_evidence(run_id, parts[4]))
                     elif self.command == "POST" and parts[3:] == ["cancel"]:
                         self._write(HTTPStatus.OK, service.cancel(run_id))
+                    elif self.command == "POST" and parts[3:] == ["pause"]:
+                        self._write(HTTPStatus.OK, service.pause(run_id))
                     elif self.command == "POST" and parts[3:] == ["resume"]:
                         self._write(HTTPStatus.OK, service.resume(run_id))
                     elif self.command == "GET" and parts[3:] in (

@@ -7,6 +7,7 @@ import json
 import sqlite3
 import threading
 import uuid
+from contextlib import contextmanager
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -119,7 +120,10 @@ class JobStore:
         self._db.row_factory = sqlite3.Row
         self._lock = threading.RLock()
         self._events = threading.Condition(self._lock)
+        self._ownership = threading.local()
         self._setup()
+        from .projections import setup
+        setup(self._db)
 
     def _setup(self) -> None:
         with self._lock:
@@ -238,28 +242,57 @@ class JobStore:
             ).fetchone()
             return None if row is None else self._job_from_row(row)
 
-    def claim(self, job_id: str, owner: str, *, stale_after_seconds: int = 30) -> TrainingJob:
+    @contextmanager
+    def _write(self, job_id: str):
+        """Serialize compare-and-write across connections and fence worker writes."""
         with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                owner = getattr(self._ownership, "owner", None)
+                if owner is not None and self.require(job_id).owner != owner:
+                    raise JobStoreError("stale worker fenced")
+                yield
+                self._db.commit()
+            except BaseException:
+                self._db.rollback()
+                raise
+
+    @contextmanager
+    def owned(self, owner: str):
+        previous = getattr(self._ownership, "owner", None)
+        self._ownership.owner = owner
+        try:
+            yield
+        finally:
+            self._ownership.owner = previous
+
+    def release(self, job_id: str, owner: str) -> None:
+        with self._write(job_id):
+            self._db.execute(
+                "UPDATE training_jobs SET owner = NULL, heartbeat_at = NULL WHERE job_id = ? AND owner = ?",
+                (job_id, owner),
+            )
+
+    def claim(self, job_id: str, owner: str, *, stale_after_seconds: int = 30) -> TrainingJob:
+        with self._write(job_id):
             job = self.require(job_id)
             if job.state in TERMINAL_STATES:
                 return job
+            if job.owner and not self._stale(job, stale_after_seconds):
+                raise JobStoreError(f"job {job_id} already has an active owner")
             now = utcnow()
-            if job.state == "running" and job.owner and not self._stale(job, stale_after_seconds):
-                raise JobStoreError(f"job {job_id} is already running")
             self._db.execute(
-                """
-                UPDATE training_jobs
-                SET owner = ?, heartbeat_at = ?, state = CASE WHEN state = 'prepared' THEN 'running' ELSE state END,
-                    updated_at = ?
-                WHERE job_id = ?
-                """,
-                (owner, now, now, job_id),
+                """UPDATE training_jobs SET owner = ?, heartbeat_at = ?,
+                state = CASE WHEN state = 'prepared' THEN 'running' ELSE state END,
+                updated_at = ? WHERE job_id = ?""", (owner, now, now, job_id),
             )
-            self._db.commit()
+            if job.state == "prepared":
+                self._insert_event(job_id, "training.lifecycle", {"state": "running", "error": None}, "running")
+                self._events.notify_all()
             return self.require(job_id)
 
     def heartbeat(self, job_id: str, owner: str) -> None:
-        with self._lock:
+        with self._write(job_id):
             job = self.require(job_id)
             if job.owner != owner:
                 raise JobStoreError("heartbeat from non-owner")
@@ -268,63 +301,70 @@ class JobStore:
                 "UPDATE training_jobs SET heartbeat_at = ?, updated_at = ? WHERE job_id = ?",
                 (now, now, job_id),
             )
-            self._db.commit()
 
     def transition(self, job_id: str, state: str, *, error: str | None = None) -> TrainingJob:
         if state not in LIFECYCLE_STATES:
             raise JobStoreError(f"invalid lifecycle state {state}")
-        with self._lock:
+        with self._write(job_id):
             job = self.require(job_id)
             if job.state in TERMINAL_STATES:
+                return job
+            if job.state == "stop_requested" and state not in {"cancelled", "blocked_uncertain"}:
+                return job
+            if job.state == "pause_requested" and state in {"running", "evaluating", "materializing"}:
                 return job
             now = utcnow()
             self._db.execute(
                 "UPDATE training_jobs SET state = ?, error = ?, updated_at = ? WHERE job_id = ?",
                 (state, error, now, job_id),
             )
-            self._db.commit()
+            self._insert_event(job_id, "training.lifecycle", {"state": state, "error": error}, state)
             self._events.notify_all()
             return self.require(job_id)
 
     def set_resume_token(self, job_id: str, token: str) -> None:
-        with self._lock:
+        with self._write(job_id):
             self._db.execute(
                 "UPDATE training_jobs SET resume_token = ?, updated_at = ? WHERE job_id = ?",
                 (token, utcnow(), job_id),
             )
-            self._db.commit()
+
+    def _insert_event(self, job_id, kind, payload, phase):
+        sequence = self._latest_sequence(job_id) + 1
+        occurred_at, event_id = utcnow(), f"evt_{uuid.uuid4().hex}"
+        self._db.execute(
+            "INSERT INTO training_events VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (job_id, sequence, event_id, kind, phase, occurred_at, canonical_json(dict(payload))),
+        )
+        from .projections import materialize
+        materialize(self._db, job_id)
+        return self._public_event(
+            job_id=job_id, algorithm_id=self.require(job_id).algorithm_id,
+            event_id=event_id, sequence=sequence, kind=kind, phase=phase,
+            occurred_at=occurred_at, payload=payload,
+        )
 
     def append_event(
         self, job_id: str, kind: str, payload: Mapping[str, Any], *, phase: str
     ) -> dict[str, Any]:
-        with self._lock:
-            last = self._db.execute(
-                "SELECT MAX(sequence) FROM training_events WHERE job_id = ?", (job_id,)
-            ).fetchone()[0]
-            sequence = int(last or 0) + 1
-            occurred_at = utcnow()
-            event_id = f"evt_{uuid.uuid4().hex}"
-            body = dict(payload)
-            self._db.execute(
-                """
-                INSERT INTO training_events(job_id, sequence, event_id, kind, phase, occurred_at, payload_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (job_id, sequence, event_id, kind, phase, occurred_at, canonical_json(body)),
-            )
-            self._db.commit()
+        with self._write(job_id):
+            event = self._insert_event(job_id, kind, payload, phase)
             self._events.notify_all()
-            job = self.require(job_id)
-            return self._public_event(
-                job_id=job_id,
-                algorithm_id=job.algorithm_id,
-                event_id=event_id,
-                sequence=sequence,
-                kind=kind,
-                phase=phase,
-                occurred_at=occurred_at,
-                payload=body,
-            )
+            return event
+
+    def append_event_once(self, job_id, kind, payload, *, phase):
+        with self._write(job_id):
+            row = self._db.execute(
+                """SELECT e.*, j.algorithm_id FROM training_events e
+                JOIN training_jobs j ON e.job_id=j.job_id
+                WHERE e.job_id=? AND e.kind=? AND e.payload_json=? ORDER BY sequence LIMIT 1""",
+                (job_id, kind, canonical_json(dict(payload))),
+            ).fetchone()
+            if row is not None:
+                return self._event_from_row(row)
+            event = self._insert_event(job_id, kind, payload, phase)
+            self._events.notify_all()
+            return event
 
     def wait_for_events(
         self, job_id: str, after_sequence: int, *, timeout: float = 1.0
@@ -363,9 +403,28 @@ class JobStore:
             ).fetchall()
             return [self._event_from_row(row) for row in rows]
 
+    def status_events(self, job_id: str, *, byte_limit: int = 32768) -> list[dict[str, Any]]:
+        """A bounded recent preview; the paged journal remains the complete source."""
+        with self._lock:
+            latest = self._latest_sequence(job_id)
+        rows = self.events(job_id, after_sequence=max(0, latest - 100), limit=100)
+        selected, size = [], 2
+        for row in reversed(rows):
+            encoded = json.dumps(row).encode()
+            if len(encoded) > byte_limit // 2:
+                row = {**row, "payload": {"source_sequence": row["sequence"],
+                       "source_url": f"/v1/runs/{job_id}/optimizer-events?after_sequence={row['sequence']-1}&limit=1",
+                       "payload_digest": digest_payload(row["payload"]), "omitted_from_preview": True}}
+                encoded = json.dumps(row).encode()
+            if size + len(encoded) + 2 > byte_limit:
+                break
+            selected.append(row)
+            size += len(encoded) + 2
+        return list(reversed(selected))
+
     def put_artifact(self, job_id: str, name: str, body: bytes, *, content_type: str) -> str:
         digest = digest_payload(body)
-        with self._lock:
+        with self._write(job_id):
             self._db.execute(
                 """
                 INSERT OR REPLACE INTO training_artifacts(job_id, name, content_type, digest, body)
@@ -373,7 +432,8 @@ class JobStore:
                 """,
                 (job_id, name, content_type, digest, body),
             )
-            self._db.commit()
+            self._insert_event(job_id, "training.artifact", {"name": name, "digest": digest,
+                               "content_type": content_type}, self.require(job_id).state)
         return digest
 
     def artifact(self, job_id: str, name: str) -> tuple[bytes, str, str]:
@@ -398,7 +458,10 @@ class JobStore:
             ]
 
     def put_receipt(self, job_id: str, request_id: str, payload: Mapping[str, Any]) -> None:
-        with self._lock:
+        if payload.get("request_id", request_id) != request_id:
+            raise ValueError("receipt request_id does not match its durable key")
+        payload = {**payload, "request_id": request_id}
+        with self._write(job_id):
             self._db.execute(
                 """
                 INSERT OR REPLACE INTO training_receipts(job_id, request_id, payload_json)
@@ -406,7 +469,8 @@ class JobStore:
                 """,
                 (job_id, request_id, canonical_json(payload)),
             )
-            self._db.commit()
+
+            self._insert_event(job_id, "training.receipt", dict(payload), self.require(job_id).state)
 
     def receipts(self, job_id: str) -> list[dict[str, Any]]:
         with self._lock:
@@ -417,7 +481,7 @@ class JobStore:
             return [json.loads(row["payload_json"]) for row in rows]
 
     def save_reducer(self, job_id: str, sequence: int, snapshot: Mapping[str, Any]) -> None:
-        with self._lock:
+        with self._write(job_id):
             self._db.execute(
                 """
                 INSERT OR REPLACE INTO reducer_checkpoints(job_id, sequence, snapshot_json)
@@ -425,7 +489,6 @@ class JobStore:
                 """,
                 (job_id, sequence, canonical_json(snapshot)),
             )
-            self._db.commit()
 
     def load_reducer(self, job_id: str) -> tuple[int, dict[str, Any]] | None:
         with self._lock:
@@ -437,20 +500,40 @@ class JobStore:
                 return None
             return int(row["sequence"]), json.loads(row["snapshot_json"])
 
+    def request_pause(self, job_id):
+        job = self.require(job_id)
+        if job.state in TERMINAL_STATES or job.state in {"stop_requested", "paused", "blocked_budget", "blocked_evaluation", "blocked_uncertain"}:
+            return job
+        return self.transition(job_id, "pause_requested")
+
+    def resume_prepared(self, job_id):
+        with self._write(job_id):
+            job = self.require(job_id)
+            if job.owner and not self._stale(job, 30):
+                return job
+            if job.state == "paused":
+                self._db.execute("UPDATE training_jobs SET state='prepared', updated_at=? WHERE job_id=?",
+                                 (utcnow(), job_id))
+                self._insert_event(job_id, "training.lifecycle", {"state": "prepared", "error": None}, "prepared")
+            return self.require(job_id)
+
     def cancellation_requested(self, job_id: str) -> bool:
-        return self.require(job_id).state == "cancelled"
+        return self.require(job_id).state in {"stop_requested", "cancelled"}
 
     def request_cancel(self, job_id: str) -> TrainingJob:
-        with self._lock:
+        with self._write(job_id):
             job = self.require(job_id)
             if job.state in TERMINAL_STATES:
                 return job
-            now = utcnow()
+            # An unowned prepared job has no admitted provider work to drain.
+            if job.state in {"blocked_budget", "blocked_evaluation", "blocked_uncertain"}:
+                raise JobStoreError("blocked work requires reconciliation before cancellation can be acknowledged")
+            state = "cancelled" if job.state in {"prepared", "paused"} and job.owner is None else "stop_requested"
             self._db.execute(
-                "UPDATE training_jobs SET state = 'cancelled', updated_at = ? WHERE job_id = ?",
-                (now, job_id),
+                "UPDATE training_jobs SET state = ?, updated_at = ? WHERE job_id = ?",
+                (state, utcnow(), job_id),
             )
-            self._db.commit()
+            self._insert_event(job_id, "training.lifecycle", {"state": state, "error": None}, state)
             self._events.notify_all()
             return self.require(job_id)
 

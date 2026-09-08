@@ -122,6 +122,8 @@ class JobStore:
         self._events = threading.Condition(self._lock)
         self._ownership = threading.local()
         self._setup()
+        from .projections import setup
+        setup(self._db)
 
     def _setup(self) -> None:
         with self._lock:
@@ -334,6 +336,8 @@ class JobStore:
             "INSERT INTO training_events VALUES (?, ?, ?, ?, ?, ?, ?)",
             (job_id, sequence, event_id, kind, phase, occurred_at, canonical_json(dict(payload))),
         )
+        from .projections import materialize
+        materialize(self._db, job_id)
         return self._public_event(
             job_id=job_id, algorithm_id=self.require(job_id).algorithm_id,
             event_id=event_id, sequence=sequence, kind=kind, phase=phase,
@@ -454,6 +458,9 @@ class JobStore:
             ]
 
     def put_receipt(self, job_id: str, request_id: str, payload: Mapping[str, Any]) -> None:
+        if payload.get("request_id", request_id) != request_id:
+            raise ValueError("receipt request_id does not match its durable key")
+        payload = {**payload, "request_id": request_id}
         with self._write(job_id):
             self._db.execute(
                 """

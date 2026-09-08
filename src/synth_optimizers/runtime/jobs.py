@@ -396,6 +396,25 @@ class JobStore:
             ).fetchall()
             return [self._event_from_row(row) for row in rows]
 
+    def status_events(self, job_id: str, *, byte_limit: int = 32768) -> list[dict[str, Any]]:
+        """A bounded recent preview; the paged journal remains the complete source."""
+        with self._lock:
+            latest = self._latest_sequence(job_id)
+        rows = self.events(job_id, after_sequence=max(0, latest - 100), limit=100)
+        selected, size = [], 2
+        for row in reversed(rows):
+            encoded = json.dumps(row).encode()
+            if len(encoded) > byte_limit // 2:
+                row = {**row, "payload": {"source_sequence": row["sequence"],
+                       "source_url": f"/v1/runs/{job_id}/optimizer-events?after_sequence={row['sequence']-1}&limit=1",
+                       "payload_digest": digest_payload(row["payload"]), "omitted_from_preview": True}}
+                encoded = json.dumps(row).encode()
+            if size + len(encoded) + 2 > byte_limit:
+                break
+            selected.append(row)
+            size += len(encoded) + 2
+        return list(reversed(selected))
+
     def put_artifact(self, job_id: str, name: str, body: bytes, *, content_type: str) -> str:
         digest = digest_payload(body)
         with self._write(job_id):

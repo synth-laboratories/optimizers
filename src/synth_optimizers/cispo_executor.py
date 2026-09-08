@@ -130,7 +130,7 @@ class TinkerCispoExecutor:
         return self.status(prepared.job_id)
 
     def status(self, job_id: str) -> dict[str, Any]:
-        return _public_status(self.store.require(job_id), self.store.events(job_id, after_sequence=0, limit=5_000))
+        return _public_status(self.store.require(job_id), self.store.status_events(job_id))
 
     def cancel(self, job_id: str) -> dict[str, Any]:
         self.store.request_cancel(job_id)

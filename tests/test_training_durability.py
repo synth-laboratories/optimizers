@@ -198,7 +198,7 @@ def test_no_evaluation_trains_single_chat_row_on_irregular_schedule(tmp_path):
     assert result["status"] == "completed"
     assert not any(kind == "sample" for kind, _ in transport.calls)
     assert [
-        e["payload"]["step"] for e in result["events"] if e["kind"] == "sft.checkpoint.created"
+        e["payload"]["step"] for e in store.events("standalone", limit=5000) if e["kind"] == "sft.checkpoint.created"
     ] == [10, 25, 50]
     bundle = json.loads(store.artifact("standalone", "policy_bundle.json")[0])
     assert bundle["heldout"]["evaluated"] is False
@@ -413,4 +413,28 @@ def test_training_jobs_share_aggregate_budget(tmp_path):
     first.reserve('sft-session', 'session')
     with pytest.raises(BudgetError):
         second.reserve('cispo-session', 'session')
+    store.close()
+
+
+def test_collection_cursor_pins_run_scope_and_sequence_after_restart(tmp_path):
+    from synth_optimizers.read_models import sft_collections
+    path = tmp_path / 'jobs.sqlite'
+    store = JobStore(path)
+    prepare(store)
+    for step in range(150):
+        store.append_event('run', 'sft.step.metrics', {'step': step}, phase='running')
+    first = sft_collections(store, 'run', collection='training_metrics')
+    assert first.truncated and len(first.items) == 100
+    for step in range(150, 170):
+        store.append_event('run', 'sft.step.metrics', {'step': step}, phase='running')
+    store.close()
+    store = JobStore(path)
+    second = sft_collections(store, 'run', collection='training_metrics', after_key=first.next_key)
+    assert len(second.items) == 50
+    assert second.projected_at_sequence == first.projected_at_sequence
+    assert not second.truncated
+    with pytest.raises(ValueError, match='cursor'):
+        sft_collections(store, 'run', collection='checkpoints', after_key=first.next_key)
+    with pytest.raises(ValueError, match='cursor'):
+        sft_collections(store, 'run', collection='training_metrics', after_key=first.next_key, at_sequence=170)
     store.close()

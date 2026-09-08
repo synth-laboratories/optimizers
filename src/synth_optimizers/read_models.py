@@ -7,6 +7,7 @@ reducers emit a summary plus keyset-paginated collections with byte bounds.
 from __future__ import annotations
 
 import json
+import base64
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, asdict, replace
 from typing import Any
@@ -38,6 +39,7 @@ def _page(
     after_key: str | None,
     key_field: str,
     byte_limit: int,
+    cursor_context: tuple[str, str] | None = None,
 ) -> Page:
     keys = [str(item[key_field]) for item in items]
     if len(set(keys)) != len(keys):
@@ -47,7 +49,10 @@ def _page(
     start = 0 if after_key is None else keys.index(after_key) + 1
 
     def make_page(rows, more):
-        page = Page(tuple(rows), str(rows[-1][key_field]) if more and rows else None,
+        next_key = str(rows[-1][key_field]) if more and rows else None
+        if next_key is not None and cursor_context is not None:
+            next_key = _encode_cursor(*cursor_context, projected_at_sequence, next_key)
+        page = Page(tuple(rows), next_key,
                     more, schema_version, projected_at_sequence, 0)
         while True:
             size = len(json.dumps(asdict(page), ensure_ascii=True).encode("utf-8"))
@@ -71,6 +76,30 @@ def _page(
         selected.append(items[index])
         page = candidate
     return page
+
+
+def _encode_cursor(job_id, collection, sequence, key):
+    payload = json.dumps([1, job_id, collection, sequence, key], separators=(",", ":")).encode()
+    return "pc1." + base64.urlsafe_b64encode(payload).decode().rstrip("=")
+
+
+def _decode_cursor(store, job_id, collection, cursor, at_sequence):
+    with store._lock:
+        latest = store._latest_sequence(job_id)
+    if cursor is None:
+        return None, latest if at_sequence is None else at_sequence
+    try:
+        if len(cursor) > 8192 or not cursor.startswith("pc1."):
+            raise ValueError()
+        payload = cursor[4:]
+        version, run, scope, sequence, key = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        if version != 1 or run != job_id or scope != collection or type(sequence) is not int or not 0 <= sequence <= latest or not isinstance(key, str):
+            raise ValueError()
+        if at_sequence is not None and at_sequence != sequence:
+            raise ValueError()
+        return key, sequence
+    except (ValueError, TypeError, UnicodeError) as exc:
+        raise ValueError("unknown or stale projection cursor") from exc
 
 
 def reduce_summary(store: JobStore, job_id: str, *, at_sequence: int | None = None) -> dict[str, Any]:
@@ -121,7 +150,9 @@ def sft_collections(
     after_key: str | None = None,
     byte_limit: int = DEFAULT_BYTE_LIMIT,
     at_sequence: int | None = None,
+    transform=None,
 ) -> Page:
+    after_key, at_sequence = _decode_cursor(store, job_id, collection, after_key, at_sequence)
     events = _events_through(store, job_id, at_sequence)
     sequence = events[-1]["sequence"] if events else 0
     mapping = {
@@ -134,25 +165,44 @@ def sft_collections(
         "per_intent": ("sft.heldout_eval.completed", "event_id", SFT_READ_SCHEMA),
         "dataset_errors": ("sft.dataset.validated", "event_id", SFT_READ_SCHEMA),
     }
+    if collection in {"child_evaluations", "rollouts", "evidence_refs"}:
+        items = []
+        for event in events:
+            if event["kind"] != "sft.child_eval.completed":
+                continue
+            result = event["payload"]
+            provenance = {key: result[key] for key in ("eval_job_id", "checkpoint_id", "evaluator_id", "role")}
+            if collection == "child_evaluations":
+                items.append({**{key: value for key, value in result.items() if key not in {"rollouts", "evidence_refs"}},
+                              "item_id": result["eval_job_id"]})
+            else:
+                for index, row in enumerate(result.get(collection, [])):
+                    items.append({**provenance, "reference": row,
+                                  "item_id": f"{result['eval_job_id']}:{collection}:{index}"})
+        return _page(items, schema_version=SFT_READ_SCHEMA, projected_at_sequence=sequence,
+                     after_key=after_key, key_field="item_id", byte_limit=byte_limit,
+                     cursor_context=(job_id, collection))
     if collection == "artifacts":
         items = [{"name": row["name"], "digest": row["digest"]} for row in (store.artifacts(job_id) if at_sequence is None else _historical_rows(events, "training.artifact", "name"))]
         return _page(
             items, schema_version=SFT_READ_SCHEMA, projected_at_sequence=sequence,
-            after_key=after_key, key_field="name", byte_limit=byte_limit,
+            after_key=after_key, key_field="name", byte_limit=byte_limit, cursor_context=(job_id, collection),
         )
     if collection == "receipts":
         items = [{"request_id": row["request_id"], **row} for row in (store.receipts(job_id) if at_sequence is None else _historical_rows(events, "training.receipt", "request_id"))]
         return _page(
             items, schema_version=SFT_READ_SCHEMA, projected_at_sequence=sequence,
-            after_key=after_key, key_field="request_id", byte_limit=byte_limit,
+            after_key=after_key, key_field="request_id", byte_limit=byte_limit, cursor_context=(job_id, collection),
         )
     if collection not in mapping:
         raise KeyError(collection)
     kind, key_field, schema = mapping[collection]
     items = [_collection_item(event, key_field) for event in events if event["kind"] == kind]
+    if transform is not None:
+        items = [transform(item) for item in items]
     return _page(
         items, schema_version=schema, projected_at_sequence=sequence,
-        after_key=after_key, key_field=key_field, byte_limit=byte_limit,
+        after_key=after_key, key_field=key_field, byte_limit=byte_limit, cursor_context=(job_id, collection),
     )
 
 
@@ -164,7 +214,9 @@ def cispo_collections(
     after_key: str | None = None,
     byte_limit: int = DEFAULT_BYTE_LIMIT,
     at_sequence: int | None = None,
+    transform=None,
 ) -> Page:
+    after_key, at_sequence = _decode_cursor(store, job_id, collection, after_key, at_sequence)
     events = _events_through(store, job_id, at_sequence)
     sequence = events[-1]["sequence"] if events else 0
     mapping = {
@@ -186,21 +238,23 @@ def cispo_collections(
         items = [{"name": row["name"], "digest": row["digest"]} for row in (store.artifacts(job_id) if at_sequence is None else _historical_rows(events, "training.artifact", "name"))]
         return _page(
             items, schema_version=CISPO_READ_SCHEMA, projected_at_sequence=sequence,
-            after_key=after_key, key_field="name", byte_limit=byte_limit,
+            after_key=after_key, key_field="name", byte_limit=byte_limit, cursor_context=(job_id, collection),
         )
     if collection == "receipts":
         items = [{"request_id": row["request_id"], **row} for row in (store.receipts(job_id) if at_sequence is None else _historical_rows(events, "training.receipt", "request_id"))]
         return _page(
             items, schema_version=CISPO_READ_SCHEMA, projected_at_sequence=sequence,
-            after_key=after_key, key_field="request_id", byte_limit=byte_limit,
+            after_key=after_key, key_field="request_id", byte_limit=byte_limit, cursor_context=(job_id, collection),
         )
     if collection not in mapping:
         raise KeyError(collection)
     kind, key_field, schema = mapping[collection]
     items = [_collection_item(event, key_field) for event in events if event["kind"] == kind]
+    if transform is not None:
+        items = [transform(item) for item in items]
     return _page(
         items, schema_version=schema, projected_at_sequence=sequence,
-        after_key=after_key, key_field=key_field, byte_limit=byte_limit,
+        after_key=after_key, key_field=key_field, byte_limit=byte_limit, cursor_context=(job_id, collection),
     )
 
 

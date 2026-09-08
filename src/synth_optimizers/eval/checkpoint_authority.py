@@ -19,8 +19,9 @@ from .staging import CandidateSource, stage_candidate_set
 
 
 class CheckpointRunner(EvalRunner):
-    def __init__(self, *args, gateway, model_id, should_stop, **kwargs):
+    def __init__(self, *args, gateway, model_id, should_stop, prices, **kwargs):
         self.gateway, self.model_id, self.should_stop = gateway, model_id, should_stop
+        self.prices = prices
         self._trial_local = threading.local()
         super().__init__(*args, **kwargs)
 
@@ -38,8 +39,9 @@ class CheckpointRunner(EvalRunner):
         value["policy_snapshot_id"] = self.gateway.checkpoint["checkpoint_id"]
         value["models"] = [{"id": self.model_id, "route": origin.base_url + "/chat/completions",
                              "secret": self.recipe.secrets[0], "efforts": [],
-                             "usd_per_1m_input": 0, "usd_per_1m_output": 0,
-                             "usd_per_1m_cached_input": 0,
+                             "usd_per_1m_input": float(self.prices["input_usd_per_million"]),
+                             "usd_per_1m_output": float(self.prices["output_usd_per_million"]),
+                             "usd_per_1m_cached_input": float(self.prices["input_usd_per_million"]),
                              "price_source": "parent_training_budget", "price_as_of": "parent_spec"}]
         write_json(path / "trial.json", value)
         return path
@@ -169,7 +171,8 @@ class CheckpointEvaluationAuthority:
                 advertised_host="host.docker.internal" if self.executor is None else "127.0.0.1",
                 ttl_seconds=recipe.limits.timeout_seconds) as gateway:
             runner = CheckpointRunner(manifest, gateway=gateway, model_id=model_id,
-                                      should_stop=should_stop, executor=self.executor, stream=Stream())
+                                      should_stop=should_stop, executor=self.executor, stream=Stream(),
+                                      prices=provider.budget.prices)
             with sqlite3.connect(self.database) as db:
                 changed = db.execute("UPDATE requests SET status='running' WHERE request_id=? AND status='prepared'", (request_id,)).rowcount
                 if changed != 1:

@@ -1,3 +1,4 @@
+import pytest
 import json
 import time
 import urllib.request
@@ -43,7 +44,8 @@ class HttpTarget:
         return TrialExecution(0, False, False, time.time(), time.time(), "")
 
 
-def test_container_checkpoints_have_real_child_jobs_live_results_and_heldout(tmp_path):
+@pytest.mark.parametrize("direction,final_value", [("maximize", 2), ("minimize", 1)])
+def test_container_checkpoints_have_real_child_jobs_live_results_and_heldout(tmp_path, direction, final_value):
     home = tmp_path / "eval"
     authority = CheckpointEvaluationAuthority(home, executor=HttpTarget())
     digest = "sha256:"+"c"*64
@@ -52,7 +54,8 @@ def test_container_checkpoints_have_real_child_jobs_live_results_and_heldout(tmp
                  "image_digest": digest, "selection_seeds": [101,102], "final_seeds": [201,202],
                  "metric_ref": "accuracy", "reward_version": "gsm8k.exact.v1", "units": "fraction"}
     config = {"training": {"steps": 2}, "checkpoint_steps": [1,2],
-              "checkpoint_evaluation": {"mode": "container", "evaluators": [evaluator]},
+              "checkpoint_evaluation": {"mode": "container", "evaluators": [evaluator],
+                  "selection": {"evaluator_id": "environment", "direction": direction}},
               "evaluation_renderer_profile": PROFILE,
               "examples": [{"text": "hello", "category": "arbitrary completion"}]}
     store = JobStore(tmp_path / "jobs.sqlite")
@@ -63,7 +66,7 @@ def test_container_checkpoints_have_real_child_jobs_live_results_and_heldout(tmp
     events = store.events("container", limit=5000)
     evaluations = [e["payload"] for e in events if e["kind"] == "sft.child_eval.completed"]
     assert len(evaluations) == 4
-    assert [e["value"] for e in evaluations] == [0,1,2,2]
+    assert [e["value"] for e in evaluations] == [0,1,2,final_value]
     assert len({e["eval_job_id"] for e in evaluations}) == 4
     assert all(e["rollouts"] and e["evidence_refs"] for e in evaluations)
     assert [e["role"] for e in evaluations] == ["baseline", "selection", "selection", "final"]
@@ -72,4 +75,8 @@ def test_container_checkpoints_have_real_child_jobs_live_results_and_heldout(tmp
     assert first_child < last_train
     final_seeds = {r["seed"] for r in evaluations[-1]["rollouts"]}
     assert final_seeds == {201,202}
+    from synth_optimizers.read_models import sft_collections
+    assert len(sft_collections(store, "container", collection="child_evaluations").items) == 4
+    assert len(sft_collections(store, "container", collection="rollouts").items) == 8
+    assert sft_collections(store, "container", collection="evidence_refs").items
     store.close()

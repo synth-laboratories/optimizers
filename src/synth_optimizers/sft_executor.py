@@ -113,7 +113,7 @@ class TinkerSftExecutor:
 
     def status(self, job_id: str) -> dict[str, Any]:
         job = self.store.require(job_id)
-        events = self.store.events(job_id, after_sequence=0, limit=5_000)
+        events = self.store.status_events(job_id)
         return _public_status(job, events)
 
     def cancel(self, job_id: str) -> dict[str, Any]:

@@ -70,19 +70,17 @@ def workshop_collection(
     if algorithm_id == "cispo":
         resolved = _CISPO_ALIASES.get(collection, collection)
         page = cispo_collections(
-            store, job_id, collection=resolved, after_key=after_key, byte_limit=byte_limit
+            store, job_id, collection=resolved, after_key=after_key, byte_limit=byte_limit,
+            transform=(lambda item: _workshop_row(item, collection)) if collection in _CISPO_ALIASES else None
         )
-        if collection in _CISPO_ALIASES:
-            return _wrap_workshop_page(page, collection)
         return page
-    if collection in {"proposer_calls", "evidence_refs", "rollouts"} and algorithm_id != "cispo":
+    if collection == "proposer_calls" and algorithm_id != "cispo":
         return _empty_page(store, job_id)
     resolved = _SFT_ALIASES.get(collection, collection)
     page = sft_collections(
-        store, job_id, collection=resolved, after_key=after_key, byte_limit=byte_limit
+        store, job_id, collection=resolved, after_key=after_key, byte_limit=byte_limit,
+        transform=(lambda item: _workshop_row(item, collection)) if collection in _SFT_ALIASES else None
     )
-    if collection in _SFT_ALIASES:
-        return _wrap_workshop_page(page, collection)
     return page
 
 

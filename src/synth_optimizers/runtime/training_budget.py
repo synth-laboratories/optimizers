@@ -1,5 +1,5 @@
 """Training admission over the shared durable optimizer budget ledger."""
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from ..contracts.training_schemas import SchemaError
 from ..providers.tinker.fake import FakeTinkerProvider
@@ -21,7 +21,7 @@ def resolve_budget(config, provider):
             raise ValueError("empty cap")
         for field in (*TOKEN_RATES, *FEES):
             micros(value["pricing"][field])
-    except (KeyError, ValueError, TypeError) as exc:
+    except (KeyError, ValueError, TypeError, InvalidOperation) as exc:
         raise SchemaError("budget requires a positive cap and explicit nonnegative token/session/save/restore prices") from exc
     return value
 

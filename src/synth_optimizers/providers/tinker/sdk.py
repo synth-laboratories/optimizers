@@ -211,7 +211,7 @@ class TinkerSdkTransport:
             for tokens, mask in zip(request.token_ids, request.response_masks, strict=True)
         ]
         output = trainer.forward(data, loss_fn="cross_entropy").result()
-        rows = tuple(_logprob_row(item, tokens) for item, tokens in zip(output.loss_fn_outputs, request.token_ids))
+        rows = tuple((0.0, *_logprob_row(item, tokens)) for item, tokens in zip(output.loss_fn_outputs, request.token_ids, strict=True))
         return {
             "logprobs": rows,
             "usage": {"training_tokens": sum(sum(1 for flag in mask if flag) for mask in request.response_masks)},
@@ -343,7 +343,7 @@ class TinkerSdkTransport:
         ids = list(tokens)
         if len(ids) < 2:
             ids = ids + [0]
-        weights = [1.0 if flag else 0.0 for flag in list(mask)[: len(ids) - 1]]
+        weights = [1.0 if flag else 0.0 for flag in list(mask)[1:len(ids)]]
         weights.extend([0.0] * max(0, len(ids) - 1 - len(weights)))
         return self._tinker.Datum(
             model_input=self._tinker.ModelInput.from_ints(ids[:-1]),
@@ -490,6 +490,6 @@ def _logprob_row(output: Any, tokens: Sequence[int]) -> tuple[float, ...]:
     if isinstance(data, Mapping):
         data = data.get("data") or []
     values = [float(value) for value in (data or [])]
-    if not values:
-        values = [0.0] * max(1, len(tokens))
+    if len(values) != len(tokens) - 1 or not all(math.isfinite(value) for value in values):
+        raise ProviderError("invalid_forward_logprobs", "forward must return one finite next-token logprob per input position")
     return tuple(values)

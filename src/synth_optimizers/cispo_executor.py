@@ -553,8 +553,11 @@ class TinkerCispoExecutor:
         for group in groups:
             for trajectory, advantage in zip(group["trajectories"], group["advantages"], strict=True):
                 tokens = tuple(int(token) for token in trajectory["token_ids"])
-                mask = tuple(True for _ in tokens)
-                token_rows.append(tokens)
+                prompt_tokens = tuple(int(token) for token in trajectory.get("prompt_token_ids") or ())
+                if not prompt_tokens:
+                    raise ProviderError("cispo_logprob_alignment", "forward requires the sampled prompt context")
+                mask = (False,) * len(prompt_tokens) + (True,) * len(tokens)
+                token_rows.append(prompt_tokens + tokens)
                 masks.append(mask)
                 behavior_rows.append(tuple(float(value) for value in trajectory["behavior_logprobs"]))
                 advantage_rows.append([float(advantage)] * len(tokens))
@@ -580,10 +583,14 @@ class TinkerCispoExecutor:
         for current, behavior, advantages, mask in zip(
             forward.logprobs, behavior_rows, advantage_rows, masks, strict=True
         ):
-            usable = min(len(current), len(behavior), len(advantages), len(mask))
-            ratios = importance_ratios(current[:usable], behavior[:usable])
+            if len(current) != len(mask):
+                raise ProviderError("cispo_logprob_alignment", "forward token alignment differs from the sampled sequence")
+            current = tuple(value for value, enabled in zip(current, mask, strict=True) if enabled)
+            if len(current) != len(behavior) or len(current) != len(advantages):
+                raise ProviderError("cispo_logprob_alignment", "completion logprob lengths differ")
+            ratios = importance_ratios(current, behavior)
             kls = [ppo_kl_from_ratio(ratio) for ratio in ratios]
-            measured = objective(kls, current[:usable], advantages[:usable], mask[:usable], slime)
+            measured = objective(kls, current, advantages, [True] * len(current), slime)
             all_ratios.extend(ratios)
             clipped_tokens += measured.clipped_token_count
             selected_tokens += measured.selected_token_count

@@ -395,6 +395,19 @@ def create_sft_http_server(
                 query = urllib.parse.parse_qs(parsed.query)
                 if self.command == "GET" and parsed.path == "/health":
                     self._write(HTTPStatus.OK, {"status": "ok", "algorithm": SFT_ALGORITHM_ID})
+                elif self.command == "GET" and parts == ["v1", "capabilities"]:
+                    self._write(HTTPStatus.OK, {
+                        "schema_version": "sft_service_capabilities.v1",
+                        "implementation_version": "sft.tinker.v1",
+                        "checkpoint_plan_schema": "training.checkpoint_plan.v2",
+                        "evaluation_modes": ["none", "builtin", "container", "both"],
+                        "controls": ["cancel", "pause", "resume"],
+                        "pause_boundary": "configured_checkpoint_after_evaluation_drain",
+                        "uncertain_operation_recovery": "manual_reconciliation_required",
+                        "container_transport": "local_docker_host_gateway",
+                        "aggregate_budget_required": True,
+                        "release_stage": "preview",
+                    })
                 elif self.command == "POST" and parts == ["v1", "runs", "estimate"]:
                     payload = self._body()
                     self._write(HTTPStatus.OK, service.estimate(_mapping(payload.get("config_json"), context="config_json")))

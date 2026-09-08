@@ -71,9 +71,11 @@ class TinkerSftExecutor:
         return cls(store, TinkerAdapter(TinkerCredentials.from_env()))
 
     def estimate(self, config: Mapping[str, Any]) -> dict[str, Any]:
-        resolve_checkpoint_plan(config)
+        plan = resolve_checkpoint_plan(config)
+        model_id = self.provider.resolve_model(str(config.get("base_model") or config.get("model_id") or "openai/gpt-oss-20b"))
+        self.provider.prepare_renderer(model_id)
         dataset = self._dataset(config)
-        steps = _positive_int(config.get("training", {}).get("steps") or config.get("max_steps") or 2, "steps")
+        steps = plan["steps"]
         batch_size = _positive_int(config.get("training", {}).get("batch_size") or 1, "batch_size")
         prompt = system_prompt_from(config)
         tokens = sum(
@@ -86,6 +88,7 @@ class TinkerSftExecutor:
             "model_id": self.provider.resolve_model(str(config.get("base_model") or config.get("model_id") or "")),
             "train_examples": len(dataset.train),
             "estimated_training_tokens": tokens * steps,
+            "resolved_checkpoint_plan": plan,
             "cost_usd": None,
             "cost_missing": True,
         }

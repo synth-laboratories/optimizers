@@ -245,7 +245,8 @@ def test_cancel_waits_for_admitted_training_call(tmp_path):
     store.close()
 
 
-def test_restart_preserves_stateful_update_accumulators(tmp_path):
+@pytest.mark.parametrize("crash_step", [1, 2, 3])
+def test_restart_preserves_stateful_update_accumulators(tmp_path, crash_step):
     from copy import deepcopy
     from synth_optimizers.sft_executor import TinkerSftExecutor
     from synth_optimizers.providers.tinker import (
@@ -284,7 +285,7 @@ def test_restart_preserves_stateful_update_accumulators(tmp_path):
 
     config = {
         "training": {"steps": 4, "batch_size": 1},
-        "checkpoint_steps": [2, 4],
+        "checkpoint_steps": [1, 2, 3, 4],
         "checkpoint_evaluation": {"mode": "none"},
         "examples": [{"text": "a", "category": "x"}, {"text": "b", "category": "longer"}],
     }
@@ -308,7 +309,7 @@ def test_restart_preserves_stateful_update_accumulators(tmp_path):
 
     def crash(job_id, kind, payload, *, phase):
         event = append(job_id, kind, payload, phase=phase)
-        if kind == "sft.checkpoint.created" and payload["step"] == 2:
+        if kind == "sft.checkpoint.created" and payload["step"] == crash_step:
             raise Crash()
         return event
 
@@ -320,7 +321,7 @@ def test_restart_preserves_stateful_update_accumulators(tmp_path):
     second = Stateful()
     assert executor(store, second).resume("restart")["status"] == "completed"
     assert second.final == control.final
-    assert len([kind for kind, _ in second.calls if kind == "train"]) == 2
+    assert len([kind for kind, _ in second.calls if kind == "train"]) == 4 - crash_step
     store.close()
     control_store.close()
 

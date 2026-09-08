@@ -328,6 +328,26 @@ class SftService:
             self.store, run_id, after_sequence=after_sequence, limit=limit
         )
 
+    def checkpoint_evidence(self, run_id: str, child_id: str) -> dict[str, Any]:
+        """Materialize portable evidence from one owned child, without provider calls."""
+        import re
+        from pathlib import Path
+        if not re.fullmatch(r"eval_[0-9a-f]{32}", child_id):
+            raise SftServiceError("invalid child evaluation identity")
+        self.store.require(run_id)
+        authority = self.executor._authority()
+        path = authority.home.run_dir(child_id) / "result_manifest.json"
+        manifest = json.loads(path.read_text())
+        correlation = manifest["correlation"]
+        if correlation["parent_run_id"] != run_id:
+            raise SftServiceError("child evaluation belongs to another training run")
+        evaluator = correlation["evaluator"]
+        seeds = evaluator["final_seeds"] if correlation["role"] == "final" else evaluator["selection_seeds"]
+        expected = len(seeds) * len(authority.home.recipe(evaluator["recipe_id"]).scenarios)
+        result = authority.result(child_id, evaluator, correlation["checkpoint"], expected)
+        return {"eval_job_id": child_id, "parent_run_id": run_id,
+                "traces": [ref for ref in result["evidence_refs"] if ref.get("role") == "trace_v5_partial"]}
+
     def state_batch(self, run_id: str, slices: str) -> dict[str, Any]:
         from .runtime.workshop import state_batch
 
@@ -437,6 +457,8 @@ def create_sft_http_server(
                     run_id = parts[2]
                     if self.command == "GET" and len(parts) == 3:
                         self._write(HTTPStatus.OK, service.get(run_id))
+                    elif self.command == "POST" and len(parts) == 6 and parts[3] == "child-evaluations" and parts[5] == "evidence":
+                        self._write(HTTPStatus.OK, service.checkpoint_evidence(run_id, parts[4]))
                     elif self.command == "POST" and parts[3:] == ["cancel"]:
                         self._write(HTTPStatus.OK, service.cancel(run_id))
                     elif self.command == "POST" and parts[3:] == ["pause"]:

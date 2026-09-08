@@ -215,9 +215,16 @@ class CheckpointEvaluationAuthority:
         valid = len(rows) == expected and all(row["status"] == "evaluated" and
                 all(row["gates"].values()) and not row["missing_gates"] and not row["missing_artifacts"]
                 for row in rows) and all(isinstance(value, (int,float)) and math.isfinite(value) for value in rewards)
+        from .checkpoint_trace import materialize_checkpoint_trace
+        retained = list(manifest["artifacts"])
+        if valid:
+            for trial, evidence, reward in zip(manifest["trials"], rows, rewards):
+                output = Path(trial["evidence"]).parent / "output"
+                retained.append(materialize_checkpoint_trace(output, job_id=job_id,
+                    trial_id=trial["trial_id"], checkpoint=checkpoint, evaluator=evaluator, reward=reward))
         return {"eval_job_id": job_id, "checkpoint_id": checkpoint["checkpoint_id"],
                 "actual_sampler_reference": checkpoint["provider_reference"], "expected": expected,
                 "completed": len(rows), "valid": valid, "status": "completed" if valid else "partial",
                 "metric_ref": evaluator["metric_ref"], "reward_version": evaluator["reward_version"],
                 "units": evaluator["units"], "value": sum(rewards)/expected if valid else None,
-                "rollouts": manifest["trials"], "evidence_refs": manifest["artifacts"]}
+                "rollouts": manifest["trials"], "evidence_refs": retained}

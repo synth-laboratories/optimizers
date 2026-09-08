@@ -1,4 +1,5 @@
 import pytest
+from pathlib import Path
 import json
 import time
 import urllib.request
@@ -35,12 +36,14 @@ class HttpTarget:
             result = json.load(response)
         assert result["synth"]["policy_snapshot_id"] == trial["policy_snapshot_id"]
         value = ord(result["choices"][0]["message"]["content"])-97
-        (request.output_dir / "trace.json").write_text(json.dumps({"request": body, "response": result}))
+        (request.output_dir / "trace.jsonl").write_text(json.dumps({"messages": body["messages"],
+            "completion": result["choices"][0]["message"]["content"], "served_policy_snapshot_id": trial["policy_snapshot_id"],
+            "seed": trial["seed"], "scenario": "test", "usage": result.get("usage")}))
         (request.output_dir / "result.json").write_text(json.dumps({
             "schema_version": "eval.container-result.v1", "trial_id": trial["trial_id"],
             "status": "evaluated", "benchmark_status": "passed", "metrics": {"accuracy": value},
             "gates": [{"id": gate, "passed": True} for gate in trial["required_gates"] if gate != "exact_checkpoint"],
-            "artifacts": [{"role": "trace", "path": "trace.json"}]}))
+            "artifacts": [{"role": "trace", "path": "trace.jsonl"}]}))
         return TrialExecution(0, False, False, time.time(), time.time(), "")
 
 
@@ -59,7 +62,8 @@ def test_container_checkpoints_have_real_child_jobs_live_results_and_heldout(tmp
               "evaluation_renderer_profile": PROFILE,
               "examples": [{"text": "hello", "category": "arbitrary completion"}]}
     store = JobStore(tmp_path / "jobs.sqlite")
-    provider = TinkerAdapter(TinkerCredentials(api_key="fixture"), transport=CheckpointProvider())
+    transport = CheckpointProvider()
+    provider = TinkerAdapter(TinkerCredentials(api_key="fixture"), transport=transport)
     executor = TinkerSftExecutor(store, provider, eval_authority=authority)
     result = executor.submit(config, job_id="container")
     assert result["status"] == "completed", result
@@ -79,6 +83,24 @@ def test_container_checkpoints_have_real_child_jobs_live_results_and_heldout(tmp
     assert len(sft_collections(store, "container", collection="child_evaluations").items) == 4
     assert len(sft_collections(store, "container", collection="rollouts").items) == 8
     assert sft_collections(store, "container", collection="evidence_refs").items
+    from synth_optimizers.sft import SftService, SftServiceError
+    from synth_containers.tracing.inspection import inspect_trace_input
+    service = SftService(tmp_path / "jobs.sqlite", executor=executor)
+    before = list(transport.calls)
+    evidence = service.checkpoint_evidence("container", evaluations[0]["eval_job_id"])
+    assert len(evidence["traces"]) == 2
+    for ref in evidence["traces"]:
+        assert ref["capture_status"] == "partial"
+        inspected = inspect_trace_input(Path(ref["path"]))
+        assert inspected.validation.valid and inspected.self_contained and inspected.trusted
+    assert service.checkpoint_evidence("container", evaluations[0]["eval_job_id"]) == evidence
+    assert transport.calls == before
+    with pytest.raises(SftServiceError, match="invalid child"):
+        service.checkpoint_evidence("container", "../../other")
+    ref = evidence["traces"][0]
+    Path(ref["path"]).write_bytes(b"changed")
+    with pytest.raises(ValueError, match="archive changed"):
+        service.checkpoint_evidence("container", evaluations[0]["eval_job_id"])
     store.close()
 
 

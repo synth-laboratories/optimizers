@@ -270,10 +270,10 @@ class DaytonaWorkspace:
         self._lock = threading.RLock()
 
     def run(self, command, *, timeout_seconds):
-        from harbor_tblite.cispo import CommandOutcome
         with self._lock:
             if self.manifest is not None or self._released:
                 raise RuntimeError('workspace is sealed or released')
+            from harbor_tblite.cispo import CommandOutcome
             if self.owner.max_command_seconds is not None:
                 timeout_seconds = min(timeout_seconds,self.owner.max_command_seconds)
             started = time.monotonic()

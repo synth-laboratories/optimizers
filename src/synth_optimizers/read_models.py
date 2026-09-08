@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict, replace
 from typing import Any
 
 from .runtime import JobStore, digest_payload
@@ -39,32 +39,38 @@ def _page(
     key_field: str,
     byte_limit: int,
 ) -> Page:
-    selected: list[Mapping[str, Any]] = []
-    size = 2
-    truncated = False
-    next_key = None
-    started = after_key is None
-    for item in items:
-        key = str(item[key_field])
-        if not started:
-            if key == after_key:
-                started = True
-            continue
-        encoded = json.dumps(item, sort_keys=True, separators=(",", ":"))
-        if selected and size + len(encoded) > byte_limit:
-            truncated = True
-            next_key = str(selected[-1][key_field])
-            break
-        selected.append(item)
-        size += len(encoded) + 1
-    return Page(
-        items=tuple(selected),
-        next_key=next_key,
-        truncated=truncated,
-        schema_version=schema_version,
-        projected_at_sequence=projected_at_sequence,
-        bytes=size,
-    )
+    keys = [str(item[key_field]) for item in items]
+    if len(set(keys)) != len(keys):
+        raise ValueError("duplicate projection ordering key")
+    if after_key is not None and after_key not in keys:
+        raise ValueError("unknown or stale projection cursor")
+    start = 0 if after_key is None else keys.index(after_key) + 1
+
+    def make_page(rows, more):
+        page = Page(tuple(rows), str(rows[-1][key_field]) if more and rows else None,
+                    more, schema_version, projected_at_sequence, 0)
+        while True:
+            size = len(json.dumps(asdict(page), ensure_ascii=True).encode("utf-8"))
+            if size == page.bytes:
+                return page
+            page = replace(page, bytes=size)
+
+    selected = []
+    page = make_page([], False)
+    if page.bytes > byte_limit:
+        raise ValueError("projection byte limit cannot fit page envelope")
+    for index in range(start, len(items)):
+        candidate = make_page([*selected, items[index]], index + 1 < len(items))
+        if candidate.bytes > byte_limit or len(selected) == 100:
+            if not selected:
+                raise ValueError("projection row exceeds byte limit; use source artifact")
+            page = make_page(selected, True)
+            if page.bytes > byte_limit:
+                raise ValueError("projection cursor exceeds byte limit")
+            return page
+        selected.append(items[index])
+        page = candidate
+    return page
 
 
 def reduce_summary(store: JobStore, job_id: str, *, at_sequence: int | None = None) -> dict[str, Any]:
@@ -72,7 +78,12 @@ def reduce_summary(store: JobStore, job_id: str, *, at_sequence: int | None = No
     events = _events_through(store, job_id, at_sequence)
     latest_metric = _latest(events, {"sft.step.metrics", "cispo.update.completed"})
     best = _best_checkpoint(events)
-    receipts = store.receipts(job_id)
+    if at_sequence is not None:
+        state_event = _latest(events, {"training.lifecycle"})
+        state = state_event["payload"]["state"] if state_event else (events[-1]["phase"] if events else "prepared")
+        job = replace(job, state=state, error=state_event["payload"].get("error") if state_event else None)
+    receipts = (store.receipts(job_id) if at_sequence is None else
+                _historical_rows(events, "training.receipt", "request_id"))
     cost_values = [row.get("cost_usd") for row in receipts]
     cost_missing = not receipts or any(row.get("cost_missing", row.get("cost_usd") is None) for row in receipts)
     usage = {
@@ -124,13 +135,13 @@ def sft_collections(
         "dataset_errors": ("sft.dataset.validated", "event_id", SFT_READ_SCHEMA),
     }
     if collection == "artifacts":
-        items = [{"name": row["name"], "digest": row["digest"]} for row in store.artifacts(job_id)]
+        items = [{"name": row["name"], "digest": row["digest"]} for row in (store.artifacts(job_id) if at_sequence is None else _historical_rows(events, "training.artifact", "name"))]
         return _page(
             items, schema_version=SFT_READ_SCHEMA, projected_at_sequence=sequence,
             after_key=after_key, key_field="name", byte_limit=byte_limit,
         )
     if collection == "receipts":
-        items = [{"request_id": row["request_id"], **row} for row in store.receipts(job_id)]
+        items = [{"request_id": row["request_id"], **row} for row in (store.receipts(job_id) if at_sequence is None else _historical_rows(events, "training.receipt", "request_id"))]
         return _page(
             items, schema_version=SFT_READ_SCHEMA, projected_at_sequence=sequence,
             after_key=after_key, key_field="request_id", byte_limit=byte_limit,
@@ -172,13 +183,13 @@ def cispo_collections(
         "per_intent": ("cispo.heldout_eval.completed", "event_id", CISPO_READ_SCHEMA),
     }
     if collection == "artifacts":
-        items = [{"name": row["name"], "digest": row["digest"]} for row in store.artifacts(job_id)]
+        items = [{"name": row["name"], "digest": row["digest"]} for row in (store.artifacts(job_id) if at_sequence is None else _historical_rows(events, "training.artifact", "name"))]
         return _page(
             items, schema_version=CISPO_READ_SCHEMA, projected_at_sequence=sequence,
             after_key=after_key, key_field="name", byte_limit=byte_limit,
         )
     if collection == "receipts":
-        items = [{"request_id": row["request_id"], **row} for row in store.receipts(job_id)]
+        items = [{"request_id": row["request_id"], **row} for row in (store.receipts(job_id) if at_sequence is None else _historical_rows(events, "training.receipt", "request_id"))]
         return _page(
             items, schema_version=CISPO_READ_SCHEMA, projected_at_sequence=sequence,
             after_key=after_key, key_field="request_id", byte_limit=byte_limit,
@@ -201,10 +212,30 @@ def replay_equals_read_model(store: JobStore, job_id: str) -> bool:
 
 
 def _events_through(store: JobStore, job_id: str, at_sequence: int | None) -> list[dict[str, Any]]:
-    events = store.events(job_id, after_sequence=0, limit=5_000)
-    if at_sequence is None:
-        return events
-    return [event for event in events if int(event["sequence"]) <= at_sequence]
+    # Freeze the upper bound before paging so concurrent appends cannot extend a read.
+    with store._lock:
+        latest = store._latest_sequence(job_id)
+    bound = latest if at_sequence is None else at_sequence
+    if bound < 0 or bound > latest:
+        raise ValueError("unknown projection sequence")
+    events = []
+    cursor = 0
+    while cursor < bound:
+        batch = store.events(job_id, after_sequence=cursor, limit=min(5000, bound - cursor))
+        if not batch:
+            raise ValueError("projection journal contains a gap")
+        events.extend(event for event in batch if event["sequence"] <= bound)
+        cursor = batch[-1]["sequence"]
+    return events
+
+
+def _historical_rows(events, kind, key):
+    rows = {}
+    for event in events:
+        if event["kind"] == kind:
+            row = event["payload"]
+            rows[row[key]] = row
+    return [rows[key] for key in sorted(rows)]
 
 
 def _latest(events: Sequence[Mapping[str, Any]], kinds: set[str]) -> Mapping[str, Any] | None:
@@ -215,7 +246,7 @@ def _latest(events: Sequence[Mapping[str, Any]], kinds: set[str]) -> Mapping[str
 
 
 def _best_checkpoint(events: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
-    promoted = _latest(events, {"sft.checkpoint.promoted", "cispo.checkpoint.promoted"})
+    promoted = _latest(events, {"sft.checkpoint.promoted", "sft.checkpoint.selected", "cispo.checkpoint.promoted"})
     return None if promoted is None else promoted.get("payload")
 
 

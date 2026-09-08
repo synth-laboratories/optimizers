@@ -19,7 +19,7 @@ from .sft_dataset import Example, render_chat, tokenize_for_sft
 def system_prompt_from(config: Mapping[str, Any]) -> str | None:
     dataset = config.get("dataset") if isinstance(config.get("dataset"), Mapping) else {}
     value = dataset.get("system_prompt") or config.get("system_prompt")
-    text = str(value or "").strip()
+    text = str(value or "")
     return text or None
 
 
@@ -60,6 +60,7 @@ def evaluate_checkpoint(
     system_prompt: str | None = None,
     max_tokens: int = 24,
     on_example: Callable[[Mapping[str, Any]], None] | None = None,
+    on_usage: Callable[[str, Any], None] | None = None,
 ) -> dict[str, Any]:
     handle = ProviderCheckpoint(
         checkpoint_id=str(checkpoint["checkpoint_id"]),
@@ -103,13 +104,26 @@ def evaluate_checkpoint(
     # dataset order so cumulative metrics and streamed event order stay
     # deterministic and paired evidence remains reproducible.
     def ordered_samples() -> Any:
-        with ThreadPoolExecutor(max_workers=sample_parallelism()) as executor:
-            futures = [
-                executor.submit(provider.sample_checkpoint, handle, request)
-                for _, _, request in prepared
-            ]
-            for prepared_row, future in zip(prepared, futures, strict=True):
-                yield prepared_row, future.result()
+        width = sample_parallelism()
+        with ThreadPoolExecutor(max_workers=width) as executor:
+            for start in range(0, len(prepared), width):
+                panel = prepared[start:start + width]
+                futures = [executor.submit(provider.sample_checkpoint, handle, request)
+                           for _, _, request in panel]
+                failure = None
+                completed = []
+                for prepared_row, future in zip(panel, futures, strict=True):
+                    try:
+                        result = future.result()
+                        if on_usage is not None:
+                            on_usage(prepared_row[2].request_id, result.usage)
+                        completed.append((prepared_row, result))
+                    except Exception as exc:
+                        failure = failure or exc
+                # Every admitted sibling is drained and settled before propagating failure.
+                yield from completed
+                if failure is not None:
+                    raise failure
 
     for (index, example, _), sampled in ordered_samples():
         predicted = extract_final_label(sampled.text)

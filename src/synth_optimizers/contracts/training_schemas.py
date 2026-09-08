@@ -35,6 +35,8 @@ LIFECYCLE_STATES = (
     "running",
     "evaluating",
     "materializing",
+    "stop_requested",
+    "blocked_uncertain",
     "completed",
     "failed",
     "cancelled",

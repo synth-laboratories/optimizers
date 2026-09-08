@@ -68,21 +68,14 @@ class SftConfig:
         slots = data.get("accelerator_slots", 1)
         if not isinstance(slots, int) or isinstance(slots, bool) or slots < 1:
             raise SftServiceError("accelerator_slots must be a positive integer")
-        raw_steps = data.get("checkpoint_steps") or list(
-            range(
-                int((data.get("training") or {}).get("checkpoint_every_steps") or 1),
-                int((data.get("training") or {}).get("steps") or 2) + 1,
-                int((data.get("training") or {}).get("checkpoint_every_steps") or 1),
-            )
-        )
-        if not isinstance(raw_steps, list) or not raw_steps:
-            raise SftServiceError("checkpoint_steps must be a non-empty list")
-        if any(
-            not isinstance(step, int) or isinstance(step, bool) or step < 1 for step in raw_steps
-        ):
-            raise SftServiceError("checkpoint_steps must contain positive integers")
-        if sorted(raw_steps) != raw_steps or len(set(raw_steps)) != len(raw_steps):
-            raise SftServiceError("checkpoint_steps must be strictly increasing")
+        from .contracts.checkpoint_plan import resolve_checkpoint_plan
+        from .contracts.training_schemas import SchemaError
+        try:
+            plan = resolve_checkpoint_plan(data)
+        except SchemaError as exc:
+            raise SftServiceError(str(exc)) from exc
+        raw_steps = plan["save_steps"]
+        data["training"] = {**(data.get("training") or {}), "steps": plan["steps"]}
         if backend == "tinker" and not _has_training_data(data):
             raise SftServiceError("Tinker SFT requires training_file_id, training_jsonl, examples, or dataset")
         data["run_id"] = resolved_run_id
@@ -90,7 +83,8 @@ class SftConfig:
         data["model_id"] = base_model
         data["backend"] = backend
         data["accelerator_slots"] = slots
-        data["checkpoint_steps"] = raw_steps
+        if "checkpoint_schedule" not in data:
+            data["checkpoint_steps"] = raw_steps
         return cls(
             run_id=resolved_run_id,
             base_model=base_model,

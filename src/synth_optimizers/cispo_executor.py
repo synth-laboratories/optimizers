@@ -133,15 +133,18 @@ class TinkerCispoExecutor:
         return _public_status(self.store.require(job_id), self.store.events(job_id, after_sequence=0, limit=5_000))
 
     def cancel(self, job_id: str) -> dict[str, Any]:
-        job = self.store.request_cancel(job_id)
-        self.store.append_event(job.job_id, "cispo.cancelled", {"reason": "requested"}, phase="cancelled")
+        self.store.request_cancel(job_id)
         return self.status(job_id)
 
     def resume(self, job_id: str) -> dict[str, Any]:
         job = self.store.require(job_id)
         if job.state in TERMINAL_STATES:
             return self.status(job_id)
-        return self._run(job_id)
+        if self.sync:
+            return self._run(job_id)
+        from .runtime import start_job_worker
+        start_job_worker(job_id, lambda: self._run(job_id))
+        return self.status(job_id)
 
     def _prepare(
         self,
@@ -187,15 +190,44 @@ class TinkerCispoExecutor:
         )
 
     def _run(self, job_id: str) -> dict[str, Any]:
+        from .runtime.worker import execute_owned
         try:
-            job = self.store.claim(job_id, self.owner)
+            result = execute_owned(self.store, job_id, self._execute)
+            return result or self.status(job_id)
         except JobStoreError:
             return self.status(job_id)
-        if job.state in TERMINAL_STATES:
-            return self.status(job_id)
+
+    def _execute(self, job: TrainingJob, owner: str) -> dict[str, Any]:
+        from copy import copy
+        from .runtime.worker import AdmissionProvider
+        executor = copy(self)
+        from .runtime.operations import DurableProvider, UncertainOperation
+        executor.provider = AdmissionProvider(
+            DurableProvider(self.provider, self.store, job.job_id, owner), self.store, job.job_id)
+        try:
+            executor.provider.provider.recovery_checkpoint()
+            result = executor._execute_body(job, owner)
+            if self.store.require(job.job_id).state == "stop_requested":
+                self.store.transition(job.job_id, "cancelled")
+                return self.status(job.job_id)
+            return result
+        except UncertainOperation as exc:
+            self.store.transition(job.job_id, "blocked_uncertain", error=str(exc))
+            return self.status(job.job_id)
+        except ProviderError as exc:
+            return executor._fail(job.job_id, str(exc))
+
+    def _execute_body(self, job: TrainingJob, owner: str) -> dict[str, Any]:
+        job_id = job.job_id
         config = json.loads(job.config_json)
+        if job.resume_token and not job.resume_token.startswith("{"):
+            from .runtime.operations import UncertainOperation
+            raise UncertainOperation("legacy resume requires explicit verified migration")
         request = _cispo_request(config)
         dataset = _dataset(config)
+        if config.get("dataset_manifest") != dataset.manifest:
+            from .runtime.operations import UncertainOperation
+            raise UncertainOperation("dataset identity changed; exact resume refused")
         slime = CispoConfig(
             eps_clip=float(request.training.get("eps_clip", 1.0)),
             eps_clip_high=float(request.training.get("eps_clip_high", 4.0)),
@@ -210,7 +242,7 @@ class TinkerCispoExecutor:
         except (UnsupportedCapability, ProviderError, CispoError) as exc:
             return self._fail(job_id, str(exc))
         if canary:
-            self.store.append_event(
+            self.store.append_event_once(
                 job_id,
                 "cispo.canary.started",
                 {"model_id": job.model_id, "validated": False},
@@ -219,7 +251,7 @@ class TinkerCispoExecutor:
         session = self._session(job_id, job.model_id, config, request)
         clip_low = max(0.0, 1.0 - slime.eps_clip)
         clip_high = 1.0 + slime.eps_clip_high
-        self.store.append_event(
+        self.store.append_event_once(
             job_id,
             "cispo.clip.identity",
             {
@@ -236,7 +268,7 @@ class TinkerCispoExecutor:
         updates = int(request.training.get("updates") or 1)
         group_size = int(request.training.get("group_size") or 2)
         prompts_per_update = int(request.training.get("prompts_per_update") or 1)
-        start = _resume_update(job) + 1
+        start = 1  # Replay confirmed operations from the durable journal.
         checkpoints: list[dict[str, Any]] = []
         try:
             baseline_checkpoint = self.provider.save_checkpoint(
@@ -259,23 +291,23 @@ class TinkerCispoExecutor:
                 candidate="parent",
                 config=config,
             )
-            self.store.append_event(
+            self.store.append_event_once(
                 job_id,
                 "cispo.baseline_eval.completed",
                 {**baseline_record, **public_evaluation(baseline), "role": "selection"},
                 phase="running",
             )
             for update in range(start, updates + 1):
-                if self.store.require(job_id).state == "cancelled":
-                    return self.status(job_id)
-                self.store.heartbeat(job_id, self.owner)
+                if self.store.cancellation_requested(job_id):
+                    return self._fail(job_id, "training cancellation requested")
+                self.store.heartbeat(job_id, owner)
                 prompts = _batch(dataset.train, update, prompts_per_update)
                 groups, metrics = self._rollout_update(
                     job_id, session, prompts, update, group_size, request, slime, config
                 )
                 zero_groups = sum(1 for group in groups if group["zero_advantage"])
                 if zero_groups == len(groups):
-                    self.store.append_event(
+                    self.store.append_event_once(
                         job_id,
                         "cispo.update.completed",
                         {"update": update, "skipped": True, "reason": "zero_advantage", **metrics},
@@ -284,7 +316,7 @@ class TinkerCispoExecutor:
                 else:
                     trainable = [group for group in groups if not group["zero_advantage"]]
                     self._train(job_id, session, trainable, update, slime, config)
-                    self.store.append_event(
+                    self.store.append_event_once(
                         job_id,
                         "cispo.update.completed",
                         {"update": update, "skipped": False, **metrics},
@@ -296,11 +328,11 @@ class TinkerCispoExecutor:
                             job_id, session, dataset, update, config, baseline=baseline
                         )
                     )
-                    self.store.set_resume_token(job_id, checkpoints[-1]["checkpoint_id"])
+                    self.store.set_resume_token(job_id, json.dumps({"step": update, "training_provider_reference": checkpoints[-1]["training_provider_reference"]}))
             promoted = max(checkpoints, key=lambda item: item["calibration_accuracy"]) if checkpoints else None
             if promoted is None:
                 return self._fail(job_id, "CISPO produced no checkpoint")
-            self.store.append_event(job_id, "cispo.checkpoint.promoted", promoted, phase="evaluating")
+            self.store.append_event_once(job_id, "cispo.checkpoint.promoted", promoted, phase="evaluating")
             self.store.transition(job_id, "evaluating")
             heldout_base = self._evaluate(
                 job_id,
@@ -326,7 +358,7 @@ class TinkerCispoExecutor:
                 "trained": public_evaluation(heldout_trained),
                 "paired_uplift": self._paired(config, heldout_base, heldout_trained),
             }
-            self.store.append_event(job_id, "cispo.heldout_eval.completed", heldout, phase="evaluating")
+            self.store.append_event_once(job_id, "cispo.heldout_eval.completed", heldout, phase="evaluating")
             self.store.transition(job_id, "materializing")
             bundle = {
                 "schema_version": "policy_bundle.v1",
@@ -340,13 +372,13 @@ class TinkerCispoExecutor:
             digest = self.store.put_artifact(
                 job_id, "policy_bundle.json", json.dumps(bundle, sort_keys=True).encode(), content_type="application/json"
             )
-            self.store.append_event(
+            self.store.append_event_once(
                 job_id,
                 "cispo.model.materialized",
                 {"digest": digest, "checkpoint_id": promoted["checkpoint_id"]},
                 phase="materializing",
             )
-            self.store.append_event(
+            self.store.append_event_once(
                 job_id,
                 "cispo.completed",
                 {"selected_checkpoint_id": promoted["checkpoint_id"], "heldout_accuracy": heldout["accuracy"]},
@@ -354,6 +386,9 @@ class TinkerCispoExecutor:
             )
             self.store.transition(job_id, "completed")
         except (ProviderError, CispoError) as exc:
+            from .runtime.operations import UncertainOperation
+            if isinstance(exc, UncertainOperation):
+                raise
             return self._fail(job_id, str(exc))
         return self.status(job_id)
 
@@ -445,7 +480,7 @@ class TinkerCispoExecutor:
                 "trajectories": trajectories,
                 "label": example.label,
             }
-            self.store.append_event(
+            self.store.append_event_once(
                 job_id,
                 "cispo.rollout_group.completed",
                 {
@@ -459,7 +494,7 @@ class TinkerCispoExecutor:
                 },
                 phase="running",
             )
-            self.store.append_event(
+            self.store.append_event_once(
                 job_id,
                 "cispo.group_advantage.computed",
                 {"group_id": group["group_id"], "advantages": list(advantages), "zero_advantage": zero_adv},
@@ -467,7 +502,7 @@ class TinkerCispoExecutor:
             )
             if zero_adv:
                 zero += 1
-                self.store.append_event(
+                self.store.append_event_once(
                     job_id,
                     "cispo.zero_advantage.detected",
                     {"group_id": group["group_id"], "rewards": rewards},
@@ -536,7 +571,7 @@ class TinkerCispoExecutor:
             all_ratios.extend(ratios)
             clipped_tokens += measured.clipped_token_count
             selected_tokens += measured.selected_token_count
-        self.store.append_event(
+        self.store.append_event_once(
             job_id,
             "cispo.importance_ratio.measured",
             {
@@ -610,11 +645,12 @@ class TinkerCispoExecutor:
             "training_checkpoint_id": training.checkpoint_id,
             "provider_reference": inference.provider_reference,
             "training_provider_reference": training.provider_reference,
+            "training_digest": training.digest,
             "digest": inference.digest,
             "resume_token": training.resume_token,
             "step": update,
         }
-        self.store.append_event(job_id, "cispo.checkpoint.created", record, phase="evaluating")
+        self.store.append_event_once(job_id, "cispo.checkpoint.created", record, phase="evaluating")
         evaluation = self._evaluate(
             job_id,
             record,
@@ -630,7 +666,7 @@ class TinkerCispoExecutor:
             "role": "selection",
             "paired_uplift": self._paired(config, baseline, evaluation),
         }
-        self.store.append_event(job_id, "cispo.checkpoint_eval.completed", payload, phase="evaluating")
+        self.store.append_event_once(job_id, "cispo.checkpoint_eval.completed", payload, phase="evaluating")
         return payload
 
     def _evaluate(
@@ -644,7 +680,7 @@ class TinkerCispoExecutor:
         config: Mapping[str, Any],
     ) -> dict[str, Any]:
         def stream(record: Mapping[str, Any]) -> None:
-            self.store.append_event(
+            self.store.append_event_once(
                 job_id,
                 "cispo.evaluation.example.completed",
                 {
@@ -670,6 +706,7 @@ class TinkerCispoExecutor:
             system_prompt=system_prompt_from(config),
             max_tokens=eval_max_tokens(config),
             on_example=stream,
+            on_usage=lambda request_id, usage: self._receipt(job_id, request_id, usage),
         )
 
     @staticmethod
@@ -687,8 +724,19 @@ class TinkerCispoExecutor:
             minimum_paired_examples=int(evaluation.get("minimum_paired_examples") or 100),
         )
 
+    def _receipt(self, job_id: str, request_id: str, usage: Any) -> None:
+        from dataclasses import asdict
+        self.store.put_receipt(job_id, request_id, {
+            **asdict(usage), "request_id": request_id, "provider": "tinker",
+            "schema_version": "training.usage_receipt.v1", "algorithm_id": ALGORITHM_ID,
+            "implementation_version": IMPLEMENTATION_VERSION,
+        })
+
     def _fail(self, job_id: str, reason: str) -> dict[str, Any]:
-        self.store.append_event(job_id, "cispo.failed", {"reason": reason}, phase="failed")
+        if self.store.cancellation_requested(job_id):
+            self.store.transition(job_id, "cancelled")
+            return self.status(job_id)
+        self.store.append_event_once(job_id, "cispo.failed", {"reason": reason}, phase="failed")
         self.store.transition(job_id, "failed", error=reason)
         return self.status(job_id)
 
@@ -726,5 +774,5 @@ def _batch(examples: Sequence[Example], step: int, size: int) -> list[Example]:
 def _resume_update(job: TrainingJob) -> int:
     if not job.resume_token:
         return 0
-    digits = "".join(ch for ch in job.resume_token if ch.isdigit())
-    return int(digits) if digits else 0
+    from .sft_executor import _resume_step
+    return _resume_step(job)

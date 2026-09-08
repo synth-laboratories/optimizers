@@ -306,6 +306,8 @@ class JobStore:
                 return job
             if job.state == "stop_requested" and state not in {"cancelled", "blocked_uncertain"}:
                 return job
+            if job.state == "pause_requested" and state in {"running", "evaluating", "materializing"}:
+                return job
             now = utcnow()
             self._db.execute(
                 "UPDATE training_jobs SET state = ?, error = ?, updated_at = ? WHERE job_id = ?",
@@ -468,6 +470,23 @@ class JobStore:
             if row is None:
                 return None
             return int(row["sequence"]), json.loads(row["snapshot_json"])
+
+    def request_pause(self, job_id):
+        job = self.require(job_id)
+        if job.state in TERMINAL_STATES or job.state in {"stop_requested", "paused"}:
+            return job
+        return self.transition(job_id, "pause_requested")
+
+    def resume_prepared(self, job_id):
+        with self._write(job_id):
+            job = self.require(job_id)
+            if job.owner and not self._stale(job, 30):
+                return job
+            if job.state == "paused":
+                self._db.execute("UPDATE training_jobs SET state='prepared', updated_at=? WHERE job_id=?",
+                                 (utcnow(), job_id))
+                self._insert_event(job_id, "training.lifecycle", {"state": "prepared", "error": None}, "prepared")
+            return self.require(job_id)
 
     def cancellation_requested(self, job_id: str) -> bool:
         return self.require(job_id).state in {"stop_requested", "cancelled"}

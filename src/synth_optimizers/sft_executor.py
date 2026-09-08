@@ -56,11 +56,13 @@ class TinkerSftExecutor:
         *,
         owner: str = "sft-worker",
         sync: bool = True,
+        eval_authority: Any = None,
     ) -> None:
         self.store = store
         self.provider = provider
         self.owner = owner
         self.sync = sync
+        self.eval_authority = eval_authority
 
     @classmethod
     def local(cls, store: JobStore, *, fixture: bool = False) -> "TinkerSftExecutor":
@@ -118,8 +120,12 @@ class TinkerSftExecutor:
         self.store.request_cancel(job_id)
         return self.status(job_id)
 
+    def pause(self, job_id: str) -> dict[str, Any]:
+        self.store.request_pause(job_id)
+        return self.status(job_id)
+
     def resume(self, job_id: str) -> dict[str, Any]:
-        job = self.store.require(job_id)
+        job = self.store.resume_prepared(job_id)
         if job.state in TERMINAL_STATES:
             return self.status(job_id)
         if self.sync:
@@ -136,6 +142,11 @@ class TinkerSftExecutor:
         idempotency_key_override: str | None = None,
     ) -> TrainingJob:
         plan = resolve_checkpoint_plan(config)
+        if plan["mode"] in {"container", "both"}:
+            for evaluator in plan["evaluators"]:
+                self._authority().validate(evaluator)
+        from .runtime.training_budget import resolve_budget
+        budget = resolve_budget(config, self.provider)
         dataset = self._dataset(config)
         validate_dataset_manifest(dataset.manifest)
         model_id = self.provider.resolve_model(
@@ -172,6 +183,7 @@ class TinkerSftExecutor:
             "backend": "tinker",
             "training": training,
             "dataset_manifest": dataset.manifest,
+            "budget": budget,
             "resolved_checkpoint_plan": plan,
             "seed": seed,
         }
@@ -272,21 +284,13 @@ class TinkerSftExecutor:
                     "digest": baseline_checkpoint.digest,
                     "step": 0,
                 }
-                baseline = self._evaluate(
-                    job_id,
-                    baseline_record,
-                    dataset.calibration,
-                    phase="selection",
-                    candidate="base",
-                    prompt=prompt,
-                    max_tokens=max_tokens,
-                )
-                self.store.append_event_once(
-                    job_id,
-                    "sft.baseline_eval.completed",
-                    {**baseline_record, **public_evaluation(baseline), "role": "selection"},
-                    phase="running",
-                )
+                if plan["baseline"]:
+                    if plan["mode"] in {"builtin", "both"}:
+                        baseline = self._evaluate(job_id, baseline_record, dataset.calibration,
+                            phase="selection", candidate="base", prompt=prompt, max_tokens=max_tokens)
+                        self.store.append_event_once(job_id, "sft.baseline_eval.completed",
+                            {**baseline_record, **public_evaluation(baseline), "role": "selection"}, phase="running")
+                    self._container_evaluate(job_id, baseline_record, "baseline")
             for step in range(start_step, int(training["steps"]) + 1):
                 if self.store.cancellation_requested(job_id):
                     return self._fail(job_id, "training cancellation requested")
@@ -323,12 +327,20 @@ class TinkerSftExecutor:
                         max_tokens=max_tokens,
                     )
                     self.store.set_resume_token(job_id, json.dumps({"step": step, "training_provider_reference": checkpoint["training_provider_reference"]}))
+                    if self.store.require(job_id).state == "pause_requested":
+                        self.store.transition(job_id, "paused")
+                        return self.status(job_id)
             if plan["mode"] == "none":
                 promoted = checkpoints[-1]
                 heldout = {"status": "not_configured", "accuracy": None, "evaluated": False}
                 self.store.append_event_once(job_id, "sft.checkpoint.selected", promoted, phase="materializing")
             else:
-                promoted = max((item for item in checkpoints if "calibration_accuracy" in item), key=lambda item: item["calibration_accuracy"])
+                eligible = [item for item in checkpoints if item.get("selection_value") is not None]
+                if not eligible:
+                    raise ProviderError("selection_unavailable", "no checkpoint has a complete valid selection result")
+                direction = -1 if plan["selection"].get("direction") == "minimize" else 1
+                tie = 1 if plan["selection"].get("tie_break") == "latest_step" else -1
+                promoted = max(eligible, key=lambda item: (direction*item["selection_value"], tie*item["step"]))
                 self.store.append_event_once(
                     job_id,
                     "sft.checkpoint.promoted",
@@ -336,39 +348,43 @@ class TinkerSftExecutor:
                     phase="evaluating",
                 )
                 self.store.transition(job_id, "evaluating")
-                heldout_base = self._evaluate(
-                    job_id,
-                    baseline_record,
-                    dataset.heldout,
-                    phase="heldout",
-                    candidate="base",
-                    prompt=prompt,
-                    max_tokens=max_tokens,
-                )
-                heldout_trained = self._evaluate(
-                    job_id,
-                    promoted,
-                    dataset.heldout,
-                    phase="heldout",
-                    candidate="selected",
-                    prompt=prompt,
-                    max_tokens=max_tokens,
-                )
-                heldout_uplift = self._paired(config, heldout_base, heldout_trained)
-                heldout = {
-                    **public_evaluation(heldout_trained),
-                    "role": "heldout",
-                    "heldout_locked": True,
-                    "baseline": public_evaluation(heldout_base),
-                    "trained": public_evaluation(heldout_trained),
-                    "paired_uplift": heldout_uplift,
-                }
-                self.store.append_event_once(
-                    job_id,
-                    "sft.heldout_eval.completed",
-                    heldout,
-                    phase="evaluating",
-                )
+                heldout = {"role": "heldout", "accuracy": None, "evaluated": False}
+                if plan["final"] and plan["mode"] in {"builtin", "both"}:
+                    heldout_base = self._evaluate(
+                        job_id,
+                        baseline_record,
+                        dataset.heldout,
+                        phase="heldout",
+                        candidate="base",
+                        prompt=prompt,
+                        max_tokens=max_tokens,
+                    )
+                    heldout_trained = self._evaluate(
+                        job_id,
+                        promoted,
+                        dataset.heldout,
+                        phase="heldout",
+                        candidate="selected",
+                        prompt=prompt,
+                        max_tokens=max_tokens,
+                    )
+                    heldout_uplift = self._paired(config, heldout_base, heldout_trained)
+                    heldout = {
+                        **public_evaluation(heldout_trained),
+                        "role": "heldout",
+                        "heldout_locked": True,
+                        "baseline": public_evaluation(heldout_base),
+                        "trained": public_evaluation(heldout_trained),
+                        "paired_uplift": heldout_uplift,
+                    }
+                    self.store.append_event_once(
+                        job_id,
+                        "sft.heldout_eval.completed",
+                        heldout,
+                        phase="evaluating",
+                    )
+                if plan["final"]:
+                    heldout["container_evaluations"] = self._container_evaluate(job_id, promoted, "final")
             self.store.transition(job_id, "materializing")
             bundle = {
                 "schema_version": "policy_bundle.v1",
@@ -399,6 +415,12 @@ class TinkerSftExecutor:
             from .runtime.operations import UncertainOperation
             if isinstance(exc, UncertainOperation):
                 raise
+            if getattr(exc, "code", "") in {"experiment_budget_exhausted", "reservation_exceeded", "pricing_reconciliation_required"}:
+                self.store.transition(job_id, "blocked_budget", error=str(exc))
+                return self.status(job_id)
+            if getattr(exc, "code", "") == "evaluation_blocked":
+                self.store.transition(job_id, "blocked_evaluation", error=str(exc))
+                return self.status(job_id)
             return self._fail(job_id, str(exc))
         return self.status(job_id)
 
@@ -436,27 +458,59 @@ class TinkerSftExecutor:
             record["evaluation_status"] = "not_configured" if plan["mode"] == "none" else "not_scheduled"
             checkpoints.append(record)
             return record
-        evaluation = self._evaluate(
-            job_id,
-            record,
-            dataset.calibration,
-            phase="selection",
-            candidate=f"checkpoint:{step}",
-            prompt=prompt,
-            max_tokens=max_tokens,
-        )
-        payload = {
-            **record,
-            **public_evaluation(evaluation),
-            "calibration_accuracy": evaluation["accuracy"],
-            "role": "selection",
-            "paired_uplift": self._paired(
-                json.loads(self.store.require(job_id).config_json), baseline, evaluation
-            ),
-        }
+        payload = {**record, "role": "selection"}
+        if plan["mode"] in {"builtin", "both"}:
+            evaluation = self._evaluate(job_id, record, dataset.calibration, phase="selection",
+                                       candidate=f"checkpoint:{step}", prompt=prompt, max_tokens=max_tokens)
+            payload.update({**public_evaluation(evaluation), "calibration_accuracy": evaluation["accuracy"],
+                            "paired_uplift": self._paired(json.loads(self.store.require(job_id).config_json), baseline, evaluation)})
+        payload["container_evaluations"] = self._container_evaluate(job_id, record, "selection")
+        selector = plan["selection"]["evaluator_id"]
+        payload["selection_value"] = (payload.get("calibration_accuracy") if selector == "builtin" else
+                                      payload["container_evaluations"].get(selector, {}).get("value"))
         self.store.append_event_once(job_id, "sft.checkpoint_eval.completed", payload, phase="evaluating")
         checkpoints.append(payload)
         return payload
+
+    def _authority(self):
+        if self.eval_authority is None:
+            from pathlib import Path
+            from .eval.checkpoint_authority import CheckpointEvaluationAuthority
+            self.eval_authority = CheckpointEvaluationAuthority(Path(self.store.path).parent / "eval")
+        return self.eval_authority
+
+    def _container_evaluate(self, job_id, checkpoint, role):
+        from .eval.models import EvalContractError
+        config = json.loads(self.store.require(job_id).config_json)
+        results = {}
+        evaluation_owner = self.store.require(job_id).owner
+        for evaluator in config["resolved_checkpoint_plan"]["evaluators"]:
+            request_id = new_request_id(job_id, checkpoint["checkpoint_id"], evaluator["id"], role)
+            self.store.append_event_once(job_id, "sft.child_eval.requested",
+                {"request_id": request_id, "checkpoint_id": checkpoint["checkpoint_id"],
+                 "evaluator_id": evaluator["id"], "role": role}, phase="evaluating")
+            def event(value):
+                with self.store.owned(evaluation_owner):
+                    self.store.append_event_once(job_id, "sft.child_eval.progress", {
+                        **value, "evaluator_id": evaluator["id"], "checkpoint_id": checkpoint["checkpoint_id"],
+                        "step": checkpoint["step"], "role": role}, phase="evaluating")
+            try:
+                result = self._authority().evaluate(request_id, checkpoint, evaluator,
+                    provider=self.provider, model_id=config["model_id"], parent_run_id=job_id,
+                    role=role, on_event=event, should_stop=lambda: (self.store.cancellation_requested(job_id) or
+                        self.store.require(job_id).owner != evaluation_owner),
+                    renderer_profile=config["evaluation_renderer_profile"])
+                if not result["valid"]:
+                    raise EvalContractError("checkpoint evaluator returned incomplete or invalid evidence")
+                results[evaluator["id"]] = result
+                self.store.append_event_once(job_id, "sft.child_eval.completed", {**result, "evaluator_id": evaluator["id"], "role": role}, phase="evaluating")
+            except EvalContractError as exc:
+                self.store.append_event_once(job_id, "sft.child_eval.failed", {"request_id": request_id,
+                    "evaluator_id": evaluator["id"], "checkpoint_id": checkpoint["checkpoint_id"], "reason": str(exc)}, phase="evaluating")
+                if evaluator.get("failure_policy", "block") == "block":
+                    raise ProviderError("evaluation_blocked", str(exc)) from exc
+                results[evaluator["id"]] = {"status": "failed", "value": None, "valid": False}
+        return results
 
     def _evaluate(
         self,

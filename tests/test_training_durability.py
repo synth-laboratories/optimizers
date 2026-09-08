@@ -366,3 +366,51 @@ def test_public_config_preserves_canonical_save_final():
         "training": {"steps": 50}, "checkpoint_schedule": {"save_steps": [10, 25]},
         "checkpoint_evaluation": {"mode": "none"}})
     assert resolve_checkpoint_plan(config.config_json)["save_steps"] == [10, 25, 50]
+
+
+def test_training_budget_survives_restart_and_unknown_usage(tmp_path):
+    from synth_optimizers.runtime.training_budget import TrainingBudget
+    from synth_optimizers.providers.protocols import TrainingStepRequest, TrainingStepResult, ProviderUsage
+    from synth_optimizers.rl.budget import BudgetError
+    store = JobStore(tmp_path / "budget.sqlite")
+    prepare(store)
+    plan = {"max_cost_usd": .003, "pricing": {"training_usd_per_million": 1000,
+            "input_usd_per_million": 1000, "output_usd_per_million": 1000,
+            "session_usd": 0, "save_usd": 0, "restore_usd": 0}}
+    budget = TrainingBudget(store, "run", plan)
+    request = TrainingStepRequest("one", "cross_entropy", ({"input_ids": [1, 2]},))
+    budget.reserve("one", "train", request)
+    budget.settle("one", TrainingStepResult("one", 1, {}, ProviderUsage()))
+    reopened = TrainingBudget(store, "run", plan)
+    assert reopened.ledger.snapshot()["counted_or_reserved_usd"] == .002
+    with pytest.raises(BudgetError, match="aggregate reservation"):
+        reopened.reserve("two", "train", request)
+    with pytest.raises(BudgetError, match="cannot be reset"):
+        TrainingBudget(store, "run", {**plan, "max_cost_usd": 1})
+    store.close()
+
+
+def test_pause_request_survives_checkpoint_phases(tmp_path):
+    store = JobStore(tmp_path / 'jobs.sqlite')
+    prepare(store)
+    store.transition('run', 'running')
+    store.request_pause('run')
+    for phase in ('running', 'materializing', 'evaluating'):
+        assert store.transition('run', phase).state == 'pause_requested'
+    assert store.transition('run', 'paused').state == 'paused'
+    assert store.resume_prepared('run').state == 'prepared'
+    store.close()
+
+
+def test_training_jobs_share_aggregate_budget(tmp_path):
+    from synth_optimizers.runtime.training_budget import TrainingBudget
+    from synth_optimizers.rl.budget import BudgetError
+    store = JobStore(tmp_path / 'jobs.sqlite')
+    plan = {'experiment_id': 'authorized-canaries', 'max_cost_usd': 20,
+            'pricing': {'session_usd': 12}}
+    first = TrainingBudget(store, 'sft', plan)
+    second = TrainingBudget(store, 'cispo', plan)
+    first.reserve('sft-session', 'session')
+    with pytest.raises(BudgetError):
+        second.reserve('cispo-session', 'session')
+    store.close()

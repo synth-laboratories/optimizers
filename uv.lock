@@ -2457,6 +2457,10 @@ dev = [
     { name = "ruff" },
     { name = "ty" },
 ]
+eval-target-build = [
+    { name = "huggingface-hub" },
+    { name = "pyarrow" },
+]
 tinker = [
     { name = "renderers" },
     { name = "tinker" },
@@ -2476,8 +2480,10 @@ requires-dist = [
     { name = "daytona", marker = "extra == 'daytona'", specifier = "==0.210.0" },
     { name = "fastapi", marker = "extra == 'benchmark-server'", specifier = ">=0.115" },
     { name = "httpx", marker = "extra == 'benchmark-server'", specifier = ">=0.27" },
+    { name = "huggingface-hub", marker = "extra == 'eval-target-build'", specifier = ">=0.24" },
     { name = "maturin", marker = "extra == 'dev'", specifier = ">=1.7.0" },
     { name = "openai", marker = "extra == 'banking77'", specifier = ">=1.0.0" },
+    { name = "pyarrow", marker = "extra == 'eval-target-build'", specifier = ">=17" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "renderers", marker = "extra == 'tinker'", specifier = ">=0.1.9" },
@@ -2488,7 +2494,7 @@ requires-dist = [
     { name = "uvicorn", marker = "extra == 'benchmark-server'", specifier = ">=0.30" },
     { name = "websocket-client", specifier = ">=1.8.0" },
 ]
-provides-extras = ["daytona", "benchmark-server", "banking77", "tinker", "dev"]
+provides-extras = ["eval-target-build", "daytona", "benchmark-server", "banking77", "tinker", "dev"]
 
 [package.metadata.requires-dev]
 dev = [

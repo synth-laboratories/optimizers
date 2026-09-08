@@ -82,16 +82,43 @@ def resolve_checkpoint_plan(config: Mapping) -> dict:
         raise SchemaError(
             "built-in paired evaluation requires baseline, selection and final panels"
         )
+    evaluators = evaluation.get("evaluators", [])
     if mode in {"container", "both"}:
-        raise SchemaError(
-            "container checkpoint evaluation authority is not installed in this runtime"
-        )
+        if not isinstance(evaluators, list) or not evaluators:
+            raise SchemaError("container evaluation requires named frozen evaluator plans")
+        ids = set()
+        for evaluator in evaluators:
+            for field in ("id", "recipe_id", "image_digest", "metric_ref", "reward_version", "units"):
+                if not isinstance(evaluator.get(field), str) or not evaluator[field]:
+                    raise SchemaError(f"evaluator requires {field}")
+            if evaluator["id"] in ids or evaluator["id"] == "builtin":
+                raise SchemaError("evaluator identities must be unique")
+            ids.add(evaluator["id"])
+            if evaluator.get("failure_policy", "block") not in {"block", "continue"}:
+                raise SchemaError("unknown evaluator failure policy")
+            selection_seeds, final_seeds = evaluator.get("selection_seeds"), evaluator.get("final_seeds")
+            for panel in (selection_seeds, final_seeds):
+                if not isinstance(panel, list) or not panel or len(panel)>1000 or any(type(seed) is not int for seed in panel) or len(set(panel)) != len(panel):
+                    raise SchemaError("evaluation panels require distinct integer seeds")
+            if set(selection_seeds) & set(final_seeds):
+                raise SchemaError("selection and final panels must be disjoint")
+        if not isinstance(config.get("evaluation_renderer_profile"), Mapping):
+            raise SchemaError("container evaluation requires a pinned renderer profile")
+    elif evaluators:
+        raise SchemaError("configured container evaluators conflict with evaluation mode")
+    selection = evaluation.get("selection", {"evaluator_id": "builtin" if mode in {"builtin", "both"} else (evaluators[0]["id"] if evaluators else "latest"),
+                                              "direction": "maximize", "tie_break": "earliest_step"})
+    allowed = {e["id"] for e in evaluators} | ({"builtin"} if mode in {"builtin", "both"} else {"latest"} if mode == "none" else set())
+    if selection.get("evaluator_id") not in allowed or selection.get("direction", "maximize") not in {"maximize", "minimize"} or selection.get("tie_break", "earliest_step") not in {"earliest_step", "latest_step"}:
+        raise SchemaError("unsupported checkpoint selection rule")
     return {
         "schema_version": "training.checkpoint_plan.v2",
         "steps": steps,
         "save_steps": saved,
         "evaluation_steps": evaluated,
         "mode": mode,
+        "evaluators": evaluators,
+        "selection": selection,
         "baseline": mode != "none" and eval_schedule.get("baseline", True),
         "final": mode != "none" and eval_schedule.get("final", True),
     }

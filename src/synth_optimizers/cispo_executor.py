@@ -136,8 +136,12 @@ class TinkerCispoExecutor:
         self.store.request_cancel(job_id)
         return self.status(job_id)
 
+    def pause(self, job_id: str) -> dict[str, Any]:
+        self.store.request_pause(job_id)
+        return self.status(job_id)
+
     def resume(self, job_id: str) -> dict[str, Any]:
-        job = self.store.require(job_id)
+        job = self.store.resume_prepared(job_id)
         if job.state in TERMINAL_STATES:
             return self.status(job_id)
         if self.sync:
@@ -154,6 +158,8 @@ class TinkerCispoExecutor:
         idempotency_key_override: str | None = None,
     ) -> TrainingJob:
         request = _cispo_request(config)
+        from .runtime.training_budget import resolve_budget
+        budget = resolve_budget(config, self.provider)
         dataset = _dataset(config)
         model_id = self.provider.resolve_model(request.model_id)
         generated_key = idempotency_key(
@@ -178,6 +184,7 @@ class TinkerCispoExecutor:
             "implementation_version": IMPLEMENTATION_VERSION,
             "model_id": model_id,
             "dataset_manifest": dataset.manifest,
+            "budget": budget,
         }
         return self.store.persist_prepared(
             algorithm_id=ALGORITHM_ID,
@@ -329,6 +336,9 @@ class TinkerCispoExecutor:
                         )
                     )
                     self.store.set_resume_token(job_id, json.dumps({"step": update, "training_provider_reference": checkpoints[-1]["training_provider_reference"]}))
+                    if self.store.require(job_id).state == "pause_requested":
+                        self.store.transition(job_id, "paused")
+                        return self.status(job_id)
             promoted = max(checkpoints, key=lambda item: item["calibration_accuracy"]) if checkpoints else None
             if promoted is None:
                 return self._fail(job_id, "CISPO produced no checkpoint")
@@ -389,6 +399,12 @@ class TinkerCispoExecutor:
             from .runtime.operations import UncertainOperation
             if isinstance(exc, UncertainOperation):
                 raise
+            if getattr(exc, "code", "") in {"experiment_budget_exhausted", "reservation_exceeded", "pricing_reconciliation_required"}:
+                self.store.transition(job_id, "blocked_budget", error=str(exc))
+                return self.status(job_id)
+            if getattr(exc, "code", "") == "evaluation_blocked":
+                self.store.transition(job_id, "blocked_evaluation", error=str(exc))
+                return self.status(job_id)
             return self._fail(job_id, str(exc))
         return self.status(job_id)
 

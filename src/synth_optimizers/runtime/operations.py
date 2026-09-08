@@ -65,14 +65,18 @@ class DurableProvider:
                 input_digest TEXT NOT NULL, result_json TEXT,
                 PRIMARY KEY(job_id, request_id))""")
             store._db.commit()
+        from .training_budget import TrainingBudget
+        config = json.loads(store.require(job_id).config_json)
+        self.budget = TrainingBudget(store, job_id, config["budget"]) if "budget" in config else None
         self.restored_step = 0
         self._recovery_checked = False
 
     def __getattr__(self, name):
         return getattr(self.provider, name)
 
-    def _call(self, kind, request_id, identity, call):
+    def _call(self, kind, request_id, identity, call, *, priced_request=None):
         digest = digest_payload(encode(identity))
+        cached = None
         with self.store.owned(self.owner), self.store._write(self.job_id):
             row = self.store._db.execute(
                 "SELECT * FROM training_operations WHERE job_id=? AND request_id=?",
@@ -83,11 +87,26 @@ class DurableProvider:
                     raise UncertainOperation("provider operation identity changed")
                 if row["result_json"] is None:
                     raise UncertainOperation(f"reconciliation required for {kind} {request_id}")
-                return decode(json.loads(row["result_json"]))
-            self.store._db.execute(
-                "INSERT INTO training_operations VALUES (?, ?, ?, ?, NULL)",
-                (self.job_id, request_id, kind, digest),
-            )
+                cached = decode(json.loads(row["result_json"]))
+            else:
+                self.store._db.execute(
+                    "INSERT INTO training_operations VALUES (?, ?, ?, ?, NULL)",
+                    (self.job_id, request_id, kind, digest),
+                )
+        if cached is not None:
+            if self.budget is not None:
+                self.budget.settle(request_id, cached)
+            return cached
+        if self.budget is not None:
+            try:
+                self.budget.reserve(request_id, kind, priced_request)
+            except Exception:
+                # No provider dispatch occurred. A prior reservation is retained for reconciliation.
+                if self.budget.ledger.operation(request_id) is None:
+                    with self.store.owned(self.owner), self.store._write(self.job_id):
+                        self.store._db.execute("DELETE FROM training_operations WHERE job_id=? AND request_id=?",
+                                               (self.job_id, request_id))
+                raise
         # Intent commits before dispatch. A crash/exception leaves the outcome unresolved.
         try:
             result = call()
@@ -122,6 +141,9 @@ class DurableProvider:
                 {"request_id": request_id, "operation": kind},
                 "running",
             )
+        if self.budget is not None:
+            self.budget.settle(request_id, result)
+            self.store.append_event_once(self.job_id, "training.budget", self.budget.ledger.snapshot(), phase="running")
         return result
 
     def recovery_checkpoint(self):
@@ -149,6 +171,8 @@ class DurableProvider:
             result for kind, result in results if kind == "save" and result.kind == "training"
         ]
         checkpoint = max(checkpoints, key=lambda item: item.step, default=None)
+        if checkpoint is None and any(kind == "session" for kind, _ in results):
+            raise UncertainOperation("created session has no durable optimizer state; reconciliation required")
         saved_step = checkpoint.step if checkpoint else 0
         if any(kind == "train" and result.step > saved_step for kind, result in results):
             raise UncertainOperation(
@@ -161,21 +185,28 @@ class DurableProvider:
         checkpoint = self.recovery_checkpoint()
         if checkpoint:
             return self._restore(checkpoint, request_id)
-        return self.provider.create_session(model_id, rank=rank, seed=seed, request_id=request_id)
+        session = self._call("session", request_id, {"model_id": model_id, "rank": rank, "seed": seed},
+                             lambda: self.provider.create_session(model_id, rank=rank, seed=seed,
+                                                                  request_id=request_id))
+        self.save_checkpoint(session, step=0, kind="training", request_id=f"{request_id}-initial-state")
+        return session
 
     def _restore(self, checkpoint, request_id):
         checkpoint = replace(
             checkpoint, model_id=checkpoint.model_id or self.store.require(self.job_id).model_id
         )
         self.restored_step = checkpoint.step
-        return self.provider.restore_session(checkpoint, request_id=f"{request_id}-{self.owner}")
+        restore_id = f"{request_id}-{self.owner}"
+        return self._call("restore", restore_id, checkpoint,
+                          lambda: self.provider.restore_session(checkpoint, request_id=restore_id))
 
     def restore_session(self, checkpoint, *, request_id):
         return self._restore(self.recovery_checkpoint() or checkpoint, request_id)
 
     def train_step(self, session, request):
         return self._call(
-            "train", request.request_id, request, lambda: self.provider.train_step(session, request)
+            "train", request.request_id, request, lambda: self.provider.train_step(session, request),
+            priced_request=request
         )
 
     def save_checkpoint(self, session, *, step, kind, request_id):
@@ -193,15 +224,15 @@ class DurableProvider:
             "sample_checkpoint",
             request.request_id,
             {"checkpoint": checkpoint, "request": request},
-            lambda: self.provider.sample_checkpoint(checkpoint, request),
+            lambda: self.provider.sample_checkpoint(checkpoint, request), priced_request=request,
         )
 
     def sample(self, session, request):
         return self._call(
-            "sample", request.request_id, request, lambda: self.provider.sample(session, request)
+            "sample", request.request_id, request, lambda: self.provider.sample(session, request), priced_request=request
         )
 
     def forward(self, session, request):
         return self._call(
-            "forward", request.request_id, request, lambda: self.provider.forward(session, request)
+            "forward", request.request_id, request, lambda: self.provider.forward(session, request), priced_request=request
         )

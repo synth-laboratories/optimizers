@@ -75,6 +75,12 @@ class CispoPublicServiceClient:
     def get(self, run_id: str) -> dict[str, Any]:
         return self._request("GET", f"/v1/runs/{urllib.parse.quote(run_id, safe='')}")
 
+    def pause(self, run_id: str) -> dict[str, Any]:
+        return self._request("POST", f"/v1/runs/{urllib.parse.quote(run_id, safe='')}/pause", {})
+
+    def resume(self, run_id: str) -> dict[str, Any]:
+        return self._request("POST", f"/v1/runs/{urllib.parse.quote(run_id, safe='')}/resume", {})
+
     def cancel(self, run_id: str) -> dict[str, Any]:
         return self._request("POST", f"/v1/runs/{urllib.parse.quote(run_id, safe='')}/cancel", {})
 
@@ -241,6 +247,8 @@ class CispoService:
 
     def experiment_control(self, run_id, action):
         if not self.is_experiment(run_id):
+            if action in {'pause', 'resume'}:
+                return self._public_run(getattr(self.executor, action)(run_id))
             raise CispoServiceError('run does not support experiment controls')
         return self.experiments.control(run_id, action)
 

@@ -139,6 +139,9 @@ class SftPublicServiceClient:
     def cancel(self, run_id: str) -> dict[str, Any]:
         return self._request("POST", f"/v1/runs/{run_id}/cancel", {})
 
+    def pause(self, run_id: str) -> dict[str, Any]:
+        return self._request("POST", f"/v1/runs/{run_id}/pause", {})
+
     def resume(self, run_id: str) -> dict[str, Any]:
         return self._request("POST", f"/v1/runs/{run_id}/resume", {})
 
@@ -310,6 +313,9 @@ class SftService:
     def cancel(self, run_id: str) -> dict[str, Any]:
         return self._public_run(self.executor.cancel(run_id))
 
+    def pause(self, run_id: str) -> dict[str, Any]:
+        return self._public_run(self.executor.pause(run_id))
+
     def resume(self, run_id: str) -> dict[str, Any]:
         return self._public_run(self.executor.resume(run_id))
 
@@ -416,6 +422,8 @@ def create_sft_http_server(
                         self._write(HTTPStatus.OK, service.get(run_id))
                     elif self.command == "POST" and parts[3:] == ["cancel"]:
                         self._write(HTTPStatus.OK, service.cancel(run_id))
+                    elif self.command == "POST" and parts[3:] == ["pause"]:
+                        self._write(HTTPStatus.OK, service.pause(run_id))
                     elif self.command == "POST" and parts[3:] == ["resume"]:
                         self._write(HTTPStatus.OK, service.resume(run_id))
                     elif self.command == "GET" and parts[3:] in (

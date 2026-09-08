@@ -2397,8 +2397,8 @@ wheels = [
 
 [[package]]
 name = "synth-containers"
-version = "0.4.2.dev20260905"
-source = { path = "vendor/synth-containers/synth_containers-0.4.2.dev20260905-py3-none-any.whl" }
+version = "0.4.2.dev20260903"
+source = { path = "vendor/synth-containers/synth_containers-0.4.2.dev20260903-py3-none-any.whl" }
 dependencies = [
     { name = "certifi" },
     { name = "fastapi" },
@@ -2409,7 +2409,7 @@ dependencies = [
     { name = "zstandard" },
 ]
 wheels = [
-    { filename = "synth_containers-0.4.2.dev20260905-py3-none-any.whl", hash = "sha256:f7757bfc84bd435be47ecd404c461e697deb4b7ef2aa94aa7a82f8bdbc319ec5" },
+    { filename = "synth_containers-0.4.2.dev20260903-py3-none-any.whl", hash = "sha256:84ae7ce35474fef1a423c1479f851093ba557169547b4c392e31c5dbf6466a93" },
 ]
 
 [package.metadata]
@@ -2488,7 +2488,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "renderers", marker = "extra == 'tinker'", specifier = ">=0.1.9" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6.0" },
-    { name = "synth-containers", path = "vendor/synth-containers/synth_containers-0.4.2.dev20260905-py3-none-any.whl" },
+    { name = "synth-containers", path = "vendor/synth-containers/synth_containers-0.4.2.dev20260903-py3-none-any.whl" },
     { name = "tinker", marker = "extra == 'tinker'" },
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.32" },
     { name = "uvicorn", marker = "extra == 'benchmark-server'", specifier = ">=0.30" },

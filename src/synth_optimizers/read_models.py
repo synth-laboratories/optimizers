@@ -165,6 +165,27 @@ def sft_collections(
         "per_intent": ("sft.heldout_eval.completed", "event_id", SFT_READ_SCHEMA),
         "dataset_errors": ("sft.dataset.validated", "event_id", SFT_READ_SCHEMA),
     }
+    if collection in {"evaluations", "checkpoint_evaluations"}:
+        items = []
+        for event in events:
+            if event["kind"] == "sft.child_eval.completed":
+                result = event["payload"]
+                item = {key: value for key, value in result.items() if key not in {"rollouts", "evidence_refs"}}
+                item.update(item_id=result["eval_job_id"], evaluation_id=result["eval_job_id"],
+                            checkpointId=result["checkpoint_id"], phase=result["role"],
+                            score=result.get("value"), evaluator=result["evaluator_id"],
+                            metric=result.get("metric_ref"))
+            elif event["kind"] == "sft.checkpoint_eval.completed":
+                item = _collection_item(event, "checkpoint_id")
+                item["item_id"] = event["event_id"]
+            else:
+                continue
+            if transform is not None:
+                item = {**transform(item), "item_id": item["item_id"]}
+            items.append(item)
+        return _page(items, schema_version=SFT_READ_SCHEMA, projected_at_sequence=sequence,
+                     after_key=after_key, key_field="item_id", byte_limit=byte_limit,
+                     cursor_context=(job_id, collection))
     if collection in {"child_evaluations", "rollouts", "evidence_refs"}:
         items = []
         for event in events:

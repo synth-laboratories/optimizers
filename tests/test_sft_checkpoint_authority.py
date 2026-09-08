@@ -80,3 +80,27 @@ def test_container_checkpoints_have_real_child_jobs_live_results_and_heldout(tmp
     assert len(sft_collections(store, "container", collection="rollouts").items) == 8
     assert sft_collections(store, "container", collection="evidence_refs").items
     store.close()
+
+
+def test_missing_pinned_image_rejected_before_any_provider_session(tmp_path):
+    class MissingImage(HttpTarget):
+        def resolve_reference(self, image, digest):
+            raise RuntimeError("pinned image is missing")
+    home = tmp_path / "eval"
+    authority = CheckpointEvaluationAuthority(home, executor=MissingImage())
+    digest = "sha256:" + "c" * 64
+    (home / "pins.toml").write_text('[pins."eval.tinker.checkpoint.gsm8k.v1"]\nimage_digest = "'+digest+'"\n')
+    evaluator = {"id": "environment", "recipe_id": "eval.tinker.checkpoint.gsm8k.v1",
+        "image_digest": digest, "selection_seeds": [101], "final_seeds": [201],
+        "metric_ref": "accuracy", "reward_version": "gsm8k.exact.v1", "units": "fraction"}
+    transport = CheckpointProvider()
+    provider = TinkerAdapter(TinkerCredentials(api_key="fixture"), transport=transport)
+    store = JobStore(tmp_path / "jobs.sqlite")
+    executor = TinkerSftExecutor(store, provider, eval_authority=authority)
+    with pytest.raises(RuntimeError, match="pinned image is missing"):
+        executor.submit({"training": {"steps": 2}, "checkpoint_steps": [1,2],
+            "checkpoint_evaluation": {"mode": "container", "evaluators": [evaluator],
+                "selection": {"evaluator_id": "environment", "direction": "maximize"}},
+            "evaluation_renderer_profile": PROFILE, "examples": [{"text": "hello", "category": "world"}]}, job_id="missing")
+    assert not transport.calls
+    store.close()

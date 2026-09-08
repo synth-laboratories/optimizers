@@ -115,6 +115,13 @@ class CheckpointEvaluationAuthority:
             raise EvalContractError("checkpoint panel is outside the registered recipe")
         if evaluator["metric_ref"] not in {metric.id for metric in recipe.target.metrics}:
             raise EvalContractError("unknown checkpoint reward metric")
+        # Admission must fail before creating a paid training session if the
+        # registered image has disappeared or its mutable tag changed.
+        from .executor import OciTrialExecutor
+        executor = self.executor if self.executor is not None else OciTrialExecutor(self.home.config.container_runtime)
+        resolve = getattr(executor, "resolve_reference", None)
+        if resolve is not None:
+            resolve(recipe.image, recipe.image_digest)
         return recipe
 
     def lookup(self, request_id):

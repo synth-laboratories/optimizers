@@ -408,6 +408,10 @@ def create_sft_http_server(
                         "aggregate_budget_required": True,
                         "release_stage": "preview",
                     })
+                elif self.command == "POST" and parts == ["v1", "renderer-profile"]:
+                    payload = self._body()
+                    model = _non_empty_text(payload.get("model_id"), field="model_id")
+                    self._write(HTTPStatus.OK, service.executor.provider.renderer_profile(model))
                 elif self.command == "POST" and parts == ["v1", "runs", "estimate"]:
                     payload = self._body()
                     self._write(HTTPStatus.OK, service.estimate(_mapping(payload.get("config_json"), context="config_json")))

@@ -506,7 +506,7 @@ class TinkerSftExecutor:
                 if not result["valid"]:
                     raise EvalContractError("checkpoint evaluator returned incomplete or invalid evidence")
                 results[evaluator["id"]] = result
-                self.store.append_event_once(job_id, "sft.child_eval.completed", {**result, "evaluator_id": evaluator["id"], "role": role}, phase="evaluating")
+                self.store.append_event_once(job_id, "sft.child_eval.completed", {**result, "evaluator_id": evaluator["id"], "role": role, "step": checkpoint["step"]}, phase="evaluating")
             except EvalContractError as exc:
                 self.store.append_event_once(job_id, "sft.child_eval.failed", {"request_id": request_id,
                     "evaluator_id": evaluator["id"], "checkpoint_id": checkpoint["checkpoint_id"], "reason": str(exc)}, phase="evaluating")

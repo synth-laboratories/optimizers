@@ -88,6 +88,9 @@ class TinkerAdapter:
         if callable(prepare):
             prepare(self.resolve_model(model_id))
 
+    def renderer_profile(self, model_id: str) -> dict[str, Any]:
+        return self._client().renderer_profile(self.resolve_model(model_id))
+
     def require_cispo(self, model_id: str) -> ProviderCapabilities:
         capabilities = self.discover_capabilities(model_id)
         try:

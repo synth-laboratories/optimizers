@@ -490,3 +490,25 @@ def test_forward_never_fabricates_or_truncates_logprobs(values):
     from synth_optimizers.providers.tinker.sdk import _logprob_row
     with pytest.raises(ProviderError, match='finite next-token'):
         _logprob_row({'logprobs': values}, (11,21,22))
+
+
+def test_renderer_profile_freezes_actual_config_and_tokens_without_training(monkeypatch):
+    import hashlib
+    import json
+    from dataclasses import dataclass
+    @dataclass
+    class Config:
+        name: str = 'test-renderer'
+    transport = TinkerSdkTransport(SimpleNamespace(), tinker_module=None)
+    prepared = []
+    monkeypatch.setattr(transport, 'prepare_renderer', prepared.append)
+    transport._renderer = SimpleNamespace(config=Config())
+    transport._tokenizer = SimpleNamespace(backend_tokenizer=SimpleNamespace(to_str=lambda: 'exact-tokenizer'))
+    monkeypatch.setattr(transport, 'tokenize_chat', lambda *a, **k: {'prompt_token_ids': [12, 34], 'stop_token_ids': [5]})
+    profile = transport.renderer_profile('openai/gpt-oss-20b')
+    assert prepared == ['openai/gpt-oss-20b']
+    assert profile['profile_id'] == 'renderers.test-renderer.v1'
+    assert profile['tokenizer_digest'] == hashlib.sha256(b'exact-tokenizer').hexdigest()
+    assert profile['config_digest'] == hashlib.sha256(json.dumps({'name':'test-renderer'},sort_keys=True,separators=(',',':')).encode()).hexdigest()
+    assert profile['stop_token_ids'] == [5]
+    assert not transport.sessions

@@ -495,7 +495,7 @@ class JobStore:
 
     def request_pause(self, job_id):
         job = self.require(job_id)
-        if job.state in TERMINAL_STATES or job.state in {"stop_requested", "paused"}:
+        if job.state in TERMINAL_STATES or job.state in {"stop_requested", "paused", "blocked_budget", "blocked_evaluation", "blocked_uncertain"}:
             return job
         return self.transition(job_id, "pause_requested")
 
@@ -519,7 +519,9 @@ class JobStore:
             if job.state in TERMINAL_STATES:
                 return job
             # An unowned prepared job has no admitted provider work to drain.
-            state = "cancelled" if job.state == "prepared" and job.owner is None else "stop_requested"
+            if job.state in {"blocked_budget", "blocked_evaluation", "blocked_uncertain"}:
+                raise JobStoreError("blocked work requires reconciliation before cancellation can be acknowledged")
+            state = "cancelled" if job.state in {"prepared", "paused"} and job.owner is None else "stop_requested"
             self._db.execute(
                 "UPDATE training_jobs SET state = ?, updated_at = ? WHERE job_id = ?",
                 (state, utcnow(), job_id),

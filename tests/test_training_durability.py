@@ -450,3 +450,20 @@ def test_resumed_claim_state_is_in_the_historical_journal(tmp_path):
     sequence = store.events('run')[-1]['sequence']
     assert reduce_summary(store, 'run', at_sequence=sequence)['state'] == 'running'
     store.close()
+
+
+def test_cancel_drained_pause_and_preserve_blocked_recovery(tmp_path):
+    store = JobStore(tmp_path / "jobs.sqlite")
+    prepare(store)
+    store.transition("run", "paused")
+    assert store.request_cancel("run").state == "cancelled"
+    store.close()
+    for state in ("blocked_budget", "blocked_evaluation", "blocked_uncertain"):
+        store = JobStore(tmp_path / (state + ".sqlite"))
+        prepare(store)
+        store.transition("run", state, error="retained recovery reason")
+        assert store.request_pause("run").state == state
+        with pytest.raises(JobStoreError, match="reconciliation"):
+            store.request_cancel("run")
+        assert store.require("run").error == "retained recovery reason"
+        store.close()

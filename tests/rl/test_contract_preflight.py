@@ -291,6 +291,33 @@ def test_client_refuses_a_non_http_base_url() -> None:
         UrllibContainerClient("file:///tmp", ContainerContract.from_metadata(metadata()))
 
 
+def test_response_limit_is_explicit_and_enforced():
+    contract=ContainerContract.from_metadata(metadata())
+    for limit in (0, True, 67_108_865):
+        with pytest.raises(ContractError):
+            UrllibContainerClient('http://localhost',contract,max_response_bytes=limit)
+    sender=RecordingSender([HttpReply(200,b'{"ok":1}')])
+    small=UrllibContainerClient('http://localhost',contract,sender=sender,max_response_bytes=7)
+    with pytest.raises(TransportError,match='exceeded 7'):
+        small.taskset()
+    exact=UrllibContainerClient('http://localhost',contract,
+        sender=RecordingSender([HttpReply(200,b'{"ok":1}')]),max_response_bytes=8)
+    assert exact.taskset()=={'ok':1}
+
+
+def test_urllib_sender_reads_one_extra_byte_for_overflow_detection(monkeypatch):
+    from synth_optimizers.rl.contract import _urllib_send
+    sizes=[]
+    class Response:
+        status=200
+        def __enter__(self): return self
+        def __exit__(self,*args): pass
+        def read(self,n): sizes.append(n); return b'{}'
+    monkeypatch.setattr(urllib.request,'urlopen',lambda *a,**k:Response())
+    assert _urllib_send(urllib.request.Request('http://localhost'),1,max_response_bytes=12).body==b'{}'
+    assert sizes==[13]
+
+
 def test_the_contract_is_found_by_version_not_by_key_name() -> None:
     """A container may already publish something under ``cispo``.
 

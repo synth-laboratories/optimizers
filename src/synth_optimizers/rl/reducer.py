@@ -221,10 +221,16 @@ def branch_aware_root_coefficients(
     agentic batch runs a box out of memory. These coefficients let each item go
     backward on its own and still land on the loss ``branch_aware_root_mean``
     would have produced.
+
+    ``root_weights`` is retained as aligned provenance for existing callers;
+    inverse branch counts must not be applied on top of root normalization.
     """
 
     if not (len(per_item_tokens) == len(root_ids) == len(root_weights)):
         raise ReducerError("coefficient inputs must align")
+    # Roots already receive one vote through the outer denominator. Branch
+    # counts describe evidence layout, not an additional loss denominator.
+    # Applying root_weights here makes context segmentation change the loss.
     grouped = _roots(root_ids)
     live = {
         root: sum(per_item_tokens[index] for index in indices)
@@ -238,7 +244,7 @@ def branch_aware_root_coefficients(
         if root not in live:
             continue
         for index in indices:
-            coefficients[index] = float(root_weights[index]) / (live[root] * len(live))
+            coefficients[index] = 1.0 / (live[root] * len(live))
     return tuple(coefficients)
 
 
@@ -254,9 +260,18 @@ def sequence_mean_coefficients(
     )
 
 
+def token_mean_coefficients(
+    *, per_item_tokens: Sequence[int], **_: Any
+) -> tuple[float, ...]:
+    """One token denominator, independent of sequence/context segmentation."""
+    total = sum(per_item_tokens)
+    return tuple(1.0 / total if total > 0 and tokens > 0 else 0.0 for tokens in per_item_tokens)
+
+
 COEFFICIENT_KERNELS: Mapping[str, Callable[..., tuple[float, ...]]] = {
     "branch_aware_root_mean": branch_aware_root_coefficients,
     "sequence_mean": sequence_mean_coefficients,
+    "token_mean": token_mean_coefficients,
 }
 
 

@@ -41,7 +41,8 @@ groups_per_step = 1
 target_train_updates = 1
 maximum_sampled_groups = 5
 credit = "length_weighted_leave_one_out_standardized"
-correction = "staleness_drop"
+correction = {kind = "staleness_drop", max_weight_staleness = 1}
+schedule = {weight_mode = "async_lag"}
 reducer = "branch_aware_root_mean"
 
 [plan.objective]
@@ -131,6 +132,16 @@ def minimal(preset: str = "cispo", **extra: str) -> str:
         else:
             text += f"\n{header}\n{body}\n"
     return text
+
+
+def test_pipeline_lag_must_fit_algorithm_assembly_bound():
+    with pytest.raises(ConfigError, match='max_weight_staleness'):
+        config_module.loads(minimal(pipeline='maximum_policy_lag = 1'))
+    configured = config_module.loads(minimal(
+        pipeline='maximum_policy_lag = 1',
+        plan='correction = {kind="staleness_drop", enabled=true, max_weight_staleness=1}\nschedule = {weight_mode="async_lag"}',
+    ))
+    assert configured.expanded_plan().correction.max_weight_staleness == 1
 
 
 # --------------------------------------------------------------------------- #

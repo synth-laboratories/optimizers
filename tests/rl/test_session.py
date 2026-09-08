@@ -61,6 +61,21 @@ def test_probe_accepts_unchanged_event_snapshots(tmp_path, monkeypatch):
         assert polls >= 3
 
 
+def test_probe_waits_for_deferred_verifier_receipt(tmp_path, monkeypatch):
+    original = session_module.ContractContainerSession.reward_payload
+    calls = 0
+    def deferred(self, rollout_id):
+        nonlocal calls
+        calls += 1
+        if calls <= 3:
+            return {'scoring_state':'awaiting_score', 'reward':None, 'deferred_scoring':True}
+        return original(self, rollout_id)
+    monkeypatch.setattr(session_module.ContractContainerSession, 'reward_payload', deferred)
+    with build_plane(scenarios.multi_turn_environment_reward(), tmp_path) as plane:
+        assert open_session(plane).startup.probe is not None
+    assert calls >= 4
+
+
 def open_session(plane, *, run_config=None, renderer_profile=None, **config_kwargs):
     """Run the ordered startup against a wired plane."""
 

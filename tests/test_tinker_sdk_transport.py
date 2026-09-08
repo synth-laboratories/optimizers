@@ -30,6 +30,22 @@ class _Future:
         return self._value
 
 
+def test_checkpoint_metadata_reports_expiry_without_downloading():
+    from datetime import datetime, timezone
+    reference = 'tinker://run/weights/state'
+    checkpoint = SimpleNamespace(tinker_path=reference,
+        expires_at=datetime(2020, 1, 1, tzinfo=timezone.utc), size_bytes=100)
+    rest = SimpleNamespace(list_checkpoints=lambda run: _Future(SimpleNamespace(checkpoints=[checkpoint])))
+    transport = TinkerSdkTransport(SimpleNamespace(create_rest_client=lambda: rest), tinker_module=None)
+    result = transport.describe_artifact(reference)
+    assert result['available'] is False
+    assert result['verification'] == 'provider_listing_reference_fingerprint'
+    assert result['digest'].startswith('sha256:')
+    assert transport.describe_artifact('tinker://run/sampler_weights/missing')['available'] is False
+    with pytest.raises(ValueError):
+        transport.describe_artifact('https://example.com/weights')
+
+
 class _Sequence:
     tokens = [7, 8]
     logprobs = [-0.1, -0.2]
@@ -61,7 +77,7 @@ class _Trainer:
 
     def optim_step(self, params):
         self.last_lr = params.learning_rate
-        return _Future(None)
+        return _Future(SimpleNamespace(metrics={'grad_norm': 1.25}))
 
     def save_state(self, name, ttl_seconds=None):
         self.last_state_name = name
@@ -80,6 +96,9 @@ class _Service:
         return _Sampler()
 
     def create_training_client_from_state(self, path):
+        raise AssertionError("resume must not reset Adam state")
+
+    def create_training_client_from_state_with_optimizer(self, path):
         return _Trainer()
 
 
@@ -171,6 +190,8 @@ def test_sdk_maps_slime_to_tinker_cispo_and_refuses_generic_is(monkeypatch) -> N
     assert trainer.last_config == {"clip_low_threshold": 0.0, "clip_high_threshold": 5.0}
     assert trainer.last_lr == 5e-6
     assert result["step"] == 1
+    assert result['metrics']['optimizer.grad_norm'] == 1.25
+    assert result['metrics']['learning_rate'] == 5e-6
 
 
 def test_sdk_consumes_the_executor_cispo_payload_and_applies_reduction_weights() -> None:
@@ -246,6 +267,64 @@ def test_sdk_restore_preserves_base_model_for_renderer(monkeypatch) -> None:
     assert transport.sessions[restored["session_id"]]["model_id"] == "openai/gpt-oss-20b"
 
 
+def test_resume_refuses_weights_only_sdk(monkeypatch):
+    transport = _transport(monkeypatch)
+    transport._service = SimpleNamespace(create_training_client_from_state=lambda path: pytest.fail("weights-only called"))
+    checkpoint = ProviderCheckpoint("state", "tinker://state", 3, "sha256:state", "training_state",
+                                    resume_token="tinker://state", model_id="openai/gpt-oss-20b")
+    with pytest.raises(ProviderError, match="optimizer-state restore"):
+        transport.load_checkpoint(checkpoint, request_id="restore")
+
+
+def test_resume_matches_uninterrupted_adam_updates(monkeypatch):
+    """Stateful transport double: a weights-only reload produces another result."""
+    import copy
+    import math
+
+    class AdamTrainer(_Trainer):
+        def __init__(self):
+            self.weight, self.m, self.v, self.t = 1.0, 0.0, 0.0, 0
+
+        def forward_backward(self, data, loss_fn, loss_fn_config=None):
+            self.gradient = sum(sum(d.loss_fn_inputs["advantages"].data) for d in data)
+            return super().forward_backward(data, loss_fn, loss_fn_config)
+
+        def optim_step(self, params):
+            self.t += 1
+            self.m = 0.9*self.m + 0.1*self.gradient
+            self.v = 0.99*self.v + 0.01*self.gradient**2
+            self.weight -= params.learning_rate*(self.m/(1-0.9**self.t))/(math.sqrt(self.v/(1-0.99**self.t))+1e-8)
+            return super().optim_step(params)
+
+    transport = _transport(monkeypatch)
+    trainer = AdamTrainer()
+    transport.sessions[trainer.model_id] = {"training": trainer, "model_id": "openai/gpt-oss-20b", "step": 0}
+    session = ProviderSession(provider="tinker", session_id=trainer.model_id, model_id="openai/gpt-oss-20b", request_id="s")
+    def update(request_id, advantage):
+        return transport.train_step(session, TrainingStepRequest(request_id=request_id,
+            loss_name="cispo.slime.v1", data=({"token_ids": (1,2,3), "loss_mask": (0,1,1),
+                "behavior_logprobs": (0,-0.1,-0.2), "advantage": advantage, "loss_weight": 0.5},),
+            metadata={"learning_rate": 0.01}))
+    update("first", 1.0)
+    saved = copy.deepcopy(trainer)
+    update("uninterrupted", -0.3)
+    expected = (trainer.weight, trainer.m, trainer.v, trainer.t)
+    calls = []
+    def restore(path):
+        calls.append(path)
+        return copy.deepcopy(saved)
+    transport._service = SimpleNamespace(create_training_client_from_state_with_optimizer=restore)
+    checkpoint = ProviderCheckpoint("state", "tinker://state", 1, "sha256:state", "training_state",
+                                    resume_token="tinker://state", model_id="openai/gpt-oss-20b")
+    restored = transport.load_checkpoint(checkpoint, request_id="resume")
+    result = update("resumed", -0.3)
+    state = transport.sessions[restored["session_id"]]
+    assert calls == ["tinker://state"]
+    actual = state["training"]
+    assert (actual.weight, actual.m, actual.v, actual.t) == pytest.approx(expected)
+    assert result["step"] == state["step"] == 2
+
+
 def test_sdk_samples_and_parses_the_final_channel(monkeypatch) -> None:
     transport = _transport(monkeypatch)
     handle = transport.create_lora_training_client("openai/gpt-oss-20b", rank=4, seed=1)
@@ -256,6 +335,31 @@ def test_sdk_samples_and_parses_the_final_channel(monkeypatch) -> None:
     )
     assert sampled["text"] == "order_physical_card"
     assert sampled["token_ids"] == [7, 8]
+
+
+@pytest.mark.parametrize('logprobs', [None, [], [-0.1], [float('nan'), -0.2]])
+def test_sampling_refuses_missing_or_invalid_behavior_logprobs(monkeypatch, logprobs):
+    transport = _transport(monkeypatch)
+    handle = transport.create_lora_training_client('openai/gpt-oss-20b', rank=4, seed=1)
+    monkeypatch.setattr(_Sequence, 'logprobs', logprobs)
+    with pytest.raises(ProviderError, match='log-probabilit'):
+        transport.sample(handle, SampleRequest(request_id='strict', prompt_token_ids=(1,), max_tokens=8))
+
+
+def test_sampling_does_not_substitute_raw_text_for_empty_content(monkeypatch):
+    transport = _transport(monkeypatch)
+    handle = transport.create_lora_training_client('openai/gpt-oss-20b', rank=4, seed=1)
+    transport._renderer.parse_response = lambda tokens: SimpleNamespace(content='')
+    result = transport.sample(handle, SampleRequest(request_id='empty', prompt_token_ids=(1,), max_tokens=8))
+    assert result['text'] == ''
+
+
+def test_sampling_requires_renderer_before_provider_call(monkeypatch):
+    transport = _transport(monkeypatch)
+    with pytest.raises(ProviderError, match='renderer'):
+        transport.sample(None, SampleRequest(request_id='missing', prompt_token_ids=(1,), max_tokens=8))
+    with pytest.raises(ProviderError, match='tokenizer'):
+        transport.decode([1])
 
 
 def test_sdk_live_sampler_name_advances_after_training(monkeypatch) -> None:

@@ -203,7 +203,7 @@ def fetch_metadata(
 
 
 def build_container_client(
-    config: RunConfig, *, environ: Mapping[str, str] | None = None
+    config: RunConfig, *, environ: Mapping[str, str] | None = None, max_response_bytes: int | None = None
 ) -> UrllibContainerClient:
     """The declared-route client, from ``[container]`` and the environment."""
 
@@ -227,6 +227,7 @@ def build_container_client(
             auth_bearer_env=connection.auth_bearer_env,
             timeout_seconds=connection.timeout_seconds,
             environ=source,
+            **({'max_response_bytes': max_response_bytes} if max_response_bytes is not None else {}),
         )
     except ContractError as error:
         raise ContainerUnreachableError(
@@ -296,12 +297,21 @@ class ProviderArtifactProbe:
         return artifacts if isinstance(artifacts, Mapping) else {}
 
     def exists(self, ref: str) -> bool:
+        inspector = getattr(self.provider, 'describe_artifact', None)
+        if callable(inspector):
+            return bool(inspector(ref).get('available'))
         observed = self._observed()
         if not observed:
             raise ArtifactMissingError(self._refusal(ref))
         return ref in observed
 
     def digest_of(self, ref: str) -> str:
+        inspector = getattr(self.provider, 'describe_artifact', None)
+        if callable(inspector):
+            metadata = inspector(ref)
+            if not metadata.get('available') or not metadata.get('digest'):
+                raise ArtifactMissingError(f'provider did not verify artifact {ref}')
+            return str(metadata['digest'])
         observed = self._observed()
         if not observed:
             raise ArtifactMissingError(self._refusal(ref))
@@ -354,6 +364,7 @@ def build_provider(config: RunConfig, *, environ: Mapping[str, str] | None = Non
 
     return TinkerAdapter(
         TinkerCredentials(api_key=credential, base_url=base_url),
+        max_attempts=1 if config.budget is not None else 3,
         user_metadata={
             "project": "synth-optimizers",
             "task": "rl",
@@ -672,6 +683,8 @@ def build_plane(
     sampling: SamplingProfile | None = None,
     artifact_probe: Any | None = None,
     prompt_budget: Any | None = None,
+    evidence_sink: Any | None = None,
+    admission_check: Any | None = None,
 ) -> Plane:
     """Assemble the live plane this configuration describes.
 
@@ -701,6 +714,19 @@ def build_plane(
         training_provider = (
             provider if provider is not None else build_provider(config, environ=environ)
         )
+        if admission_check is not None:
+            from .runtime_adapters import FencedProvider
+            training_provider = FencedProvider(training_provider, admission_check)
+        if config.budget is not None:
+            from .budget import BudgetedProvider, ExperimentBudget
+
+            policy = config.budget
+            training_provider = BudgetedProvider(
+                training_provider, ExperimentBudget(policy.ledger, policy.experiment_id, policy.cap_usd),
+                input_rate=policy.input_usd_per_million,
+                output_rate=policy.output_usd_per_million,
+                training_rate=policy.training_usd_per_million,
+            )
         resolver = EvaluationResolver(
             catalog,
             probe=artifact_probe or ProviderArtifactProbe(training_provider),
@@ -709,6 +735,9 @@ def build_plane(
         # 4. The renderer the container declared, the gateway, its listener,
         #    and the origin root the container will be handed.
         document = _capability_document(container)
+        prepare_renderer = getattr(training_provider, 'prepare_renderer', None)
+        if callable(prepare_renderer):
+            prepare_renderer(config.model.id)
         renderer = build_renderer(
             training_provider, document.renderer_profile, wire_api=config.model.wire_api
         )
@@ -742,12 +771,16 @@ def build_plane(
         )
 
         # 6. The session: health, capabilities, tasks, handshake, probe.
+        if evidence_sink is None:
+            from .evidence import EvidenceStore
+            evidence_sink = EvidenceStore(artifact_directory / 'evidence.sqlite3')
         session = start_session(
             container,
             config,
             renderer_profile=gateway.renderer_profile,
             clock=run_clock,
             sampling=sampling_profile,
+            evidence_sink=evidence_sink,
         )
         stack.pop_all()
     return Plane(

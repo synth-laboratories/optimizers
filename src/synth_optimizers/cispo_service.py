@@ -29,6 +29,7 @@ from .contracts.training_schemas import (
 )
 from .recipes.banking77 import fixture_examples
 from .runtime import JobStore, JobStoreError, after_sequence_from, wants_live_stream, write_sse
+from .rl.experiment import CoordinationError
 
 
 class CispoServiceError(ValueError):
@@ -159,7 +160,13 @@ class CispoService:
         *,
         fixture: bool = False,
         background: bool = False,
+        experiments: Any | None = None,
     ) -> None:
+        self.experiments = experiments
+        if self.experiments is None and os.environ.get('SYNTH_OPTIMIZERS_RL_EXPERIMENT_PREVIEW') == '1':
+            from .rl.experiment_service import ExperimentService
+            self.experiments = ExperimentService(str(database_path) + '.experiments')
+        self.background = background
         if executor is not None:
             self.store = executor.store
             self.executor = executor
@@ -187,6 +194,19 @@ class CispoService:
         run_id: str | None = None,
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
+        if config_json.get('schema_version') == 'rl.experiment.v1':
+            if self.experiments is None:
+                raise CispoServiceError('container experiment preview is not enabled')
+            identity = config_json.get('experiment_id')
+            if any(value is not None and value != identity for value in (run_id, idempotency_key)):
+                raise CispoServiceError('experiment, run and idempotency identities must agree')
+            try:
+                self.store.require(str(identity))
+            except JobStoreError:
+                pass
+            else:
+                raise CispoServiceError('run identity already belongs to the legacy CISPO runtime')
+            return self.experiments.submit(config_json, start=self.background)
         payload = _executor_config(config_json)
         algorithm = str(payload.get("algorithm_id") or payload.get("algorithm") or "").strip()
         if algorithm != CISPO_ALGORITHM_ID:
@@ -197,6 +217,8 @@ class CispoService:
             raise CispoServiceError(str(exc)) from exc
         requested_run_id = run_id or idempotency_key or _optional_text(payload.get("run_id"))
         canonical_run_id = requested_run_id or _fresh_run_id()
+        if self.is_experiment(canonical_run_id):
+            raise CispoServiceError('run identity already belongs to a container experiment')
         result = self.executor.submit(
             payload,
             job_id=canonical_run_id,
@@ -205,15 +227,30 @@ class CispoService:
         return self._submit_response(canonical_run_id, str(result.get("status") or "queued"))
 
     def get(self, run_id: str) -> dict[str, Any]:
+        if self.is_experiment(run_id):
+            return self.experiments.get(run_id)
         return self._public_run(self.executor.status(run_id))
 
     def cancel(self, run_id: str) -> dict[str, Any]:
+        if self.is_experiment(run_id):
+            return self.experiments.control(run_id, 'stop')
         return self._public_run(self.executor.cancel(run_id))
+
+    def is_experiment(self, run_id: str) -> bool:
+        return self.experiments is not None and self.experiments.contains(run_id)
+
+    def experiment_control(self, run_id, action):
+        if not self.is_experiment(run_id):
+            raise CispoServiceError('run does not support experiment controls')
+        return self.experiments.control(run_id, action)
 
     def optimizer_events(
         self, run_id: str, *, after_sequence: int = 0, limit: int = 500
     ) -> dict[str, Any]:
         from .runtime.workshop import optimizer_event_page
+
+        if self.is_experiment(run_id):
+            return self.experiments.events(run_id, after_sequence, limit)
 
         return optimizer_event_page(
             self.store, run_id, after_sequence=after_sequence, limit=limit
@@ -221,7 +258,21 @@ class CispoService:
 
     def state_batch(self, run_id: str, slices: str) -> dict[str, Any]:
         from .runtime.workshop import state_batch
-
+        if self.is_experiment(run_id):
+            summary = self.experiments.get(run_id)
+            payload = {'run_id': run_id, 'summary': summary}
+            for name in filter(None, (s.strip() for s in slices.split(','))):
+                if name == 'summary':
+                    continue
+                if name in {'candidates', 'checkpoints'}:
+                    items = self.experiments.checkpoints(run_id)['checkpoints']
+                elif name == 'evaluations':
+                    items = [p['result'] for p in summary['phases'] if p['state'] == 'completed'
+                             and p['phase']['kind'] in {'validation', 'final'}]
+                else:
+                    raise CispoServiceError('unsupported experiment state slice')
+                payload[name] = {'items': items}
+            return payload
         return state_batch(self.store, run_id, slices, algorithm_id=CISPO_ALGORITHM_ID)
 
     def artifact(self, run_id: str, name: str) -> CispoArtifact:
@@ -265,6 +316,8 @@ def create_cispo_http_server(
     service_token: str | None = None,
 ) -> ThreadingHTTPServer:
     token = _optional_text(service_token)
+    if service.experiments is not None and token is None:
+        raise CispoServiceError('container experiment HTTP service requires a bearer token')
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
@@ -282,10 +335,15 @@ def create_cispo_http_server(
                     self._write(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
                     return
                 parsed = urllib.parse.urlsplit(self.path)
-                parts = [part for part in parsed.path.split("/") if part]
+                parts = [urllib.parse.unquote(part) for part in parsed.path.split("/") if part]
                 query = urllib.parse.parse_qs(parsed.query)
                 if self.command == "GET" and parsed.path == "/health":
                     self._write(HTTPStatus.OK, {"status": "ok", "algorithm": CISPO_ALGORITHM_ID})
+                elif self.command == 'GET' and parts == ['v1', 'capabilities']:
+                    self._write(HTTPStatus.OK, {'schema_version': 'cispo_service_capabilities.v1',
+                        'container_experiments': service.experiments is not None,
+                        'experiment_schema': 'rl.experiment.v1', 'experiment_events': 'cursor_polling',
+                        'experiment_control_boundary': 'phase_drain', 'release_stage': 'preview'})
                 elif self.command == "POST" and parts == ["v1", "runs"]:
                     payload = self._body()
                     if payload.get("algorithm", CISPO_ALGORITHM_ID) != CISPO_ALGORITHM_ID:
@@ -302,11 +360,21 @@ def create_cispo_http_server(
                         self._write(HTTPStatus.OK, service.get(run_id))
                     elif self.command == "POST" and parts[3:] == ["cancel"]:
                         self._write(HTTPStatus.OK, service.cancel(run_id))
+                    elif self.command == 'POST' and len(parts) == 4 and parts[3] in {'start', 'pause', 'resume', 'stop', 'recover'}:
+                        self._write(HTTPStatus.OK, service.experiment_control(run_id, parts[3]))
+                    elif self.command == 'GET' and parts[3:] == ['checkpoints'] and service.is_experiment(run_id):
+                        self._write(HTTPStatus.OK, service.experiments.checkpoints(run_id))
+                    elif self.command == 'GET' and parts[3:] == ['evaluations'] and service.is_experiment(run_id):
+                        self._write(HTTPStatus.OK, service.experiments.evaluations(run_id))
+                    elif self.command == 'POST' and len(parts) == 6 and parts[3] == 'checkpoints' and parts[5] == 'verify' and service.is_experiment(run_id):
+                        self._write(HTTPStatus.OK, service.experiments.verify_checkpoint(run_id, parts[4]))
                     elif self.command == "GET" and (
                         parts[3:] == ["optimizer-events"]
                         or parts[3:] == ["optimizer-events", "stream"]
                     ):
                         if wants_live_stream(parsed.path, query):
+                            if service.is_experiment(run_id):
+                                raise CispoServiceError('experiment events use cursor polling; SSE is not advertised')
                             service.store.require(run_id)
                             write_sse(
                                 self,
@@ -338,8 +406,12 @@ def create_cispo_http_server(
                 self._write(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
             except JobStoreError as exc:
                 self._write(HTTPStatus.NOT_FOUND, {"error": str(exc)})
+            except CoordinationError:
+                self._write(HTTPStatus.CONFLICT, {'error': 'experiment_state_conflict', 'reconciliation_required': True})
+            except ValueError:
+                self._write(HTTPStatus.BAD_REQUEST, {'error': 'invalid_experiment_request'})
             except Exception as exc:  # pragma: no cover - final HTTP boundary
-                self._write(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+                self._write(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal_service_error"})
 
         def _body(self) -> dict[str, Any]:
             length = int(self.headers.get("Content-Length", "0"))

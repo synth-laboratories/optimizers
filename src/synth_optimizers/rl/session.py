@@ -426,8 +426,10 @@ class ContractContainerSession:
         ledger: HandshakeLedger,
         clock: RunClock,
         request_builder: HandshakeRequest,
+        evidence_sink: Any | None = None,
     ) -> None:
         self._client = client
+        self._evidence_sink = evidence_sink
         self._config = config
         self._startup = startup
         self._ledger = ledger
@@ -756,7 +758,10 @@ class ContractContainerSession:
         if not trace_digest:
             raise SessionError(f"rollout {rollout_id} sealed a trace with no digest")
         episode = self._episode(rollout_id, trace)
-        reward = self._reward(rollout_id, trace_digest)
+        reward_payload = self._client.reward(rollout_id)
+        reward = self._reward(rollout_id, trace_digest, payload=reward_payload)
+        if self._evidence_sink is not None:
+            self._evidence_sink.record(rollout_id, dict(trace), dict(reward_payload))
         return self._align_team(episode, reward), reward
 
     def _align_team(
@@ -891,8 +896,10 @@ class ContractContainerSession:
             probe=any(episode.probe for episode in episodes),
         )
 
-    def _reward(self, rollout_id: str, trace_digest: str) -> RewardRecord:
-        payload = self._client.reward(rollout_id)
+    def _reward(self, rollout_id: str, trace_digest: str,
+                *, payload: Mapping[str, Any] | None = None) -> RewardRecord:
+        if payload is None:
+            payload = self._client.reward(rollout_id)
         state = str(payload.get("state") or "")
         if state == "pending" or "reward_id" not in payload:
             raise EvidenceNotReady(
@@ -1022,6 +1029,7 @@ def start_session(
     optimizer_version: str = "0.2.20",
     sampling: SamplingProfile | None = None,
     probe_runner: "Callable[..., ProbeReport] | None" = None,
+    evidence_sink: Any | None = None,
 ) -> ContractContainerSession:
     """Health, metadata, capabilities, tasks, handshake, renderer, probe -- in order.
 
@@ -1139,6 +1147,7 @@ def start_session(
         ledger=ledger,
         clock=clock,
         request_builder=request,
+        evidence_sink=evidence_sink,
     )
 
     runner = probe_runner or run_probe
@@ -1257,7 +1266,8 @@ def run_probe(
 
     cursors: list[int] = []
     state: Mapping[str, Any] = {}
-    for _poll in range(8):
+    probe_deadline = time.monotonic() + 600
+    while True:
         state = session.poll(rollout_id)
         operations.add("state")
         events = session.events(rollout_id)
@@ -1271,12 +1281,26 @@ def run_probe(
                 cursors.append(cursor)
         if str(state.get("state")) in {"scored", "awaiting_score"} or state.get("terminal"):
             break
+        if time.monotonic() >= probe_deadline:
+            session.terminate(rollout_id, reason="probe_timeout")
+            raise ProbeRefused("probe episode did not finish before its deadline")
+        time.sleep(0.1)
     session.renew(rollout_id)
     operations.add("renew")
     finalized = session.finalize(rollout_id)
     trace = session.trace(rollout_id)
     operations.add("trace")
     reward_payload = session.reward_payload(rollout_id)
+    while "reward_id" not in reward_payload:
+        if str(reward_payload.get("state") or reward_payload.get("scoring_state")) not in {
+            "awaiting_score", "pending", "deferred"
+        }:
+            raise ProbeRefused("probe returned no reward receipt and no deferred scoring state")
+        if time.monotonic() >= probe_deadline:
+            session.terminate(rollout_id, reason="probe_reward_timeout")
+            raise ProbeRefused("probe deferred reward did not settle before its deadline")
+        time.sleep(0.1)
+        reward_payload = session.reward_payload(rollout_id)
     operations.add("reward")
     operations.add("finalize")
 

@@ -83,6 +83,11 @@ class TinkerAdapter:
     def resolve_model(self, model_id: str) -> str:
         return resolve_tinker_model(model_id)
 
+    def prepare_renderer(self, model_id: str) -> None:
+        prepare = getattr(self._client(), 'prepare_renderer', None)
+        if callable(prepare):
+            prepare(self.resolve_model(model_id))
+
     def require_cispo(self, model_id: str) -> ProviderCapabilities:
         capabilities = self.discover_capabilities(model_id)
         try:
@@ -254,6 +259,12 @@ class TinkerAdapter:
         if callable(decoder):
             return str(decoder(token_ids))
         return "".join(chr(32 + (int(token) % 95)) for token in token_ids)
+
+    def describe_artifact(self, reference: str) -> Mapping[str, Any]:
+        inspector = getattr(self._client(), 'describe_artifact', None)
+        if not callable(inspector):
+            raise ProviderError('artifact_inspection_unsupported', 'provider transport has no artifact inspection')
+        return inspector(reference)
 
     def classify_error(self, error: BaseException) -> ProviderError:
         return classify_tinker_error(error)

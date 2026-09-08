@@ -137,7 +137,9 @@ def _config():
 
 
 @pytest.mark.parametrize("concurrency", [3, 12])
-def test_screen_runs_single_arm_with_bound_and_writes_durable_receipts(tmp_path: Path, concurrency: int) -> None:
+@pytest.mark.parametrize("bounds", [{}, {'minimum_successes':2,'maximum_successes':6}, {'minimum_successes':5,'maximum_successes':6}])
+@pytest.mark.parametrize('successes',[1,2,4,6,7])
+def test_screen_runs_single_arm_with_bound_and_writes_durable_receipts(tmp_path: Path, concurrency: int, bounds, successes) -> None:
     config = _config()
     tasks = tuple(
         TaskSpec(
@@ -159,6 +161,13 @@ def test_screen_runs_single_arm_with_bound_and_writes_durable_receipts(tmp_path:
         behavior_fingerprint="fingerprint-1",
     )
     session = FakeSession(tasks)
+    original_evidence = session.evidence
+    def evidence(rollout_id):
+        episode,reward=original_evidence(rollout_id)
+        if rollout_id.split('-')[-2]=='10':
+            reward=FakeReward(float(int(rollout_id.rsplit('-',1)[-1])<successes))
+        return episode,reward
+    session.evidence=evidence
     class CompletedOnlyGateway(FakeGateway):
         def declare_attempt(self, proxy_request_id, **kwargs):
             assert kwargs['rollout_id'] not in session.active
@@ -167,7 +176,8 @@ def test_screen_runs_single_arm_with_bound_and_writes_durable_receipts(tmp_path:
     gateway = CompletedOnlyGateway()
     plane = SimpleNamespace(session=session, gateway=gateway, binder=FakeBinder(revision))
 
-    manifest = screen.run_screen(
+    from synth_optimizers.rl.screening import run_screen
+    manifest = run_screen(
         config,
         plane,
         selector="checkpoint-1",
@@ -177,6 +187,7 @@ def test_screen_runs_single_arm_with_bound_and_writes_durable_receipts(tmp_path:
         poll_interval=0,
         wall_clock=iter((100.0, 104.0)).__next__,
         monotonic_clock=iter((20.0, 24.0)).__next__,
+        **bounds,
     )
 
     assert manifest["attempt_count"] == 16
@@ -190,7 +201,8 @@ def test_screen_runs_single_arm_with_bound_and_writes_durable_receipts(tmp_path:
         "completion_tokens": 72,
         "total_tokens": 232,
     }
-    assert manifest["selected_train_ids"] == ["banking77/train/10"]
+    selected = bounds.get('minimum_successes',1)<=successes<=bounds.get('maximum_successes',7)
+    assert manifest["selected_train_ids"] == (["banking77/train/10"] if selected else [])
     assert session.max_active == concurrency
     assert len(gateway.declared) == len(gateway.closed) == 16
     # Samples repeat the exact task instance. The sample index/idempotency key,
@@ -206,7 +218,7 @@ def test_screen_runs_single_arm_with_bound_and_writes_durable_receipts(tmp_path:
         "completion_tokens": 1,
         "provider_request_ids": ["request-rollout-10-0"],
     }
-    assert summary["tasks"][0]["successes"] == 4
+    assert summary["tasks"][0]["successes"] == successes
     assert summary["tasks"][1]["successes"] == 8
     assert persisted == manifest
 
@@ -301,6 +313,63 @@ def test_selected_task_ids_excludes_zero_and_all_correct() -> None:
         {"task_id": "all", "successes": 8, "samples": 8},
     ]
     assert screen.selected_task_ids(rows) == ["mixed"]
+
+
+def test_screen_recovery_preserves_completed_outcomes_and_only_samples_missing(tmp_path):
+    from synth_optimizers.rl.screening import run_screen
+    config = replace(_config(), taskset=replace(_config().taskset, train_ids=('banking77/train/10',)))
+    task = TaskSpec(task_id=config.taskset.train_ids[0], split='train', seed=100,
+        group_id='source', task_family='banking77', content_digest='digest-task')
+    revision = PolicyRevision(revision=0, revision_id='pg-0@0', checkpoint_id='checkpoint-1',
+        parameter_group_id='pg-0', sampler_reference='tinker://sampler', behavior_fingerprint='fingerprint-1')
+    def plane(session):
+        return SimpleNamespace(session=session, gateway=FakeGateway(), binder=FakeBinder(revision))
+    run_screen(config, plane(FakeSession((task,))), selector='checkpoint-1', output=tmp_path/'original', samples=8)
+    original = json.loads((tmp_path/'original/attempts.json').read_text())
+    recovered = tuple(original[:3])
+    session = FakeSession((task,))
+    result = run_screen(config, plane(session), selector='checkpoint-1', output=tmp_path/'retry',
+        samples=8, completed_attempts=recovered)
+    assert len(session.seeds) == 5
+    assert not {r['rollout_id'] for r in recovered} & session.seeds.keys()
+    assert json.loads((tmp_path/'retry/attempts.json').read_text()) == original
+    assert result['recovered_attempt_count'] == 3
+    for rows in ((recovered[0], recovered[0]), ({**recovered[0], 'checkpoint_id':'wrong'},)):
+        with pytest.raises(ValueError, match='invalid completed'):
+            run_screen(config, plane(FakeSession((task,))), selector='checkpoint-1',
+                output=tmp_path/'invalid', samples=8, completed_attempts=rows)
+
+
+@pytest.mark.parametrize('server_failure', [False, True])
+def test_supported_screen_waits_for_deferred_rewards(tmp_path, monkeypatch, server_failure):
+    from synth_optimizers.rl.screening import run_screen
+    from synth_optimizers.rl.session import EvidenceNotReady
+    config = replace(_config(), taskset=replace(_config().taskset, train_ids=('banking77/train/10',)))
+    task = TaskSpec(task_id=config.taskset.train_ids[0], split='train', seed=100,
+                    group_id='source', task_family='banking77', content_digest='digest-task')
+    revision = PolicyRevision(revision=0, revision_id='pg-0@0', checkpoint_id='checkpoint-1',
+        parameter_group_id='pg-0', sampler_reference='tinker://sampler', behavior_fingerprint='fingerprint-1')
+    session = FakeSession((task,))
+    original = session.evidence
+    seen = set()
+    def deferred(rollout_id):
+        if rollout_id not in seen:
+            seen.add(rollout_id)
+            if server_failure:
+                from synth_optimizers.rl.contract import ContainerStatusError
+                raise ContainerStatusError('/cispo/reward',500,'verifier provisioning failed')
+            raise EvidenceNotReady('verifier pending')
+        return original(rollout_id)
+    monkeypatch.setattr(session, 'evidence', deferred)
+    gateway = FakeGateway()
+    result = run_screen(config, SimpleNamespace(session=session, gateway=gateway, binder=FakeBinder(revision)),
+        selector='checkpoint-1', output=tmp_path, samples=8, concurrency=8, poll_interval=0,
+        max_infrastructure_retries=1)
+    assert len(seen) == 8
+    assert len(gateway.closed) == (16 if server_failure else 8)
+    if server_failure:
+        assert len(json.loads((tmp_path/'infrastructure-failures.json').read_text())) == 8
+    assert len(result['selected_train_ids']) == 1
 
 
 def test_failed_attempt_aborts_and_cleans_up_all_other_active_rollouts(tmp_path: Path) -> None:

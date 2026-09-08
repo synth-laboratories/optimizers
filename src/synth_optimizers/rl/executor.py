@@ -42,6 +42,7 @@ from ..contracts.rl_records import RewardRecord, TrainableEpisode
 from . import assembly, credit
 from .assembly import AssemblyError, EvidenceBundle, TrainingBatch
 from .config import RunConfig
+from .contract import ContainerStatusError
 from .leases import LeaseBook, LeaseSizing, StragglerPolicy
 from .lifecycle import RunLifecycle
 from .plan import AlgorithmPlan
@@ -416,6 +417,9 @@ class ContainerRunExecutor:
     def stop(self, *, reason: str = "operator") -> str:
         report = self.lifecycle.stop(reason=reason)
         self._stop_reason = self._stop_reason or "stopped"
+        if report.terminate_failures:
+            directory = self.write_receipts('shutdown_failed')
+            raise ExecutorError(f'run shutdown failed; see lifecycle receipts in {directory}')
         return report.to_state
 
     def _terminate_attempt(self, attempt_id: str) -> None:
@@ -590,6 +594,9 @@ class ContainerRunExecutor:
         for route_key, parameter_group in route_keys:
             revision = self._group_revisions.get(pin.group_id, self.revisions)[parameter_group]
             proxy_request_id = f"{pin.group_id}::s{sample_index}::{route_key}"
+            attempt_row = self.store.attempt(attempt_id)
+            if attempt_row is not None and attempt_row.replacement_index:
+                proxy_request_id += f"::r{attempt_row.replacement_index}"
             origins[route_key] = self.gateway.bind(
                 revision,
                 pin=pin,
@@ -680,21 +687,38 @@ class ContainerRunExecutor:
             rollout_id = self._rollouts.get(attempt.attempt_id)
             if rollout_id is None:
                 continue
-            state = self.session.poll(rollout_id)
-            name = str(state.get("state") or "")
-            if not state.get("terminal") and name not in {"scored", "awaiting_score"}:
-                self._heartbeat(attempt.attempt_id, rollout_id)
-                continue
-            if name == "awaiting_score" and attempt.state == "running":
-                self.queues.report_awaiting_score(attempt.attempt_id)
-                self.session.finalize(rollout_id)
-                moved += 1
-                continue
-            if attempt.state == "running":
-                self.session.finalize(rollout_id)
-            if self._accept(attempt.attempt_id, rollout_id, state):
+            try:
+                state = self.session.poll(rollout_id)
+                name = str(state.get("state") or "")
+                if name in {'failed', 'cancelled'}:
+                    self._retry_infrastructure(attempt.attempt_id,rollout_id,reason='container_'+name)
+                    moved += 1
+                    continue
+                if not state.get("terminal") and name not in {"scored", "awaiting_score"}:
+                    self._heartbeat(attempt.attempt_id, rollout_id)
+                    continue
+                if attempt.state == "running":
+                    self.queues.report_awaiting_score(attempt.attempt_id)
+                    self.session.finalize(rollout_id)
+                    moved += 1
+                if self._accept(attempt.attempt_id, rollout_id, state):
+                    moved += 1
+            except ContainerStatusError as error:
+                if error.status < 500:
+                    raise
+                self._retry_infrastructure(attempt.attempt_id,rollout_id,reason=str(error))
                 moved += 1
         return moved
+
+    def _retry_infrastructure(self, attempt_id: str, rollout_id: str, *, reason: str) -> None:
+        try:
+            self.session.terminate(rollout_id,reason='infrastructure_failure')
+        except Exception:
+            pass
+        self._close_origin(attempt_id)
+        replacement = self.queues.retry_infrastructure(attempt_id,reason=reason)
+        if replacement is None:
+            raise ExecutorError(f'infrastructure replacements exhausted for {attempt_id}: {reason}')
 
     def _heartbeat(self, attempt_id: str, rollout_id: str) -> None:
         lease = self.leases.lease_for(attempt_id)
@@ -861,10 +885,12 @@ class ContainerRunExecutor:
     def _train(self, group_ids: Sequence[str]) -> UpdateRecord:
         bundles: list[EvidenceBundle] = []
         staleness = 0
+        group_staleness: dict[str, int] = {}
         for group_id in group_ids:
             group = self.store.group(group_id)
             assert group is not None
             gap = self.current_revision - group.policy_revision
+            group_staleness[group_id] = gap
             staleness = max(staleness, gap)
             bundles.extend(self._bundles(group_id, gap))
         try:
@@ -922,7 +948,7 @@ class ContainerRunExecutor:
                     group_id=provenance.group_id,
                     pin=self._pins[provenance.group_id],
                     disposition="skipped" if provenance.skipped else "trained",
-                    staleness=staleness,
+                    staleness=group_staleness[provenance.group_id],
                     rewards=provenance.rewards,
                     advantages=provenance.advantages,
                     zero_variance=provenance.zero_variance,
@@ -1029,14 +1055,20 @@ class ContainerRunExecutor:
         """Close the run, leave the receipts complete, and report."""
 
         state = self.lifecycle.state
+        terminate_failures = {}
         if state == "draining" and not any(self.lifecycle.outstanding_drain_work().values()):
             self.lifecycle.finish_drain()
         elif state not in {"stopped", "drained"}:
-            self.lifecycle.stop(reason=reason)
+            stopped = self.lifecycle.stop(reason=reason)
+            terminate_failures = stopped.terminate_failures
         for attempt_id in list(self._origins):
             self._close_origin(attempt_id)
         self._stop_reason = reason
         directory = self.write_receipts(reason)
+        if terminate_failures:
+            raise ExecutorError(
+                f'run shutdown failed for {len(terminate_failures)} attempts; '
+                f'see lifecycle receipts in {directory}')
         return RunReport(
             run_id=self.run_id,
             plan_hash=self.plan.plan_hash,

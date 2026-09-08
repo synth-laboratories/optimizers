@@ -453,6 +453,72 @@ def test_branches_of_one_attempt_do_not_multiply_its_weight() -> None:
     assert weights[("g1-r1", "root")] == pytest.approx(1.0)
 
 
+@pytest.mark.parametrize("same_policy", ["none", "token_weighted_mean", "episode_uniform"])
+@pytest.mark.parametrize("branches", [("root", "root"), ("root", "context-2")])
+def test_unequal_turns_preserve_root_token_mean_through_provider(same_policy, branches):
+    """A 10-token turn must not get the same total weight as a 90-token turn."""
+    from types import SimpleNamespace
+    from synth_optimizers.providers.tinker.sdk import _train_datum
+
+    plan = expand({"preset": "cispo", "credit": {"same_policy_reduction": same_policy}})
+    pin = _pin("g", plan_hash=plan.plan_hash)
+    episodes = [
+        _episode("a", (
+            _segment(tokens=11, trainable=10, branch_id=branches[0], agent_instance_id="solo"),
+            _segment(base=200, tokens=91, trainable=90, branch_id=branches[1], agent_instance_id="solo"),
+        )),
+        _episode("b", (_segment(base=400, tokens=101, trainable=100, agent_instance_id="solo"),)),
+    ]
+    bundles = [EvidenceBundle(group_id="g", sample_index=i, pin=pin, episode=ep,
+                              reward=_reward(ep.rollout_id, 1.0-i))
+               for i, ep in enumerate(episodes)]
+    items = assemble(plan, bundles).items
+    assert [item.loss_weight for item in items] == pytest.approx([0.005]*3)
+    assert [item.loss_weight*item.trainable_tokens for item in items] == pytest.approx([0.05, 0.45, 0.5])
+
+    tinker = SimpleNamespace(ModelInput=SimpleNamespace(from_ints=lambda ids: ids),
+                             TensorData=lambda **kw: SimpleNamespace(**kw),
+                             Datum=lambda **kw: SimpleNamespace(**kw))
+    # Exercise the final next-token shift and Tinker advantage/mask adapter,
+    # not just a receipt containing the intended weight.
+    data = [_train_datum(tinker, {
+        "token_ids": item.token_ids, "loss_mask": item.loss_mask,
+        "behavior_logprobs": item.behavior_logprobs,
+        "advantage": item.advantage, "loss_weight": item.loss_weight,
+    }, "cispo") for item in items]
+    assert [sum(d.loss_fn_inputs["advantages"].data) for d in data] == pytest.approx([0.05, 0.45, -0.5])
+
+
+@pytest.mark.parametrize("lengths", [(10, 90), (50, 50), (1, 99), (20, 30, 50)])
+def test_representational_splits_do_not_change_root_loss(lengths):
+    plan = expand({"preset": "cispo", "credit": {"same_policy_reduction": "none"}})
+    pin = _pin("g", plan_hash=plan.plan_hash)
+    bundles = []
+    for i, turn_lengths in enumerate((lengths, (100,))):
+        rid = f"r{i}"
+        segments = tuple(_segment(base=1000+i*1000+j*100, tokens=n+1, trainable=n,
+                                  branch_id=f"context-{j}") for j, n in enumerate(turn_lengths))
+        bundles.append(EvidenceBundle(group_id="g", sample_index=i, pin=pin,
+                                      episode=_episode(rid, segments), reward=_reward(rid, 1-i)))
+    items = assemble(plan, bundles).items
+    for rid in ("r0", "r1"):
+        assert sum(x.loss_weight*x.trainable_tokens for x in items if x.rollout_id==rid) == pytest.approx(0.5)
+    # A fixed per-token surrogate is unchanged by splitting or context IDs.
+    assert sum(x.loss_weight*x.trainable_tokens*2.0 for x in items) == pytest.approx(2.0)
+
+
+def test_explicit_token_mean_is_supported_end_to_end():
+    plan = expand({"preset": "cispo", "credit": {"same_policy_reduction": "none"},
+                   "reducer": {"kind": "token_mean"}})
+    pin = _pin("g", plan_hash=plan.plan_hash)
+    bundles = [EvidenceBundle(group_id="g", sample_index=i, pin=pin,
+        episode=_episode(f"r{i}", (_segment(base=1000*i, tokens=length+1, trainable=length),)),
+        reward=_reward(f"r{i}", 1-i)) for i,length in enumerate((10,90))]
+    batch = assemble(plan,bundles)
+    assert [item.loss_weight for item in batch.items] == pytest.approx([0.01,0.01])
+    assert [item.loss_weight*item.trainable_tokens for item in batch.items] == pytest.approx([0.1,0.9])
+
+
 def test_spans_with_no_trainable_token_are_dropped_with_a_reason() -> None:
     pin = _pin("g1", cardinality=2)
     episode = _episode(
@@ -549,7 +615,8 @@ def test_a_span_contradicting_the_declared_parameter_group_fails_the_batch() -> 
         assemble(CISPO, [_replace_episode(bundles[0], lying), bundles[1]])
 
 
-def test_the_same_policy_reduction_is_applied_and_receipted_in_the_batch() -> None:
+@pytest.mark.parametrize("split_streams", [False, True])
+def test_the_same_policy_reduction_is_applied_and_receipted_in_the_batch(split_streams) -> None:
     """Two instances share one parameter group; one emits 25x the tokens."""
 
     def group(plan: Any) -> list[EvidenceBundle]:
@@ -576,6 +643,14 @@ def test_the_same_policy_reduction_is_applied_and_receipted_in_the_batch() -> No
                     agent_instance_id="instance_chatty",
                 ),
             )
+            if split_streams:
+                segments = tuple(
+                    _segment(base=2000+index*1000+j*200+k*100, tokens=n+1, trainable=n,
+                             agent_instance_id=segment.agent_instance_id,
+                             branch_id=f"context-{k}")
+                    for j, segment in enumerate(segments)
+                    for k, n in enumerate((1, segment.trainable_tokens-1))
+                )
             bundles.append(
                 EvidenceBundle(
                     group_id="gs",
@@ -598,6 +673,10 @@ def test_the_same_policy_reduction_is_applied_and_receipted_in_the_batch() -> No
     reduced = assemble(CISPO, group(CISPO)).batch_for("pg_alpha")
     shares = reduced.same_policy.applied_shares
     assert shares == pytest.approx({"instance_chatty": 0.5, "instance_quiet": 0.5})
+    actual_mass = {}
+    for item in reduced.items:
+        actual_mass[item.agent_instance_id] = actual_mass.get(item.agent_instance_id, 0.0) + item.loss_weight*item.trainable_tokens
+    assert actual_mass == pytest.approx({"instance_chatty": 0.5, "instance_quiet": 0.5})
     assert reduced.same_policy.naive_shares == pytest.approx(naive_shares)
     per_instance = {
         item.agent_instance_id: item.same_policy_weight for item in reduced.items

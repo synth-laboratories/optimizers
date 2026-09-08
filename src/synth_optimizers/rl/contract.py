@@ -396,12 +396,12 @@ class HttpReply:
 Sender = Callable[[urllib.request.Request, float], HttpReply]
 
 
-def _urllib_send(request: urllib.request.Request, timeout: float) -> HttpReply:
+def _urllib_send(request: urllib.request.Request, timeout: float, *, max_response_bytes: int = MAX_RESPONSE_BYTES) -> HttpReply:
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
-            return HttpReply(status=int(response.status), body=response.read(MAX_RESPONSE_BYTES))
+            return HttpReply(status=int(response.status), body=response.read(max_response_bytes + 1))
     except urllib.error.HTTPError as exc:  # a real server reply
-        return HttpReply(status=int(exc.code), body=exc.read(MAX_RESPONSE_BYTES))
+        return HttpReply(status=int(exc.code), body=exc.read(max_response_bytes + 1))
 
 
 @dataclass(frozen=True, slots=True)
@@ -434,6 +434,7 @@ class UrllibContainerClient(ContainerClient):
         sender: Sender | None = None,
         sleep: Callable[[float], None] | None = None,
         environ: Mapping[str, str] | None = None,
+        max_response_bytes: int = MAX_RESPONSE_BYTES,
     ) -> None:
         parsed = urllib.parse.urlparse(base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -444,7 +445,10 @@ class UrllibContainerClient(ContainerClient):
         self._auth_bearer_env = (auth_bearer_env or "").strip() or None
         self._timeout_seconds = float(timeout_seconds)
         self._retry = retry or RetryPolicy()
-        self._sender: Sender = sender or _urllib_send
+        if type(max_response_bytes) is not int or not 1 <= max_response_bytes <= 67_108_864:
+            raise ContractError('response byte limit must be an integer in 1..67108864')
+        self._max_response_bytes = max_response_bytes
+        self._sender: Sender = sender or (lambda request, timeout: _urllib_send(request, timeout, max_response_bytes=max_response_bytes))
         self._sleep = sleep or time.sleep
         self._environ = environ if environ is not None else os.environ
 
@@ -496,15 +500,15 @@ class UrllibContainerClient(ContainerClient):
                 self._sleep(backoff)
                 backoff = min(backoff * 2, self._retry.max_backoff_seconds)
                 continue
-            return self._decode(path, reply)
+            return self._decode(path, reply, max_response_bytes=self._max_response_bytes)
         raise TransportError(f"container {path} unreachable: {last}")
 
     @staticmethod
-    def _decode(path: str, reply: HttpReply) -> Mapping[str, Any]:
+    def _decode(path: str, reply: HttpReply, *, max_response_bytes: int = MAX_RESPONSE_BYTES) -> Mapping[str, Any]:
         if reply.status < 200 or reply.status >= 300:
             raise ContainerStatusError(path, reply.status, reply.body.decode("utf-8", "replace"))
-        if len(reply.body) >= MAX_RESPONSE_BYTES:
-            raise TransportError(f"container {path} response exceeded {MAX_RESPONSE_BYTES} bytes")
+        if len(reply.body) > max_response_bytes:
+            raise TransportError(f"container {path} response exceeded {max_response_bytes} bytes")
         text = reply.body.decode("utf-8", "replace").strip()
         if not text:
             return {}

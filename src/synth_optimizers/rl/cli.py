@@ -116,6 +116,15 @@ def register(subcommands: argparse._SubParsersAction) -> None:
     parser.set_defaults(rl_dispatch=dispatch)
     commands = parser.add_subparsers(dest="rl_command", required=True)
 
+    experiment = commands.add_parser('experiment', help='Frozen, durable experiment coordination.')
+    experiment.add_argument('action', choices=('validate', 'submit', 'run', 'status', 'events', 'pause', 'resume', 'stop', 'recover', 'checkpoints', 'evaluations', 'verify-checkpoint'))
+    experiment.add_argument('--store', required=True)
+    experiment.add_argument('--spec', help='Frozen JSON experiment specification for validate/submit.')
+    experiment.add_argument('--id', help='Existing experiment identity.')
+    experiment.add_argument('--checkpoint', help='Immutable checkpoint identity for verification.')
+    experiment.add_argument('--after-sequence', type=int, default=0)
+    experiment.add_argument('--limit', type=int, default=500)
+
     run = commands.add_parser("run", help="Execute a training run from a config file.")
     run.add_argument("--config", required=True, help="Path to a run config file.")
     run.add_argument("--receipts", help="Directory the run leaves its receipt in.")
@@ -192,6 +201,22 @@ def register(subcommands: argparse._SubParsersAction) -> None:
     catalog = commands.add_parser("catalog", help="Read the append-only checkpoint catalog.")
     catalog_commands = catalog.add_subparsers(dest="catalog_command", required=True)
 
+    events = catalog_commands.add_parser("events", help="Page durable checkpoint events.")
+    events.add_argument("--catalog", required=True)
+    events.add_argument("--run", required=True)
+    events.add_argument("--after-sequence", type=int, default=0)
+    events.add_argument("--limit", type=int, default=500)
+
+    details = catalog_commands.add_parser("details", help="Effective checkpoint state; no provider calls.")
+    details.add_argument("--catalog", required=True)
+    details.add_argument("checkpoint_id")
+
+    catalog_commands.add_parser("capabilities", help="Supported checkpoint read capabilities.")
+
+    snapshot = catalog_commands.add_parser("snapshot", help="Atomic checkpoint snapshot and event cursor.")
+    snapshot.add_argument("--catalog", required=True)
+    snapshot.add_argument("--run", required=True)
+
     listing = catalog_commands.add_parser("list", help="List catalog entries by any index.")
     listing.add_argument("--catalog", required=True)
     listing.add_argument("--run", help="Index: producing run.")
@@ -259,6 +284,7 @@ def dispatch(args: argparse.Namespace) -> int:
 
     command = args.rl_command
     handlers = {
+        "experiment": _experiment,
         "run": _run,
         "evaluate": _evaluate,
         "catalog": _catalog,
@@ -280,6 +306,59 @@ def dispatch(args: argparse.Namespace) -> int:
 
 
 # ------------------------------------------------------------------ commands
+
+
+def _experiment(args):
+    from .experiment import ExperimentSpec, ExperimentStore, CoordinationError
+    from .experiment_driver import ContainerExperimentDriver
+    from .experiment_runner import run_experiment
+    try:
+        if args.action in {'validate', 'submit'}:
+            if not args.spec:
+                raise ValueError('--spec is required')
+            spec = ExperimentSpec.model_validate_json(Path(args.spec).read_text())
+            if args.action == 'validate':
+                print(json.dumps({'valid': True, 'experiment_id': spec.experiment_id, 'phases': spec.phases()}))
+                return 0
+            store = ExperimentStore(args.store)
+            store.submit(spec)
+            result = store.snapshot(spec.experiment_id)
+        else:
+            if not args.id:
+                raise ValueError('--id is required')
+            store = ExperimentStore(args.store)
+            if args.action in {'recover', 'checkpoints', 'evaluations', 'verify-checkpoint', 'events', 'status'}:
+                from .experiment_service import ExperimentService
+                service = ExperimentService(args.store)
+                if args.action == 'verify-checkpoint':
+                    if not args.checkpoint:
+                        raise ValueError('--checkpoint is required')
+                    result = service.verify_checkpoint(args.id, args.checkpoint)
+                elif args.action == 'checkpoints':
+                    result = service.checkpoints(args.id)
+                elif args.action == 'evaluations':
+                    result = service.evaluations(args.id)
+                elif args.action == 'events':
+                    result = service.events(args.id, args.after_sequence, args.limit)
+                elif args.action == 'status':
+                    result = service.get(args.id)
+                else:
+                    result = service.control(args.id, args.action)
+                print(json.dumps(result, sort_keys=True))
+                return 0
+            if args.action == 'run':
+                result = run_experiment(store, args.id, ContainerExperimentDriver(store.specification(args.id)))
+            elif args.action == 'events':
+                result = store.events(args.id, args.after_sequence, args.limit)
+            else:
+                if args.action != 'status':
+                    store.control(args.id, args.action)
+                result = store.snapshot(args.id)
+        print(json.dumps(result, sort_keys=True))
+        return 0
+    except (ValueError, CoordinationError) as error:
+        print(f'error: {error}', file=sys.stderr)
+        return 1
 
 
 def _run(args: argparse.Namespace) -> int:
@@ -420,8 +499,23 @@ def _evaluate(args: argparse.Namespace) -> int:
 
 
 def _catalog(args: argparse.Namespace) -> int:
+    from .read_api import capabilities, checkpoint_details, run_snapshot
+
+    if args.catalog_command == "capabilities":
+        print(json.dumps(capabilities(), indent=2, sort_keys=True))
+        return 0
     catalog = CheckpointCatalog(args.catalog)
     try:
+        if args.catalog_command == "snapshot":
+            print(json.dumps(run_snapshot(catalog, args.run), indent=2, sort_keys=True))
+            return 0
+        if args.catalog_command == "events":
+            print(json.dumps(catalog.event_page(args.run, after_sequence=args.after_sequence,
+                                              limit=args.limit), indent=2, sort_keys=True))
+            return 0
+        if args.catalog_command == "details":
+            print(json.dumps(checkpoint_details(catalog, args.checkpoint_id), indent=2, sort_keys=True))
+            return 0
         if args.catalog_command == "list":
             return _catalog_list(catalog, args)
         if args.catalog_command == "describe":

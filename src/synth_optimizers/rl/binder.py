@@ -171,6 +171,7 @@ class CatalogPolicyBinder:
         self._train_calls: dict[tuple[str, str], tuple[str, ...]] = {}
         self._packed_groups: dict[tuple[str, str], tuple[str, ...]] = {}
         self._receipts: list[Mapping[str, Any]] = []
+        self._resume_identity: dict[str, str] = {}
 
     # ------------------------------------------------------------- identity
 
@@ -198,7 +199,7 @@ class CatalogPolicyBinder:
     def resume_artifact_identity(self) -> Mapping[str, str]:
         """Exact independently verified training-state identity used to resume."""
 
-        payload = getattr(self._provider, "_resume_artifact_identity", {})
+        payload = self._resume_identity or getattr(self._provider, "_resume_artifact_identity", {})
         if not isinstance(payload, Mapping):
             return {}
         reference = payload.get("ref")
@@ -209,7 +210,7 @@ class CatalogPolicyBinder:
 
     # ------------------------------------------------------------- baseline
 
-    def baseline(self, *, run_id: str, parameter_group_id: str) -> PolicyRevision:
+    def baseline(self, *, run_id: str, parameter_group_id: str, save_training_state: bool = False) -> PolicyRevision:
         """Materialize and catalogue the imported baseline before any attempt."""
 
         run = _text(run_id, "run_id")
@@ -259,6 +260,7 @@ class CatalogPolicyBinder:
                 length=32,
             )
             session = self._provider.restore_session(restored, request_id=request_id)
+            self._resume_identity = {'ref': artifact.ref, 'digest': artifact.digest}
             self._sessions[group] = session
             parent_checkpoint_id = policy.checkpoint_id
             baseline_revision = revision_number_of(policy.policy_revision_id)
@@ -273,13 +275,15 @@ class CatalogPolicyBinder:
             update_id=BASELINE_UPDATE_ID,
         )
         policy_revision_id = f"{group}@{baseline_revision}"
+        training_state = self._save(session, group, step=baseline_revision,
+            kind=TRAINING_STATE_KIND, update_id=BASELINE_UPDATE_ID) if save_training_state else None
         record = self._record(
             run_id=run,
             update_id=BASELINE_UPDATE_ID,
             parameter_group_id=group,
             policy_revision_id=policy_revision_id,
             sampler=checkpoint,
-            training_state=None,
+            training_state=training_state,
             parent_checkpoint_id=parent_checkpoint_id,
             train_call_ids=(),
             evidence=TrainingEvidence(),
@@ -295,7 +299,7 @@ class CatalogPolicyBinder:
             record=record,
             revision=baseline_revision,
             sampler=checkpoint,
-            training_state=None,
+            training_state=training_state,
             policy_set_revision_id=None,
         )
         self._revisions[group] = revision
@@ -374,6 +378,10 @@ class CatalogPolicyBinder:
                 "cost_missing": usage.cost_missing,
                 "loss_weight_nonzero": sum(weight != 0.0 for weight in loss_weights),
                 "loss_weight_l1": sum(abs(weight) for weight in loss_weights),
+                "loss_weight_token_mass": sum(
+                    abs(weight) * sum(bool(flag) for flag in row.get("loss_mask", ()))
+                    for weight, row in zip(loss_weights, rows, strict=True)
+                ),
                 "loss_weight_l2_squared": sum(weight * weight for weight in loss_weights),
                 "loss_weight_min": min(loss_weights),
                 "loss_weight_max": max(loss_weights),

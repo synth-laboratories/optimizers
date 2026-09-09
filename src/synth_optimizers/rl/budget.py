@@ -187,6 +187,14 @@ class ExperimentBudget:
                 'counted_usd': row[1] / 1e6, 'evidence': evidence,
             })
 
+    def operation(self, operation: str):
+        """Read a reservation without admitting or settling any work."""
+        with self._db() as db:
+            row = db.execute('SELECT reserved,counted,status,lane FROM charges WHERE experiment=? AND operation=?',
+                             (self.experiment_id, operation)).fetchone()
+        return None if row is None else dict(reserved_microusd=row[0], counted_microusd=row[1],
+                                             status=row[2], lane=row[3])
+
     def snapshot(self) -> dict:
         with self._db() as db:
             db.execute('BEGIN')

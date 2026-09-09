@@ -127,7 +127,7 @@ def test_unvalidated_canary_is_allowed_to_train(tmp_path) -> None:
     request["allow_unvalidated_canary"] = True
     result = executor.submit(request, job_id="cispo_canary")
     assert result["status"] == "completed"
-    kinds = [event["event_type"] for event in result["events"]]
+    kinds = [event["event_type"] for event in store.events("cispo_canary", limit=5000)]
     assert "cispo.canary.started" in kinds
     assert "cispo.importance_ratio.measured" in kinds
     assert any(kind == "train" for kind, _request in transport.calls)

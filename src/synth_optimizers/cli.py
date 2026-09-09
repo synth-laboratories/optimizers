@@ -1593,7 +1593,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional inbound bearer-token environment variable.",
     )
 
-    for command_name in ("submit", "watch", "cancel"):
+    for command_name in ("submit", "watch", "cancel", "pause", "resume"):
         command = sft_subcommands.add_parser(command_name)
         command.add_argument(
             "--service-url",
@@ -1613,8 +1613,8 @@ def build_parser() -> argparse.ArgumentParser:
     sft_watch.add_argument("--events", action="store_true")
     sft_watch.add_argument("--after-seq", type=int, default=0)
     sft_watch.add_argument("--limit", type=int, default=500)
-    sft_cancel = sft_subcommands.choices["cancel"]
-    sft_cancel.add_argument("run_id")
+    for action in ("cancel", "pause", "resume"):
+        sft_subcommands.choices[action].add_argument("run_id")
 
     mapo = subcommands.add_parser("mapo")
     mapo_subcommands = mapo.add_subparsers(dest="mapo_command", required=True)

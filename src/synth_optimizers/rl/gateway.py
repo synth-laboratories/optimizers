@@ -1587,9 +1587,9 @@ def _dispatch(
         credential = str(handler.headers.get("authorization", "") or "")
         if credential.lower().startswith("bearer "):
             credential = credential[7:].strip()
-        body = gateway.handle(
-            attempt, payload, credential=credential or None, wire_api=wire_api
-        )
+        if not credential:
+            raise UnknownOriginError("sampler HTTP requests require the issued bearer credential")
+        body = gateway.handle(attempt, payload, credential=credential, wire_api=wire_api)
         return 200, body
     except Exception as error:  # noqa: BLE001 - every refusal is a typed status
         return _status_for(error), {

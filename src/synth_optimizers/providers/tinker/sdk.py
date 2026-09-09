@@ -117,6 +117,33 @@ class TinkerSdkTransport:
         sampler = self._service.create_sampling_client(base_model=resolve_tinker_model(model_id))
         self._bind_tokenizer(sampler, resolve_tinker_model(model_id))
 
+    def renderer_profile(self, model_id: str) -> dict[str, Any]:
+        """Freeze the actual renderer and tokenizer without creating training state."""
+        import importlib.metadata
+        import json
+        from dataclasses import asdict, is_dataclass
+        from ...contracts.rl_records import CANARY_MESSAGES, canary_digest
+        from .prime import renderer_version
+
+        self.prepare_renderer(model_id)
+        config = self._renderer.config
+        if hasattr(config, "model_dump"):
+            config = config.model_dump(mode="json")
+        elif is_dataclass(config):
+            config = asdict(config)
+        else:
+            raise ProviderError("renderer_profile_unsupported", "renderer configuration is not serializable")
+        encoded = self.tokenize_chat(CANARY_MESSAGES, add_generation_prompt=True)
+        return {
+            "profile_id": renderer_version(self._renderer),
+            "package": "renderers", "package_version": importlib.metadata.version("renderers"),
+            "config_digest": hashlib.sha256(json.dumps(config, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+            "tokenizer_id": resolve_tinker_model(model_id),
+            "tokenizer_digest": hashlib.sha256(self._tokenizer.backend_tokenizer.to_str().encode()).hexdigest(),
+            "stop_token_ids": list(encoded["stop_token_ids"]),
+            "canary_digest": canary_digest(encoded["prompt_token_ids"]),
+        }
+
     def create_lora_training_client(self, base_model: str, rank: int, seed: int) -> Any:
         trainer = self._service.create_lora_training_client(
             base_model=base_model, rank=rank, seed=seed
@@ -211,7 +238,7 @@ class TinkerSdkTransport:
             for tokens, mask in zip(request.token_ids, request.response_masks, strict=True)
         ]
         output = trainer.forward(data, loss_fn="cross_entropy").result()
-        rows = tuple(_logprob_row(item, tokens) for item, tokens in zip(output.loss_fn_outputs, request.token_ids))
+        rows = tuple((0.0, *_logprob_row(item, tokens)) for item, tokens in zip(output.loss_fn_outputs, request.token_ids, strict=True))
         return {
             "logprobs": rows,
             "usage": {"training_tokens": sum(sum(1 for flag in mask if flag) for mask in request.response_masks)},
@@ -343,7 +370,7 @@ class TinkerSdkTransport:
         ids = list(tokens)
         if len(ids) < 2:
             ids = ids + [0]
-        weights = [1.0 if flag else 0.0 for flag in list(mask)[: len(ids) - 1]]
+        weights = [1.0 if flag else 0.0 for flag in list(mask)[1:len(ids)]]
         weights.extend([0.0] * max(0, len(ids) - 1 - len(weights)))
         return self._tinker.Datum(
             model_input=self._tinker.ModelInput.from_ints(ids[:-1]),
@@ -490,6 +517,6 @@ def _logprob_row(output: Any, tokens: Sequence[int]) -> tuple[float, ...]:
     if isinstance(data, Mapping):
         data = data.get("data") or []
     values = [float(value) for value in (data or [])]
-    if not values:
-        values = [0.0] * max(1, len(tokens))
+    if len(values) != len(tokens) - 1 or not all(math.isfinite(value) for value in values):
+        raise ProviderError("invalid_forward_logprobs", "forward must return one finite next-token logprob per input position")
     return tuple(values)

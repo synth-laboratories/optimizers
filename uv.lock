@@ -2397,8 +2397,8 @@ wheels = [
 
 [[package]]
 name = "synth-containers"
-version = "0.4.2.dev20260905"
-source = { path = "vendor/synth-containers/synth_containers-0.4.2.dev20260905-py3-none-any.whl" }
+version = "0.4.2.dev20260908"
+source = { path = "vendor/synth-containers/synth_containers-0.4.2.dev20260908-py3-none-any.whl" }
 dependencies = [
     { name = "certifi" },
     { name = "fastapi" },
@@ -2409,7 +2409,7 @@ dependencies = [
     { name = "zstandard" },
 ]
 wheels = [
-    { filename = "synth_containers-0.4.2.dev20260905-py3-none-any.whl", hash = "sha256:f7757bfc84bd435be47ecd404c461e697deb4b7ef2aa94aa7a82f8bdbc319ec5" },
+    { filename = "synth_containers-0.4.2.dev20260908-py3-none-any.whl", hash = "sha256:329e92e2a29a96487c28bf2786082349165d29845bd97a0d10ae2b996e6685b2" },
 ]
 
 [package.metadata]
@@ -2429,8 +2429,22 @@ requires-dist = [
 provides-extras = ["dev"]
 
 [[package]]
+name = "synth-harbor-tblite"
+version = "0.1.1.dev20260908"
+source = { path = "vendor/synth-harbor-tblite/synth_harbor_tblite-0.1.1.dev20260908-py3-none-any.whl" }
+dependencies = [
+    { name = "synth-containers" },
+]
+wheels = [
+    { filename = "synth_harbor_tblite-0.1.1.dev20260908-py3-none-any.whl", hash = "sha256:002018a074fc6d84be526dc01619d4b3416e8ccb31cde8e3f99c9f7fedff9289" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "synth-containers", specifier = "==0.4.2.dev20260908" }]
+
+[[package]]
 name = "synth-optimizers"
-version = "0.2.20"
+version = "0.2.21"
 source = { editable = "." }
 dependencies = [
     { name = "pydantic" },
@@ -2457,6 +2471,10 @@ dev = [
     { name = "ruff" },
     { name = "ty" },
 ]
+eval-target-build = [
+    { name = "huggingface-hub" },
+    { name = "pyarrow" },
+]
 tinker = [
     { name = "renderers" },
     { name = "tinker" },
@@ -2467,6 +2485,7 @@ dev = [
     { name = "maturin" },
     { name = "pytest" },
     { name = "ruff" },
+    { name = "synth-harbor-tblite" },
     { name = "ty" },
 ]
 
@@ -2476,25 +2495,28 @@ requires-dist = [
     { name = "daytona", marker = "extra == 'daytona'", specifier = "==0.210.0" },
     { name = "fastapi", marker = "extra == 'benchmark-server'", specifier = ">=0.115" },
     { name = "httpx", marker = "extra == 'benchmark-server'", specifier = ">=0.27" },
+    { name = "huggingface-hub", marker = "extra == 'eval-target-build'", specifier = ">=0.24" },
     { name = "maturin", marker = "extra == 'dev'", specifier = ">=1.7.0" },
     { name = "openai", marker = "extra == 'banking77'", specifier = ">=1.0.0" },
+    { name = "pyarrow", marker = "extra == 'eval-target-build'", specifier = ">=17" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "renderers", marker = "extra == 'tinker'", specifier = ">=0.1.9" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6.0" },
-    { name = "synth-containers", path = "vendor/synth-containers/synth_containers-0.4.2.dev20260905-py3-none-any.whl" },
+    { name = "synth-containers", path = "vendor/synth-containers/synth_containers-0.4.2.dev20260908-py3-none-any.whl" },
     { name = "tinker", marker = "extra == 'tinker'" },
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.32" },
     { name = "uvicorn", marker = "extra == 'benchmark-server'", specifier = ">=0.30" },
     { name = "websocket-client", specifier = ">=1.8.0" },
 ]
-provides-extras = ["daytona", "benchmark-server", "banking77", "tinker", "dev"]
+provides-extras = ["eval-target-build", "daytona", "benchmark-server", "banking77", "tinker", "dev"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "maturin", specifier = ">=1.7.0" },
     { name = "pytest", specifier = ">=8.0.0" },
     { name = "ruff", specifier = ">=0.6.0" },
+    { name = "synth-harbor-tblite", path = "vendor/synth-harbor-tblite/synth_harbor_tblite-0.1.1.dev20260908-py3-none-any.whl" },
     { name = "ty", specifier = ">=0.0.32" },
 ]
 

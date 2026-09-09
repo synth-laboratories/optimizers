@@ -1,7 +1,7 @@
 # Container-first queue-native CISPO: architecture and engineering handoff
 
-Initial benchmark: 2026-09-02  
-Engineering handoff updated: 2026-09-03  
+Initial benchmark: 2026-09-02\
+Engineering handoff updated: 2026-09-03\
 Reframed against Synth Style and the Tito data plane: 2026-09-03
 
 ## Queue architecture reference

@@ -93,4 +93,3 @@ mode = "off"
 [artifacts]
 catalog = "/Users/joshuapurtell/Documents/ChatGPT/Synth Prod/b77_variance8_gate_15/checkpoints.sqlite3"
 directory = "/Users/joshuapurtell/Documents/ChatGPT/Synth Prod/b77_real_uplift_18/training_stage1/runs"
-

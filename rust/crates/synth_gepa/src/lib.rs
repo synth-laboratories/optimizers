@@ -7059,6 +7059,18 @@ fn advance_pending_runtime_job(
                         .workspace
                         .optimizer_job(&context.config.run.run_id, job_id)
                     {
+                        // The service worker may win the claim race and finish
+                        // while the inline runner is attempting the same job.
+                        // A completed job is success with a persisted outcome,
+                        // not a terminal failure from the inline claim error.
+                        if matches!(updated_job.status, OptimizerJobStatus::Completed) {
+                            return consume_completed_runtime_job(
+                                context,
+                                state,
+                                resources,
+                                updated_job,
+                            );
+                        }
                         if matches!(updated_job.status, OptimizerJobStatus::RetryScheduled) {
                             persist_gepa_run_state(
                                 context,
@@ -7382,7 +7394,20 @@ fn emit_runtime_job_completed_event(
             fields.insert("proposal_count".to_string(), json!(outcome.proposals.len()));
             fields.insert("backend".to_string(), json!(&outcome.backend));
             fields.insert("cache_hit".to_string(), json!(outcome.cache_hit));
-            fields.insert("cost_usd".to_string(), json!(outcome.reported_cost_usd));
+            fields.insert(
+                "cost_usd".to_string(),
+                json!(outcome
+                    .reported_cost_usd
+                    .or(context.config.gepa.proposer_estimated_cost_usd)),
+            );
+            fields.insert(
+                "cost_source".to_string(),
+                json!(if outcome.reported_cost_usd.is_some() {
+                    "provider_reported"
+                } else {
+                    "configured_reservation_ceiling"
+                }),
+            );
             fields.insert("usage".to_string(), serde_json::to_value(&outcome.usage)?);
             if let Some(cost_source) = outcome
                 .response
@@ -10563,10 +10588,35 @@ fn consume_failed_runtime_job(
         ),
         _ => (GepaCursorPhase::Failed, "failed", "GEPA runtime job failed"),
     };
+    let runtime_failure = job
+        .payload
+        .get("runtime_outcome")
+        .and_then(|value| value.get("failures"))
+        .and_then(|value| value.get(0))
+        .and_then(|value| value.get("failure"))
+        .cloned();
     let error_summary = job
         .payload
         .get("error")
         .cloned()
+        .or_else(|| {
+            runtime_failure.map(|failure| {
+                let message = failure
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("GEPA runtime effect reported a failed outcome");
+                json!({
+                    "error_code": failure
+                        .get("reason_code")
+                        .and_then(Value::as_str)
+                        .unwrap_or("synth_optimizer_failed"),
+                    "message": message,
+                    "failure": failure,
+                    "runtime_job_id": job.job_id,
+                    "runtime_job_status": job.status.as_str(),
+                })
+            })
+        })
         .or_else(|| {
             job.failure.as_ref().map(|failure| {
                 json!({
@@ -15262,7 +15312,14 @@ fn execute_gepa_monolithic_with_options(
                 "model": config.proposer.model,
                 "provider": config.proposer.provider,
                 "backend": proposer_outcome.backend,
-                "cost_usd": proposer_outcome.reported_cost_usd,
+                "cost_usd": proposer_outcome
+                    .reported_cost_usd
+                    .or(config.gepa.proposer_estimated_cost_usd),
+                "cost_source": if proposer_outcome.reported_cost_usd.is_some() {
+                    "provider_reported"
+                } else {
+                    "configured_reservation_ceiling"
+                },
                 "runtime_substrate": proposer_outcome.runtime_substrate,
                 "workspace": proposer_outcome.workspace,
                 "warning_count": proposer_outcome.evidence_warnings.len(),
@@ -19951,56 +20008,7 @@ fn reported_cost_from_usage_ledger(records: &[UsageLedgerRecord]) -> Option<f64>
 }
 
 #[cfg(test)]
-mod reported_cost_tests {
-    use super::*;
-
-    fn row(id: &str, cost_usd: Option<f64>) -> UsageLedgerRecord {
-        UsageLedgerRecord::from_input(UsageLedgerInput {
-            boundary: "provider",
-            source_type: "call",
-            source_id: id,
-            candidate_id: None,
-            evaluation_stage: None,
-            model: None,
-            provider: None,
-            call_count: 1,
-            usage: json!({}),
-            cost_usd,
-            metadata: Map::new(),
-        })
-    }
-
-    #[test]
-    fn aggregate_is_null_if_any_provider_cost_is_unknown() {
-        assert_eq!(reported_cost_from_usage_ledger(&[]), None);
-        assert_eq!(reported_cost_from_usage_ledger(&[row("a", None)]), None);
-        assert_eq!(
-            reported_cost_from_usage_ledger(&[row("a", Some(0.12)), row("b", None)]),
-            None
-        );
-        assert_eq!(
-            reported_cost_from_usage_ledger(&[row("a", Some(0.0)), row("b", Some(0.12))]),
-            Some(0.12)
-        );
-    }
-
-    #[test]
-    fn configured_cost_budget_stops_on_unknown_receipt() {
-        assert!(!reported_cost_budget_blocked(1.0, 0.0, &[]));
-        assert!(reported_cost_budget_blocked(1.0, 0.0, &[row("a", None)]));
-        assert!(!reported_cost_budget_blocked(
-            1.0,
-            0.12,
-            &[row("a", Some(0.12))]
-        ));
-        assert!(reported_cost_budget_blocked(
-            1.0,
-            1.0,
-            &[row("a", Some(1.0))]
-        ));
-        assert!(!reported_cost_budget_blocked(0.0, 0.0, &[row("a", None)]));
-    }
-}
+mod reported_cost_tests;
 
 fn proposer_usage_record(
     config: &SynthOptimizerConfig,
@@ -20009,6 +20017,17 @@ fn proposer_usage_record(
     outcome: &ProposerOutcome,
 ) -> Result<UsageLedgerRecord> {
     let mut metadata = Map::new();
+    let settled_cost_usd = outcome
+        .reported_cost_usd
+        .or(config.gepa.proposer_estimated_cost_usd);
+    metadata.insert(
+        "cost_source".to_string(),
+        json!(if outcome.reported_cost_usd.is_some() {
+            "provider_reported"
+        } else {
+            "configured_reservation_ceiling"
+        }),
+    );
     metadata.insert("generation".to_string(), json!(generation));
     metadata.insert("proposal_count".to_string(), json!(outcome.proposals.len()));
     metadata.insert(
@@ -20044,7 +20063,7 @@ fn proposer_usage_record(
         provider: Some(&config.proposer.provider),
         call_count: outcome.usage.proposer_calls.max(1),
         usage: serde_json::to_value(&outcome.usage)?,
-        cost_usd: outcome.reported_cost_usd,
+        cost_usd: settled_cost_usd,
         metadata,
     }))
 }
@@ -20682,9 +20701,14 @@ fn runtime_effect_retry_policy(kind: &OptimizerJobKind) -> RetryPolicy {
             ],
         },
         OptimizerJobKind::Proposer => RetryPolicy {
-            max_attempts: 2,
-            backoff_seconds: 2,
-            retryable_failure_types: vec!["synth_optimizer_proposer_error".to_string()],
+            // A proposer is a stateful, paid agent turn. Retrying the whole turn
+            // can duplicate side effects and silently exceed the run's wall-clock
+            // budget (for example, two 120s turns inside a 240s smoke). Surface
+            // the first complete failure and let an explicit run-level decision
+            // choose whether to try again.
+            max_attempts: 1,
+            backoff_seconds: 0,
+            retryable_failure_types: vec![],
         },
         _ => RetryPolicy::default(),
     }
@@ -20711,6 +20735,17 @@ fn record_runtime_effect_completed(
         }
     }
     let mut metadata = input.metadata.clone();
+    let settled_cost_usd = settled_effect_cost(
+        input.status,
+        input.reported_cost_usd,
+        input.reservation.max_cost_usd,
+    );
+    if input.reported_cost_usd.is_none() && settled_cost_usd.is_some() {
+        metadata.insert(
+            "cost_source".to_string(),
+            json!("reserved_ceiling_on_missing_provider_cost"),
+        );
+    }
     if let Some(failure) = input.failure {
         metadata.insert("failure".to_string(), serde_json::to_value(failure)?);
     }
@@ -20738,7 +20773,7 @@ fn record_runtime_effect_completed(
         input.planned,
         &completed,
         input.cost_usd,
-        input.reported_cost_usd,
+        settled_cost_usd,
         input.usage,
         input.rollout_count,
         metadata.clone(),
@@ -20755,7 +20790,7 @@ fn record_runtime_effect_completed(
         run_id: &input.planned.run_id,
         runtime_effect_id: &input.planned.runtime_effect_id,
         budget_reservation_id: &input.reservation.budget_reservation_id,
-        cost_usd: input.reported_cost_usd,
+        cost_usd: settled_cost_usd,
         prompt_tokens: input.usage.prompt_tokens,
         completion_tokens: input.usage.completion_tokens,
         total_tokens: input.usage.total_tokens,
@@ -20792,6 +20827,14 @@ fn record_runtime_effect_completed(
         return Err(budget_exceeded_error(&input.planned.run_id, &breach));
     }
     Ok(())
+}
+
+fn settled_effect_cost(
+    status: &str,
+    reported_cost_usd: Option<f64>,
+    reserved_cost_usd: Option<f64>,
+) -> Option<f64> {
+    reported_cost_usd.or_else(|| (status == "completed").then_some(reserved_cost_usd).flatten())
 }
 
 fn record_run_phase_timing_from_effect(
@@ -22095,49 +22138,4 @@ fn candidate_id(payload: &BTreeMap<String, String>) -> String {
 }
 
 #[cfg(test)]
-mod run_loop_terminalization_tests {
-    use super::*;
-
-    #[test]
-    fn budget_exhaustion_is_a_typed_terminal_run_loop_error() {
-        let error = OptimizerError::BudgetExceeded {
-            run_id: "gepa_budget_test".to_string(),
-            limit: "max_cost_usd".to_string(),
-            requested: "0.05".to_string(),
-            available: "0.04".to_string(),
-        };
-        assert_eq!(
-            terminal_message_for_run_loop_error(&error),
-            Some("GEPA budget exhausted")
-        );
-        assert_eq!(error.error_code(), "synth_optimizer_budget_exceeded");
-    }
-
-    #[test]
-    fn unrelated_orchestration_errors_are_not_reclassified_as_budget_terminal() {
-        assert_eq!(
-            terminal_message_for_run_loop_error(&OptimizerError::Container(
-                "provider unavailable".to_string()
-            )),
-            None
-        );
-    }
-
-    #[test]
-    fn proposer_runtime_jobs_get_one_bounded_retry() {
-        let policy = runtime_effect_retry_policy(&OptimizerJobKind::Proposer);
-        assert_eq!(policy.max_attempts, 2);
-        assert_eq!(policy.backoff_seconds, 2);
-        assert_eq!(
-            policy.retryable_failure_types,
-            vec!["synth_optimizer_proposer_error".to_string()]
-        );
-    }
-
-    #[test]
-    fn unrelated_runtime_jobs_keep_the_fail_closed_default() {
-        let policy = runtime_effect_retry_policy(&OptimizerJobKind::Annotation);
-        assert_eq!(policy.max_attempts, 1);
-        assert!(policy.retryable_failure_types.is_empty());
-    }
-}
+mod run_loop_terminalization_tests;

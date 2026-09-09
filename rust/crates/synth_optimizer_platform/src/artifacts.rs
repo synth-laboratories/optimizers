@@ -179,6 +179,13 @@ pub struct GepaRunResult {
     pub reconciliation_status: Option<GepaReconciliationStatus>,
     #[serde(default)]
     pub resolved_pipeline: Value,
+    /// The trial this run was dispatched for, echoed back unchanged.
+    ///
+    /// The experiment layer recomputes its own digest from this and compares;
+    /// a manifest that came back with a mangled envelope fails that comparison
+    /// rather than joining to the wrong arm.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation: Option<Value>,
 }
 
 pub fn artifact_ref(path: &Path, kind: &str, retention: &str) -> Result<ArtifactRef> {

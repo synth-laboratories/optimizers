@@ -34,7 +34,6 @@ from .hosted import (
     HostedOptimizerError,
     validate_online_reflexion_evidence_notes,
 )
-from .sft import SftConfig, SftPublicServiceClient, SftServiceError, serve_sft_service
 from .tunnels import TunnelError, TunnelProvider
 from .victorialogs import project_gepa_run_artifacts, project_gepa_run_started
 
@@ -750,97 +749,6 @@ def _config_file_object(path: str) -> dict:
     if not isinstance(data, dict):
         raise SystemExit(f"{path} must contain an object")
     return data
-
-
-def _sft_service_client(args: argparse.Namespace) -> SftPublicServiceClient:
-    token = os.environ.get(args.service_token_env) if args.service_token_env else None
-    return SftPublicServiceClient(args.service_url, token, timeout_seconds=args.timeout_seconds)
-
-
-def _sft_validate(args: argparse.Namespace) -> int:
-    try:
-        config = SftConfig.from_toml(
-            Path(args.config).read_text(encoding="utf-8"), run_id=args.run_id
-        )
-    except OSError as exc:
-        raise SystemExit(f"cannot read {args.config}: {exc}") from exc
-    except SftServiceError as exc:
-        raise SystemExit(str(exc)) from exc
-    payload = {
-        "algorithm": "sft",
-        "run_id": config.run_id,
-        "backend": config.backend,
-        "base_model": config.base_model,
-        "checkpoint_steps": list(config.checkpoint_steps),
-        "accelerator_slots": config.accelerator_slots,
-    }
-    print(
-        json.dumps(payload, indent=2, sort_keys=True)
-        if args.json
-        else f"valid SFT config run_id={config.run_id} backend={config.backend}"
-    )
-    return 0
-
-
-def _sft_submit(args: argparse.Namespace) -> int:
-    try:
-        config_toml = Path(args.config).read_text(encoding="utf-8")
-        client = _sft_service_client(args)
-        submitted = client.submit_toml(
-            config_toml,
-            run_id=args.run_id,
-            idempotency_key=args.idempotency_key,
-        )
-        if args.json and not args.follow:
-            print(json.dumps(submitted, indent=2, sort_keys=True))
-            return 0
-        run_id = str(submitted["run_id"])
-        print(f"submitted run_id={run_id} status={submitted.get('status', 'queued')}")
-        if not args.follow:
-            return 0
-        while True:
-            record = client.get(run_id)
-            status = str(record.get("status", "unknown"))
-            print(f"status={status}")
-            if status in {"succeeded", "failed", "cancelled"}:
-                if args.json:
-                    print(json.dumps(record, indent=2, sort_keys=True))
-                return 1 if status == "failed" else 0
-            time.sleep(args.poll_seconds)
-    except (OSError, SftServiceError) as exc:
-        raise SystemExit(str(exc)) from exc
-
-
-def _sft_watch(args: argparse.Namespace) -> int:
-    try:
-        client = _sft_service_client(args)
-        record = client.get(args.run_id)
-        if args.events:
-            page = client.optimizer_events(
-                args.run_id, after_sequence=args.after_seq, limit=args.limit
-            )
-            record["events"] = page.get("events", [])
-        print(
-            json.dumps(record, indent=2, sort_keys=True)
-            if args.json
-            else f"run_id={args.run_id} status={record.get('status')}"
-        )
-        return 1 if record.get("status") == "failed" else 0
-    except SftServiceError as exc:
-        raise SystemExit(str(exc)) from exc
-
-
-def _sft_cancel(args: argparse.Namespace) -> int:
-    try:
-        record = _sft_service_client(args).cancel(args.run_id)
-    except SftServiceError as exc:
-        raise SystemExit(str(exc)) from exc
-    print(
-        json.dumps(record, indent=2, sort_keys=True)
-        if args.json
-        else f"run_id={args.run_id} status={record.get('status')}"
-    )
-    return 0
 
 
 def _submit_hosted_gelo(args: argparse.Namespace) -> int:
@@ -1685,7 +1593,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional inbound bearer-token environment variable.",
     )
 
-    for command_name in ("submit", "watch", "cancel"):
+    for command_name in ("submit", "watch", "cancel", "pause", "resume"):
         command = sft_subcommands.add_parser(command_name)
         command.add_argument(
             "--service-url",
@@ -1705,8 +1613,8 @@ def build_parser() -> argparse.ArgumentParser:
     sft_watch.add_argument("--events", action="store_true")
     sft_watch.add_argument("--after-seq", type=int, default=0)
     sft_watch.add_argument("--limit", type=int, default=500)
-    sft_cancel = sft_subcommands.choices["cancel"]
-    sft_cancel.add_argument("run_id")
+    for action in ("cancel", "pause", "resume"):
+        sft_subcommands.choices[action].add_argument("run_id")
 
     mapo = subcommands.add_parser("mapo")
     mapo_subcommands = mapo.add_subparsers(dest="mapo_command", required=True)
@@ -2222,9 +2130,11 @@ def build_parser() -> argparse.ArgumentParser:
     gepa_runs_delete.add_argument("--yes", action="store_true", help="Apply the deletion.")
     gepa_runs_delete.add_argument("--json", action="store_true")
 
-    from .eval.commands import register as register_eval
-
-    register_eval(subcommands)
+    from .eval import commands as eval_commands
+    from .experiment import commands as experiment_commands
+    from .rl import cli as rl_cli
+    for family in (eval_commands, experiment_commands, rl_cli):
+        family.register(subcommands)
 
     events = subcommands.add_parser("events")
     events_subcommands = events.add_subparsers(dest="events_command", required=True)
@@ -2237,45 +2147,64 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _apply_proposer_overrides(config: Any, args: Any) -> None:
+    """Apply `gepa run --proposer-*` to the loaded config, in process.
+
+    These flags used to be exported as `SYNTH_OPTIMIZERS_PROPOSER_*` and read
+    back by the Rust config loader after the TOML was parsed, which made the
+    process environment a second config authority — the same variables could be
+    set by anything else in the shell and silently change what ran. The flags
+    now mutate the config object that is written out and executed, so the
+    resolved config is the only authority.
+    """
+
+    if args.proposer_execution_mode:
+        config.proposer.execution_mode = args.proposer_execution_mode.strip().lower()
+    if args.proposer_model:
+        config.proposer.model = args.proposer_model.strip()
+    if args.proposer_reasoning_effort:
+        config.proposer.reasoning_effort = args.proposer_reasoning_effort.strip().lower()
+    if args.proposer_service_tier:
+        config.proposer.service_tier = args.proposer_service_tier.strip().lower()
+    if args.proposer_auth_mode:
+        # `to_toml` drops api_key_env for chatgpt/host, so auth mode is the only
+        # field this has to set.
+        config.proposer.auth_mode = args.proposer_auth_mode.strip().lower().replace("-", "_")
+    if args.proposer_codex_home:
+        config.proposer.codex_home = args.proposer_codex_home
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "eval":
         from .eval.commands import dispatch as dispatch_eval
         from .eval.models import EvalContractError
-
         try:
             return dispatch_eval(args)
         except EvalContractError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
+    if args.command == "experiment":
+        from .experiment.commands import dispatch as dispatch_experiment
+        from .experiment.models import ExperimentContractError
+        try:
+            return dispatch_experiment(args)
+        except ExperimentContractError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+    if args.command == "rl":
+        return args.rl_dispatch(args)
     if args.command == "gepa" and args.gepa_command == "run":
         from .gepa import GepaRun, UsageRegistrationConfig
 
         old_terminal = os.environ.get("SYNTH_OPTIMIZERS_TERMINAL")
-        old_proposer_execution_mode = os.environ.get("SYNTH_OPTIMIZERS_PROPOSER_EXECUTION_MODE")
-        old_proposer_model = os.environ.get("SYNTH_OPTIMIZERS_PROPOSER_MODEL")
-        old_proposer_reasoning_effort = os.environ.get("SYNTH_OPTIMIZERS_PROPOSER_REASONING_EFFORT")
-        old_proposer_service_tier = os.environ.get("SYNTH_OPTIMIZERS_PROPOSER_SERVICE_TIER")
-        old_proposer_auth_mode = os.environ.get("SYNTH_OPTIMIZERS_PROPOSER_AUTH_MODE")
-        old_proposer_codex_home = os.environ.get("SYNTH_OPTIMIZERS_PROPOSER_CODEX_HOME")
         if not args.json:
+            # Presentation only: this selects the Rust terminal renderer. It is
+            # not a run-config override and never reaches the resolved config.
             os.environ["SYNTH_OPTIMIZERS_TERMINAL"] = "1"
-        if args.proposer_execution_mode:
-            os.environ["SYNTH_OPTIMIZERS_PROPOSER_EXECUTION_MODE"] = args.proposer_execution_mode
-        if args.proposer_model:
-            os.environ["SYNTH_OPTIMIZERS_PROPOSER_MODEL"] = args.proposer_model
-        if args.proposer_reasoning_effort:
-            os.environ["SYNTH_OPTIMIZERS_PROPOSER_REASONING_EFFORT"] = (
-                args.proposer_reasoning_effort
-            )
-        if args.proposer_service_tier:
-            os.environ["SYNTH_OPTIMIZERS_PROPOSER_SERVICE_TIER"] = args.proposer_service_tier
-        if args.proposer_auth_mode:
-            os.environ["SYNTH_OPTIMIZERS_PROPOSER_AUTH_MODE"] = args.proposer_auth_mode
-        if args.proposer_codex_home:
-            os.environ["SYNTH_OPTIMIZERS_PROPOSER_CODEX_HOME"] = args.proposer_codex_home
         try:
             gepa_run = GepaRun.from_toml(args.config)
+            _apply_proposer_overrides(gepa_run.config, args)
             if args.disable_usage_registration:
                 gepa_run.config.usage_registration = UsageRegistrationConfig(enabled=False)
             project_gepa_run_started(
@@ -2295,32 +2224,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 os.environ.pop("SYNTH_OPTIMIZERS_TERMINAL", None)
             else:
                 os.environ["SYNTH_OPTIMIZERS_TERMINAL"] = old_terminal
-            if old_proposer_execution_mode is None:
-                os.environ.pop("SYNTH_OPTIMIZERS_PROPOSER_EXECUTION_MODE", None)
-            else:
-                os.environ["SYNTH_OPTIMIZERS_PROPOSER_EXECUTION_MODE"] = old_proposer_execution_mode
-            if old_proposer_model is None:
-                os.environ.pop("SYNTH_OPTIMIZERS_PROPOSER_MODEL", None)
-            else:
-                os.environ["SYNTH_OPTIMIZERS_PROPOSER_MODEL"] = old_proposer_model
-            if old_proposer_reasoning_effort is None:
-                os.environ.pop("SYNTH_OPTIMIZERS_PROPOSER_REASONING_EFFORT", None)
-            else:
-                os.environ["SYNTH_OPTIMIZERS_PROPOSER_REASONING_EFFORT"] = (
-                    old_proposer_reasoning_effort
-                )
-            if old_proposer_service_tier is None:
-                os.environ.pop("SYNTH_OPTIMIZERS_PROPOSER_SERVICE_TIER", None)
-            else:
-                os.environ["SYNTH_OPTIMIZERS_PROPOSER_SERVICE_TIER"] = old_proposer_service_tier
-            if old_proposer_auth_mode is None:
-                os.environ.pop("SYNTH_OPTIMIZERS_PROPOSER_AUTH_MODE", None)
-            else:
-                os.environ["SYNTH_OPTIMIZERS_PROPOSER_AUTH_MODE"] = old_proposer_auth_mode
-            if old_proposer_codex_home is None:
-                os.environ.pop("SYNTH_OPTIMIZERS_PROPOSER_CODEX_HOME", None)
-            else:
-                os.environ["SYNTH_OPTIMIZERS_PROPOSER_CODEX_HOME"] = old_proposer_codex_home
         if args.json:
             print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
         else:
@@ -2348,18 +2251,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         docs = DocsSource([docs_root], title=args.title)
         serve_console(board, docs, host=args.host, port=args.port)
         return 0
-    if args.command == "sft" and args.sft_command == "validate":
-        return _sft_validate(args)
-    if args.command == "sft" and args.sft_command == "submit":
-        return _sft_submit(args)
-    if args.command == "sft" and args.sft_command == "watch":
-        return _sft_watch(args)
-    if args.command == "sft" and args.sft_command == "cancel":
-        return _sft_cancel(args)
-    if args.command == "sft" and args.sft_command == "service":
-        token = os.environ.get(args.service_token_env) if args.service_token_env else None
-        serve_sft_service(args.db, args.bind, service_token=token)
-        return 0
+    if args.command == "sft":
+        from .sft_cli import dispatch as dispatch_sft
+
+        return dispatch_sft(args)
     if args.command == "mapo" and args.mapo_command == "startup":
         return _gelo_startup(args)
     if args.command == "mapo" and args.mapo_command == "submit":

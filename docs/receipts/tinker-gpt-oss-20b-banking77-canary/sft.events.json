@@ -1,0 +1,251 @@
+[
+  {
+    "event_id": "evt_e7517dc266034e478542981c732fcbf3",
+    "event_type": "sft.dataset.validated",
+    "job_id": "sft_canary",
+    "kind": "sft.dataset.validated",
+    "occurred_at": "2026-09-02T14:42:35.043015Z",
+    "payload": {
+      "labels": [
+        "activate_my_card",
+        "balance_not_updated_after_cheque_or_cash_deposit",
+        "card_swallowed",
+        "get_physical_card",
+        "lost_or_stolen_card",
+        "order_physical_card"
+      ],
+      "manifest": {
+        "digest": "sha256:da225a7fc8f7bb052f978fa5e866205cba7f07d341db036038914d26822c7f28",
+        "example_counts": {
+          "calibration": 1,
+          "heldout": 1,
+          "train": 4
+        },
+        "label_taxonomy_digest": "sha256:da5f50e3e629265d3945bb0c0da486e8b1f5eb88553445c542a55473d5813323",
+        "renderer_version": "renderers.gpt-oss.low.v1",
+        "schema_version": "dataset.manifest.v1",
+        "split_digests": {
+          "calibration": "sha256:50e9039352c3342b27030c8a29b99086e264717b891f30adfdfe5b92ab772494",
+          "heldout": "sha256:4e810d82825e55cba871f2457d8334a862a1162f718fd7b0e6dfeebfd32c1a87",
+          "train": "sha256:739bd7aac89fbf4081df1332d90f8614abc19bc6bfc9d2ba48a737b589b4a4c1"
+        }
+      }
+    },
+    "phase": "prepared",
+    "producer": {
+      "commit": "local",
+      "service": "synth-optimizers",
+      "version": "synth-optimizers.training.v1"
+    },
+    "schema_version": "training.event.v1",
+    "sequence": 1,
+    "sequence_number": 1
+  },
+  {
+    "event_id": "evt_fad2365445ba460c995128868bdaf73a",
+    "event_type": "sft.training.started",
+    "job_id": "sft_canary",
+    "kind": "sft.training.started",
+    "occurred_at": "2026-09-02T14:42:44.506496Z",
+    "payload": {
+      "model_id": "openai/gpt-oss-20b",
+      "session_id": "abce894f-d52f-5ead-8370-c9e8202c2c94:train:0"
+    },
+    "phase": "running",
+    "producer": {
+      "commit": "local",
+      "service": "synth-optimizers",
+      "version": "synth-optimizers.training.v1"
+    },
+    "schema_version": "training.event.v1",
+    "sequence": 2,
+    "sequence_number": 2
+  },
+  {
+    "event_id": "evt_b7e07aa15e91468e86fa5a993679f263",
+    "event_type": "sft.step.metrics",
+    "job_id": "sft_canary",
+    "kind": "sft.step.metrics",
+    "occurred_at": "2026-09-02T14:42:53.143848Z",
+    "payload": {
+      "metrics": {
+        "clock_cycle:unique": 1780776.0,
+        "e_frac_oversubscribed:mean": 0.3580729365348816,
+        "e_frac_with_tokens:mean": 0.8736979365348816,
+        "e_max_violation:max": 5.517482280731201,
+        "e_max_violation:mean": 3.792541027069092,
+        "e_min_violation:mean": -0.9836829900741577,
+        "loss:sum": 0.025627191178500652
+      },
+      "step": 1,
+      "tokens": 11
+    },
+    "phase": "running",
+    "producer": {
+      "commit": "local",
+      "service": "synth-optimizers",
+      "version": "synth-optimizers.training.v1"
+    },
+    "schema_version": "training.event.v1",
+    "sequence": 3,
+    "sequence_number": 3
+  },
+  {
+    "event_id": "evt_6a2d6c3f59fa4ec9877581a290d7bb72",
+    "event_type": "sft.checkpoint.created",
+    "job_id": "sft_canary",
+    "kind": "sft.checkpoint.created",
+    "occurred_at": "2026-09-02T14:42:58.595388Z",
+    "payload": {
+      "checkpoint_id": "inference-1-34bf9af1a421",
+      "digest": "sha256:3be4a6880666a9a4b601f8a2b01f99ea96472ab1bc15dc65ff3034bf9af1a421",
+      "provider_reference": "tinker://abce894f-d52f-5ead-8370-c9e8202c2c94:train:0/sampler_weights/optimizers-inference-tinkerreq_aae5987754ec899bffdb33ac",
+      "resume_token": "tinker://abce894f-d52f-5ead-8370-c9e8202c2c94:train:0/weights/optimizers-training-tinkerreq_b0c8c67a449f25594b68c843",
+      "step": 1,
+      "training_checkpoint_id": "training-1-65f1074ea319",
+      "training_provider_reference": "tinker://abce894f-d52f-5ead-8370-c9e8202c2c94:train:0/weights/optimizers-training-tinkerreq_b0c8c67a449f25594b68c843"
+    },
+    "phase": "evaluating",
+    "producer": {
+      "commit": "local",
+      "service": "synth-optimizers",
+      "version": "synth-optimizers.training.v1"
+    },
+    "schema_version": "training.event.v1",
+    "sequence": 4,
+    "sequence_number": 4
+  },
+  {
+    "event_id": "evt_77e6c03dd1344cfa94f5a3428d23e29d",
+    "event_type": "sft.checkpoint_eval.completed",
+    "job_id": "sft_canary",
+    "kind": "sft.checkpoint_eval.completed",
+    "occurred_at": "2026-09-02T14:43:06.130346Z",
+    "payload": {
+      "calibration_accuracy": 1.0,
+      "checkpoint_id": "inference-1-34bf9af1a421",
+      "digest": "sha256:3be4a6880666a9a4b601f8a2b01f99ea96472ab1bc15dc65ff3034bf9af1a421",
+      "per_intent": {
+        "card_swallowed": {
+          "accuracy": 1.0,
+          "correct": 1,
+          "n": 1
+        }
+      },
+      "provider_reference": "tinker://abce894f-d52f-5ead-8370-c9e8202c2c94:train:0/sampler_weights/optimizers-inference-tinkerreq_aae5987754ec899bffdb33ac",
+      "resume_token": "tinker://abce894f-d52f-5ead-8370-c9e8202c2c94:train:0/weights/optimizers-training-tinkerreq_b0c8c67a449f25594b68c843",
+      "step": 1,
+      "training_checkpoint_id": "training-1-65f1074ea319",
+      "training_provider_reference": "tinker://abce894f-d52f-5ead-8370-c9e8202c2c94:train:0/weights/optimizers-training-tinkerreq_b0c8c67a449f25594b68c843"
+    },
+    "phase": "evaluating",
+    "producer": {
+      "commit": "local",
+      "service": "synth-optimizers",
+      "version": "synth-optimizers.training.v1"
+    },
+    "schema_version": "training.event.v1",
+    "sequence": 5,
+    "sequence_number": 5
+  },
+  {
+    "event_id": "evt_f2d6f1eff8304f65b2e395dd6b3f67d5",
+    "event_type": "sft.checkpoint.promoted",
+    "job_id": "sft_canary",
+    "kind": "sft.checkpoint.promoted",
+    "occurred_at": "2026-09-02T14:43:06.131845Z",
+    "payload": {
+      "calibration_accuracy": 1.0,
+      "checkpoint_id": "inference-1-34bf9af1a421",
+      "digest": "sha256:3be4a6880666a9a4b601f8a2b01f99ea96472ab1bc15dc65ff3034bf9af1a421",
+      "per_intent": {
+        "card_swallowed": {
+          "accuracy": 1.0,
+          "correct": 1,
+          "n": 1
+        }
+      },
+      "provider_reference": "tinker://abce894f-d52f-5ead-8370-c9e8202c2c94:train:0/sampler_weights/optimizers-inference-tinkerreq_aae5987754ec899bffdb33ac",
+      "resume_token": "tinker://abce894f-d52f-5ead-8370-c9e8202c2c94:train:0/weights/optimizers-training-tinkerreq_b0c8c67a449f25594b68c843",
+      "step": 1,
+      "training_checkpoint_id": "training-1-65f1074ea319",
+      "training_provider_reference": "tinker://abce894f-d52f-5ead-8370-c9e8202c2c94:train:0/weights/optimizers-training-tinkerreq_b0c8c67a449f25594b68c843"
+    },
+    "phase": "evaluating",
+    "producer": {
+      "commit": "local",
+      "service": "synth-optimizers",
+      "version": "synth-optimizers.training.v1"
+    },
+    "schema_version": "training.event.v1",
+    "sequence": 6,
+    "sequence_number": 6
+  },
+  {
+    "event_id": "evt_35f91783e4364cf882e4ca2f831043fe",
+    "event_type": "sft.heldout_eval.completed",
+    "job_id": "sft_canary",
+    "kind": "sft.heldout_eval.completed",
+    "occurred_at": "2026-09-02T14:43:06.134808Z",
+    "payload": {
+      "accuracy": 0.0,
+      "n": 1,
+      "per_intent": {
+        "get_physical_card": {
+          "accuracy": 0.0,
+          "correct": 0,
+          "n": 1
+        }
+      }
+    },
+    "phase": "evaluating",
+    "producer": {
+      "commit": "local",
+      "service": "synth-optimizers",
+      "version": "synth-optimizers.training.v1"
+    },
+    "schema_version": "training.event.v1",
+    "sequence": 7,
+    "sequence_number": 7
+  },
+  {
+    "event_id": "evt_65acd545b832414ebad59c528a3789a3",
+    "event_type": "sft.model.materialized",
+    "job_id": "sft_canary",
+    "kind": "sft.model.materialized",
+    "occurred_at": "2026-09-02T14:43:06.137436Z",
+    "payload": {
+      "checkpoint_id": "inference-1-34bf9af1a421",
+      "digest": "sha256:5983904022258ef0e384544409765648bad62519ac21b4dd3db9318a5144fb3e"
+    },
+    "phase": "materializing",
+    "producer": {
+      "commit": "local",
+      "service": "synth-optimizers",
+      "version": "synth-optimizers.training.v1"
+    },
+    "schema_version": "training.event.v1",
+    "sequence": 8,
+    "sequence_number": 8
+  },
+  {
+    "event_id": "evt_3a172cac56834ffea6d707ed230ce5ac",
+    "event_type": "sft.completed",
+    "job_id": "sft_canary",
+    "kind": "sft.completed",
+    "occurred_at": "2026-09-02T14:43:06.139191Z",
+    "payload": {
+      "heldout_accuracy": 0.0,
+      "selected_checkpoint_id": "inference-1-34bf9af1a421"
+    },
+    "phase": "completed",
+    "producer": {
+      "commit": "local",
+      "service": "synth-optimizers",
+      "version": "synth-optimizers.training.v1"
+    },
+    "schema_version": "training.event.v1",
+    "sequence": 9,
+    "sequence_number": 9
+  }
+]

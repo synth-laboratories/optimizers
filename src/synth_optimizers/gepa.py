@@ -107,12 +107,14 @@ class RunSettingsTomlSection(BaseModel):
     run_id: str = "gepa_sdk_run"
     output_dir: str | Path = "runs"
     seed: int = 0
+    correlation: dict[str, Any] | None = None
 
     def to_domain(self) -> "RunSettings":
         return RunSettings(
             run_id=self.run_id,
             output_dir=self.output_dir,
             seed=self.seed,
+            correlation=dict(self.correlation) if self.correlation else None,
         )
 
 
@@ -221,6 +223,7 @@ class ProposerTomlSection(BaseModel):
     api_family: str = "chat_completions"
     base_url: str | None = None
     model: str | None = "gpt-5.4-mini"
+    allow_unverified_model: bool = False
     reasoning_effort: str | None = "medium"
     service_tier: str | None = None
     auth_mode: str = "api_key"
@@ -255,6 +258,7 @@ class ProposerTomlSection(BaseModel):
             api_family=self.api_family,
             base_url=self.base_url,
             model=self.model,
+            allow_unverified_model=self.allow_unverified_model,
             reasoning_effort=self.reasoning_effort,
             service_tier=self.service_tier,
             auth_mode=self.auth_mode,
@@ -335,6 +339,19 @@ class GepaAdaptiveStageWorkersTomlSection(BaseModel):
     stale_gap_threshold: int = 2
 
 
+class GepaAdaptiveRolloutConcurrencyTomlSection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = None
+    initial: int | None = Field(default=None, ge=1)
+    min: int | None = Field(default=None, ge=1)
+    max: int | None = Field(default=None, ge=1)
+    increase_step: int | None = Field(default=None, ge=1)
+    decrease_step: int | None = Field(default=None, ge=1)
+    increase_after_successes: int | None = Field(default=None, ge=1)
+    overload_status_codes: list[int] | None = None
+
+
 class GepaPipelineTomlSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -342,6 +359,7 @@ class GepaPipelineTomlSection(BaseModel):
     staleness_policy: GepaStalenessPolicy | str = GepaStalenessPolicy.FULL
     delta_max: int = 2
     max_in_flight_candidates: int = 1
+    adaptive_rollout_concurrency: GepaAdaptiveRolloutConcurrencyTomlSection | None = None
     workers: GepaPipelineWorkersTomlSection = Field(default_factory=GepaPipelineWorkersTomlSection)
     speculative_completion: GepaSpeculativeCompletionTomlSection = Field(
         default_factory=GepaSpeculativeCompletionTomlSection
@@ -458,6 +476,7 @@ class GepaTomlSection(BaseModel):
             proposer_concurrency=self.pipeline.workers.propose,
             rollout_concurrency=self.pipeline.workers.rollout,
             evaluator_concurrency=self.pipeline.workers.evaluate,
+            adaptive_rollout_concurrency=self.pipeline.adaptive_rollout_concurrency,
             speculative_alpha=(
                 self.pipeline.speculative_completion.alpha
                 if self.pipeline.speculative_completion.enabled
@@ -535,6 +554,21 @@ class JesterkyWorkflowTomlSection(BaseModel):
         )
 
 
+class DiskBudgetTomlSection(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = True
+    soft_limit_gb: float = 5.0
+    hard_limit_gb: float = 10.0
+
+    def to_domain(self) -> "DiskBudgetConfig":
+        return DiskBudgetConfig(
+            enabled=bool(self.enabled),
+            soft_limit_gb=float(self.soft_limit_gb),
+            hard_limit_gb=float(self.hard_limit_gb),
+        )
+
+
 class GepaTomlDocument(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -548,6 +582,7 @@ class GepaTomlDocument(BaseModel):
         default_factory=JesterkyWorkflowTomlSection
     )
     cache: CacheTomlSection = Field(default_factory=CacheTomlSection)
+    disk_budget: DiskBudgetTomlSection = Field(default_factory=DiskBudgetTomlSection)
     usage_registration: UsageRegistrationTomlSection = Field(
         default_factory=UsageRegistrationTomlSection
     )
@@ -573,6 +608,7 @@ class GepaTomlDocument(BaseModel):
             budget=self.gepa.budget_config(),
             jesterky_workflow=self.jesterky_workflow.to_domain(),
             cache=self.cache.to_domain(),
+            disk_budget=self.disk_budget.to_domain(),
             usage_registration=self.usage_registration.to_domain(),
             target_modules=list(self.candidate.target_modules),
             seed_candidate=dict(self.seed_candidate),
@@ -583,13 +619,22 @@ class GepaTomlDocument(BaseModel):
 class ContainerCapabilityMetadataPayload(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    policy_ready: bool
+    policy_ready: bool = False
 
 
 class ContainerCapabilitiesPayload(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    metadata: ContainerCapabilityMetadataPayload
+    # Optional because this block is read on exactly one branch: a recipe that
+    # sets `policy = None` and needs the container to supply the policy. A
+    # recipe that configures its own policy never consults `policy_ready`, so
+    # requiring the block turned an unread field into a hard precondition and
+    # refused every container that does not advertise it -- which today is all
+    # of them. Defaulting to not-ready keeps the branch that *does* read it
+    # failing closed, with its own accurate message.
+    metadata: ContainerCapabilityMetadataPayload = Field(
+        default_factory=ContainerCapabilityMetadataPayload
+    )
 
 
 class ContainerMetadataPayload(BaseModel):
@@ -618,13 +663,22 @@ class RunSettings:
     run_id: str = "gepa_sdk_run"
     output_dir: str | Path = "runs"
     seed: int = 0
+    #: `synth.correlation.v1`, set only when an experiment dispatched this run.
+    #: Carried verbatim so the manifest and run registry can be joined back to
+    #: the trial; nothing in this process reads it.
+    correlation: dict[str, Any] | None = None
 
     def to_toml(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "run_id": self.run_id,
             "output_dir": str(self.output_dir),
             "seed": int(self.seed),
         }
+        if self.correlation is not None:
+            # Absent rather than empty: a run nobody dispatched must not grow a
+            # correlation key that later reads as a join to nothing.
+            payload["correlation"] = dict(self.correlation)
+        return payload
 
 
 @dataclass(slots=True)
@@ -868,6 +922,7 @@ class ProposerConfig:
     api_family: str = "chat_completions"
     base_url: str | None = None
     model: str | None = "gpt-5.4-mini"
+    allow_unverified_model: bool = False
     reasoning_effort: str | None = "medium"
     service_tier: str | None = None
     auth_mode: str = "api_key"
@@ -920,6 +975,7 @@ class ProposerConfig:
                 "api_family": self.api_family,
                 "base_url": self.base_url,
                 "model": self.model,
+                "allow_unverified_model": bool(self.allow_unverified_model),
                 "reasoning_effort": self.reasoning_effort,
                 "service_tier": self.service_tier,
                 "auth_mode": self.auth_mode,
@@ -1124,6 +1180,7 @@ class GepaPipeline:
     adaptive_stage_workers_max: int = 128
     adaptive_stage_workers_backlog_threshold: int = 2
     adaptive_stage_workers_stale_gap_threshold: int = 2
+    adaptive_rollout_concurrency: GepaAdaptiveRolloutConcurrencyTomlSection | None = None
 
     @classmethod
     def sync_serial(
@@ -1219,6 +1276,10 @@ class GepaPipeline:
                 "stale_gap_threshold": int(self.adaptive_stage_workers_stale_gap_threshold),
             },
         }
+        if self.adaptive_rollout_concurrency is not None:
+            gepa["pipeline"]["adaptive_rollout_concurrency"].update(
+                self.adaptive_rollout_concurrency.model_dump(exclude_none=True)
+            )
 
 
 @dataclass(slots=True)
@@ -1235,6 +1296,20 @@ class CacheConfig:
                 "namespace": self.namespace,
             }
         )
+
+
+@dataclass(slots=True)
+class DiskBudgetConfig:
+    enabled: bool = True
+    soft_limit_gb: float = 5.0
+    hard_limit_gb: float = 10.0
+
+    def to_toml(self) -> dict[str, Any]:
+        return {
+            "enabled": bool(self.enabled),
+            "soft_limit_gb": float(self.soft_limit_gb),
+            "hard_limit_gb": float(self.hard_limit_gb),
+        }
 
 
 @dataclass(slots=True)
@@ -1314,6 +1389,7 @@ class GepaConfig:
         default_factory=JesterkyWorkflowConfig
     )
     cache: CacheConfig = field(default_factory=CacheConfig)
+    disk_budget: DiskBudgetConfig = field(default_factory=DiskBudgetConfig)
     usage_registration: UsageRegistrationConfig = field(
         default_factory=UsageRegistrationConfig
     )
@@ -1410,6 +1486,7 @@ class GepaConfig:
         payload["gepa"] = gepa
         payload["jesterky_workflow"] = self.jesterky_workflow.to_toml()
         payload["cache"] = self.cache.to_toml()
+        payload["disk_budget"] = self.disk_budget.to_toml()
         return payload
 
     def to_config_json(self) -> dict[str, Any]:
@@ -1596,21 +1673,14 @@ def _bearer_header_from_env(env_name: str) -> str:
     return f"Bearer {token}"
 
 
+#: The one backend URL name. Seven aliases used to be tried in order, so which
+#: backend a run talked to depended on which of them a shell happened to carry.
+BACKEND_BASE_URL_ENV = "SYNTH_BACKEND_URL"
+
+
 def _backend_base_url_from_env() -> str | None:
-    for name in (
-        "SYNTH_BACKEND_URL_OVERRIDE",
-        "SYNTH_BACKEND_URL",
-        "SYNTH_API_URL",
-        "DEV_SYNTH_BACKEND_URL",
-        "DEV_BACKEND_URL",
-        "PROD_SYNTH_BACKEND_URL",
-        "PROD_BACKEND_URL",
-        "BACKEND_URL",
-    ):
-        value = os.getenv(name, "").strip()
-        if value:
-            return value
-    return None
+    value = os.getenv(BACKEND_BASE_URL_ENV, "").strip()
+    return value or None
 
 
 def _normalize_backend_base_url(url: str) -> str:

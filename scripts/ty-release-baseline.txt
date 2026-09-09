@@ -1,0 +1,228 @@
+src/synth_optimizers/board_server.py: error[call-non-callable] Object of type `object` is not callable
+src/synth_optimizers/board_server.py: error[invalid-argument-type] Argument to constructor `float.__new__` is incorrect: Expected `str | Buffer | SupportsFloat | SupportsIndex`, found `Unknown | None`
+src/synth_optimizers/board_server.py: error[invalid-argument-type] Argument to constructor `float.__new__` is incorrect: Expected `str | Buffer | SupportsFloat | SupportsIndex`, found `~None`
+src/synth_optimizers/board_server.py: error[invalid-argument-type] Argument to constructor `int.__new__` is incorrect: Expected `str | Buffer | SupportsInt | SupportsIndex | SupportsTrunc`, found `object`
+src/synth_optimizers/board_server.py: error[invalid-argument-type] Argument to constructor `int.__new__` is incorrect: Expected `str | Buffer | SupportsInt | SupportsIndex | SupportsTrunc`, found `~AlwaysFalsy | Literal[0]`
+src/synth_optimizers/board_server.py: error[invalid-argument-type] Argument to constructor `int.__new__` is incorrect: Expected `str | Buffer | SupportsInt | SupportsIndex | SupportsTrunc`, found `~None`
+src/synth_optimizers/board_server.py: error[invalid-argument-type] Argument to function `_normalize_run_status_projection` is incorrect: Expected `dict[Unknown, Unknown]`, found `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/board_server.py: error[invalid-argument-type] Argument to function `len` is incorrect: Expected `Sized`, found `Unknown | None | list[Unknown]`
+src/synth_optimizers/board_server.py: error[invalid-argument-type] Argument to function `len` is incorrect: Expected `Sized`, found `Unknown | None | list[Unknown]`
+src/synth_optimizers/board_server.py: error[invalid-argument-type] Argument to function `len` is incorrect: Expected `Sized`, found `Unknown | None | list[Unknown]`
+src/synth_optimizers/board_server.py: error[invalid-method-override] Invalid override of method `log_message`: Definition is incompatible with `BaseHTTPRequestHandler.log_message`
+src/synth_optimizers/board_server.py: error[invalid-return-type] Return type does not match returned value: expected `int | None`, found `int | float | None`
+src/synth_optimizers/board_server.py: error[not-iterable] Object of type `(list[dict[Unknown, Unknown]] & ~AlwaysFalsy) | Unknown | None | list[Unknown]` may not be iterable
+src/synth_optimizers/board_server.py: error[not-iterable] Object of type `(list[dict[Unknown, Unknown]] & ~AlwaysFalsy) | Unknown | None | list[Unknown]` may not be iterable
+src/synth_optimizers/board_server.py: error[not-subscriptable] Cannot subscript object of type `None` with no `__getitem__` method
+src/synth_optimizers/board_server.py: error[not-subscriptable] Cannot subscript object of type `None` with no `__getitem__` method
+src/synth_optimizers/board_server.py: error[not-subscriptable] Cannot subscript object of type `None` with no `__getitem__` method
+src/synth_optimizers/board_server.py: error[not-subscriptable] Cannot subscript object of type `None` with no `__getitem__` method
+src/synth_optimizers/board_server.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/board_server.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/board_server.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/board_server.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/board_server.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/board_server.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/board_server.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/board_server.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/board_server.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/board_server.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/board_server.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/board_server.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/board_server.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/board_server.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/board_server.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/board_server.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/board_server.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/board_server.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/board_server.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/board_server.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/board_server.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/board_server.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/board_server.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/board_server.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/board_server.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/board_server.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/board_server.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/board_server.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/board_server.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/board_server.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/board_server.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/board_server.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/board_server.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/board_server.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/board_server.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/board_server.py: error[unresolved-attribute] Attribute `items` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/board_server.py: error[unresolved-attribute] Object of type `BoardSource` has no attribute `workspace_storage`
+src/synth_optimizers/cispo_executor.py: error[invalid-assignment] Object of type `AdmissionProvider` is not assignable to attribute `provider` of type `TrainingProvider`
+src/synth_optimizers/cispo_executor.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Any | None | dict[Unknown, Unknown]`
+src/synth_optimizers/cispo_executor.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Any | None | dict[Unknown, Unknown]`
+src/synth_optimizers/cispo_executor.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Any | None | dict[Unknown, Unknown]`
+src/synth_optimizers/cispo_executor.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Any | None | dict[Unknown, Unknown]`
+src/synth_optimizers/cispo_executor.py: error[unresolved-attribute] Object of type `TrainingProvider` has no attribute `provider`
+src/synth_optimizers/cispo_service.py: error[invalid-method-override] Invalid override of method `log_message`: Definition is incompatible with `BaseHTTPRequestHandler.log_message`
+src/synth_optimizers/cispo_service.py: error[unresolved-attribute] Attribute `checkpoints` is not defined on `None` in union `Any | None | ExperimentService`
+src/synth_optimizers/cispo_service.py: error[unresolved-attribute] Attribute `checkpoints` is not defined on `None` in union `Any | None | ExperimentService`
+src/synth_optimizers/cispo_service.py: error[unresolved-attribute] Attribute `control` is not defined on `None` in union `Any | None | ExperimentService`
+src/synth_optimizers/cispo_service.py: error[unresolved-attribute] Attribute `control` is not defined on `None` in union `Any | None | ExperimentService`
+src/synth_optimizers/cispo_service.py: error[unresolved-attribute] Attribute `evaluations` is not defined on `None` in union `Any | None | ExperimentService`
+src/synth_optimizers/cispo_service.py: error[unresolved-attribute] Attribute `events` is not defined on `None` in union `Any | None | ExperimentService`
+src/synth_optimizers/cispo_service.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Any | None | ExperimentService`
+src/synth_optimizers/cispo_service.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Any | None | ExperimentService`
+src/synth_optimizers/cispo_service.py: error[unresolved-attribute] Attribute `verify_checkpoint` is not defined on `None` in union `Any | None | ExperimentService`
+src/synth_optimizers/cli.py: error[invalid-argument-type] Argument to constructor `float.__new__` is incorrect: Expected `str | Buffer | SupportsFloat | SupportsIndex`, found `~AlwaysFalsy | Literal[0]`
+src/synth_optimizers/cli.py: error[invalid-argument-type] Argument to constructor `int.__new__` is incorrect: Expected `str | Buffer | SupportsInt | SupportsIndex | SupportsTrunc`, found `int | float | None`
+src/synth_optimizers/cli.py: error[invalid-argument-type] Argument to function `_print_gelo_watch_snapshot` is incorrect: Expected `Mapping[str, Any] | None`, found `Mapping[str, Any] | OptimizerStateSlice | None`
+src/synth_optimizers/cli.py: error[invalid-argument-type] Argument to function `_print_gelo_watch_snapshot` is incorrect: Expected `Mapping[str, Any] | None`, found `Mapping[str, Any] | OptimizerStateSlice | None`
+src/synth_optimizers/cli.py: error[no-matching-overload] No overload of `dict.__init__` matches arguments
+src/synth_optimizers/cli.py: error[no-matching-overload] No overload of `dict.__init__` matches arguments
+src/synth_optimizers/cli.py: error[unresolved-attribute] Attribute `get` is not defined on `OptimizerEvent` in union `Mapping[str, Any] | OptimizerEvent`
+src/synth_optimizers/cli.py: error[unresolved-attribute] Attribute `get` is not defined on `OptimizerEvent` in union `Mapping[str, Any] | OptimizerEvent`
+src/synth_optimizers/cli.py: error[unresolved-attribute] Attribute `get` is not defined on `OptimizerEvent` in union `Mapping[str, Any] | OptimizerEvent`
+src/synth_optimizers/cli.py: error[unresolved-attribute] Attribute `get` is not defined on `OptimizerEvent` in union `Mapping[str, Any] | OptimizerEvent`
+src/synth_optimizers/cli.py: error[unresolved-attribute] Attribute `get` is not defined on `OptimizerEvent` in union `Mapping[str, Any] | OptimizerEvent`
+src/synth_optimizers/cli.py: error[unresolved-attribute] Attribute `get` is not defined on `OptimizerEvent` in union `Mapping[str, Any] | OptimizerEvent`
+src/synth_optimizers/cli.py: error[unresolved-attribute] Attribute `get` is not defined on `OptimizerEvent` in union `Mapping[str, Any] | OptimizerEvent`
+src/synth_optimizers/cli.py: error[unresolved-attribute] Attribute `get` is not defined on `OptimizerEvent` in union `Mapping[str, Any] | OptimizerEvent`
+src/synth_optimizers/cli.py: error[unsupported-operator] Operator `+` is not supported between objects of type `Literal[":"]` and `Unknown | None`
+src/synth_optimizers/discovery.py: error[invalid-argument-type] Argument to constructor `int.__new__` is incorrect: Expected `str | Buffer | SupportsInt | SupportsIndex | SupportsTrunc`, found `~None`
+src/synth_optimizers/docs_server.py: error[invalid-method-override] Invalid override of method `log_message`: Definition is incompatible with `BaseHTTPRequestHandler.log_message`
+src/synth_optimizers/docs_server.py: error[unresolved-attribute] Attribute `group` is not defined on `None` in union `Match[str] | None`
+src/synth_optimizers/eval/checkpoint_gateway.py: error[invalid-argument-type] Argument to bound method `SamplerGatewayService.bind` is incorrect: Expected `GroupPin`, found `EvaluationPin`
+src/synth_optimizers/eval/commands.py: error[unresolved-attribute] Attribute `resolve_reference` is not defined on `None` in union `Any | None`
+src/synth_optimizers/eval/runner.py: error[invalid-argument-type] Argument to bound method `TrialExecutor.run` is incorrect: Expected `(dict[str, Any], /) -> None`, found `(payload: dict[str, Any]) -> dict[str, Any]`
+src/synth_optimizers/eval/runner.py: error[not-subscriptable] Cannot subscript object of type `None` with no `__getitem__` method
+src/synth_optimizers/experiment/adapters/eval_runtime.py: error[invalid-argument-type] Argument is incorrect: Expected `int`, found `str | int`
+src/synth_optimizers/experiment/adapters/eval_runtime.py: error[invalid-argument-type] Argument is incorrect: Expected `int`, found `str | int`
+src/synth_optimizers/experiment/adapters/eval_runtime.py: error[invalid-argument-type] Argument is incorrect: Expected `int`, found `str | int`
+src/synth_optimizers/experiment/adapters/eval_runtime.py: error[invalid-argument-type] Argument is incorrect: Expected `str | None`, found `str | int`
+src/synth_optimizers/experiment/adapters/eval_runtime.py: error[invalid-argument-type] Argument is incorrect: Expected `str | None`, found `str | int`
+src/synth_optimizers/experiment/adapters/eval_runtime.py: error[invalid-argument-type] Argument is incorrect: Expected `str | None`, found `str | int`
+src/synth_optimizers/experiment/adapters/gepa_cli.py: error[invalid-argument-type] Argument is incorrect: Expected `int`, found `str | int | Any`
+src/synth_optimizers/experiment/adapters/gepa_cli.py: error[invalid-argument-type] Argument is incorrect: Expected `int`, found `str | int | Any`
+src/synth_optimizers/experiment/adapters/gepa_cli.py: error[invalid-argument-type] Argument is incorrect: Expected `int`, found `str | int | Any`
+src/synth_optimizers/experiment/adapters/gepa_cli.py: error[invalid-argument-type] Argument is incorrect: Expected `str | None`, found `str | int | Any`
+src/synth_optimizers/experiment/adapters/gepa_cli.py: error[invalid-argument-type] Argument is incorrect: Expected `str | None`, found `str | int | Any`
+src/synth_optimizers/experiment/adapters/gepa_cli.py: error[invalid-argument-type] Argument is incorrect: Expected `str | None`, found `str | int | Any`
+src/synth_optimizers/experiment/adapters/gepa_cli.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Any | None | dict[Unknown, Unknown]`
+src/synth_optimizers/experiment/adapters/gepa_cli.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Any | None | dict[Unknown, Unknown]`
+src/synth_optimizers/experiment/adapters/gepa_cli.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Any | None | dict[Unknown, Unknown]`
+src/synth_optimizers/experiment/adapters/gepa_cli.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Any | None | dict[Unknown, Unknown]`
+src/synth_optimizers/experiment/analysis.py: error[no-matching-overload] No overload of function `sorted` matches arguments
+src/synth_optimizers/gelo.py: error[invalid-argument-type] Argument is incorrect: Expected `int`, found `int | str`
+src/synth_optimizers/gelo.py: error[invalid-argument-type] Argument is incorrect: Expected `int`, found `int | str`
+src/synth_optimizers/gelo.py: error[invalid-argument-type] Argument is incorrect: Expected `int`, found `int | str`
+src/synth_optimizers/gelo.py: error[invalid-argument-type] Argument is incorrect: Expected `int`, found `int | str`
+src/synth_optimizers/gelo.py: error[invalid-argument-type] Argument is incorrect: Expected `str`, found `int | str`
+src/synth_optimizers/gelo.py: error[invalid-argument-type] Argument is incorrect: Expected `str`, found `int | str`
+src/synth_optimizers/gelo.py: error[invalid-argument-type] Argument is incorrect: Expected `str`, found `int | str`
+src/synth_optimizers/gelo.py: error[invalid-argument-type] Argument to constructor `Path.__new__` is incorrect: Expected `str | PathLike[str]`, found `Path | str | None`
+src/synth_optimizers/gelo.py: error[invalid-argument-type] Argument to constructor `Path.__new__` is incorrect: Expected `str | PathLike[str]`, found `Path | str | None`
+src/synth_optimizers/gepa.py: error[invalid-argument-type] Argument to constructor `Path.__new__` is incorrect: Expected `str | PathLike[str]`, found `str | Path | None`
+src/synth_optimizers/hosted.py: error[call-non-callable] Object of type `object` is not callable
+src/synth_optimizers/hosted.py: error[invalid-argument-type] Argument to bound method `Mapping.get` is incorrect: Expected `Never`, found `Literal["algorithm"]`
+src/synth_optimizers/hosted.py: error[invalid-argument-type] Argument to bound method `Mapping.get` is incorrect: Expected `Never`, found `Literal["candidate_kinds"]`
+src/synth_optimizers/hosted.py: error[invalid-argument-type] Argument to bound method `Mapping.get` is incorrect: Expected `Never`, found `Literal["status"]`
+src/synth_optimizers/o11y.py: error[invalid-argument-type] Argument to bound method `dict.get` is incorrect: Expected `Never`, found `Literal["custom"]`
+src/synth_optimizers/o11y.py: error[invalid-argument-type] Argument to bound method `list.append` is incorrect: Expected `Never`, found `str`
+src/synth_optimizers/o11y.py: error[invalid-argument-type] Argument to constructor `float.__new__` is incorrect: Expected `str | Buffer | SupportsFloat | SupportsIndex`, found `object`
+src/synth_optimizers/o11y.py: error[invalid-argument-type] Argument to constructor `float.__new__` is incorrect: Expected `str | Buffer | SupportsFloat | SupportsIndex`, found `~None`
+src/synth_optimizers/o11y.py: error[invalid-argument-type] Method `__getitem__` of type `bound method Top[dict[Unknown, Unknown]].__getitem__(key: Never, /) -> object` cannot be called with key of type `Literal["custom"]` on object of type `Top[dict[Unknown, Unknown]]`
+src/synth_optimizers/o11y.py: error[not-iterable] Object of type `Unknown | None | list[Unknown]` may not be iterable
+src/synth_optimizers/o11y.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/o11y.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/o11y.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/o11y.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/o11y.py: error[unresolved-attribute] Attribute `items` is not defined on `None` in union `Unknown | None | dict[Unknown, Unknown]`
+src/synth_optimizers/providers/tinker/fake.py: error[call-top-callable] Object of type `Top[(...) -> object]` is not safe to call; its signature is not known
+src/synth_optimizers/providers/tinker/prime.py: error[unresolved-import] Cannot resolve imported module `renderers`
+src/synth_optimizers/providers/tinker/prime.py: error[unresolved-import] Cannot resolve imported module `renderers`
+src/synth_optimizers/providers/tinker/sdk.py: error[unresolved-attribute] Attribute `backend_tokenizer` is not defined on `None` in union `Any | None`
+src/synth_optimizers/providers/tinker/sdk.py: error[unresolved-attribute] Attribute `config` is not defined on `None` in union `Any | None`
+src/synth_optimizers/providers/tinker/sdk.py: error[unresolved-import] Cannot resolve imported module `pyqwest.httpx`
+src/synth_optimizers/providers/tinker/sdk.py: error[unresolved-import] Cannot resolve imported module `pyqwest`
+src/synth_optimizers/providers/tinker/sdk.py: error[unresolved-import] Cannot resolve imported module `tinker._base_client`
+src/synth_optimizers/providers/tinker/sdk.py: error[unresolved-import] Cannot resolve imported module `tinker`
+src/synth_optimizers/rl/benchmark_server.py: error[unresolved-attribute] Attribute `cap_usd` is not defined on `None` in union `BudgetPolicy | None`
+src/synth_optimizers/rl/benchmark_server.py: error[unresolved-attribute] Attribute `ledger` is not defined on `None` in union `BudgetPolicy | None`
+src/synth_optimizers/rl/benchmark_server.py: error[unresolved-import] Cannot resolve imported module `craftax_gold.targets`
+src/synth_optimizers/rl/benchmark_server.py: error[unresolved-import] Cannot resolve imported module `craftax_gold`
+src/synth_optimizers/rl/benchmark_server.py: error[unresolved-import] Cannot resolve imported module `healthbench_chat.targets`
+src/synth_optimizers/rl/benchmark_server.py: error[unresolved-import] Cannot resolve imported module `healthbench_chat`
+src/synth_optimizers/rl/cli.py: error[call-non-callable] Object of type `object` is not callable
+src/synth_optimizers/rl/cli.py: error[invalid-argument-type] Argument to function `execute` is incorrect: Expected `ContractContainerSession`, found `ContainerSession`
+src/synth_optimizers/rl/cli.py: error[invalid-return-type] Return type does not match returned value: expected `synth_optimizers.rl.cli.Plane`, found `synth_optimizers.rl.plane.Plane`
+src/synth_optimizers/rl/cli.py: error[no-matching-overload] No overload of bound method `str.join` matches arguments
+src/synth_optimizers/rl/daytona_binary_grader.py: error[invalid-argument-type] Argument to function `module_from_spec` is incorrect: Expected `ModuleSpec`, found `ModuleSpec | None`
+src/synth_optimizers/rl/daytona_binary_grader.py: error[unresolved-attribute] Attribute `exec_module` is not defined on `None` in union `Loader | None`
+src/synth_optimizers/rl/daytona_binary_grader.py: error[unresolved-attribute] Attribute `loader` is not defined on `None` in union `ModuleSpec | None`
+src/synth_optimizers/rl/daytona_substrate.py: error[unresolved-import] Cannot resolve imported module `daytona`
+src/synth_optimizers/rl/daytona_substrate.py: error[unresolved-import] Cannot resolve imported module `daytona`
+src/synth_optimizers/rl/daytona_substrate.py: error[unresolved-import] Cannot resolve imported module `harbor_tblite.cispo`
+src/synth_optimizers/rl/daytona_substrate.py: error[unresolved-import] Cannot resolve imported module `harbor_tblite.cispo`
+src/synth_optimizers/rl/evaluation.py: error[unresolved-attribute] Object of type `ContainerSession` has no attribute `obligations`
+src/synth_optimizers/rl/executor.py: error[invalid-return-type] Return type does not match returned value: expected `list[Mapping[str, Any]]`, found `list[dict[str, str | int | Any | None]]`
+src/synth_optimizers/rl/experiment.py: error[invalid-argument-type] Argument to bound method `list.append` is incorrect: Expected `dict[str, str]`, found `dict[str, str | int]`
+src/synth_optimizers/rl/experiment.py: error[invalid-argument-type] Argument to bound method `list.extend` is incorrect: Expected `Iterable[dict[str, str]]`, found `GeneratorType[dict[str, str | int], None, None]`
+src/synth_optimizers/rl/experiment_driver.py: error[invalid-argument-type] Argument to `PairedEvaluation.__init__` is incorrect: Expected `SamplerGateway`, found `Unknown | SamplerGatewayService`
+src/synth_optimizers/rl/experiment_driver.py: error[invalid-argument-type] Argument to function `execute` is incorrect: Expected `SamplerGateway`, found `Unknown | SamplerGatewayService`
+src/synth_optimizers/rl/experiment_service.py: error[unresolved-attribute] Attribute `cap_usd` is not defined on `None` in union `BudgetPolicy | None`
+src/synth_optimizers/rl/experiment_service.py: error[unresolved-attribute] Attribute `cap_usd` is not defined on `None` in union `BudgetPolicy | None`
+src/synth_optimizers/rl/experiment_service.py: error[unresolved-attribute] Attribute `ledger` is not defined on `None` in union `BudgetPolicy | None`
+src/synth_optimizers/rl/experiment_service.py: error[unresolved-attribute] Attribute `ledger` is not defined on `None` in union `BudgetPolicy | None`
+src/synth_optimizers/rl/gateway.py: error[invalid-method-override] Invalid override of method `log_message`: Definition is incompatible with `BaseHTTPRequestHandler.log_message`
+src/synth_optimizers/rl/plane.py: error[invalid-argument-type] Argument is incorrect: Expected `RunClock`, found `RunClock | LiveRunClock`
+src/synth_optimizers/rl/plane.py: error[invalid-argument-type] Argument to `SamplerGatewayService.__init__` is incorrect: Expected `SamplerBackend`, found `Any | FencedProvider | BudgetedProvider`
+src/synth_optimizers/rl/plane.py: error[invalid-argument-type] Argument to `UrllibContainerClient.__init__` is incorrect: Expected `((Request, int | float, /) -> HttpReply) | None`, found `int | Unknown`
+src/synth_optimizers/rl/plane.py: error[invalid-argument-type] Argument to `UrllibContainerClient.__init__` is incorrect: Expected `((int | float, /) -> None) | None`, found `int | Unknown`
+src/synth_optimizers/rl/plane.py: error[invalid-argument-type] Argument to `UrllibContainerClient.__init__` is incorrect: Expected `RetryPolicy | None`, found `int | Unknown`
+src/synth_optimizers/rl/plane.py: error[invalid-argument-type] Argument to function `start_session` is incorrect: Expected `RunClock`, found `RunClock | LiveRunClock`
+src/synth_optimizers/rl/screening.py: error[invalid-argument-type] Argument to function `_usage_totals` is incorrect: Expected `list[Mapping[str, Any]]`, found `list[dict[str, Any]]`
+src/synth_optimizers/rl/screening.py: error[invalid-argument-type] Argument to function `_usage_totals` is incorrect: Expected `list[Mapping[str, Any]]`, found `list[dict[str, Any]]`
+src/synth_optimizers/rl/session.py: error[invalid-argument-type] Argument to constructor `int.__new__` is incorrect: Expected `str | Buffer | SupportsInt | SupportsIndex | SupportsTrunc`, found `Any | None | int`
+src/synth_optimizers/rl/store.py: error[invalid-return-type] Return type does not match returned value: expected `GroupRow`, found `GroupRow | None`
+src/synth_optimizers/runtime/training_budget.py: error[unresolved-attribute] Attribute `data` is not defined on `None` in union `Unknown | None`
+src/synth_optimizers/runtime/training_budget.py: error[unresolved-attribute] Attribute `max_tokens` is not defined on `None` in union `Unknown | None`
+src/synth_optimizers/runtime/training_budget.py: error[unresolved-attribute] Attribute `prompt_token_ids` is not defined on `None` in union `Unknown | None`
+src/synth_optimizers/runtime/training_budget.py: error[unresolved-attribute] Attribute `token_ids` is not defined on `None` in union `Unknown | None`
+src/synth_optimizers/sft.py: error[invalid-method-override] Invalid override of method `log_message`: Definition is incompatible with `BaseHTTPRequestHandler.log_message`
+src/synth_optimizers/sft.py: error[unknown-argument] Argument `idempotency_key_override` does not match any known parameter of bound method `SftExecutor.submit`
+src/synth_optimizers/sft.py: error[unresolved-attribute] Object of type `SftExecutor` has no attribute `_authority`
+src/synth_optimizers/sft.py: error[unresolved-attribute] Object of type `SftExecutor` has no attribute `pause`
+src/synth_optimizers/sft.py: error[unresolved-attribute] Object of type `SftExecutor` has no attribute `provider`
+src/synth_optimizers/sft.py: error[unresolved-attribute] Unresolved attribute `sync` on type `SftExecutor`
+src/synth_optimizers/sft_dataset.py: error[invalid-argument-type] Argument to constructor `map.__new__` is incorrect: Expected `(object, /) -> int`, found `<class 'int'>`
+src/synth_optimizers/sft_dataset.py: error[invalid-assignment] Object of type `list[Unknown]` is not assignable to `def rows(value) -> Unknown`
+src/synth_optimizers/sft_dataset.py: error[invalid-return-type] Return type does not match returned value: expected `list[dict[str, Any]]`, found `def rows(value) -> Unknown`
+src/synth_optimizers/sft_dataset.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Any | None | dict[Unknown, Unknown]`
+src/synth_optimizers/sft_dataset.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Any | None | dict[Unknown, Unknown]`
+src/synth_optimizers/sft_dataset.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Any | None | dict[Unknown, Unknown]`
+src/synth_optimizers/sft_dataset.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Any | None | dict[Unknown, Unknown]`
+src/synth_optimizers/sft_dataset.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Any | None | dict[Unknown, Unknown]`
+src/synth_optimizers/sft_dataset.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Any | None | dict[Unknown, Unknown]`
+src/synth_optimizers/sft_dataset.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Any | None | dict[Unknown, Unknown]`
+src/synth_optimizers/sft_dataset.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Any | None | dict[Unknown, Unknown]`
+src/synth_optimizers/sft_dataset.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Any | None | dict[Unknown, Unknown]`
+src/synth_optimizers/sft_dataset.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Any | None | dict[Unknown, Unknown]`
+src/synth_optimizers/sft_dataset.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Any | None | dict[Unknown, Unknown]`
+src/synth_optimizers/sft_dataset.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Any | None | dict[Unknown, Unknown]`
+src/synth_optimizers/sft_dataset.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Any | None | dict[Unknown, Unknown]`
+src/synth_optimizers/sft_dataset.py: error[unresolved-attribute] Function `rows` has no attribute `append`
+src/synth_optimizers/sft_executor.py: error[invalid-argument-type] Argument is incorrect: Expected `str`, found `str | None`
+src/synth_optimizers/sft_executor.py: error[invalid-assignment] Object of type `AdmissionProvider` is not assignable to attribute `provider` of type `TrainingProvider`
+src/synth_optimizers/sft_executor.py: error[no-matching-overload] No overload of bound method `MutableMapping.update` matches arguments
+src/synth_optimizers/sft_executor.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Any | None | dict[Unknown, Unknown]`
+src/synth_optimizers/sft_executor.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Any | None | dict[Unknown, Unknown]`
+src/synth_optimizers/sft_executor.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Any | None | dict[Unknown, Unknown]`
+src/synth_optimizers/sft_executor.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Any | None | dict[Unknown, Unknown]`
+src/synth_optimizers/sft_executor.py: error[unresolved-attribute] Object of type `TrainingProvider` has no attribute `prepare_renderer`
+src/synth_optimizers/sft_executor.py: error[unresolved-attribute] Object of type `TrainingProvider` has no attribute `provider`
+src/synth_optimizers/training_eval.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Any | None | dict[Unknown, Unknown]`
+src/synth_optimizers/training_eval.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Any | None | dict[Unknown, Unknown]`
+src/synth_optimizers/training_eval.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Any | None | dict[Unknown, Unknown]`
+src/synth_optimizers/tunnels.py: error[invalid-argument-type] Argument to bound method `GatewayHandler._send_upstream_response` is incorrect: Expected `Mapping[str, Any]`, found `Message[str, str]`
+src/synth_optimizers/tunnels.py: error[invalid-argument-type] Argument to bound method `_SynthTunnelAgent._send_response` is incorrect: Expected `Mapping[str, Any]`, found `Message[str, str]`
+src/synth_optimizers/victorialogs.py: error[invalid-argument-type] Argument to function `_level_for` is incorrect: Expected `dict[str, Any]`, found `Any | None | dict[Unknown, Unknown]`
+src/synth_optimizers/victorialogs.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Any | None | dict[Unknown, Unknown]`
+src/synth_optimizers/victorialogs.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Any | None | dict[Unknown, Unknown]`
+src/synth_optimizers/victorialogs.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Any | None | dict[Unknown, Unknown]`
+src/synth_optimizers/victorialogs.py: error[unresolved-attribute] Attribute `get` is not defined on `None` in union `Any | None | dict[Unknown, Unknown]`

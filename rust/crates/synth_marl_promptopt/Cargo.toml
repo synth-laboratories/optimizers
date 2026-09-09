@@ -14,3 +14,6 @@ synth_gepa = { path = "../synth_gepa" }
 synth_optimizer_platform = { path = "../synth_optimizer_platform" }
 toml.workspace = true
 uuid.workspace = true
+
+[lints]
+workspace = true

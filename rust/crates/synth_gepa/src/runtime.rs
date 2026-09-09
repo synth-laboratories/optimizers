@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, VecDeque};
-use std::env;
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
@@ -283,6 +282,13 @@ pub struct RuntimeRolloutFailure {
     pub failure: FailurePayload,
 }
 
+/// Callback invoked for each rollout progress event.
+pub type RuntimeRolloutProgressObserver<'a> = dyn FnMut(&RuntimeRolloutProgress) -> Result<()> + 'a;
+
+// 928 bytes against 176 for the next largest, but this is only ever built once
+// per rollout event and handed to the observer by reference, so the size is
+// never copied on a hot path. Boxing would break a published enum for nothing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug)]
 pub enum RuntimeRolloutProgress {
     Started {
@@ -345,7 +351,7 @@ pub struct GepaRuntimeExecutor<'a> {
     config: &'a SynthOptimizerConfig,
     client: &'a ContainerClient,
     executor_config: RuntimeEffectExecutorConfig,
-    progress_observer: Option<&'a mut dyn FnMut(&RuntimeRolloutProgress) -> Result<()>>,
+    progress_observer: Option<&'a mut RuntimeRolloutProgressObserver<'a>>,
 }
 
 pub fn execute_one_pending_optimizer_job_from_run_workspace(
@@ -370,7 +376,7 @@ pub fn execute_one_pending_optimizer_job_with_progress(
     run_id: &str,
     job_id: &str,
     executor_config: RuntimeEffectExecutorConfig,
-    progress_observer: &mut dyn FnMut(&RuntimeRolloutProgress) -> Result<()>,
+    progress_observer: &mut RuntimeRolloutProgressObserver<'_>,
 ) -> Result<RuntimeEffectOutcome> {
     let mut executor = GepaRuntimeExecutor {
         workspace,
@@ -993,27 +999,10 @@ impl RolloutDispatchConfig {
                 .to_ascii_lowercase(),
             poll_interval: Duration::from_millis(config.gepa.rollout_poll_interval_ms.max(1)),
             async_timeout: Duration::from_secs(config.gepa.rollout_async_timeout_seconds.max(1)),
-            http_retries: env_usize("SYNTH_OPTIMIZERS_GEPA_ROLLOUT_HTTP_RETRIES")
-                .unwrap_or(DEFAULT_ROLLOUT_HTTP_RETRIES)
-                .min(10),
-            retry_backoff: Duration::from_millis(
-                env_u64("SYNTH_OPTIMIZERS_GEPA_ROLLOUT_RETRY_BACKOFF_MS")
-                    .unwrap_or(DEFAULT_ROLLOUT_RETRY_BACKOFF_MS),
-            ),
+            http_retries: DEFAULT_ROLLOUT_HTTP_RETRIES.min(10),
+            retry_backoff: Duration::from_millis(DEFAULT_ROLLOUT_RETRY_BACKOFF_MS),
         }
     }
-}
-
-fn env_usize(name: &str) -> Option<usize> {
-    env::var(name)
-        .ok()
-        .and_then(|value| value.trim().parse::<usize>().ok())
-}
-
-fn env_u64(name: &str) -> Option<u64> {
-    env::var(name)
-        .ok()
-        .and_then(|value| value.trim().parse::<u64>().ok())
 }
 
 fn rollout_concurrency(config: &SynthOptimizerConfig) -> usize {

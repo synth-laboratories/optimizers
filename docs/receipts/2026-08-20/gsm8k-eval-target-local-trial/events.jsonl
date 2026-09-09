@@ -1,0 +1,3 @@
+{"event": "trial.started", "at": 1787248211.1471555, "trial_id": "gsm8k-test-101-base", "seed": 101, "scenario": "gsm8k-test"}
+{"event": "rollout.started", "at": 1787248211.2108495, "seed": 101, "policy_snapshot_id": "snap_f5cd812adb69462cbe007a8946340e2e", "route": "mlx-local-base"}
+{"event": "rollout.finished", "at": 1787248218.0450673, "correct": 0.0, "parse_mode": "exact", "format_compliant": true, "snapshot_pinned": true, "completion_tokens": 304}

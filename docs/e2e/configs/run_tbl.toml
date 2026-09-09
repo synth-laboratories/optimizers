@@ -1,0 +1,64 @@
+
+schema_version = "cispo.container.v1"
+run_id = "tbl_final"
+
+[container]
+url = "http://127.0.0.1:8244"
+
+[taskset]
+train_split = "train"
+evaluation_split = "train"
+train_ids = ["tblite/jsonl-aggregator"]
+evaluation_ids = []
+
+[model]
+provider = "fake"
+id = "openai/gpt-oss-20b"
+family = "gpt_oss"
+policy_kind = "tblite_mini_swe"
+
+[plan]
+preset = "cispo"
+group_size = 4
+groups_per_step = 1
+target_train_updates = 1
+maximum_sampled_groups = 6
+
+[pipeline]
+max_execution_slots = 4
+rollout_queue_capacity = 8
+score_queue_capacity = 8
+scored_result_queue_capacity = 8
+train_ready_capacity = 1
+maximum_policy_lag = 0
+max_open_groups = 1
+expected_horizon_seconds = 3600.0
+stale_disposition = "discard"
+
+[topology]
+expected_topology_id = "tblite.mini_swe.solo.v1"
+trainable_teams = ["team-0"]
+partial_roster = "refuse"
+
+[opponents]
+match_set_revision = "match-set-0001"
+
+[reward]
+optimized_channel = "score"
+
+[evaluation]
+paired = false
+
+[lifecycle]
+resume_requires_rehandshake = true
+
+[offline]
+mode = "off"
+
+[artifacts]
+# Absolute, and inside the scratchpad: these are relative to the process's cwd,
+# which is the optimizers checkout, and a catalog left there is both shared
+# between runs (a second run collides on its own checkpoint ids) and written
+# into a repository this work does not own.
+catalog = "/tmp/synth-container-first-e2e/tblite/checkpoints.sqlite3"
+directory = "/tmp/synth-container-first-e2e/tblite/runs"

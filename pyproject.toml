@@ -1,6 +1,6 @@
 [project]
 name = "synth-optimizers"
-version = "0.2.14"
+version = "0.2.22"
 description = "Public Synth optimizer tooling with a Rust GEPA core."
 authors = [{name = "Synth Laboratories", email = "josh@usesynth.ai"}]
 readme = "README.md"
@@ -8,17 +8,26 @@ requires-python = ">=3.11"
 license = "Apache-2.0"
 dependencies = [
     "pydantic>=2.0.0",
-    "synth-containers==0.4.1.dev20260814",
+    "synth-containers==0.4.2",
     "websocket-client>=1.8.0",
 ]
 
 [project.optional-dependencies]
+eval-target-build = ["pyarrow>=17", "huggingface-hub>=0.24"]
+daytona = ["daytona==0.210.0"]
+benchmark-server = ["fastapi>=0.115", "uvicorn>=0.30", "httpx>=0.27"]
 banking77 = [
     "datasets>=2.19.0",
     "openai>=1.0.0",
 ]
+tinker = [
+    "tinker",
+    "renderers>=0.1.9",
+]
 dev = [
     "maturin>=1.7.0",
+    "numpy>=2.0",
+    "pytest>=8.0.0",
     "ruff>=0.6.0",
     "ty>=0.0.32",
 ]
@@ -26,12 +35,15 @@ dev = [
 [dependency-groups]
 dev = [
     "maturin>=1.7.0",
+    "numpy>=2.0",
+    "pytest>=8.0.0",
     "ruff>=0.6.0",
     "ty>=0.0.32",
 ]
 
 [project.scripts]
 synth-optimizers = "synth_optimizers.cli:main"
+synth-optimizers-cispo = "synth_optimizers.cispo_cli:main"
 
 [project.urls]
 Homepage = "https://github.com/synth-laboratories/optimizers"
@@ -54,7 +66,8 @@ include = ["src/synth_optimizers/docs/**/*", "src/synth_optimizers/eval/catalog/
 package = true
 
 [tool.uv.sources]
-synth-containers = { git = "https://github.com/synth-laboratories/containers.git", rev = "e76f8e4ba3edae10dec24bf9e71ec1a7fb332bed" }
+# Coordinated-release candidate; no sibling checkout is required by uv users.
+synth-containers = { path = "vendor/synth-containers/synth_containers-0.4.2-py3-none-any.whl" }
 
 [tool.ruff]
 line-length = 100

@@ -1,0 +1,105 @@
+schema_version = "cispo.container.v1"
+run_id = "b77_hard20_uplift_11"
+
+[container]
+url = "http://127.0.0.1:8241"
+
+[taskset]
+train_split = "train"
+evaluation_split = "heldout"
+# Four separate train examples for each intent missed by run 10's baseline.
+train_ids = [
+  "banking77/train/7005", "banking77/train/7006", "banking77/train/7007", "banking77/train/7008",
+  "banking77/train/2077", "banking77/train/2078", "banking77/train/2079", "banking77/train/2080",
+  "banking77/train/9515", "banking77/train/9516", "banking77/train/9517", "banking77/train/9518",
+  "banking77/train/0", "banking77/train/1", "banking77/train/2", "banking77/train/3",
+  "banking77/train/1245", "banking77/train/1246", "banking77/train/1247", "banking77/train/1248",
+  "banking77/train/3994", "banking77/train/3995", "banking77/train/3996", "banking77/train/3997",
+  "banking77/train/8047", "banking77/train/8048", "banking77/train/8049", "banking77/train/8050",
+  "banking77/train/1928", "banking77/train/1929", "banking77/train/1930", "banking77/train/1931",
+  "banking77/train/6722", "banking77/train/6723", "banking77/train/6724", "banking77/train/6725",
+  "banking77/train/2869", "banking77/train/2870", "banking77/train/2871", "banking77/train/2872",
+  "banking77/train/1817", "banking77/train/1818", "banking77/train/1819", "banking77/train/1820",
+  "banking77/train/2698", "banking77/train/2699", "banking77/train/2700", "banking77/train/2701",
+  "banking77/train/8167", "banking77/train/8168", "banking77/train/8169", "banking77/train/8170",
+  "banking77/train/8208", "banking77/train/8209", "banking77/train/8210", "banking77/train/8211",
+]
+# Fresh panel: the next heldout example for every intent, never used by run 10.
+evaluation_ids = [
+  "banking77/heldout/1761", "banking77/heldout/2841", "banking77/heldout/481",
+  "banking77/heldout/2961", "banking77/heldout/1441", "banking77/heldout/321",
+  "banking77/heldout/2681", "banking77/heldout/1041", "banking77/heldout/2161",
+  "banking77/heldout/681", "banking77/heldout/2921", "banking77/heldout/961",
+  "banking77/heldout/1", "banking77/heldout/281", "banking77/heldout/41",
+  "banking77/heldout/361", "banking77/heldout/801", "banking77/heldout/1081",
+  "banking77/heldout/121", "banking77/heldout/1921", "banking77/heldout/2881",
+  "banking77/heldout/2721", "banking77/heldout/2121", "banking77/heldout/1402",
+  "banking77/heldout/561", "banking77/heldout/3041", "banking77/heldout/1801",
+  "banking77/heldout/1561", "banking77/heldout/1721", "banking77/heldout/1481",
+  "banking77/heldout/1361", "banking77/heldout/1121", "banking77/heldout/2761",
+  "banking77/heldout/81", "banking77/heldout/401", "banking77/heldout/161",
+  "banking77/heldout/2281", "banking77/heldout/241", "banking77/heldout/2601",
+  "banking77/heldout/1241", "banking77/heldout/2401", "banking77/heldout/921",
+  "banking77/heldout/441", "banking77/heldout/1641", "banking77/heldout/2481",
+  "banking77/heldout/1521", "banking77/heldout/1601", "banking77/heldout/201",
+  "banking77/heldout/641", "banking77/heldout/1841", "banking77/heldout/521",
+  "banking77/heldout/2241", "banking77/heldout/1681", "banking77/heldout/2081",
+  "banking77/heldout/881", "banking77/heldout/1881", "banking77/heldout/601",
+  "banking77/heldout/2801", "banking77/heldout/2441", "banking77/heldout/2641",
+  "banking77/heldout/721", "banking77/heldout/1001", "banking77/heldout/1321",
+  "banking77/heldout/1961", "banking77/heldout/2201", "banking77/heldout/2321",
+  "banking77/heldout/841", "banking77/heldout/2041", "banking77/heldout/1201",
+  "banking77/heldout/3001", "banking77/heldout/2001", "banking77/heldout/2361",
+  "banking77/heldout/2521", "banking77/heldout/1281", "banking77/heldout/1161",
+  "banking77/heldout/761", "banking77/heldout/2561",
+]
+
+[model]
+provider = "tinker"
+id = "openai/gpt-oss-20b"
+family = "gpt_oss"
+policy_kind = "banking77_classify"
+learning_rate = 0.00005
+
+[plan]
+preset = "cispo"
+group_size = 8
+groups_per_step = 2
+target_train_updates = 20
+steps_per_round = 20
+maximum_sampled_groups = 80
+
+[pipeline]
+max_execution_slots = 8
+rollout_queue_capacity = 128
+score_queue_capacity = 128
+scored_result_queue_capacity = 128
+train_ready_capacity = 1
+maximum_policy_lag = 0
+max_open_groups = 1
+expected_horizon_seconds = 60.0
+stale_disposition = "discard"
+
+[topology]
+expected_topology_id = "banking77.classify.solo.v1"
+trainable_teams = ["team-0"]
+partial_roster = "refuse"
+
+[opponents]
+match_set_revision = "match-set-0001"
+
+[reward]
+optimized_channel = "score"
+
+[evaluation]
+paired = false
+
+[lifecycle]
+resume_requires_rehandshake = true
+
+[offline]
+mode = "off"
+
+[artifacts]
+catalog = "/tmp/synth-container-first-e2e/banking77-hard20-paid-11/checkpoints.sqlite3"
+directory = "/tmp/synth-container-first-e2e/banking77-hard20-paid-11/runs"

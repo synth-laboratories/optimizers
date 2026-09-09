@@ -669,12 +669,10 @@ fn terminal_rollout_progress_line(fields: &Value, finished: bool) -> String {
         .unwrap_or(0)
         .min(total);
     let width = 20usize;
-    let filled = if total > 0 {
-        (done.saturating_mul(width) + total / 2) / total
-    } else {
-        0
-    }
-    .min(width);
+    let filled = (done.saturating_mul(width) + total / 2)
+        .checked_div(total)
+        .unwrap_or(0)
+        .min(width);
     let bar = format!("{}{}", "#".repeat(filled), ".".repeat(width - filled));
     let percent = if total > 0 {
         100.0 * done as f64 / total as f64

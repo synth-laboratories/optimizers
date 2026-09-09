@@ -38,6 +38,7 @@ class TrialRunRequest:
     limits: TrialLimits
     network: str
     secrets: Mapping[str, str] = field(default_factory=dict)
+    extra_hosts: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,6 +169,10 @@ class OciTrialExecutor:
         ]
         for name, value in request.secrets.items():
             argv.extend(["--env", f"{name}={value}"])
+        for mapping in request.extra_hosts:
+            if mapping != "host.docker.internal:host-gateway":
+                raise ContainerRuntimeError(f"unsupported eval container host mapping: {mapping}")
+            argv.extend(["--add-host", mapping])
         argv.append(request.image_reference)
 
         stderr_path = request.output_dir / "container.stderr.log"

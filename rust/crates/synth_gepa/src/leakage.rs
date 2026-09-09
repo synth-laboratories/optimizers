@@ -1,8 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const DEFAULT_LEAKAGE_MIN_SPAN_CHARS: usize = 32;
-
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LeakageMatch {
     pub example_id: String,
@@ -137,7 +135,10 @@ fn string_field(row: &Value, keys: &[&str]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The default the platform config applies; asserting against a second
+    // copy of `32` here would let the two drift apart silently.
     use serde_json::json;
+    use synth_optimizer_platform::DEFAULT_LEAKAGE_MIN_SPAN_CHARS;
 
     #[test]
     fn thirty_two_char_containment_is_a_leak() {

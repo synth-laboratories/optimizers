@@ -19,6 +19,9 @@ use synth_optimizer_platform::limits::{
     BudgetReleaseRecord, BudgetReservationInput, BudgetReservationRecord, RunLimitPolicy,
     RuntimeEffectAdmissionInput, RuntimeEffectAdmissionRecord, RuntimeEffectBudgetEstimate,
 };
+use synth_optimizer_platform::observability::{
+    GEPA_RUN_CANCELLED_EVENT_TYPE, GEPA_RUN_FAILED_EVENT_TYPE,
+};
 use synth_optimizer_platform::{
     budget_limit_engine_input, container_child_eval_ref, fold_reported_cost, normalize_event_feed,
     proposer_delta_chunks_from_response, stable_json_hash, task_identity, write_run_storage_report,
@@ -1129,7 +1132,7 @@ struct HeldoutSelectionInput<'a> {
 
 const ROLLOUT_CACHE_PROFILE: &str = "rollout_request";
 const PROPOSER_CACHE_PROFILE: &str = "gepa_proposer";
-const GEPA_ALGORITHM_ID: &str = "synth_gepa.v1";
+pub(crate) const GEPA_ALGORITHM_ID: &str = "synth_gepa.v1";
 
 struct StopperSnapshot<'a> {
     status: &'a str,
@@ -2059,7 +2062,6 @@ fn append_global_gepa_run_index_entry(home: &Path, entry: &Value) -> Result<()> 
     let mut file = OpenOptions::new()
         .create(true)
         .read(true)
-        .write(true)
         .append(true)
         .open(&index_path)
         .map_err(|source| OptimizerError::io(&index_path, source))?;
@@ -2100,57 +2102,7 @@ fn append_global_gepa_run_index_entry(home: &Path, entry: &Value) -> Result<()> 
 }
 
 #[cfg(test)]
-mod global_gepa_run_index_tests {
-    use super::*;
-    use std::sync::{Arc, Barrier};
-
-    #[test]
-    fn concurrent_appends_remain_distinct_valid_jsonl_records() {
-        let home = std::env::temp_dir().join(format!(
-            "synth_gepa_index_concurrency_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let barrier = Arc::new(Barrier::new(3));
-        let mut writers = Vec::new();
-        for run_id in ["gepa_luna", "gepa_sol"] {
-            let home = home.clone();
-            let barrier = Arc::clone(&barrier);
-            writers.push(thread::spawn(move || {
-                let entry = json!({
-                    "schema": "synth.gepa_run_index.v1",
-                    "run_id": run_id,
-                    "run_dir": home.join(run_id),
-                    "event_feed_path": home.join(run_id).join("optimizer_events.jsonl"),
-                });
-                barrier.wait();
-                append_global_gepa_run_index_entry(&home, &entry).unwrap();
-            }));
-        }
-        barrier.wait();
-        for writer in writers {
-            writer.join().unwrap();
-        }
-
-        let lines = fs::read_to_string(home.join("index.jsonl")).unwrap();
-        let entries = lines
-            .lines()
-            .map(|line| serde_json::from_str::<Value>(line).unwrap())
-            .collect::<Vec<_>>();
-        assert_eq!(entries.len(), 2);
-        assert_eq!(
-            entries
-                .iter()
-                .filter_map(|entry| entry.get("run_id").and_then(Value::as_str))
-                .collect::<BTreeSet<_>>(),
-            BTreeSet::from(["gepa_luna", "gepa_sol"])
-        );
-        fs::remove_dir_all(home).unwrap();
-    }
-}
+mod global_gepa_run_index_tests;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct UsageTotals {
@@ -7056,6 +7008,18 @@ fn advance_pending_runtime_job(
                         .workspace
                         .optimizer_job(&context.config.run.run_id, job_id)
                     {
+                        // The service worker may win the claim race and finish
+                        // while the inline runner is attempting the same job.
+                        // A completed job is success with a persisted outcome,
+                        // not a terminal failure from the inline claim error.
+                        if matches!(updated_job.status, OptimizerJobStatus::Completed) {
+                            return consume_completed_runtime_job(
+                                context,
+                                state,
+                                resources,
+                                updated_job,
+                            );
+                        }
                         if matches!(updated_job.status, OptimizerJobStatus::RetryScheduled) {
                             persist_gepa_run_state(
                                 context,
@@ -7379,7 +7343,20 @@ fn emit_runtime_job_completed_event(
             fields.insert("proposal_count".to_string(), json!(outcome.proposals.len()));
             fields.insert("backend".to_string(), json!(&outcome.backend));
             fields.insert("cache_hit".to_string(), json!(outcome.cache_hit));
-            fields.insert("cost_usd".to_string(), json!(outcome.reported_cost_usd));
+            fields.insert(
+                "cost_usd".to_string(),
+                json!(outcome
+                    .reported_cost_usd
+                    .or(context.config.gepa.proposer_estimated_cost_usd)),
+            );
+            fields.insert(
+                "cost_source".to_string(),
+                json!(if outcome.reported_cost_usd.is_some() {
+                    "provider_reported"
+                } else {
+                    "configured_reservation_ceiling"
+                }),
+            );
             fields.insert("usage".to_string(), serde_json::to_value(&outcome.usage)?);
             if let Some(cost_source) = outcome
                 .response
@@ -9072,7 +9049,7 @@ fn prompt_assertions_for_candidate(
             field.clone(),
             json!({
                 "sha256": sha256_text(prompt),
-                "bytes": prompt.as_bytes().len(),
+                "bytes": prompt.len(),
                 "source": format!("candidate.{field}"),
                 "must_reach": "policy_llm_system_message",
             }),
@@ -10560,10 +10537,35 @@ fn consume_failed_runtime_job(
         ),
         _ => (GepaCursorPhase::Failed, "failed", "GEPA runtime job failed"),
     };
+    let runtime_failure = job
+        .payload
+        .get("runtime_outcome")
+        .and_then(|value| value.get("failures"))
+        .and_then(|value| value.get(0))
+        .and_then(|value| value.get("failure"))
+        .cloned();
     let error_summary = job
         .payload
         .get("error")
         .cloned()
+        .or_else(|| {
+            runtime_failure.map(|failure| {
+                let message = failure
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("GEPA runtime effect reported a failed outcome");
+                json!({
+                    "error_code": failure
+                        .get("reason_code")
+                        .and_then(Value::as_str)
+                        .unwrap_or("synth_optimizer_failed"),
+                    "message": message,
+                    "failure": failure,
+                    "runtime_job_id": job.job_id,
+                    "runtime_job_status": job.status.as_str(),
+                })
+            })
+        })
         .or_else(|| {
             job.failure.as_ref().map(|failure| {
                 json!({
@@ -10799,13 +10801,13 @@ fn terminalize_gepa_run_state(
         if matches!(terminal_state, OptimizerRunState::Cancelled) {
             (
                 OptimizerTransitionTrigger::CancelRequested,
-                "gepa.run.cancelled",
+                GEPA_RUN_CANCELLED_EVENT_TYPE,
                 "GEPA run cancelled",
             )
         } else {
             (
                 OptimizerTransitionTrigger::FailureRaised,
-                "gepa.run.failed",
+                GEPA_RUN_FAILED_EVENT_TYPE,
                 "GEPA run failed",
             )
         };
@@ -10852,6 +10854,11 @@ fn terminalize_gepa_run_state(
         )?;
     }
     let state_history = serde_json::to_value(&context.state_machine.history)?;
+    let storage_summary = record_terminal_storage_snapshot(
+        &context.paths,
+        &context.config.run.run_id,
+        &mut context.events,
+    )?;
     context.events.emit(
         terminal_event_type,
         message,
@@ -10887,6 +10894,14 @@ fn terminalize_gepa_run_state(
         "cache_profile_path": context.paths.cache_profile_path.display().to_string(),
         "workspace_db_path": context.paths.workspace_db_path.display().to_string(),
     });
+    if let (Some(manifest), Some(correlation)) = (
+        failure_manifest.as_object_mut(),
+        correlation_value(&context.config),
+    ) {
+        // A failed trial still has to join to its arm; dropping the envelope
+        // here would turn a recorded failure into an unattributable one.
+        manifest.insert("correlation".to_string(), correlation);
+    }
     if let (Some(manifest), Some(selection)) =
         (failure_manifest.as_object_mut(), selection.as_object())
     {
@@ -10901,11 +10916,6 @@ fn terminalize_gepa_run_state(
         &context.paths.run_dir,
     )?;
     context.events.set_lane("enrichment");
-    let storage_summary = record_terminal_storage_snapshot(
-        &context.paths,
-        &context.config.run.run_id,
-        &mut context.events,
-    )?;
     let optimizer_enrichment_cursor = context.events.last_sequence_number();
     if let Some(manifest) = failure_manifest.as_object_mut() {
         manifest.insert(
@@ -14050,6 +14060,13 @@ fn finalize_completed_gepa_run(
     )?;
     let runtime_summary =
         serde_json::to_value(runtime_usage_summary_from_events(context.events.records()))?;
+    // The canonical optimizer stream seals on the terminal event. Storage
+    // facts must be recorded first; the raw enrichment lane does not unseal it.
+    let storage_summary = record_terminal_storage_snapshot(
+        &context.paths,
+        &context.config.run.run_id,
+        &mut context.events,
+    )?;
     context.events.emit(
         "gepa.run.finished",
         "GEPA run finished",
@@ -14072,11 +14089,6 @@ fn finalize_completed_gepa_run(
         &context.paths.run_dir,
     )?;
     context.events.set_lane("enrichment");
-    let storage_summary = record_terminal_storage_snapshot(
-        &context.paths,
-        &context.config.run.run_id,
-        &mut context.events,
-    )?;
     context.events.flush()?;
     context
         .workspace
@@ -14156,6 +14168,7 @@ fn finalize_completed_gepa_run(
         cost_usd: reported_cost,
         usage: usage_value,
         state_history,
+        correlation: correlation_value(&context.config),
         ..Default::default()
     };
     apply_identities_to_run_result(
@@ -14240,6 +14253,19 @@ fn finalize_completed_gepa_run(
         result: Some(result),
         message: "GEPA run completed".to_string(),
     })
+}
+
+/// The trial envelope, as JSON, for a manifest that is about to be sealed.
+///
+/// Returns `None` for an ordinary run. A run nobody dispatched from an
+/// experiment must not grow an empty `correlation` key that later reads as a
+/// join to nothing.
+fn correlation_value(config: &SynthOptimizerConfig) -> Option<Value> {
+    config
+        .run
+        .correlation
+        .as_ref()
+        .and_then(|envelope| serde_json::to_value(envelope).ok())
 }
 
 fn stopped_by_value(config: &SynthOptimizerConfig, state: &GepaRunState) -> Value {
@@ -15237,7 +15263,14 @@ fn execute_gepa_monolithic_with_options(
                 "model": config.proposer.model,
                 "provider": config.proposer.provider,
                 "backend": proposer_outcome.backend,
-                "cost_usd": proposer_outcome.reported_cost_usd,
+                "cost_usd": proposer_outcome
+                    .reported_cost_usd
+                    .or(config.gepa.proposer_estimated_cost_usd),
+                "cost_source": if proposer_outcome.reported_cost_usd.is_some() {
+                    "provider_reported"
+                } else {
+                    "configured_reservation_ceiling"
+                },
                 "runtime_substrate": proposer_outcome.runtime_substrate,
                 "workspace": proposer_outcome.workspace,
                 "warning_count": proposer_outcome.evidence_warnings.len(),
@@ -16701,6 +16734,8 @@ fn execute_gepa_monolithic_with_options(
     )?;
     let runtime_summary =
         serde_json::to_value(runtime_usage_summary_from_events(events.records()))?;
+    let storage_summary =
+        record_terminal_storage_snapshot(&paths, &config.run.run_id, &mut events)?;
     events.emit(
         "gepa.run.finished",
         "GEPA run finished",
@@ -16722,8 +16757,6 @@ fn execute_gepa_monolithic_with_options(
         &paths.run_dir,
     )?;
     events.set_lane("enrichment");
-    let storage_summary =
-        record_terminal_storage_snapshot(&paths, &config.run.run_id, &mut events)?;
     events.flush()?;
     workspace.record_event_stream(&config.run.run_id, events.records())?;
     registry.append(&RunRegistryEntry::finished(
@@ -16788,6 +16821,7 @@ fn execute_gepa_monolithic_with_options(
         cost_usd: reported_cost,
         usage: usage_value,
         state_history,
+        correlation: correlation_value(&config),
         ..Default::default()
     };
     apply_identities_to_run_result(
@@ -17494,7 +17528,7 @@ fn score_vector_frame_matches_split(
     // while the heldout rows retain their dataset split, such as "test".
     frame.split == "heldout"
         && frame.evaluation_stage == "heldout"
-        && source_stages.iter().any(|stage| *stage == "heldout")
+        && source_stages.contains(&"heldout")
 }
 
 fn score_vector_for_candidate(input: CandidateScoreVectorInput<'_>) -> Result<ScoreVectorRecord> {
@@ -19925,56 +19959,7 @@ fn reported_cost_from_usage_ledger(records: &[UsageLedgerRecord]) -> Option<f64>
 }
 
 #[cfg(test)]
-mod reported_cost_tests {
-    use super::*;
-
-    fn row(id: &str, cost_usd: Option<f64>) -> UsageLedgerRecord {
-        UsageLedgerRecord::from_input(UsageLedgerInput {
-            boundary: "provider",
-            source_type: "call",
-            source_id: id,
-            candidate_id: None,
-            evaluation_stage: None,
-            model: None,
-            provider: None,
-            call_count: 1,
-            usage: json!({}),
-            cost_usd,
-            metadata: Map::new(),
-        })
-    }
-
-    #[test]
-    fn aggregate_is_null_if_any_provider_cost_is_unknown() {
-        assert_eq!(reported_cost_from_usage_ledger(&[]), None);
-        assert_eq!(reported_cost_from_usage_ledger(&[row("a", None)]), None);
-        assert_eq!(
-            reported_cost_from_usage_ledger(&[row("a", Some(0.12)), row("b", None)]),
-            None
-        );
-        assert_eq!(
-            reported_cost_from_usage_ledger(&[row("a", Some(0.0)), row("b", Some(0.12))]),
-            Some(0.12)
-        );
-    }
-
-    #[test]
-    fn configured_cost_budget_stops_on_unknown_receipt() {
-        assert!(!reported_cost_budget_blocked(1.0, 0.0, &[]));
-        assert!(reported_cost_budget_blocked(1.0, 0.0, &[row("a", None)]));
-        assert!(!reported_cost_budget_blocked(
-            1.0,
-            0.12,
-            &[row("a", Some(0.12))]
-        ));
-        assert!(reported_cost_budget_blocked(
-            1.0,
-            1.0,
-            &[row("a", Some(1.0))]
-        ));
-        assert!(!reported_cost_budget_blocked(0.0, 0.0, &[row("a", None)]));
-    }
-}
+mod reported_cost_tests;
 
 fn proposer_usage_record(
     config: &SynthOptimizerConfig,
@@ -19983,6 +19968,17 @@ fn proposer_usage_record(
     outcome: &ProposerOutcome,
 ) -> Result<UsageLedgerRecord> {
     let mut metadata = Map::new();
+    let settled_cost_usd = outcome
+        .reported_cost_usd
+        .or(config.gepa.proposer_estimated_cost_usd);
+    metadata.insert(
+        "cost_source".to_string(),
+        json!(if outcome.reported_cost_usd.is_some() {
+            "provider_reported"
+        } else {
+            "configured_reservation_ceiling"
+        }),
+    );
     metadata.insert("generation".to_string(), json!(generation));
     metadata.insert("proposal_count".to_string(), json!(outcome.proposals.len()));
     metadata.insert(
@@ -20018,7 +20014,7 @@ fn proposer_usage_record(
         provider: Some(&config.proposer.provider),
         call_count: outcome.usage.proposer_calls.max(1),
         usage: serde_json::to_value(&outcome.usage)?,
-        cost_usd: outcome.reported_cost_usd,
+        cost_usd: settled_cost_usd,
         metadata,
     }))
 }
@@ -20656,9 +20652,14 @@ fn runtime_effect_retry_policy(kind: &OptimizerJobKind) -> RetryPolicy {
             ],
         },
         OptimizerJobKind::Proposer => RetryPolicy {
-            max_attempts: 2,
-            backoff_seconds: 2,
-            retryable_failure_types: vec!["synth_optimizer_proposer_error".to_string()],
+            // A proposer is a stateful, paid agent turn. Retrying the whole turn
+            // can duplicate side effects and silently exceed the run's wall-clock
+            // budget (for example, two 120s turns inside a 240s smoke). Surface
+            // the first complete failure and let an explicit run-level decision
+            // choose whether to try again.
+            max_attempts: 1,
+            backoff_seconds: 0,
+            retryable_failure_types: vec![],
         },
         _ => RetryPolicy::default(),
     }
@@ -20685,6 +20686,17 @@ fn record_runtime_effect_completed(
         }
     }
     let mut metadata = input.metadata.clone();
+    let settled_cost_usd = settled_effect_cost(
+        input.status,
+        input.reported_cost_usd,
+        input.reservation.max_cost_usd,
+    );
+    if input.reported_cost_usd.is_none() && settled_cost_usd.is_some() {
+        metadata.insert(
+            "cost_source".to_string(),
+            json!("reserved_ceiling_on_missing_provider_cost"),
+        );
+    }
     if let Some(failure) = input.failure {
         metadata.insert("failure".to_string(), serde_json::to_value(failure)?);
     }
@@ -20712,7 +20724,7 @@ fn record_runtime_effect_completed(
         input.planned,
         &completed,
         input.cost_usd,
-        input.reported_cost_usd,
+        settled_cost_usd,
         input.usage,
         input.rollout_count,
         metadata.clone(),
@@ -20729,7 +20741,7 @@ fn record_runtime_effect_completed(
         run_id: &input.planned.run_id,
         runtime_effect_id: &input.planned.runtime_effect_id,
         budget_reservation_id: &input.reservation.budget_reservation_id,
-        cost_usd: input.reported_cost_usd,
+        cost_usd: settled_cost_usd,
         prompt_tokens: input.usage.prompt_tokens,
         completion_tokens: input.usage.completion_tokens,
         total_tokens: input.usage.total_tokens,
@@ -20766,6 +20778,18 @@ fn record_runtime_effect_completed(
         return Err(budget_exceeded_error(&input.planned.run_id, &breach));
     }
     Ok(())
+}
+
+fn settled_effect_cost(
+    status: &str,
+    reported_cost_usd: Option<f64>,
+    reserved_cost_usd: Option<f64>,
+) -> Option<f64> {
+    reported_cost_usd.or_else(|| {
+        (status == "completed")
+            .then_some(reserved_cost_usd)
+            .flatten()
+    })
 }
 
 fn record_run_phase_timing_from_effect(
@@ -21848,13 +21872,13 @@ fn fail_gepa_run_and_return<T>(input: FailedGepaRunInput<'_>, error: OptimizerEr
         OptimizerError::Cancelled { .. } => (
             OptimizerRunState::Cancelled,
             OptimizerTransitionTrigger::CancelRequested,
-            "gepa.run.cancelled",
+            GEPA_RUN_CANCELLED_EVENT_TYPE,
             "GEPA run cancelled",
         ),
         _ => (
             OptimizerRunState::Failed,
             OptimizerTransitionTrigger::FailureRaised,
-            "gepa.run.failed",
+            GEPA_RUN_FAILED_EVENT_TYPE,
             "GEPA run failed",
         ),
     };
@@ -21981,6 +22005,8 @@ fn fail_gepa_run_and_return<T>(input: FailedGepaRunInput<'_>, error: OptimizerEr
     input
         .workspace
         .record_checkpoint_compacting_previous(&input.config.run.run_id, &checkpoint)?;
+    let storage_summary =
+        record_terminal_storage_snapshot(input.paths, &input.config.run.run_id, input.events)?;
     input.events.emit(
         terminal_event_type,
         input.message,
@@ -22018,8 +22044,6 @@ fn fail_gepa_run_and_return<T>(input: FailedGepaRunInput<'_>, error: OptimizerEr
         &input.paths.run_dir,
     )?;
     input.events.set_lane("enrichment");
-    let storage_summary =
-        record_terminal_storage_snapshot(input.paths, &input.config.run.run_id, input.events)?;
     input.events.flush()?;
     input
         .workspace
@@ -22069,49 +22093,4 @@ fn candidate_id(payload: &BTreeMap<String, String>) -> String {
 }
 
 #[cfg(test)]
-mod run_loop_terminalization_tests {
-    use super::*;
-
-    #[test]
-    fn budget_exhaustion_is_a_typed_terminal_run_loop_error() {
-        let error = OptimizerError::BudgetExceeded {
-            run_id: "gepa_budget_test".to_string(),
-            limit: "max_cost_usd".to_string(),
-            requested: "0.05".to_string(),
-            available: "0.04".to_string(),
-        };
-        assert_eq!(
-            terminal_message_for_run_loop_error(&error),
-            Some("GEPA budget exhausted")
-        );
-        assert_eq!(error.error_code(), "synth_optimizer_budget_exceeded");
-    }
-
-    #[test]
-    fn unrelated_orchestration_errors_are_not_reclassified_as_budget_terminal() {
-        assert_eq!(
-            terminal_message_for_run_loop_error(&OptimizerError::Container(
-                "provider unavailable".to_string()
-            )),
-            None
-        );
-    }
-
-    #[test]
-    fn proposer_runtime_jobs_get_one_bounded_retry() {
-        let policy = runtime_effect_retry_policy(&OptimizerJobKind::Proposer);
-        assert_eq!(policy.max_attempts, 2);
-        assert_eq!(policy.backoff_seconds, 2);
-        assert_eq!(
-            policy.retryable_failure_types,
-            vec!["synth_optimizer_proposer_error".to_string()]
-        );
-    }
-
-    #[test]
-    fn unrelated_runtime_jobs_keep_the_fail_closed_default() {
-        let policy = runtime_effect_retry_policy(&OptimizerJobKind::Annotation);
-        assert_eq!(policy.max_attempts, 1);
-        assert!(policy.retryable_failure_types.is_empty());
-    }
-}
+mod run_loop_terminalization_tests;

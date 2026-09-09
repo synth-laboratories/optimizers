@@ -8,6 +8,7 @@ use serde_json::{Map, Value};
 
 use crate::agent_runtime::{validate_execution_mode_compat, ExecutionSubstrate};
 use crate::configured_limits::validate_gepa_limit_config;
+use crate::correlation::CorrelationEnvelope;
 use crate::disk_budget::DiskBudgetConfig;
 use crate::error::{OptimizerError, Result};
 
@@ -395,145 +396,10 @@ impl SynthOptimizerConfig {
         let path = path.as_ref();
         let text = fs::read_to_string(path).map_err(|source| OptimizerError::io(path, source))?;
         let mut config: Self = toml::from_str(&text)?;
-        config.apply_env_overrides()?;
         config.resolve_relative_paths(path.parent().unwrap_or_else(|| Path::new(".")));
         config.resolve_runtime_targets()?;
         config.validate()?;
         Ok(config)
-    }
-
-    fn apply_env_overrides(&mut self) -> Result<()> {
-        if let Some(run_id) =
-            read_env_override(&["SYNTH_OPTIMIZERS_RUN_ID", "GEPA_PLATFORM_RUN_ID"])
-        {
-            self.run.run_id = run_id;
-        }
-        if let Some(output_dir) =
-            read_env_override(&["SYNTH_OPTIMIZERS_OUTPUT_DIR", "GEPA_PLATFORM_OUTPUT_DIR"])
-        {
-            self.run.output_dir = PathBuf::from(output_dir);
-        }
-        if let Some(cache_namespace) = read_env_override(&[
-            "SYNTH_OPTIMIZERS_CACHE_NAMESPACE",
-            "GEPA_PLATFORM_CACHE_NAMESPACE",
-        ]) {
-            self.cache.namespace = Some(cache_namespace);
-        }
-        if let Some(cache_path) =
-            read_env_override(&["SYNTH_OPTIMIZERS_CACHE_PATH", "GEPA_PLATFORM_CACHE_PATH"])
-        {
-            self.cache.path = Some(PathBuf::from(cache_path));
-        }
-        if let Some(cache_mode) =
-            read_env_override(&["SYNTH_OPTIMIZERS_CACHE_MODE", "GEPA_PLATFORM_CACHE_MODE"])
-        {
-            self.cache.mode = parse_cache_mode_override(&cache_mode)?;
-        }
-        if let Some(proposer_backend) = read_env_override(&[
-            "SYNTH_OPTIMIZERS_PROPOSER_BACKEND",
-            "GEPA_PLATFORM_PROPOSER_BACKEND",
-        ]) {
-            self.proposer.backend = proposer_backend;
-        }
-        if let Some(execution_mode) = read_env_override(&[
-            "SYNTH_OPTIMIZERS_PROPOSER_EXECUTION_MODE",
-            "GEPA_PLATFORM_PROPOSER_EXECUTION_MODE",
-        ]) {
-            self.proposer.execution_mode = execution_mode.trim().to_ascii_lowercase();
-        }
-        if let Some(model) = read_env_override(&[
-            "SYNTH_OPTIMIZERS_PROPOSER_MODEL",
-            "GEPA_PLATFORM_PROPOSER_MODEL",
-        ]) {
-            self.proposer.model = Some(model.trim().to_string());
-        }
-        if let Some(reasoning_effort) = read_env_override(&[
-            "SYNTH_OPTIMIZERS_PROPOSER_REASONING_EFFORT",
-            "GEPA_PLATFORM_PROPOSER_REASONING_EFFORT",
-        ]) {
-            self.proposer.reasoning_effort = Some(normalize_enum_value(&reasoning_effort));
-        }
-        if let Some(service_tier) = read_env_override(&[
-            "SYNTH_OPTIMIZERS_PROPOSER_SERVICE_TIER",
-            "GEPA_PLATFORM_PROPOSER_SERVICE_TIER",
-        ]) {
-            self.proposer.service_tier = normalize_proposer_service_tier(&service_tier);
-        }
-        if let Some(auth_mode) = read_env_override(&[
-            "SYNTH_OPTIMIZERS_PROPOSER_AUTH_MODE",
-            "GEPA_PLATFORM_PROPOSER_AUTH_MODE",
-        ]) {
-            self.proposer.auth_mode = proposer_auth_mode_normalized(&auth_mode);
-            if proposer_uses_chatgpt_auth(&self.proposer.auth_mode) {
-                self.proposer.api_key_env = None;
-            }
-        }
-        if let Some(codex_home) = read_env_override(&[
-            "SYNTH_OPTIMIZERS_PROPOSER_CODEX_HOME",
-            "GEPA_PLATFORM_PROPOSER_CODEX_HOME",
-        ]) {
-            self.proposer.codex_home = Some(PathBuf::from(codex_home));
-        }
-        if let Some(rollout_submission_mode) =
-            read_env_override(&["SYNTH_OPTIMIZERS_ROLLOUT_SUBMISSION_MODE"])
-        {
-            self.gepa.rollout_submission_mode = rollout_submission_mode.trim().to_ascii_lowercase();
-        }
-        if let Some(poll_interval_ms) =
-            read_env_override(&["SYNTH_OPTIMIZERS_ROLLOUT_POLL_INTERVAL_MS"])
-        {
-            self.gepa.rollout_poll_interval_ms = parse_u64_override(
-                "SYNTH_OPTIMIZERS_ROLLOUT_POLL_INTERVAL_MS",
-                &poll_interval_ms,
-            )?;
-        }
-        if let Some(timeout_seconds) =
-            read_env_override(&["SYNTH_OPTIMIZERS_ROLLOUT_ASYNC_TIMEOUT_SECONDS"])
-        {
-            self.gepa.rollout_async_timeout_seconds = parse_u64_override(
-                "SYNTH_OPTIMIZERS_ROLLOUT_ASYNC_TIMEOUT_SECONDS",
-                &timeout_seconds,
-            )?;
-        }
-        if let Some(pipeline_mode) = read_env_override(&["SYNTH_OPTIMIZERS_GEPA_PIPELINE_MODE"]) {
-            self.gepa.pipeline.mode = Some(parse_gepa_pipeline_mode_override(&pipeline_mode)?);
-        }
-        if let Some(staleness_policy) =
-            read_env_override(&["SYNTH_OPTIMIZERS_GEPA_STALENESS_POLICY"])
-        {
-            self.gepa.pipeline.staleness_policy =
-                parse_gepa_staleness_policy_override(&staleness_policy)?;
-        }
-        if let Some(rollout_chunk_size) =
-            read_env_override(&["SYNTH_OPTIMIZERS_GEPA_ROLLOUT_CHUNK_SIZE"])
-        {
-            self.gepa.rollout_chunk_size = Some(parse_usize_override(
-                "SYNTH_OPTIMIZERS_GEPA_ROLLOUT_CHUNK_SIZE",
-                &rollout_chunk_size,
-            )?);
-        }
-        if let Some(raw) =
-            read_env_override(&["SYNTH_OPTIMIZERS_GEPA_ROLLOUT_FAILURE_RATE_TOLERANCE"])
-        {
-            self.gepa.rollout_failure_rate_tolerance =
-                parse_f64_override("SYNTH_OPTIMIZERS_GEPA_ROLLOUT_FAILURE_RATE_TOLERANCE", &raw)?;
-        }
-        if let Some(raw) = read_env_override(&["SYNTH_OPTIMIZERS_DISK_BUDGET_ENABLED"]) {
-            self.disk_budget.enabled =
-                parse_bool_override("SYNTH_OPTIMIZERS_DISK_BUDGET_ENABLED", &raw)?;
-        }
-        if let Some(raw) = read_env_override(&["SYNTH_OPTIMIZERS_DISK_BUDGET_SOFT_LIMIT_GB"]) {
-            self.disk_budget.soft_limit_gb =
-                parse_f64_override("SYNTH_OPTIMIZERS_DISK_BUDGET_SOFT_LIMIT_GB", &raw)?;
-        }
-        if let Some(raw) = read_env_override(&["SYNTH_OPTIMIZERS_DISK_BUDGET_HARD_LIMIT_GB"]) {
-            self.disk_budget.hard_limit_gb =
-                parse_f64_override("SYNTH_OPTIMIZERS_DISK_BUDGET_HARD_LIMIT_GB", &raw)?;
-        }
-        if let Some(raw) = read_env_override(&["SYNTH_OPTIMIZERS_DISK_BUDGET_PATH"]) {
-            self.disk_budget.path = Some(PathBuf::from(raw));
-        }
-        Ok(())
     }
 
     fn resolve_relative_paths(&mut self, base_dir: &Path) {
@@ -554,6 +420,11 @@ impl SynthOptimizerConfig {
             self.cache.path = Some(absolutize(base_dir, path));
         }
         resolve_command_path_args(base_dir, &mut self.proposer.command);
+        let spec = self.jesterky_workflow.spec.trim();
+        if !spec.is_empty() {
+            self.jesterky_workflow.spec =
+                absolutize(base_dir, Path::new(spec)).display().to_string();
+        }
     }
 
     pub fn resolve_runtime_targets(&mut self) -> Result<()> {
@@ -825,6 +696,10 @@ pub struct RunConfig {
     pub output_dir: PathBuf,
     #[serde(default)]
     pub seed: u64,
+    /// Set when an experiment dispatched this run. The service still mints
+    /// `run_id` itself; this only records which trial asked for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation: Option<CorrelationEnvelope>,
 }
 
 impl Default for RunConfig {
@@ -833,6 +708,7 @@ impl Default for RunConfig {
             run_id: default_run_id(),
             output_dir: default_output_dir(),
             seed: 0,
+            correlation: None,
         }
     }
 }
@@ -1463,9 +1339,12 @@ fn validate_proposer_runtime_substrate_config(proposer: &ProposerConfig) -> Resu
 
 fn validate_chat_completions_proposer_config(proposer: &ProposerConfig) -> Result<()> {
     let provider = proposer.provider.trim().to_ascii_lowercase();
-    if !matches!(provider.as_str(), "deepseek" | "nvidia" | "openai") {
+    if !matches!(
+        provider.as_str(),
+        "deepseek" | "nvidia" | "openai" | "openrouter"
+    ) {
         return Err(OptimizerError::Config(format!(
-            "chat-completions proposer backend requires proposer.provider = \"deepseek\", \"nvidia\", or \"openai\"; got {:?}",
+            "chat-completions proposer backend requires proposer.provider = \"deepseek\", \"nvidia\", \"openai\", or \"openrouter\"; got {:?}",
             proposer.provider
         )));
     }
@@ -1512,9 +1391,13 @@ fn validate_openrouter_proposer_config(proposer: &ProposerConfig) -> Result<()> 
             VERIFIED_OPENROUTER_MODELS.join(", ")
         )));
     }
-    if proposer.backend != "codex_app_server" {
+    if !matches!(
+        proposer.backend.as_str(),
+        "codex_app_server" | "chat_completions" | "deepseek_chat"
+    ) {
         return Err(OptimizerError::Config(
-            "OpenRouter proposer requires proposer.backend = \"codex_app_server\"".to_string(),
+            "OpenRouter proposer requires proposer.backend = \"codex_app_server\" or \"chat_completions\""
+                .to_string(),
         ));
     }
     let auth_mode = proposer_auth_mode_normalized(&proposer.auth_mode);
@@ -1797,7 +1680,7 @@ fn default_leakage_policy() -> String {
 }
 
 fn default_leakage_min_span_chars() -> usize {
-    32
+    crate::levers::DEFAULT_LEAKAGE_MIN_SPAN_CHARS
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2229,25 +2112,15 @@ fn reject_path_segment(field: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+/// The one backend URL name. Seven aliases used to be tried in order, so the
+/// backend a run talked to depended on which of them a shell happened to carry.
+pub const BACKEND_BASE_URL_ENV: &str = "SYNTH_BACKEND_URL";
+
 fn resolve_backend_base_url_from_env() -> Option<String> {
-    for name in [
-        "SYNTH_BACKEND_URL_OVERRIDE",
-        "SYNTH_BACKEND_URL",
-        "SYNTH_API_URL",
-        "DEV_SYNTH_BACKEND_URL",
-        "DEV_BACKEND_URL",
-        "PROD_SYNTH_BACKEND_URL",
-        "PROD_BACKEND_URL",
-        "BACKEND_URL",
-    ] {
-        if let Ok(value) = env::var(name) {
-            let value = value.trim().to_string();
-            if !value.is_empty() {
-                return Some(value);
-            }
-        }
-    }
-    None
+    env::var(BACKEND_BASE_URL_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn normalize_backend_base_url(raw: &str) -> String {
@@ -2431,14 +2304,6 @@ fn validate_policy_config(config: &PolicyConfig) -> Result<()> {
 
 fn normalize_enum_value(value: &str) -> String {
     value.trim().to_ascii_lowercase().replace('-', "_")
-}
-
-fn normalize_proposer_service_tier(value: &str) -> Option<String> {
-    match normalize_enum_value(value).as_str() {
-        "" | "default" | "normal" | "standard" => None,
-        "fast" => Some("fast".to_string()),
-        _ => Some(value.trim().to_string()),
-    }
 }
 
 fn validate_proposer_prompt_config(config: &ProposerPromptConfig) -> Result<()> {
@@ -2754,76 +2619,6 @@ fn validate_gepa_objective_direction(name: &str, direction: &str) -> Result<()> 
     }
 }
 
-fn read_env_override(names: &[&str]) -> Option<String> {
-    names.iter().find_map(|name| {
-        env::var(name)
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-    })
-}
-
-fn parse_cache_mode_override(raw_mode: &str) -> Result<CacheConfigMode> {
-    match raw_mode.trim().to_ascii_lowercase().as_str() {
-        "off" => Ok(CacheConfigMode::Off),
-        "readwrite" => Ok(CacheConfigMode::Readwrite),
-        "readonly" => Ok(CacheConfigMode::Readonly),
-        _ => Err(OptimizerError::Config(format!(
-            "unknown cache mode override: {raw_mode}"
-        ))),
-    }
-}
-
-fn parse_u64_override(name: &str, raw_value: &str) -> Result<u64> {
-    raw_value.trim().parse::<u64>().map_err(|source| {
-        OptimizerError::Config(format!("invalid {name} override {raw_value:?}: {source}"))
-    })
-}
-
-fn parse_usize_override(name: &str, raw_value: &str) -> Result<usize> {
-    raw_value.trim().parse::<usize>().map_err(|source| {
-        OptimizerError::Config(format!("invalid {name} override {raw_value:?}: {source}"))
-    })
-}
-
-fn parse_f64_override(name: &str, raw_value: &str) -> Result<f64> {
-    raw_value.trim().parse::<f64>().map_err(|source| {
-        OptimizerError::Config(format!("invalid {name} override {raw_value:?}: {source}"))
-    })
-}
-
-fn parse_bool_override(name: &str, raw_value: &str) -> Result<bool> {
-    match raw_value.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "on" | "y" => Ok(true),
-        "0" | "false" | "no" | "off" | "n" | "" => Ok(false),
-        other => Err(OptimizerError::Config(format!(
-            "invalid {name} override {other:?}: expected one of 0/1/true/false/yes/no/on/off"
-        ))),
-    }
-}
-
-fn parse_gepa_pipeline_mode_override(raw_mode: &str) -> Result<GepaPipelineMode> {
-    match raw_mode.trim().to_ascii_lowercase().as_str() {
-        "sync_serial" | "sync" | "serial" => Ok(GepaPipelineMode::SyncSerial),
-        "async_pipelined" | "async" | "pipelined" => Ok(GepaPipelineMode::AsyncPipelined),
-        "flash_evolve" | "flashevolve" | "flash" => Ok(GepaPipelineMode::FlashEvolve),
-        _ => Err(OptimizerError::Config(format!(
-            "unknown GEPA pipeline mode override: {raw_mode}"
-        ))),
-    }
-}
-
-fn parse_gepa_staleness_policy_override(raw_policy: &str) -> Result<GepaStalenessPolicy> {
-    match raw_policy.trim().to_ascii_lowercase().as_str() {
-        "full" | "full_async" => Ok(GepaStalenessPolicy::Full),
-        "guarded" => Ok(GepaStalenessPolicy::Guarded),
-        "reflective" => Ok(GepaStalenessPolicy::Reflective),
-        _ => Err(OptimizerError::Config(format!(
-            "unknown GEPA staleness policy override: {raw_policy}"
-        ))),
-    }
-}
-
 fn validate_gepa_pipeline_config(config: &GepaPipelineConfig) -> Result<()> {
     match (config.resolved_mode(), config.staleness_policy) {
         (GepaPipelineMode::SyncSerial, GepaStalenessPolicy::Full) => {}
@@ -2977,6 +2772,64 @@ fn validate_gepa_leakage_config(config: &GepaLeakageConfig) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// Byte-for-byte what `experiment.adapters.gepa_cli` writes into a rendered
+    /// trial config.
+    ///
+    /// `RunConfig` is `deny_unknown_fields`, so this is the exact place a
+    /// correlation envelope would be rejected at parse time -- before a
+    /// container starts and long before anyone notices a manifest that cannot
+    /// be joined to an arm.
+    const RENDERED_TRIAL_RUN_SECTION: &str = r#"
+[run]
+run_id = "gepa_t676b09f94e51e2f3"
+output_dir = "runs/t676b09f94e51e2f3"
+seed = 104
+
+[run.correlation]
+schema_version = "synth.correlation.v1"
+experiment_id = "luna-effort-v1"
+arm_id = "arm_6edf53cf5835"
+block_id = "seed:104"
+replicate = 0
+trial_id = "t676b09f94e51e2f3"
+plan_digest = "sha256:abababababababababababababababababababababababababababababababab"
+
+[run.correlation.subject]
+subject_kind = "proposer-policy"
+subject_id = "gpt-5.6-luna@low"
+subject_content_digest = "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+"#;
+
+    #[derive(Deserialize)]
+    struct RunSectionOnly {
+        run: RunConfig,
+    }
+
+    #[test]
+    fn a_rendered_trial_config_parses_with_its_envelope_intact() {
+        let parsed: RunSectionOnly =
+            toml::from_str(RENDERED_TRIAL_RUN_SECTION).expect("rendered trial config parses");
+        assert_eq!(parsed.run.run_id, "gepa_t676b09f94e51e2f3");
+        assert_eq!(parsed.run.seed, 104);
+
+        let envelope = parsed.run.correlation.expect("envelope survives the TOML");
+        envelope.validate().expect("valid");
+        assert_eq!(envelope.trial_id, "t676b09f94e51e2f3");
+        assert_eq!(envelope.subject.subject_id, "gpt-5.6-luna@low");
+        // TOML cannot express null, so the optionals must be absent rather than
+        // empty; a `candidate_id = null` here would not have parsed at all.
+        assert!(envelope.candidate_id.is_none());
+        assert!(envelope.subject.parent_subject_id.is_none());
+    }
+
+    #[test]
+    fn an_ordinary_run_section_still_parses_without_one() {
+        let parsed: RunSectionOnly =
+            toml::from_str("[run]\nrun_id = \"plain\"\noutput_dir = \"runs\"\nseed = 0\n")
+                .expect("a run without an experiment behind it parses");
+        assert!(parsed.run.correlation.is_none());
+    }
+
     #[test]
     fn locked_5_6_chatgpt_proposers_are_allowed() {
         for model in ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"] {
@@ -3075,3 +2928,8 @@ mod tests {
         assert_eq!(pipeline.max_in_flight_candidates, 10);
     }
 }
+
+/// P0-4 lock. The loaded config is what the TOML says, whatever the process
+/// environment carries.
+#[cfg(test)]
+mod env_authority;

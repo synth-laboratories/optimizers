@@ -1,28 +1,28 @@
-"""Public SFT control plane backed by an internal Optimizers-beta executor.
+"""Public SFT control plane executed in-process by the Tinker SFT executor.
 
-The public service owns SFT's stable API, canonical run identity, validation, and
-replay-facing endpoints.  The beta service is deliberately an executor: it receives
-only validated jobs and is not a Workshop-facing control plane.
+The public service owns SFT's stable API, canonical run identity, validation,
+and replay-facing endpoints. Training runs locally against the shared Tinker
+adapter. Historical Optimizers-beta remains a reference implementation only.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import sqlite3
-import threading
-import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
-import uuid
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
+
+from .contracts.training_schemas import TERMINAL_STATES
+from .recipes.banking77 import fixture_examples
+from .runtime import JobStore, JobStoreError, after_sequence_from, wants_live_stream, write_sse
+from .sft_executor import SftExecutor, TinkerSftExecutor
 
 
 SFT_ALGORITHM_ID = "sft"
@@ -38,12 +38,6 @@ class SftArtifact:
 
     body: bytes
     content_type: str
-
-
-class SftExecutor(Protocol):
-    def request(
-        self, method: str, path: str, payload: Mapping[str, Any] | None = None
-    ) -> dict[str, Any]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,7 +59,8 @@ class SftConfig:
         data = _json_object(value, context="SFT config")
         resolved_run_id = _non_empty_text(run_id or data.get("run_id"), field="run_id")
         base_model = _non_empty_text(
-            data.get("base_model", "openai/gpt-oss-20b"), field="base_model"
+            data.get("base_model") or data.get("model_id") or "openai/gpt-oss-20b",
+            field="base_model",
         )
         backend = _non_empty_text(data.get("backend", "tinker"), field="backend")
         if backend not in {"fixture", "tinker"}:
@@ -73,25 +68,23 @@ class SftConfig:
         slots = data.get("accelerator_slots", 1)
         if not isinstance(slots, int) or isinstance(slots, bool) or slots < 1:
             raise SftServiceError("accelerator_slots must be a positive integer")
-        raw_steps = data.get("checkpoint_steps", [10, 20])
-        if not isinstance(raw_steps, list) or not raw_steps:
-            raise SftServiceError("checkpoint_steps must be a non-empty list")
-        if any(
-            not isinstance(step, int) or isinstance(step, bool) or step < 1 for step in raw_steps
-        ):
-            raise SftServiceError("checkpoint_steps must contain positive integers")
-        if sorted(raw_steps) != raw_steps or len(set(raw_steps)) != len(raw_steps):
-            raise SftServiceError("checkpoint_steps must be strictly increasing")
-        if backend == "tinker" and not (
-            _optional_text(data.get("training_file_id"))
-            or _optional_text(data.get("training_jsonl"))
-        ):
-            raise SftServiceError("Tinker SFT requires training_file_id or training_jsonl")
+        from .contracts.checkpoint_plan import resolve_checkpoint_plan
+        from .contracts.training_schemas import SchemaError
+        try:
+            plan = resolve_checkpoint_plan(data)
+        except SchemaError as exc:
+            raise SftServiceError(str(exc)) from exc
+        raw_steps = plan["save_steps"]
+        data["training"] = {**(data.get("training") or {}), "steps": plan["steps"]}
+        if backend == "tinker" and not _has_training_data(data):
+            raise SftServiceError("Tinker SFT requires training_file_id, training_jsonl, examples, or dataset")
         data["run_id"] = resolved_run_id
         data["base_model"] = base_model
+        data["model_id"] = base_model
         data["backend"] = backend
         data["accelerator_slots"] = slots
-        data["checkpoint_steps"] = raw_steps
+        if "checkpoint_schedule" not in data:
+            data["checkpoint_steps"] = raw_steps
         return cls(
             run_id=resolved_run_id,
             base_model=base_model,
@@ -103,82 +96,13 @@ class SftConfig:
 
     @classmethod
     def from_toml(cls, text: str, *, run_id: str | None = None) -> "SftConfig":
+        import tomllib
+
         try:
             value = tomllib.loads(text)
         except tomllib.TOMLDecodeError as exc:
             raise SftServiceError(f"invalid SFT TOML: {exc}") from exc
         return cls.from_mapping(value, run_id=run_id)
-
-
-class BetaSftExecutorClient:
-    """Authenticated internal client for the Optimizers-beta SFT executor."""
-
-    def __init__(self, base_url: str, token: str, *, timeout_seconds: float = 300.0) -> None:
-        self.base_url = _non_empty_text(base_url, field="beta base URL").rstrip("/")
-        self.token = _non_empty_text(token, field="beta service token")
-        self.timeout_seconds = timeout_seconds
-
-    @classmethod
-    def from_env(cls) -> "BetaSftExecutorClient":
-        return cls(
-            os.environ.get("SYNTH_OPTIMIZERS_BETA_URL")
-            or os.environ.get("OPTIMIZERS_BETA_URL")
-            or "http://127.0.0.1:8879",
-            os.environ.get("OPTIMIZERS_BETA_SERVICE_TOKEN", ""),
-        )
-
-    def request(
-        self,
-        method: str,
-        path: str,
-        payload: Mapping[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        body = None if payload is None else json.dumps(payload).encode("utf-8")
-        request = urllib.request.Request(
-            f"{self.base_url}{path}",
-            data=body,
-            method=method,
-            headers={
-                "Accept": "application/json",
-                "Authorization": f"Bearer {self.token}",
-                **({"Content-Type": "application/json"} if body is not None else {}),
-            },
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                raw = response.read().decode("utf-8")
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise SftServiceError(
-                f"beta SFT executor {method} {path} failed: {exc.code} {detail}"
-            ) from exc
-        except urllib.error.URLError as exc:
-            raise SftServiceError(f"beta SFT executor {method} {path} failed: {exc}") from exc
-        try:
-            decoded = json.loads(raw) if raw.strip() else {}
-        except json.JSONDecodeError as exc:
-            raise SftServiceError(f"beta SFT executor returned invalid JSON: {exc}") from exc
-        return _json_object(decoded, context="beta SFT response")
-
-    def artifact(self, run_id: str, name: str) -> SftArtifact:
-        request = urllib.request.Request(
-            f"{self.base_url}/v1/runs/{urllib.parse.quote(run_id, safe='')}/artifacts/"
-            f"{urllib.parse.quote(name, safe='')}",
-            headers={"Authorization": f"Bearer {self.token}"},
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                return SftArtifact(
-                    body=response.read(),
-                    content_type=response.headers.get_content_type(),
-                )
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise SftServiceError(
-                f"beta SFT artifact {run_id}/{name} failed: {exc.code} {detail}"
-            ) from exc
-        except urllib.error.URLError as exc:
-            raise SftServiceError(f"beta SFT artifact {run_id}/{name} failed: {exc}") from exc
 
 
 class SftPublicServiceClient:
@@ -215,6 +139,15 @@ class SftPublicServiceClient:
     def cancel(self, run_id: str) -> dict[str, Any]:
         return self._request("POST", f"/v1/runs/{run_id}/cancel", {})
 
+    def pause(self, run_id: str) -> dict[str, Any]:
+        return self._request("POST", f"/v1/runs/{run_id}/pause", {})
+
+    def resume(self, run_id: str) -> dict[str, Any]:
+        return self._request("POST", f"/v1/runs/{run_id}/resume", {})
+
+    def estimate(self, config: Mapping[str, Any]) -> dict[str, Any]:
+        return self._request("POST", "/v1/runs/estimate", {"algorithm": SFT_ALGORITHM_ID, "config_json": dict(config)})
+
     def optimizer_events(
         self, run_id: str, *, after_sequence: int = 0, limit: int = 500
     ) -> dict[str, Any]:
@@ -222,6 +155,35 @@ class SftPublicServiceClient:
             {"after_sequence": max(0, after_sequence), "limit": max(1, min(5_000, limit))}
         )
         return self._request("GET", f"/v1/runs/{run_id}/optimizer-events?{query}")
+
+    def optimizer_event_stream(
+        self, run_id: str, *, after_sequence: int = 0
+    ) -> Iterator[dict[str, Any]]:
+        query = urllib.parse.urlencode({"after_sequence": max(0, after_sequence)})
+        path = f"/v1/runs/{run_id}/optimizer-events/stream?{query}"
+        headers = {
+            "Accept": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Connection": "close",
+        }
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        request = urllib.request.Request(
+            f"{self.base_url}{path}", method="GET", headers=headers
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+                for event in _iter_sse_events(response):
+                    yield event
+                    if str(event.get("phase") or "") in TERMINAL_STATES:
+                        return
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise SftServiceError(
+                f"public SFT service GET {path} failed: {exc.code} {detail}"
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise SftServiceError(f"public SFT service GET {path} failed: {exc}") from exc
 
     def artifact(self, run_id: str, name: str) -> SftArtifact:
         request = urllib.request.Request(
@@ -282,32 +244,37 @@ class SftPublicServiceClient:
 class SftService:
     """Durable public SFT façade with one canonical run ID per submission."""
 
-    def __init__(self, database_path: str | Path, executor: SftExecutor) -> None:
-        database = Path(database_path)
-        database.parent.mkdir(parents=True, exist_ok=True)
-        self.database_path = str(database)
-        self.executor = executor
-        self._db = sqlite3.connect(self.database_path, check_same_thread=False)
-        self._db.row_factory = sqlite3.Row
-        self._lock = threading.RLock()
-        self._db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS sft_public_runs (
-                run_id TEXT PRIMARY KEY,
-                beta_run_id TEXT NOT NULL,
-                config_json TEXT NOT NULL,
-                status TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                error TEXT
+    def __init__(
+        self,
+        database_path: str | Path,
+        executor: SftExecutor | None = None,
+        *,
+        fixture: bool = False,
+        background: bool = False,
+    ) -> None:
+        if executor is None:
+            self.store = JobStore(database_path)
+            self.executor = TinkerSftExecutor.local(
+                self.store, fixture=fixture or _use_fixture_executor()
             )
-            """
-        )
-        self._db.commit()
+        else:
+            self.executor = executor
+            store = getattr(executor, "store", None)
+            self.store = store if isinstance(store, JobStore) else JobStore(database_path)
+        if background:
+            self.executor.sync = False
 
     @classmethod
     def from_env(cls, database_path: str | Path) -> "SftService":
-        return cls(database_path, BetaSftExecutorClient.from_env())
+        return cls(database_path, background=True)
+
+    @classmethod
+    def from_fixture(cls, database_path: str | Path) -> "SftService":
+        return cls(database_path, fixture=True)
+
+    def estimate(self, config: Mapping[str, Any]) -> dict[str, Any]:
+        validated = SftConfig.from_mapping(config, run_id=str(config.get("run_id") or "sft_estimate"))
+        return self.executor.estimate(_executor_config(validated))
 
     def submit(
         self,
@@ -316,46 +283,16 @@ class SftService:
         run_id: str | None = None,
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
-        with self._lock:
-            requested_run_id = run_id or idempotency_key or _optional_text(config.get("run_id"))
-            canonical_run_id = requested_run_id or f"sft_{uuid.uuid4().hex}"
-            validated = SftConfig.from_mapping(config, run_id=canonical_run_id)
-            existing = self._lookup(canonical_run_id)
-            if existing is not None:
-                if existing["config_json"] != _compact_json(validated.config_json):
-                    raise SftServiceError(
-                        f"idempotency key {canonical_run_id!r} was already submitted with a different SFT config"
-                    )
-                return self._submit_response(existing["run_id"], existing["status"])
-
-            response = self.executor.request(
-                "POST",
-                "/v1/runs",
-                {
-                    "algorithm": SFT_ALGORITHM_ID,
-                    "idempotency_key": canonical_run_id,
-                    "config_json": validated.config_json,
-                },
-            )
-            beta_run_id = _non_empty_text(response.get("run_id"), field="beta run_id")
-            status = _non_empty_text(response.get("status", "queued"), field="beta status")
-            now = _now()
-            self._db.execute(
-                """
-                INSERT INTO sft_public_runs(run_id, beta_run_id, config_json, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    canonical_run_id,
-                    beta_run_id,
-                    _compact_json(validated.config_json),
-                    status,
-                    now,
-                    now,
-                ),
-            )
-            self._db.commit()
-            return self._submit_response(canonical_run_id, status)
+        requested_run_id = run_id or idempotency_key or _optional_text(config.get("run_id"))
+        canonical_run_id = requested_run_id or _fresh_run_id()
+        validated = SftConfig.from_mapping(config, run_id=canonical_run_id)
+        payload = _executor_config(validated)
+        result = self.executor.submit(
+            payload,
+            job_id=canonical_run_id,
+            idempotency_key_override=idempotency_key,
+        )
+        return self._submit_response(canonical_run_id, str(result.get("status") or "queued"))
 
     def submit_toml(
         self,
@@ -371,87 +308,60 @@ class SftService:
         )
 
     def get(self, run_id: str) -> dict[str, Any]:
-        with self._lock:
-            record = self._require(run_id)
-            remote = self.executor.request("GET", f"/v1/runs/{record['beta_run_id']}")
-            status = _non_empty_text(remote.get("status", record["status"]), field="beta status")
-            error = _optional_text(remote.get("error"))
-            self._update_status(run_id, status, error)
-            return self._public_run(record, remote, status, error)
+        return self._public_run(self.executor.status(run_id))
 
     def cancel(self, run_id: str) -> dict[str, Any]:
-        with self._lock:
-            record = self._require(run_id)
-            remote = self.executor.request("POST", f"/v1/runs/{record['beta_run_id']}/cancel", {})
-            status = _non_empty_text(remote.get("status", "cancelled"), field="beta status")
-            self._update_status(run_id, status, _optional_text(remote.get("error")))
-            return self.get(run_id)
+        return self._public_run(self.executor.cancel(run_id))
+
+    def pause(self, run_id: str) -> dict[str, Any]:
+        return self._public_run(self.executor.pause(run_id))
+
+    def resume(self, run_id: str) -> dict[str, Any]:
+        return self._public_run(self.executor.resume(run_id))
 
     def optimizer_events(
         self, run_id: str, *, after_sequence: int = 0, limit: int = 500
     ) -> dict[str, Any]:
-        with self._lock:
-            record = self._require(run_id)
-            query = urllib.parse.urlencode(
-                {"after_sequence": max(0, after_sequence), "limit": max(1, min(5_000, limit))}
-            )
-            remote = self.executor.request(
-                "GET", f"/v1/runs/{record['beta_run_id']}/optimizer-events?{query}"
-            )
-            remote["run_id"] = run_id
-            return remote
+        from .runtime.workshop import optimizer_event_page
+
+        return optimizer_event_page(
+            self.store, run_id, after_sequence=after_sequence, limit=limit
+        )
+
+    def checkpoint_evidence(self, run_id: str, child_id: str) -> dict[str, Any]:
+        """Materialize portable evidence from one owned child, without provider calls."""
+        import re
+        if not re.fullmatch(r"eval_[0-9a-f]{32}", child_id):
+            raise SftServiceError("invalid child evaluation identity")
+        self.store.require(run_id)
+        authority = self.executor._authority()
+        path = authority.home.run_dir(child_id) / "result_manifest.json"
+        manifest = json.loads(path.read_text())
+        correlation = manifest["correlation"]
+        if correlation["parent_run_id"] != run_id:
+            raise SftServiceError("child evaluation belongs to another training run")
+        evaluator = correlation["evaluator"]
+        seeds = evaluator["final_seeds"] if correlation["role"] == "final" else evaluator["selection_seeds"]
+        expected = len(seeds) * len(authority.home.recipe(evaluator["recipe_id"]).scenarios)
+        result = authority.result(child_id, evaluator, correlation["checkpoint"], expected)
+        return {"eval_job_id": child_id, "parent_run_id": run_id,
+                "traces": [ref for ref in result["evidence_refs"] if ref.get("role") == "trace_v5_partial"]}
 
     def state_batch(self, run_id: str, slices: str) -> dict[str, Any]:
-        with self._lock:
-            record = self._require(run_id)
-            encoded = urllib.parse.urlencode({"slices": slices})
-            remote = self.executor.request(
-                "GET", f"/v1/runs/{record['beta_run_id']}/state/batch?{encoded}"
-            )
-            remote["run_id"] = run_id
-            return remote
+        from .runtime.workshop import state_batch
+
+        return state_batch(self.store, run_id, slices, algorithm_id=SFT_ALGORITHM_ID)
 
     def artifact(self, run_id: str, name: str) -> SftArtifact:
-        with self._lock:
-            record = self._require(run_id)
-            artifact = getattr(self.executor, "artifact", None)
-            if not callable(artifact):
-                raise SftServiceError("public SFT artifact proxy is unavailable")
-            return artifact(record["beta_run_id"], name)
+        body, content_type, _digest = self.store.artifact(run_id, name)
+        return SftArtifact(body=body, content_type=content_type)
 
-    def _lookup(self, run_id: str) -> sqlite3.Row | None:
-        return self._db.execute(
-            "SELECT * FROM sft_public_runs WHERE run_id = ?", (run_id,)
-        ).fetchone()
-
-    def _require(self, run_id: str) -> sqlite3.Row:
-        record = self._lookup(run_id)
-        if record is None:
-            raise SftServiceError(f"unknown public SFT run {run_id!r}")
-        return record
-
-    def _update_status(self, run_id: str, status: str, error: str | None) -> None:
-        self._db.execute(
-            "UPDATE sft_public_runs SET status = ?, updated_at = ?, error = ? WHERE run_id = ?",
-            (status, _now(), error, run_id),
-        )
-        self._db.commit()
-
-    @staticmethod
-    def _public_run(
-        record: sqlite3.Row,
-        remote: Mapping[str, Any],
-        status: str,
-        error: str | None,
-    ) -> dict[str, Any]:
-        response = SftService._submit_response(record["run_id"], status)
-        for field in ("created_at", "updated_at"):
-            if value := _optional_text(remote.get(field)):
-                response[field] = value
-        if error:
-            response["error"] = error
-        if isinstance(remote.get("cancellation_requested"), bool):
-            response["cancellation_requested"] = remote["cancellation_requested"]
+    def _public_run(self, remote: Mapping[str, Any]) -> dict[str, Any]:
+        run_id = str(remote.get("run_id") or remote.get("job_id"))
+        status = str(remote.get("status") or "queued")
+        response = self._submit_response(run_id, status)
+        if remote.get("error"):
+            response["error"] = remote["error"]
         result = remote.get("result")
         if isinstance(result, Mapping):
             public_result = {
@@ -470,6 +380,7 @@ class SftService:
             "algorithm": SFT_ALGORITHM_ID,
             "status": status,
             "events_url": f"/v1/runs/{run_id}/optimizer-events",
+            "events_stream_url": f"/v1/runs/{run_id}/optimizer-events/stream",
             "status_url": f"/v1/runs/{run_id}",
             "artifact_base_url": f"/v1/runs/{run_id}/artifacts",
         }
@@ -503,6 +414,26 @@ def create_sft_http_server(
                 query = urllib.parse.parse_qs(parsed.query)
                 if self.command == "GET" and parsed.path == "/health":
                     self._write(HTTPStatus.OK, {"status": "ok", "algorithm": SFT_ALGORITHM_ID})
+                elif self.command == "GET" and parts == ["v1", "capabilities"]:
+                    self._write(HTTPStatus.OK, {
+                        "schema_version": "sft_service_capabilities.v1",
+                        "implementation_version": "sft.tinker.v1",
+                        "checkpoint_plan_schema": "training.checkpoint_plan.v2",
+                        "evaluation_modes": ["none", "builtin", "container", "both"],
+                        "controls": ["cancel", "pause", "resume"],
+                        "pause_boundary": "configured_checkpoint_after_evaluation_drain",
+                        "uncertain_operation_recovery": "manual_reconciliation_required",
+                        "container_transport": "local_docker_host_gateway",
+                        "aggregate_budget_required": True,
+                        "release_stage": "preview",
+                    })
+                elif self.command == "POST" and parts == ["v1", "renderer-profile"]:
+                    payload = self._body()
+                    model = _non_empty_text(payload.get("model_id"), field="model_id")
+                    self._write(HTTPStatus.OK, service.executor.provider.renderer_profile(model))
+                elif self.command == "POST" and parts == ["v1", "runs", "estimate"]:
+                    payload = self._body()
+                    self._write(HTTPStatus.OK, service.estimate(_mapping(payload.get("config_json"), context="config_json")))
                 elif self.command == "POST" and parts == ["v1", "runs"]:
                     payload = self._body()
                     if payload.get("algorithm", SFT_ALGORITHM_ID) != SFT_ALGORITHM_ID:
@@ -525,14 +456,36 @@ def create_sft_http_server(
                     run_id = parts[2]
                     if self.command == "GET" and len(parts) == 3:
                         self._write(HTTPStatus.OK, service.get(run_id))
+                    elif self.command == "POST" and len(parts) == 6 and parts[3] == "child-evaluations" and parts[5] == "evidence":
+                        self._write(HTTPStatus.OK, service.checkpoint_evidence(run_id, parts[4]))
                     elif self.command == "POST" and parts[3:] == ["cancel"]:
                         self._write(HTTPStatus.OK, service.cancel(run_id))
-                    elif self.command == "GET" and parts[3:] == ["optimizer-events"]:
+                    elif self.command == "POST" and parts[3:] == ["pause"]:
+                        self._write(HTTPStatus.OK, service.pause(run_id))
+                    elif self.command == "POST" and parts[3:] == ["resume"]:
+                        self._write(HTTPStatus.OK, service.resume(run_id))
+                    elif self.command == "GET" and parts[3:] in (
+                        ["optimizer-events"],
+                        ["optimizer-events", "stream"],
+                    ):
+                        try:
+                            service.store.require(run_id)
+                        except JobStoreError as exc:
+                            self._write(HTTPStatus.NOT_FOUND, {"error": str(exc)})
+                            return
+                        if wants_live_stream(parsed.path, query):
+                            write_sse(
+                                self,
+                                service.store,
+                                run_id,
+                                after_sequence=after_sequence_from(query),
+                            )
+                            return
                         self._write(
                             HTTPStatus.OK,
                             service.optimizer_events(
                                 run_id,
-                                after_sequence=_query_int(query, "after_sequence", default=0),
+                                after_sequence=after_sequence_from(query),
                                 limit=_query_int(query, "limit", default=500),
                             ),
                         )
@@ -549,6 +502,8 @@ def create_sft_http_server(
                     self._write(HTTPStatus.NOT_FOUND, {"error": "not found"})
             except SftServiceError as exc:
                 self._write(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            except JobStoreError as exc:
+                self._write(HTTPStatus.NOT_FOUND, {"error": str(exc)})
             except Exception as exc:  # pragma: no cover - final HTTP boundary
                 self._write(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
 
@@ -593,6 +548,48 @@ def serve_sft_service(
     server.serve_forever()
 
 
+def _executor_config(config: SftConfig) -> dict[str, Any]:
+    payload = dict(config.config_json)
+    if not _has_training_data(payload):
+        payload["examples"] = fixture_examples()
+        payload.setdefault(
+            "dataset",
+            {
+                "examples": payload["examples"],
+                "train_indexes": [0, 1, 2, 3],
+                "calibration_indexes": [4],
+                "heldout_indexes": [5],
+            },
+        )
+    payload.setdefault("training", {})
+    payload["training"].setdefault("steps", max(config.checkpoint_steps))
+    payload["training"].setdefault("checkpoint_every_steps", min(config.checkpoint_steps))
+    payload["training"].setdefault("batch_size", 1)
+    return payload
+
+
+def _has_training_data(data: Mapping[str, Any]) -> bool:
+    dataset = data.get("dataset")
+    return bool(
+        _optional_text(data.get("training_file_id"))
+        or _optional_text(data.get("training_jsonl"))
+        or isinstance(data.get("examples"), list)
+        and data.get("examples")
+        or isinstance(dataset, Mapping)
+        and (dataset.get("examples") or dataset.get("recipe_id"))
+    )
+
+
+def _use_fixture_executor() -> bool:
+    return os.environ.get("SYNTH_OPTIMIZERS_SFT_FIXTURE", "").strip() == "1"
+
+
+def _fresh_run_id() -> str:
+    import uuid
+
+    return f"sft_{uuid.uuid4().hex}"
+
+
 def _parse_bind(bind: str) -> tuple[str, int]:
     host, separator, raw_port = bind.rpartition(":")
     if not separator or not host:
@@ -604,6 +601,46 @@ def _parse_bind(bind: str) -> tuple[str, int]:
     if not 0 < port < 65536:
         raise SftServiceError("bind port must be in 1..65535")
     return host, port
+
+
+def _iter_sse_events(response: Any) -> Iterator[dict[str, Any]]:
+    data_lines: list[str] = []
+    event_name = ""
+    for raw_line in response:
+        line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
+        if not line:
+            event = _sse_event(data_lines, event_name)
+            data_lines = []
+            event_name = ""
+            if event is not None:
+                yield event
+            continue
+        if line.startswith(":"):
+            continue
+        if line.startswith("data:"):
+            data_lines.append(line[5:].lstrip())
+            continue
+        if line.startswith("event:"):
+            event_name = line[6:].strip()
+            continue
+        if line.startswith("id:"):
+            continue
+    event = _sse_event(data_lines, event_name)
+    if event is not None:
+        yield event
+
+
+def _sse_event(data_lines: list[str], event_name: str) -> dict[str, Any] | None:
+    if not data_lines:
+        return None
+    if event_name and event_name != "optimizer":
+        return None
+    payload = "\n".join(data_lines)
+    try:
+        decoded = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise SftServiceError(f"public SFT SSE returned invalid JSON: {exc}") from exc
+    return _json_object(decoded, context="public SFT SSE event")
 
 
 def _query_int(query: Mapping[str, list[str]], key: str, *, default: int) -> int:
@@ -629,10 +666,6 @@ def _mapping(value: Any, *, context: str) -> Mapping[str, Any]:
     return value
 
 
-def _compact_json(value: Mapping[str, Any]) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"))
-
-
 def _non_empty_text(value: Any, *, field: str) -> str:
     text = str(value or "").strip()
     if not text:
@@ -643,7 +676,3 @@ def _non_empty_text(value: Any, *, field: str) -> str:
 def _optional_text(value: Any) -> str | None:
     text = str(value or "").strip()
     return text or None
-
-
-def _now() -> str:
-    return datetime.now(UTC).isoformat().replace("+00:00", "Z")

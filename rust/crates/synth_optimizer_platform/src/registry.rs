@@ -10,6 +10,7 @@ use time::OffsetDateTime;
 use crate::artifacts::ArtifactPaths;
 use crate::cache::CacheMode;
 use crate::config::SynthOptimizerConfig;
+use crate::correlation::CorrelationEnvelope;
 use crate::error::{OptimizerError, Result};
 
 #[derive(Clone, Debug)]
@@ -100,6 +101,10 @@ pub struct RunRegistryEntry {
     pub usage: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub storage: Option<Value>,
+    /// Present only for runs an experiment dispatched, so the registry can be
+    /// scanned for "every run belonging to trial X" without a second index.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation: Option<CorrelationEnvelope>,
 }
 
 impl RunRegistryEntry {
@@ -198,6 +203,7 @@ impl RunRegistryEntry {
             cost_usd: None,
             usage,
             storage: None,
+            correlation: config.run.correlation.clone(),
         }
     }
 }

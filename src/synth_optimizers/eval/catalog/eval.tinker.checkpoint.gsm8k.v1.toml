@@ -1,0 +1,56 @@
+[recipe]
+id = "eval.tinker.checkpoint.gsm8k.v1"
+title = "Hosted checkpoint evaluation (GSM8K)"
+description = "Score exact hosted sampler checkpoints on frozen GSM8K panels."
+task = "gsm8k"
+policy_kind = "tinker-sampler.v1"
+image = "gsm8k-eval-target"
+prerequisites = ["Published or locally built checkpoint-capable GSM8K image pinned by digest"]
+scenarios = ["gsm8k-test"]
+screening_seeds = [101, 102, 103, 104, 105, 106, 107, 108, 109, 110]
+confirmation_seeds = [201, 202, 203, 204, 205, 206, 207, 208, 209, 210]
+secrets = ["SYNTH_CHECKPOINT_TOKEN"]
+
+[recipe.budget]
+max_llm_calls = 40
+max_usd = 0.01
+
+[[recipe.models]]
+id = "openai/gpt-oss-20b"
+route = "http://host.docker.internal:8787/v1/chat/completions"
+secret = "SYNTH_CHECKPOINT_TOKEN"
+efforts = []
+usd_per_1m_input = 0.0
+usd_per_1m_output = 0.0
+usd_per_1m_cached_input = 0.0
+price_source = "local-compute"
+price_as_of = "2026-08-18"
+
+[recipe.target]
+schema_version = "eval.target.v1"
+policy_kinds = ["tinker-sampler.v1"]
+trial_mode = "one-policy-one-seed"
+required_gates = ["policy_loaded", "verifier_completed", "snapshot_pinned", "exact_checkpoint"]
+required_artifacts = ["trace", "checkpoint_binding"]
+supports_live_events = true
+network = "bridge"
+
+[[recipe.target.metrics]]
+id = "accuracy"
+direction = "maximize"
+
+[recipe.selection]
+primary_metric = "accuracy"
+min_lift = 0.0
+min_valid_trials = 10
+decision_mode = "report_only"
+
+[recipe.selection.elimination]
+kind = "none"
+
+[recipe.limits]
+max_parallel_trials = 8
+timeout_seconds = 1800
+cpus = 2.0
+memory_mb = 4096
+max_output_bytes = 268435456

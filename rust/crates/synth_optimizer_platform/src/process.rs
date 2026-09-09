@@ -365,9 +365,7 @@ pub fn structured_child_crash(
     stderr_tail: &str,
     leased_run_ids: &[String],
 ) -> Value {
-    let (exit_status, signal) = status
-        .map(exit_status_parts)
-        .unwrap_or((None, None));
+    let (exit_status, signal) = status.map(exit_status_parts).unwrap_or((None, None));
     json!({
         "schema_version": "synth.gepa_service.crash.v1",
         "cause": "service_crash",
@@ -472,7 +470,10 @@ mod tests {
         assert_eq!(crash["exit_status"], 7);
         assert_eq!(crash["signal"], Value::Null);
         assert!(
-            crash["stderr_tail"].as_str().unwrap().contains("container boom"),
+            crash["stderr_tail"]
+                .as_str()
+                .unwrap()
+                .contains("container boom"),
             "stderr tail: {}",
             crash["stderr_tail"]
         );

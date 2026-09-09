@@ -802,10 +802,8 @@ impl DaytonaAppServerClient {
                     ));
                 }
             };
-            if message_matches_turn(&message, turn_id) {
-                if is_terminal_turn_event(&message) {
-                    return Ok(message);
-                }
+            if message_matches_turn(&message, turn_id) && is_terminal_turn_event(&message) {
+                return Ok(message);
             }
         }
     }
@@ -923,9 +921,7 @@ impl DaytonaAppServerClient {
     fn handle_stdout_chunk(&mut self, chunk: &str) -> Result<()> {
         self.stdout_remainder.push_str(chunk);
         loop {
-            let trimmed_start = self
-                .stdout_remainder
-                .trim_start_matches(|c| c == '\r' || c == '\n');
+            let trimmed_start = self.stdout_remainder.trim_start_matches(['\r', '\n']);
             if trimmed_start.len() != self.stdout_remainder.len() {
                 self.stdout_remainder = trimmed_start.to_string();
             }
@@ -966,7 +962,7 @@ impl DaytonaAppServerClient {
             };
             let body_start = header_end + separator_len;
             let body_end = body_start + content_length;
-            if self.stdout_remainder.as_bytes().len() < body_end {
+            if self.stdout_remainder.len() < body_end {
                 return Ok(());
             }
             let payload = self.stdout_remainder.as_bytes()[body_start..body_end].to_vec();

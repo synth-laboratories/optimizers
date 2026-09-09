@@ -1,0 +1,94 @@
+schema_version = "cispo.container.v1"
+run_id = "b77_real_uplift_18_final_test"
+
+[container]
+url = "http://127.0.0.1:8241"
+
+[taskset]
+train_split = "train"
+evaluation_split = "heldout"
+# Frozen by the Stage-2 8x screen against the Stage-1 final checkpoint.
+train_ids = [
+  "banking77/train/8048", "banking77/train/2870", "banking77/train/2079",
+  "banking77/train/1819", "banking77/train/9518", "banking77/train/1931",
+]
+# Sealed final-test panel; preserve this exact order.
+# Panel digest: sha256:5f1c672211e70f7c2686cf7951a262c53dea834a6837cbccc013901c78e5422f
+evaluation_ids = [
+  "banking77/heldout/1791", "banking77/heldout/2866", "banking77/heldout/505",
+  "banking77/heldout/2994", "banking77/heldout/1460", "banking77/heldout/326",
+  "banking77/heldout/2711", "banking77/heldout/1078", "banking77/heldout/2199",
+  "banking77/heldout/716", "banking77/heldout/2949", "banking77/heldout/973",
+  "banking77/heldout/21", "banking77/heldout/319", "banking77/heldout/52",
+  "banking77/heldout/395", "banking77/heldout/826", "banking77/heldout/1095",
+  "banking77/heldout/157", "banking77/heldout/1935", "banking77/heldout/2896",
+  "banking77/heldout/2738", "banking77/heldout/2135", "banking77/heldout/1434",
+  "banking77/heldout/593", "banking77/heldout/3067", "banking77/heldout/1833",
+  "banking77/heldout/1574", "banking77/heldout/1751", "banking77/heldout/1489",
+  "banking77/heldout/1372", "banking77/heldout/1154", "banking77/heldout/2795",
+  "banking77/heldout/114", "banking77/heldout/409", "banking77/heldout/180",
+  "banking77/heldout/2312", "banking77/heldout/250", "banking77/heldout/2634",
+  "banking77/heldout/1262", "banking77/heldout/2410", "banking77/heldout/950",
+  "banking77/heldout/478", "banking77/heldout/1654", "banking77/heldout/2494",
+  "banking77/heldout/1534", "banking77/heldout/1614", "banking77/heldout/213",
+  "banking77/heldout/672", "banking77/heldout/1853", "banking77/heldout/557",
+  "banking77/heldout/2268", "banking77/heldout/1703", "banking77/heldout/2119",
+  "banking77/heldout/886", "banking77/heldout/1899", "banking77/heldout/626",
+  "banking77/heldout/2836", "banking77/heldout/2461", "banking77/heldout/2678",
+  "banking77/heldout/726", "banking77/heldout/1025", "banking77/heldout/1358",
+  "banking77/heldout/1996", "banking77/heldout/2214", "banking77/heldout/2339",
+  "banking77/heldout/863", "banking77/heldout/2078", "banking77/heldout/1211",
+  "banking77/heldout/3016", "banking77/heldout/2033", "banking77/heldout/2392",
+  "banking77/heldout/2538", "banking77/heldout/1314", "banking77/heldout/1174",
+  "banking77/heldout/782", "banking77/heldout/2590",
+]
+
+[model]
+provider = "tinker"
+id = "openai/gpt-oss-20b"
+family = "gpt_oss"
+policy_kind = "banking77_classify"
+learning_rate = 0.00005
+
+[plan]
+preset = "cispo"
+group_size = 16
+groups_per_step = 1
+target_train_updates = 8
+steps_per_round = 8
+maximum_sampled_groups = 40
+
+[pipeline]
+max_execution_slots = 8
+rollout_queue_capacity = 128
+score_queue_capacity = 256
+scored_result_queue_capacity = 256
+train_ready_capacity = 1
+maximum_policy_lag = 0
+max_open_groups = 1
+expected_horizon_seconds = 120.0
+stale_disposition = "discard"
+
+[topology]
+expected_topology_id = "banking77.classify.solo.v1"
+trainable_teams = ["team-0"]
+partial_roster = "refuse"
+
+[opponents]
+match_set_revision = "match-set-0001"
+
+[reward]
+optimized_channel = "score"
+
+[evaluation]
+paired = false
+
+[lifecycle]
+resume_requires_rehandshake = true
+
+[offline]
+mode = "off"
+
+[artifacts]
+catalog = "/Users/joshuapurtell/Documents/ChatGPT/Synth Prod/b77_variance8_gate_15/checkpoints.sqlite3"
+directory = "/Users/joshuapurtell/Documents/ChatGPT/Synth Prod/b77_real_uplift_18/evaluation_final/runs"

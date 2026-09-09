@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from .executor import (
     ContainerRuntimeError,
@@ -34,6 +34,7 @@ from .models import (
     CANDIDATE_SET_SCHEMA,
     EVAL_ALGORITHM_ID,
     EVAL_ALGORITHM_VERSION,
+    MLX_LORA_POLICY_KIND,
     RUN_MANIFEST_SCHEMA,
     TRIAL_MANIFEST_SCHEMA,
     WORKER_EVENT_SCHEMA,
@@ -43,6 +44,7 @@ from .models import (
     ContainerResult,
     EvalContractError,
     PolicyCandidate,
+    SeedLedger,
     SelectionDecision,
     TrialKey,
     TrialRecord,
@@ -50,6 +52,7 @@ from .models import (
     canonical_json,
     digest_of,
     digest_of_tree,
+    read_mlx_lora_policy,
     write_json,
 )
 from .recipes import EvalRecipe
@@ -73,6 +76,10 @@ class WorkerManifest:
     home: Path
     candidate_set_path: Path
     session_ref: str | None
+    correlation: dict[str, Any] | None = None
+    plan_override: dict[str, Any] | None = None
+    credential_mode: str | None = None
+    provider_routes: dict[str, Any] | None = None
 
     @classmethod
     def load(cls, path: Path) -> WorkerManifest:
@@ -85,12 +92,38 @@ class WorkerManifest:
         for key in ("run_id", "recipe_id", "home", "candidate_set_path"):
             if not isinstance(payload.get(key), str) or not payload[key].strip():
                 raise EvalContractError(f"worker manifest requires {key}")
+        correlation = payload.get("correlation")
+        if correlation is not None and not isinstance(correlation, dict):
+            raise EvalContractError("worker manifest correlation must be an object")
+        override = payload.get("plan_override")
+        if override is not None and not isinstance(override, dict):
+            raise EvalContractError("worker manifest plan_override must be an object")
+        credential_mode = payload.get("credential_mode")
+        provider_routes = payload.get("provider_routes")
+        if credential_mode is not None and credential_mode != "workshop_proxy":
+            raise EvalContractError("paid eval credential_mode must be workshop_proxy")
+        if provider_routes is not None and not isinstance(provider_routes, dict):
+            raise EvalContractError("worker manifest provider_routes must be an object")
+        if credential_mode == "workshop_proxy":
+            route = str((provider_routes or {}).get("openai") or "")
+            lowered = route.lower()
+            if (
+                not route.startswith("http://host.docker.internal:")
+                or "/cap/wcap_" not in route
+                or not route.endswith("/chat/completions")
+                or any(host in lowered for host in ("api.openai.com", "127.0.0.1", "localhost"))
+            ):
+                raise EvalContractError("Workshop proxy route is absent or not container-reachable")
         return cls(
             run_id=payload["run_id"],
             recipe_id=payload["recipe_id"],
             home=Path(payload["home"]).expanduser(),
             candidate_set_path=Path(payload["candidate_set_path"]).expanduser(),
             session_ref=payload.get("session_ref"),
+            correlation=correlation,
+            plan_override=override,
+            credential_mode=credential_mode,
+            provider_routes=provider_routes,
         )
 
 
@@ -207,12 +240,37 @@ class PauseGate:
             self._events.emit("eval.run.resumed")
 
 
+class PolicySnapshotRegistrar(Protocol):
+    """Turns a staged candidate directory into an immutable snapshot id.
+
+    The container cannot load an adapter: the inference service runs on the
+    host and the trial runs in Docker.  So the host registers the candidate
+    before the trial and the container is told only the snapshot id and the
+    recipe-owned route — never adapter bytes, and never a mutable run-local
+    name that could be re-pointed at different weights between two trials that
+    are supposed to be the same arm.
+
+    Implementations are injected.  There is no default: a run that needs
+    snapshots and was given no registrar fails before it starts a container
+    rather than silently scoring an unpinned policy.
+    """
+
+    def register(
+        self,
+        *,
+        candidate_id: str,
+        artifact_digest: str,
+        policy_dir: Path,
+    ) -> str: ...
+
+
 class EvalRunner:
     def __init__(
         self,
         manifest: WorkerManifest,
         *,
         executor: TrialExecutor | None = None,
+        policy_registrar: "PolicySnapshotRegistrar | None" = None,
         stream: Any = None,
     ) -> None:
         self.manifest = manifest
@@ -232,11 +290,138 @@ class EvalRunner:
             ttl_seconds=self.home.config.lease_ttl_seconds,
         )
         self._executor = executor
+        self._policy_registrar = policy_registrar
+        self._snapshot_ids: dict[str, str] = {}
+        self._snapshot_lock = threading.Lock()
         self._image_reference = ""
         self._resolved_secrets: dict[str, str] | None = None
         self._parallelism = min(
             self.recipe.limits.max_parallel_trials, self.home.config.max_concurrent_trials
         )
+        (
+            self._candidate_ids,
+            self._screening_seeds,
+            self._confirmation_seeds,
+            self._model_efforts,
+        ) = self._narrow()
+        self._baseline_id = (
+            self.candidate_set.baseline_id
+            if self.candidate_set.baseline_id in self._candidate_ids
+            else None
+        )
+
+    # -------------------------------------------------------------- narrowing
+
+    def _narrow(self) -> tuple[list[str], tuple[int, ...], tuple[int, ...], dict[str, str]]:
+        """Apply an app-supplied override, which may only ever *narrow*.
+
+        An experiment needs to run one candidate against one seed, but it must
+        not be able to introduce a seed, a model, or an effort the trusted recipe
+        never declared. Every branch here is a subset check for that reason: the
+        recipe stays the only source of what a container may be asked to do, and
+        the caller only gets to choose among it.
+        """
+
+        declared_ids = [candidate.id for candidate in self.candidate_set.candidates]
+        override = self.manifest.plan_override or {}
+        accepted = {
+            "candidate_ids",
+            "seeds",
+            "screening_seeds",
+            "confirmation_seeds",
+            "model_efforts",
+        }
+        unknown = sorted(set(override) - accepted)
+        if unknown:
+            raise EvalContractError(f"plan_override does not accept {unknown}")
+        if "seeds" in override and (
+            "screening_seeds" in override or "confirmation_seeds" in override
+        ):
+            raise EvalContractError(
+                "plan_override.seeds selects from the whole declared schedule; it cannot be "
+                "combined with per-stage seed narrowing"
+            )
+
+        candidate_ids = declared_ids
+        raw_ids = override.get("candidate_ids")
+        if raw_ids is not None:
+            if not isinstance(raw_ids, Sequence) or isinstance(raw_ids, str) or not raw_ids:
+                raise EvalContractError("plan_override.candidate_ids must be a non-empty list")
+            missing = sorted(set(raw_ids) - set(declared_ids))
+            if missing:
+                raise EvalContractError(
+                    f"plan_override.candidate_ids names candidates that are not in the staged "
+                    f"set: {missing}"
+                )
+            candidate_ids = [item for item in declared_ids if item in set(raw_ids)]
+
+        def seeds(field_name: str, declared: tuple[int, ...]) -> tuple[int, ...]:
+            raw = override.get(field_name)
+            if raw is None:
+                return declared
+            if not isinstance(raw, Sequence) or isinstance(raw, str):
+                raise EvalContractError(f"plan_override.{field_name} must be a list")
+            extra = sorted(set(raw) - set(declared))
+            if extra:
+                raise EvalContractError(
+                    f"plan_override.{field_name} asks for seeds {extra}, which recipe "
+                    f"{self.recipe.id} does not declare; widen the recipe, not the run"
+                )
+            return tuple(seed for seed in declared if seed in set(raw))
+
+        if "seeds" in override:
+            # One pass over a chosen subset of the whole declared schedule. The
+            # screen/confirm split exists to keep an eliminated candidate from
+            # being confirmed on the seeds that eliminated it; a caller running a
+            # single seed with no elimination has nothing for that split to
+            # protect, and the sealed manifest records exactly what was chosen.
+            declared = (*self.recipe.screening_seeds, *self.recipe.confirmation_seeds)
+            screening = seeds("seeds", declared)
+            confirmation: tuple[int, ...] = ()
+        else:
+            screening = seeds("screening_seeds", self.recipe.screening_seeds)
+            confirmation = seeds("confirmation_seeds", self.recipe.confirmation_seeds)
+        if not screening:
+            raise EvalContractError("plan_override left no seeds to run")
+
+        efforts: dict[str, str] = {}
+        raw_efforts = override.get("model_efforts") or {}
+        if not isinstance(raw_efforts, dict):
+            raise EvalContractError("plan_override.model_efforts must be an object")
+        routes = {model.id: model for model in self.recipe.models}
+        for model_id, effort in sorted(raw_efforts.items()):
+            route = routes.get(model_id)
+            if route is None:
+                raise EvalContractError(
+                    f"plan_override.model_efforts names model {model_id!r}, which recipe "
+                    f"{self.recipe.id} does not route"
+                )
+            if effort not in route.efforts:
+                raise EvalContractError(
+                    f"model {model_id} does not declare effort {effort!r}; "
+                    f"declared: {list(route.efforts)}"
+                )
+            efforts[model_id] = effort
+        return candidate_ids, screening, confirmation, efforts
+
+    def _narrowed_models(self) -> list[dict[str, Any]]:
+        """Recipe routes with any selected effort collapsed to a single choice.
+
+        Narrowing the allowlist to one value is how effort becomes a treatment
+        without the container gaining a new input: it still reads the same field
+        it always read, and it now has exactly one option.
+        """
+
+        models = []
+        for model in self.recipe.models:
+            payload = model.to_json()
+            if self.manifest.credential_mode == "workshop_proxy":
+                payload["route"] = self.manifest.provider_routes["openai"]  # type: ignore[index]
+            selected = self._model_efforts.get(model.id)
+            if selected is not None:
+                payload["efforts"] = [selected]
+            models.append(payload)
+        return models
 
     # ---------------------------------------------------------------- inputs
 
@@ -259,6 +444,13 @@ class EvalRunner:
                     f"{self.recipe.image} does not accept"
                 )
             path = self.candidate_set.artifact_path(candidate)
+            if candidate.kind == MLX_LORA_POLICY_KIND:
+                read_mlx_lora_policy(path)
+                if self._policy_registrar is None:
+                    raise EvalContractError(
+                        f"candidate {candidate.label} is {MLX_LORA_POLICY_KIND}, which the "
+                        f"container cannot load; this run needs a policy snapshot registrar"
+                    )
             actual = digest_of_tree(path)
             if actual != candidate.artifact_digest:
                 raise EvalContractError(
@@ -282,7 +474,12 @@ class EvalRunner:
         """
 
         path = self.run_dir / "input_manifest.json"
-        ledger = self.recipe.seed_ledger(sealed_at=_now())
+        ledger = SeedLedger(
+            screening=self._screening_seeds,
+            confirmation=self._confirmation_seeds,
+            scenarios=self.recipe.scenarios,
+            sealed_at=_now(),
+        )
         manifest = {
             "schema_version": RUN_MANIFEST_SCHEMA,
             "run_id": self.manifest.run_id,
@@ -308,12 +505,19 @@ class EvalRunner:
                         "label": candidate.label,
                         "kind": candidate.kind,
                         "digest": candidate.artifact_digest,
-                        "is_baseline": candidate.id == self.candidate_set.baseline_id,
+                        "is_baseline": candidate.id == self._baseline_id,
+                        "in_run": candidate.id in self._candidate_ids,
                     }
                     for candidate in self.candidate_set.candidates
                 ],
             },
             "seed_ledger": ledger.to_json(),
+            "experiment": {
+                "correlation": self.manifest.correlation,
+                "plan_override": self.manifest.plan_override,
+                "candidate_ids": list(self._candidate_ids),
+                "model_efforts": dict(self._model_efforts),
+            },
             "selection": self.recipe.selection.to_json(),
             "limits": self.recipe.limits.to_json(),
             "runtime": {
@@ -326,8 +530,10 @@ class EvalRunner:
         }
         if path.is_file():
             existing = json.loads(path.read_text(encoding="utf-8"))
-            for field_name in ("recipe", "candidate_set"):
-                if digest_of(existing.get(field_name)) != digest_of(manifest[field_name]):
+            for field_name in ("recipe", "candidate_set", "seed_ledger", "experiment"):
+                if digest_of(_resume_identity(existing, field_name)) != digest_of(
+                    _resume_identity(manifest, field_name)
+                ):
                     raise EvalContractError(
                         f"run {self.manifest.run_id} was sealed with a different "
                         f"{field_name}; start a new run instead of mutating a sealed one"
@@ -361,10 +567,43 @@ class EvalRunner:
         except (EvalContractError, json.JSONDecodeError, OSError):
             return None
 
+    def _register_snapshot(self, candidate: PolicyCandidate) -> str | None:
+        """Pin the candidate with the inference service before the trial runs.
+
+        Called per trial, because that is when the container is about to be
+        told which policy to sample.  The id is derived from the candidate's
+        `artifact_digest`, so re-registering the same bytes must return the
+        same id; an id that drifts inside one run means the service handed out
+        a mutable name and every trial before it was scoring something else.
+        """
+
+        if self._policy_registrar is None:
+            return None
+        snapshot_id = self._policy_registrar.register(
+            candidate_id=candidate.id,
+            artifact_digest=candidate.artifact_digest,
+            policy_dir=self.candidate_set.artifact_path(candidate),
+        )
+        if not isinstance(snapshot_id, str) or not snapshot_id.strip():
+            raise EvalContractError(
+                f"policy snapshot registration for candidate {candidate.label} "
+                f"returned no snapshot id"
+            )
+        snapshot_id = snapshot_id.strip()
+        with self._snapshot_lock:
+            previous = self._snapshot_ids.setdefault(candidate.artifact_digest, snapshot_id)
+        if previous != snapshot_id:
+            raise EvalContractError(
+                f"policy snapshot id for candidate {candidate.label} changed from "
+                f"{previous} to {snapshot_id} inside one run; a snapshot must be immutable"
+            )
+        return snapshot_id
+
     def _write_trial_manifest(self, key: TrialKey, candidate: PolicyCandidate) -> Path:
         input_dir = self._trial_dir(key) / "input"
         input_dir.mkdir(parents=True, exist_ok=True)
         (input_dir / "policy").mkdir(exist_ok=True)  # bind-mount target
+        snapshot_id = self._register_snapshot(candidate)
         write_json(
             input_dir / "trial.json",
             {
@@ -381,13 +620,15 @@ class EvalRunner:
                     "digest": candidate.artifact_digest,
                     "entrypoint": candidate.entrypoint,
                 },
+                "policy_snapshot_id": snapshot_id,
                 "metrics": [metric.to_json() for metric in self.recipe.target.metrics],
                 "required_gates": list(self.recipe.target.required_gates),
                 "limits": {
                     "timeout_seconds": self.recipe.limits.timeout_seconds,
                     "max_output_bytes": self.recipe.limits.max_output_bytes,
                 },
-                "models": [model.to_json() for model in self.recipe.models],
+                "models": self._narrowed_models(),
+                "correlation": self.manifest.correlation,
                 "budget": self.recipe.budget.to_json() if self.recipe.budget else None,
                 "output": {
                     "result_path": "/output/result.json",
@@ -401,10 +642,16 @@ class EvalRunner:
         """Resolved once per run, from names the recipe declared and nothing else."""
 
         if self._resolved_secrets is None:
-            self._resolved_secrets = {
-                name: self.home.resolve_secret(name, declared=self.recipe.secrets)
-                for name in self.recipe.secrets
-            }
+            if self.manifest.credential_mode == "workshop_proxy":
+                sentinel = str((self.manifest.provider_routes or {}).get("api_key_sentinel") or "")
+                if sentinel != "workshop-proxy":
+                    raise EvalContractError("Workshop proxy manifest omitted its API key sentinel")
+                self._resolved_secrets = {name: sentinel for name in self.recipe.secrets}
+            else:
+                self._resolved_secrets = {
+                    name: self.home.resolve_secret(name, declared=self.recipe.secrets)
+                    for name in self.recipe.secrets
+                }
         return self._resolved_secrets
 
     def _run_trial(self, key: TrialKey) -> TrialRecord:
@@ -460,6 +707,10 @@ class EvalRunner:
                     limits=self.recipe.limits,
                     network=self.recipe.target.network,
                     secrets=self._secrets(),
+                    extra_hosts=tuple(
+                        str(value)
+                        for value in (self.manifest.provider_routes or {}).get("extra_hosts", [])
+                    ),
                 ),
                 on_event=lambda payload: self.events.emit(
                     "eval.trial.event", trial_id=key.trial_id, container_event=payload
@@ -681,7 +932,7 @@ class EvalRunner:
         candidate_ids: Sequence[str],
         eliminations: dict[str, str] | None = None,
     ) -> list[CandidateScorecard]:
-        baseline_id = self.candidate_set.baseline_id
+        baseline_id = self._baseline_id
         baseline_records = [record for record in records if record.key.candidate_id == baseline_id]
         cards = []
         for candidate_id in candidate_ids:
@@ -738,7 +989,7 @@ class EvalRunner:
         # A previous attempt may have died holding tokens for this run id.
         reclaimed = self.semaphore.release_run(self.manifest.run_id)
         ledger = manifest["seed_ledger"]
-        all_ids = [candidate.id for candidate in self.candidate_set.candidates]
+        all_ids = list(self._candidate_ids)
         self.events.emit(
             "eval.run.planned",
             recipe_id=self.recipe.id,
@@ -747,10 +998,12 @@ class EvalRunner:
                 {
                     "id": c.id,
                     "label": c.label,
-                    "is_baseline": c.id == self.candidate_set.baseline_id,
+                    "is_baseline": c.id == self._baseline_id,
                 }
                 for c in self.candidate_set.candidates
+                if c.id in self._candidate_ids
             ],
+            correlation=self.manifest.correlation,
             manifest_digest=digest_of(manifest),
             parallelism=self._parallelism,
             global_capacity=self.home.config.max_concurrent_trials,
@@ -767,7 +1020,7 @@ class EvalRunner:
             self.recipe.selection,
             screen_cards,
             target=self.recipe.target,
-            baseline_id=self.candidate_set.baseline_id,
+            baseline_id=self._baseline_id,
         )
         if eliminations:
             screen_cards = self._score(
@@ -786,7 +1039,7 @@ class EvalRunner:
             self.recipe.selection,
             scorecards=decision_cards,
             records=decision_records,
-            baseline_id=self.candidate_set.baseline_id,
+            baseline_id=self._baseline_id,
             cancelled=self.cancel.cancelled,
         )
         self._seal_outputs(screen_cards, confirm_cards, screening, confirmation, decision)
@@ -826,6 +1079,8 @@ class EvalRunner:
                 "run_id": self.manifest.run_id,
                 "recipe_id": self.recipe.id,
                 "candidate_set_id": self.candidate_set.id,
+                "correlation": self.manifest.correlation,
+                "image_reference": self._image_reference,
                 "selection": decision.to_json(),
                 "trials": [
                     {
@@ -858,6 +1113,19 @@ class EvalRunner:
         )
 
 
+def _resume_identity(manifest: dict[str, Any], field_name: str) -> Any:
+    """The part of a sealed field that a resume must find unchanged.
+
+    `sealed_at` is when the seeds were written down, not which seeds they are.
+    Comparing it would make every resume look like a mutated run.
+    """
+
+    value = manifest.get(field_name)
+    if field_name == "seed_ledger" and isinstance(value, dict):
+        return {key: item for key, item in value.items() if key != "sealed_at"}
+    return value
+
+
 def _directory_bytes(path: Path) -> int:
     return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
 
@@ -866,12 +1134,16 @@ def run_worker(
     manifest_path: Path,
     *,
     executor: TrialExecutor | None = None,
+    policy_registrar: PolicySnapshotRegistrar | None = None,
     stream: Any = None,
 ) -> int:
     """Entry point behind `synth-optimizers eval worker`."""
 
     return EvalRunner(
-        WorkerManifest.load(manifest_path), executor=executor, stream=stream
+        WorkerManifest.load(manifest_path),
+        executor=executor,
+        policy_registrar=policy_registrar,
+        stream=stream,
     ).execute()
 
 
@@ -889,6 +1161,7 @@ __all__ = [
     "CancellationToken",
     "EvalRunner",
     "EventEmitter",
+    "PolicySnapshotRegistrar",
     "WorkerManifest",
     "request_cancel",
     "run_worker",

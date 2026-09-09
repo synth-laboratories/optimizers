@@ -1,0 +1,9 @@
+eval home <scratch>/eval-home-b is ready
+  runtime: docker -> /opt/homebrew/bin/docker
+  semaphore: {'capacity': 2, 'leased': 0, 'available': 2, 'leases': []}
+  eval.craftax.code-policy.smoke.v1: target image ghcr.io/synth-laboratories/workshop-craftax-eval-target is not present locally; pull or build it first
+  eval.craftax.llm-policy.smoke.v1: target image ghcr.io/synth-laboratories/workshop-craftax-eval-target is not present locally; pull or build it first
+  eval.fixture.policy-smoke.v1: target image is not published and pinned yet
+  eval.gamebench.craftax-code-policy.confirm.v1: target image is not published and pinned yet
+  eval.gamebench.llm-policy.confirm.v1: target image is not published and pinned yet
+  eval.mlx.local-policy.smoke.v1: ok

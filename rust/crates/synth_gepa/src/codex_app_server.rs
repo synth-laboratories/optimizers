@@ -1,9 +1,12 @@
-use std::collections::{BTreeMap, BTreeSet};
-use std::env;
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    env, fs,
+    path::{Path, PathBuf},
+    sync::{Mutex, OnceLock},
+    time::Duration,
+};
+
+mod openrouter_usage;
 
 use crate::{CandidateRecord, RolloutScore};
 use reqwest::blocking::Client;
@@ -168,9 +171,10 @@ pub(crate) fn run_deepseek_chat_proposer(input: CodexProposerInput<'_>) -> Resul
                 "gpt-4.1-mini",
                 false,
             ),
+            "openrouter" => ("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY", "openai/gpt-5.6-luna", false),
             other => {
                 return Err(OptimizerError::Config(format!(
-                    "chat-completions proposer backend requires proposer.provider = \"deepseek\", \"nvidia\", or \"openai\"; got {other:?}"
+                    "chat-completions proposer backend requires proposer.provider = \"deepseek\", \"nvidia\", \"openai\", or \"openrouter\"; got {other:?}"
                 )))
             }
         };
@@ -578,6 +582,9 @@ fn normalize_proposer_usage(config: &SynthOptimizerConfig, model: &str, usage: V
     }
     if provider.eq_ignore_ascii_case("openrouter") && model_lower == OPENROUTER_GROK43_MODEL {
         return normalize_openrouter_grok43_usage(model, usage_map);
+    }
+    if provider.eq_ignore_ascii_case("openrouter") {
+        return openrouter_usage::normalize(model, usage_map, reported_cost);
     }
     if provider.eq_ignore_ascii_case("deepseek") || model_lower.contains("deepseek") {
         usage_map.insert(
@@ -3399,36 +3406,4 @@ fn non_empty(value: Option<&str>) -> Option<&str> {
 }
 
 #[cfg(test)]
-mod cost_tests {
-    use super::*;
-
-    #[test]
-    fn chatgpt_proposer_emits_explicit_zero_incremental_api_cost() {
-        let mut config = SynthOptimizerConfig::default();
-        config.proposer.auth_mode = "chatgpt".to_string();
-        let usage = normalize_proposer_usage(
-            &config,
-            "gpt-5.6-luna",
-            json!({"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}),
-        );
-        assert_eq!(usage.get("cost_usd"), Some(&json!(0.0)));
-        assert_eq!(
-            usage.get("cost_source"),
-            Some(&json!("chatgpt_subscription_no_incremental_api_charge"))
-        );
-        assert_eq!(usage.get("provider"), Some(&json!("chatgpt_subscription")));
-    }
-
-    #[test]
-    fn chatgpt_proposer_preserves_an_explicit_cost_receipt() {
-        let mut config = SynthOptimizerConfig::default();
-        config.proposer.auth_mode = "chatgpt".to_string();
-        let usage = normalize_proposer_usage(
-            &config,
-            "gpt-5.6-luna",
-            json!({"cost_usd": 0.25, "cost_source": "provider"}),
-        );
-        assert_eq!(usage.get("cost_usd"), Some(&json!(0.25)));
-        assert_eq!(usage.get("cost_source"), Some(&json!("provider")));
-    }
-}
+mod cost_tests;

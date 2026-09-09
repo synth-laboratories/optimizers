@@ -107,7 +107,7 @@ pub fn execute_marl_promptopt(config: MarlPromptoptConfig) -> Result<MarlRunResu
         heldout_limit: gepa_config.gepa.heldout_rollout_limit(),
         ..BudgetLedger::default()
     };
-    if config.experiment.compare_seed_on_heldout && budget.heldout_limit % 2 != 0 {
+    if config.experiment.compare_seed_on_heldout && !budget.heldout_limit.is_multiple_of(2) {
         return Err(OptimizerError::Config(
             "equal paired heldout comparison requires an even heldout rollout limit".to_string(),
         ));

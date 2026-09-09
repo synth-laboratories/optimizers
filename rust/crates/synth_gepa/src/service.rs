@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha1::{Digest as Sha1Digest, Sha1};
 use sha2::{Digest as Sha2Digest, Sha256};
+use synth_optimizer_platform::correlation::CorrelationEnvelope;
 use synth_optimizer_platform::{
     compact_run_storage, delete_run_storage, fold_reported_cost, inspect_run_storage,
     inspect_workspace_storage_health, optimizer_event_feed_path_for, ArtifactPaths, CacheMode,
@@ -30,12 +31,14 @@ use crate::{
     },
     project_gepa_limit_snapshot, record_initial_platform_snapshots, GepaAdvanceMode,
     GepaAdvanceOutcome, GepaCancellationSource, GepaExecutionOptions, GepaRunResult,
+    GEPA_ALGORITHM_ID,
 };
 
 #[path = "service_ownership.rs"]
 mod service_ownership;
 use service_ownership::{
-    acquire_service_ownership, owned_heartbeat_payload, refresh_owned_heartbeat, service_id_for,
+    acquire_service_ownership, owned_heartbeat_payload, process_identity_payload,
+    refresh_owned_heartbeat, service_id_for,
 };
 
 const DEFAULT_SERVICE_WORKER_COUNT: usize = 10;
@@ -180,6 +183,12 @@ struct GepaServiceRunRequest {
     campaign_id: Option<String>,
     #[serde(default)]
     supersedes_request_id: Option<String>,
+    /// Set when an experiment dispatched this run.
+    ///
+    /// The service still mints `run_id` itself and reports it back; the caller
+    /// supplies only the trial identity, which is the half it actually owns.
+    #[serde(default)]
+    correlation: Option<CorrelationEnvelope>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1457,9 +1466,12 @@ fn route_request(request: HttpRequest, runtime: GepaServiceRuntime) -> HttpRespo
     let segments = path_segments(path);
     let config = &runtime.config;
     match (request.method.as_str(), segments.as_slice()) {
-        ("GET", ["health"]) => json_response(200, &json!({"status": "ok"})),
+        ("GET", ["health"]) => json_response(
+            200,
+            &json!({"status": "ok", "process": process_identity_payload(config)}),
+        ),
         ("GET", ["v1", "optimizer", "capabilities"]) | ("GET", ["v1", "optimizer", "status"]) => {
-            json_response(200, &optimizer_capabilities_payload())
+            json_response(200, &optimizer_capabilities_payload(config))
         }
         ("GET", ["whoami"]) => json_response(
             200,
@@ -1550,9 +1562,12 @@ fn route_request(request: HttpRequest, runtime: GepaServiceRuntime) -> HttpRespo
     }
 }
 
-fn optimizer_capabilities_payload() -> Value {
+fn optimizer_capabilities_payload(config: &GepaServiceConfig) -> Value {
     json!({
         "status": "ok",
+        // Workshop verifies this is the child it spawned before trusting the
+        // rest of the handshake (ownership protocol 2, P1-1).
+        "process": process_identity_payload(config),
         "algorithms": ["gepa"],
         "recipes": [
             "gepa.banking77.smoke.v1",
@@ -1747,12 +1762,58 @@ fn create_run_response(runtime: &GepaServiceRuntime, request: &HttpRequest) -> H
     }
 }
 
+/// Env prefixes that used to reach into a loaded config and change what ran.
+/// The overrides are gone; a service process that still carries one of these is
+/// configured by two authorities, so admission refuses rather than guess which
+/// one the operator meant.
+pub const FORBIDDEN_RUNTIME_ENV_PREFIXES: &[&str] = &["SYNTH_OPTIMIZERS_", "GEPA_PLATFORM_"];
+
+/// Names under a forbidden prefix present in the given environment, sorted.
+fn forbidden_runtime_env_vars_in<I, K>(vars: I) -> Vec<String>
+where
+    I: IntoIterator<Item = K>,
+    K: AsRef<str>,
+{
+    let mut found: Vec<String> = vars
+        .into_iter()
+        .map(|name| name.as_ref().to_string())
+        .filter(|name| {
+            FORBIDDEN_RUNTIME_ENV_PREFIXES
+                .iter()
+                .any(|prefix| name.starts_with(prefix))
+        })
+        .collect();
+    found.sort();
+    found.dedup();
+    found
+}
+
+fn forbidden_runtime_env_vars() -> Vec<String> {
+    forbidden_runtime_env_vars_in(std::env::vars().map(|(name, _)| name))
+}
+
+/// `Err(Config)` — so the HTTP layer answers 422 `invalid_config` — when the
+/// service process env can still override a run's config. Values are never
+/// echoed: the name is what the operator has to remove.
+fn refuse_env_overrides() -> Result<()> {
+    let present = forbidden_runtime_env_vars();
+    if present.is_empty() {
+        return Ok(());
+    }
+    Err(OptimizerError::Config(format!(
+        "invalid_config: the service environment carries run-config overrides \
+         ({}); a run's config is sealed at admission. Unset them and restart the service.",
+        present.join(", ")
+    )))
+}
+
 fn create_run(
     runtime: &GepaServiceRuntime,
     run_request: GepaServiceRunRequest,
     idempotency_key: Option<String>,
     request_body_sha256: String,
 ) -> Result<(u16, Value)> {
+    refuse_env_overrides()?;
     let config = &runtime.config;
     let store = WorkspaceStore::open(&config.db_path)?;
     if let Some(idempotency_key) = idempotency_key.as_deref() {
@@ -1769,8 +1830,28 @@ fn create_run(
     }
     // Contract handshake FIRST: fetch the program (version-check + ingest), then
     // build the config from it so target_modules/seed_candidate are populated.
+    if let Some(correlation) = run_request.correlation.as_ref() {
+        // Before the contract handshake and before any run record exists: a
+        // malformed envelope refused here costs nothing, and refused later
+        // costs a run.
+        correlation.validate()?;
+    }
     let program = verify_container_contract(&run_request.container_url)?;
     let optimizer_config = run_request_to_optimizer_config(&run_request, &program)?;
+    // Seal the admitted config before the request can be claimed. The digest is
+    // the record that nothing between here and execution changed it.
+    let mut admission_metadata = Map::new();
+    admission_metadata.insert("source".to_string(), json!("gepa_service_admission"));
+    admission_metadata.insert("wire_contract".to_string(), json!("gepa-service-v1"));
+    admission_metadata.insert(
+        "forbidden_env_overrides".to_string(),
+        json!(Vec::<String>::new()),
+    );
+    let resolved_config_digest = store.record_admitted_run_config(
+        &optimizer_config,
+        GEPA_ALGORITHM_ID,
+        admission_metadata,
+    )?;
     let request = store.submit_run_config_with_identity(
         optimizer_config,
         "http:gepa-service-v1",
@@ -1783,6 +1864,8 @@ fn create_run(
             "idempotency_key": idempotency_key,
             "campaign_id": run_request.campaign_id,
             "supersedes_request_id": run_request.supersedes_request_id,
+            "correlation": run_request.correlation,
+            "resolved_config_digest": resolved_config_digest,
         })),
         idempotency_key.as_deref(),
         Some(&request_body_sha256),
@@ -3011,6 +3094,9 @@ fn run_request_to_optimizer_config(
         &request.taskset.heldout_ids,
     )?;
     let mut config = SynthOptimizerConfig::default();
+    // `run_id` stays whatever the service minted in `Default`; only the trial
+    // identity comes from the caller.
+    config.run.correlation = request.correlation.clone();
     if let Some(output_dir) = request
         .output_dir
         .as_deref()
@@ -3665,6 +3751,13 @@ fn project_run(store: &WorkspaceStore, request: &WorkspaceRunRequestStatus) -> R
         "candidate_count": candidate_count,
         "checkpoint_sequence": cursor.as_ref().map(|cursor| cursor.checkpoint_sequence),
         "config": project_run_config(&config, request.manual_step),
+        // Echoed so a caller can confirm the service accepted the trial identity
+        // it sent, and learn the run id it minted, in the same response.
+        "correlation": config
+            .run
+            .correlation
+            .as_ref()
+            .and_then(|envelope| serde_json::to_value(envelope).ok()),
         "submitted_at": request.submitted_at,
         "started_at": request.started_at,
         "finished_at": request.finished_at,
@@ -4163,7 +4256,7 @@ fn percentile(values: &[f64], quantile: f64) -> Option<f64> {
     ordered.sort_by(|left, right| left.total_cmp(right));
     if (quantile - 0.50).abs() < f64::EPSILON {
         let middle = ordered.len() / 2;
-        if ordered.len() % 2 == 0 {
+        if ordered.len().is_multiple_of(2) {
             return Some((ordered[middle - 1] + ordered[middle]) / 2.0);
         }
         return Some(ordered[middle]);
@@ -5812,6 +5905,65 @@ mod tests {
         std::env::temp_dir().join(format!("synth_gepa_service_{name}_{suffix}.jsonl"))
     }
 
+    fn correlation_json() -> Value {
+        json!({
+            "schema_version": "synth.correlation.v1",
+            "experiment_id": "luna-effort-v1",
+            "arm_id": "arm_6edf53cf5835",
+            "block_id": "seed:104",
+            "replicate": 0,
+            "trial_id": "t676b09f94e51e2f3",
+            "plan_digest": format!("sha256:{}", "ab".repeat(32)),
+            "subject": {
+                "subject_kind": "proposer-policy",
+                "subject_id": "gpt-5.6-luna@low",
+                "subject_content_digest": format!("sha256:{}", "cd".repeat(32)),
+            },
+        })
+    }
+
+    #[test]
+    fn a_run_request_accepts_a_correlation_envelope_but_never_a_run_id() {
+        let envelope: CorrelationEnvelope =
+            serde_json::from_value(correlation_json()).expect("envelope parses");
+        envelope.validate().expect("valid");
+
+        // The caller owns the trial identity and nothing else: a `run_id`
+        // anywhere in the envelope is refused rather than honoured, because the
+        // service is the only thing allowed to name a run.
+        let mut smuggled = correlation_json();
+        smuggled
+            .as_object_mut()
+            .unwrap()
+            .insert("run_id".into(), json!("gepa_caller_chosen"));
+        assert!(serde_json::from_value::<CorrelationEnvelope>(smuggled).is_err());
+    }
+
+    #[test]
+    fn correlation_reaches_the_run_config_without_displacing_the_minted_run_id() {
+        let mut config = SynthOptimizerConfig::default();
+        let minted = config.run.run_id.clone();
+        config.run.correlation =
+            Some(serde_json::from_value(correlation_json()).expect("envelope parses"));
+
+        assert_eq!(config.run.run_id, minted);
+        let encoded = serde_json::to_value(&config.run).expect("config serialises");
+        assert_eq!(
+            encoded["correlation"]["trial_id"],
+            json!("t676b09f94e51e2f3")
+        );
+        assert_eq!(encoded["run_id"], json!(minted));
+    }
+
+    #[test]
+    fn an_ordinary_run_config_carries_no_correlation_key_at_all() {
+        // An empty `correlation` on a run nobody dispatched would later read as
+        // a join to nothing.
+        let config = SynthOptimizerConfig::default();
+        let encoded = serde_json::to_value(&config.run).expect("config serialises");
+        assert!(encoded.get("correlation").is_none());
+    }
+
     #[test]
     fn service_refuses_singleton_worker() {
         assert_eq!(
@@ -5839,7 +5991,23 @@ mod tests {
 
     #[test]
     fn workshop_capability_handshake_is_complete() {
-        let capabilities = optimizer_capabilities_payload();
+        let config = GepaServiceConfig {
+            workshop_instance_id: Some("workshop-test:1".to_string()),
+            ..GepaServiceConfig::new(scratch_path("capabilities"), "127.0.0.1:0")
+        };
+        let capabilities = optimizer_capabilities_payload(&config);
+        let process = &capabilities["process"];
+        assert_eq!(process["pid"], std::process::id());
+        assert_eq!(
+            process["ownership_protocol"],
+            service_ownership::OWNERSHIP_PROTOCOL
+        );
+        assert_eq!(process["instance_id"], "workshop-test:1");
+        assert!(process["start_identity"].is_string());
+        assert!(process["exe_digest"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:"));
         for field in ["algorithms", "recipes", "compatibleTemplateIds"] {
             let values = capabilities[field].as_array().unwrap();
             assert!(!values.is_empty());
@@ -5977,3 +6145,8 @@ mod tests {
         let _ = fs::remove_file(path);
     }
 }
+
+/// P0-4 lock. Admission refuses a service process whose environment can still
+/// change what a run executes, and seals the digest of what it admitted.
+#[cfg(test)]
+mod create_run;

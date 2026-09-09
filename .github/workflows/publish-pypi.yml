@@ -14,6 +14,7 @@ on:
   push:
     branches:
       - codex/v010-stable-packages
+      - codex/v010-optimizers-integrated
     tags:
       - "v*"
 
@@ -57,7 +58,7 @@ jobs:
           ref_type = os.environ["RELEASE_REF_TYPE"]
 
           if channel == "candidate":
-              if ref != "refs/heads/codex/v010-stable-packages":
+              if ref not in {"refs/heads/codex/v010-stable-packages", "refs/heads/codex/v010-optimizers-integrated"}:
                   raise SystemExit("candidate checks require the release preparation branch")
               if not re.fullmatch(r"\d+\.\d+\.\d+", version):
                   raise SystemExit(f"candidate version is invalid: {version}")

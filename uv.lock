@@ -2409,7 +2409,7 @@ dependencies = [
     { name = "zstandard" },
 ]
 wheels = [
-    { filename = "synth_containers-0.4.2-py3-none-any.whl", hash = "sha256:98bb5184ec2661f2a02974f65f373b88e9b28b5d2541dbf644c0d0b552e40e9f" },
+    { filename = "synth_containers-0.4.2-py3-none-any.whl", hash = "sha256:02943f7e00e281b04b07b8f5d5f3084ab52a170d76efe400502b8e72b9c3a81b" },
 ]
 
 [package.metadata]

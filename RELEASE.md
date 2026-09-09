@@ -1,9 +1,12 @@
 # Release: synth-optimizers
 
-Current status: prerelease implementation for the public GEPA vertical slice.
+Current candidate: stable `0.2.22` (not yet published), depending on Containers
+`0.4.2`. Rust and Python package versions must agree.
 
-Do not tag or publish `0.1.0` until the Banking77, TBLite, code-review, and
-Crafter acceptance packet is complete:
+Production release acceptance covers the supported optimizer behavior below.
+TBLite is eval/testing-only: it is not an installation dependency, production
+release gate, or required publication. Its independent lock and blocked research
+fixtures are documented in `evals/tblite/README.md`.
 
 - fresh readwrite GEPA run writes result manifest, raw events, normalized events,
   best candidate, candidate registry, frontier, and cache profile
@@ -14,13 +17,14 @@ Crafter acceptance packet is complete:
 
 ## Validation
 
-Run from `packages/synth-optimizers/`:
+Run from the repository root:
 
 ```bash
 cargo test --workspace --exclude synth_optimizers_py
 cargo fmt --check
 cargo check --workspace
 cargo clippy --workspace -- -D warnings
+uv run --locked --group dev pytest tests -q
 python -m py_compile src/synth_optimizers/__init__.py src/synth_optimizers/cli.py
 uv run --project . --group dev ruff check src
 uv run --project . --group dev ty check src
@@ -46,7 +50,6 @@ has the package built or installed:
 
 ```bash
 synth-optimizers gepa run --config cookbooks/optimizers/gepa/banking77_container/gepa.toml
-synth-optimizers gepa run --config cookbooks/optimizers/gepa/tblite_container/gepa.toml
 synth-optimizers gepa run --config cookbooks/optimizers/gepa/code_review_container/gepa.toml
 synth-optimizers gepa run --config cookbooks/optimizers/gepa/crafter_container/gepa.toml
 synth-optimizers events compare --left <fresh>/events.normalized.jsonl --right <cached>/events.normalized.jsonl

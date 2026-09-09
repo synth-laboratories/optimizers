@@ -66,10 +66,15 @@ def iter_live_events(
             yield event
         state = store.require(job_id).state
         if state in TERMINAL_STATES:
-            leftover = store.events(job_id, after_sequence=cursor, limit=500)
-            for event in leftover:
-                yield event
-            return
+            # Terminal state closes the producer, not the pagination cursor.
+            # A reconnect may have more than two pages left to replay.
+            while True:
+                leftover = store.events(job_id, after_sequence=cursor, limit=500)
+                if not leftover:
+                    return
+                for event in leftover:
+                    cursor = int(event["sequence"])
+                    yield event
         if not live:
             return
         before = cursor

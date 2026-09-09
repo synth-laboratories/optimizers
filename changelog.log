@@ -2,6 +2,10 @@
 
 ## 2026-09-09
 
+* Prepared stable `0.2.22` with Containers `0.4.2`; not yet published.
+* Isolated TBLite research dependencies and fixtures from production validation.
+* Added Python release tests and a Linux x86_64 wheel build to publication CI.
+* Fixed terminal event replay truncation for journals longer than two pages.
 * `0.2.22.dev20260909`: made the declared cargo fmt/clippy/ruff gates pass, and
   restored `cargo test`, which had stopped compiling because `identities.rs`
   used `LeverBundle` without importing it. 137 tests.

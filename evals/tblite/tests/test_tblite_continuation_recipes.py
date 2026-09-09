@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-RECIPES=Path(__file__).parents[1]/'docs/e2e'
+RECIPES=Path(__file__).parents[3]/'docs/e2e'
 
 @pytest.fixture
 def recipes(monkeypatch):

@@ -1,0 +1,16 @@
+[project]
+name = "synth-optimizers-tblite-evals"
+version = "0.0.0"
+requires-python = ">=3.11"
+dependencies = [
+    "synth-harbor-tblite==0.1.1.dev20260909",
+    "synth-containers==0.4.2.dev20260909",
+    "pytest>=8.0.0",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+synth-harbor-tblite = { path = "../../vendor/synth-harbor-tblite/synth_harbor_tblite-0.1.1.dev20260909-py3-none-any.whl" }
+synth-containers = { path = "../../vendor/synth-containers/synth_containers-0.4.2.dev20260909-py3-none-any.whl" }

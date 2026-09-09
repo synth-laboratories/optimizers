@@ -92,18 +92,28 @@ jobs:
       - name: Rust suite
         run: cargo test --workspace --exclude synth_optimizers_py
 
+      - name: Python production suite
+        run: uv run --locked --group dev pytest tests -q
+
       - name: Static gates
         run: |
           cargo clippy --workspace -- -D warnings
-          uv run --project . --group dev ruff check src
+          uv run --locked --project . --group dev ruff check src
           git diff --check
 
   build:
-    name: Build macOS arm64 wheel
+    name: Build ${{ matrix.target }} wheel
     needs:
       - validate
       - test
-    runs-on: macos-14
+    strategy:
+      matrix:
+        include:
+          - runner: macos-14
+            target: aarch64-apple-darwin
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
@@ -111,12 +121,26 @@ jobs:
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b
         with:
           command: build
-          target: aarch64-apple-darwin
+          target: ${{ matrix.target }}
           args: --release --out dist --find-interpreter
+
+      - name: Verify production dependency metadata
+        run: python3 scripts/check-production-wheel.py dist/*.whl
+
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
+        with:
+          python-version: "3.11"
+
+      - name: Fresh production wheel installation
+        run: |
+          uv venv .release-smoke --python 3.11
+          uv pip install --python .release-smoke/bin/python dist/*.whl vendor/synth-containers/synth_containers-0.4.2-py3-none-any.whl
+          .release-smoke/bin/python -c 'from importlib.metadata import distributions; import synth_optimizers._synth_optimizers; assert not any("tblite" in d.metadata["Name"].lower() for d in distributions())'
+          .release-smoke/bin/synth-optimizers --help
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: optimizer-wheel
+          name: optimizer-wheel-${{ matrix.target }}
           path: dist/*.whl
           if-no-files-found: error
           retention-days: 7

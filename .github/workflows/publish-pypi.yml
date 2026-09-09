@@ -73,9 +73,36 @@ jobs:
               output.write(f"version={version}\n")
           PY
 
+  # A package must not reach PyPI having never run its own suite. `cargo test`
+  # was absent here and had stopped compiling entirely before this release.
+  # `synth_optimizers_py` is excluded because linking the PyO3 extension as a
+  # test binary is a harness problem, not a source one.
+  test:
+    name: Test
+    needs: validate
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
+        with:
+          enable-cache: true
+          python-version: "3.11"
+
+      - name: Rust suite
+        run: cargo test --workspace --exclude synth_optimizers_py
+
+      - name: Static gates
+        run: |
+          cargo clippy --workspace -- -D warnings
+          uv run --project . --group dev ruff check src
+          git diff --check
+
   build:
     name: Build macOS arm64 wheel
-    needs: validate
+    needs:
+      - validate
+      - test
     runs-on: macos-14
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -96,7 +123,9 @@ jobs:
 
   source:
     name: Build source distribution
-    needs: validate
+    needs:
+      - validate
+      - test
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262

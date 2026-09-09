@@ -9,11 +9,11 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.2.21"
+version = "0.2.22"
 edition = "2021"
 license = "Apache-2.0"
 authors = ["Synth Laboratories <josh@usesynth.ai>"]
-repository = "https://github.com/synth-laboratories/synth-cookbooks-public"
+repository = "https://github.com/synth-laboratories/optimizers"
 
 [workspace.dependencies]
 anyhow = "1.0"

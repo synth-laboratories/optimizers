@@ -494,6 +494,7 @@ def test_forward_never_fabricates_or_truncates_logprobs(values):
 
 def test_renderer_profile_freezes_actual_config_and_tokens_without_training(monkeypatch):
     import hashlib
+    import importlib.metadata
     import json
     from dataclasses import dataclass
     @dataclass
@@ -502,12 +503,17 @@ def test_renderer_profile_freezes_actual_config_and_tokens_without_training(monk
     transport = TinkerSdkTransport(SimpleNamespace(), tinker_module=None)
     prepared = []
     monkeypatch.setattr(transport, 'prepare_renderer', prepared.append)
+    def package_version(name):
+        assert name == 'renderers'
+        return '0.1.9-test'
+    monkeypatch.setattr(importlib.metadata, 'version', package_version)
     transport._renderer = SimpleNamespace(config=Config())
     transport._tokenizer = SimpleNamespace(backend_tokenizer=SimpleNamespace(to_str=lambda: 'exact-tokenizer'))
     monkeypatch.setattr(transport, 'tokenize_chat', lambda *a, **k: {'prompt_token_ids': [12, 34], 'stop_token_ids': [5]})
     profile = transport.renderer_profile('openai/gpt-oss-20b')
     assert prepared == ['openai/gpt-oss-20b']
     assert profile['profile_id'] == 'renderers.test-renderer.v1'
+    assert profile['package_version'] == '0.1.9-test'
     assert profile['tokenizer_digest'] == hashlib.sha256(b'exact-tokenizer').hexdigest()
     assert profile['config_digest'] == hashlib.sha256(json.dumps({'name':'test-renderer'},sort_keys=True,separators=(',',':')).encode()).hexdigest()
     assert profile['stop_token_ids'] == [5]

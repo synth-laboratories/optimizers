@@ -6,7 +6,7 @@ import pytest
 
 
 spec = importlib.util.spec_from_file_location('native_vim',
-    Path(__file__).parents[1]/'docs/e2e/tblite_native_vim_grader.py')
+    Path(__file__).parents[3]/'docs/e2e/tblite_native_vim_grader.py')
 native = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(native)
 

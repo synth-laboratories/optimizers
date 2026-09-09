@@ -2102,57 +2102,7 @@ fn append_global_gepa_run_index_entry(home: &Path, entry: &Value) -> Result<()> 
 }
 
 #[cfg(test)]
-mod global_gepa_run_index_tests {
-    use super::*;
-    use std::sync::{Arc, Barrier};
-
-    #[test]
-    fn concurrent_appends_remain_distinct_valid_jsonl_records() {
-        let home = std::env::temp_dir().join(format!(
-            "synth_gepa_index_concurrency_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let barrier = Arc::new(Barrier::new(3));
-        let mut writers = Vec::new();
-        for run_id in ["gepa_luna", "gepa_sol"] {
-            let home = home.clone();
-            let barrier = Arc::clone(&barrier);
-            writers.push(thread::spawn(move || {
-                let entry = json!({
-                    "schema": "synth.gepa_run_index.v1",
-                    "run_id": run_id,
-                    "run_dir": home.join(run_id),
-                    "event_feed_path": home.join(run_id).join("optimizer_events.jsonl"),
-                });
-                barrier.wait();
-                append_global_gepa_run_index_entry(&home, &entry).unwrap();
-            }));
-        }
-        barrier.wait();
-        for writer in writers {
-            writer.join().unwrap();
-        }
-
-        let lines = fs::read_to_string(home.join("index.jsonl")).unwrap();
-        let entries = lines
-            .lines()
-            .map(|line| serde_json::from_str::<Value>(line).unwrap())
-            .collect::<Vec<_>>();
-        assert_eq!(entries.len(), 2);
-        assert_eq!(
-            entries
-                .iter()
-                .filter_map(|entry| entry.get("run_id").and_then(Value::as_str))
-                .collect::<BTreeSet<_>>(),
-            BTreeSet::from(["gepa_luna", "gepa_sol"])
-        );
-        fs::remove_dir_all(home).unwrap();
-    }
-}
+mod global_gepa_run_index_tests;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct UsageTotals {
@@ -10904,6 +10854,11 @@ fn terminalize_gepa_run_state(
         )?;
     }
     let state_history = serde_json::to_value(&context.state_machine.history)?;
+    let storage_summary = record_terminal_storage_snapshot(
+        &context.paths,
+        &context.config.run.run_id,
+        &mut context.events,
+    )?;
     context.events.emit(
         terminal_event_type,
         message,
@@ -10961,11 +10916,6 @@ fn terminalize_gepa_run_state(
         &context.paths.run_dir,
     )?;
     context.events.set_lane("enrichment");
-    let storage_summary = record_terminal_storage_snapshot(
-        &context.paths,
-        &context.config.run.run_id,
-        &mut context.events,
-    )?;
     let optimizer_enrichment_cursor = context.events.last_sequence_number();
     if let Some(manifest) = failure_manifest.as_object_mut() {
         manifest.insert(
@@ -14110,6 +14060,13 @@ fn finalize_completed_gepa_run(
     )?;
     let runtime_summary =
         serde_json::to_value(runtime_usage_summary_from_events(context.events.records()))?;
+    // The canonical optimizer stream seals on the terminal event. Storage
+    // facts must be recorded first; the raw enrichment lane does not unseal it.
+    let storage_summary = record_terminal_storage_snapshot(
+        &context.paths,
+        &context.config.run.run_id,
+        &mut context.events,
+    )?;
     context.events.emit(
         "gepa.run.finished",
         "GEPA run finished",
@@ -14132,11 +14089,6 @@ fn finalize_completed_gepa_run(
         &context.paths.run_dir,
     )?;
     context.events.set_lane("enrichment");
-    let storage_summary = record_terminal_storage_snapshot(
-        &context.paths,
-        &context.config.run.run_id,
-        &mut context.events,
-    )?;
     context.events.flush()?;
     context
         .workspace
@@ -16782,6 +16734,8 @@ fn execute_gepa_monolithic_with_options(
     )?;
     let runtime_summary =
         serde_json::to_value(runtime_usage_summary_from_events(events.records()))?;
+    let storage_summary =
+        record_terminal_storage_snapshot(&paths, &config.run.run_id, &mut events)?;
     events.emit(
         "gepa.run.finished",
         "GEPA run finished",
@@ -16803,8 +16757,6 @@ fn execute_gepa_monolithic_with_options(
         &paths.run_dir,
     )?;
     events.set_lane("enrichment");
-    let storage_summary =
-        record_terminal_storage_snapshot(&paths, &config.run.run_id, &mut events)?;
     events.flush()?;
     workspace.record_event_stream(&config.run.run_id, events.records())?;
     registry.append(&RunRegistryEntry::finished(
@@ -20833,7 +20785,11 @@ fn settled_effect_cost(
     reported_cost_usd: Option<f64>,
     reserved_cost_usd: Option<f64>,
 ) -> Option<f64> {
-    reported_cost_usd.or_else(|| (status == "completed").then_some(reserved_cost_usd).flatten())
+    reported_cost_usd.or_else(|| {
+        (status == "completed")
+            .then_some(reserved_cost_usd)
+            .flatten()
+    })
 }
 
 fn record_run_phase_timing_from_effect(
@@ -22049,6 +22005,8 @@ fn fail_gepa_run_and_return<T>(input: FailedGepaRunInput<'_>, error: OptimizerEr
     input
         .workspace
         .record_checkpoint_compacting_previous(&input.config.run.run_id, &checkpoint)?;
+    let storage_summary =
+        record_terminal_storage_snapshot(input.paths, &input.config.run.run_id, input.events)?;
     input.events.emit(
         terminal_event_type,
         input.message,
@@ -22086,8 +22044,6 @@ fn fail_gepa_run_and_return<T>(input: FailedGepaRunInput<'_>, error: OptimizerEr
         &input.paths.run_dir,
     )?;
     input.events.set_lane("enrichment");
-    let storage_summary =
-        record_terminal_storage_snapshot(input.paths, &input.config.run.run_id, input.events)?;
     input.events.flush()?;
     input
         .workspace

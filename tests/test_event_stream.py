@@ -35,7 +35,25 @@ def test_append_event_wakes_a_live_tail(tmp_path) -> None:
     store.transition(job.job_id, "completed")
     thread.join(timeout=2)
     assert not thread.is_alive()
-    assert seen == ["sft.training.started", "sft.completed"]
+    assert seen == ["sft.training.started", "sft.completed", "training.lifecycle"]
+    assert seen == [event["event_type"] for event in store.events(job.job_id, after_sequence=0)]
+    store.close()
+
+
+def test_terminal_tail_drains_all_pages(tmp_path) -> None:
+    store = JobStore(tmp_path / "jobs.sqlite")
+    job = store.persist_prepared(
+        algorithm_id="sft", implementation_version="sft.tinker.v1",
+        provider="tinker", model_id="test", idempotency_key="paged", config={},
+        job_id="run_paged",
+    )
+    for index in range(1001):
+        store.append_event(job.job_id, "sft.step.metrics", {"index": index}, phase="running")
+    store.transition(job.job_id, "completed")
+    events = list(iter_live_events(store, job.job_id))
+    assert len(events) == 1002
+    assert [event["sequence"] for event in events] == list(range(1, 1003))
+    assert events[-1]["event_type"] == "training.lifecycle"
     store.close()
 
 

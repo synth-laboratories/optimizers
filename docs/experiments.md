@@ -22,6 +22,8 @@ about what ran.
 
 ## The pieces
 
+Module paths in this table are relative to `src/synth_optimizers/`.
+
 | Module | Owns |
 | --- | --- |
 | `experiment/models.py` | the wire records: correlation envelope, subject reference, factor catalog, trial outcome |

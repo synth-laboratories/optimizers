@@ -339,6 +339,19 @@ class GepaAdaptiveStageWorkersTomlSection(BaseModel):
     stale_gap_threshold: int = 2
 
 
+class GepaAdaptiveRolloutConcurrencyTomlSection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = None
+    initial: int | None = Field(default=None, ge=1)
+    min: int | None = Field(default=None, ge=1)
+    max: int | None = Field(default=None, ge=1)
+    increase_step: int | None = Field(default=None, ge=1)
+    decrease_step: int | None = Field(default=None, ge=1)
+    increase_after_successes: int | None = Field(default=None, ge=1)
+    overload_status_codes: list[int] | None = None
+
+
 class GepaPipelineTomlSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -346,6 +359,7 @@ class GepaPipelineTomlSection(BaseModel):
     staleness_policy: GepaStalenessPolicy | str = GepaStalenessPolicy.FULL
     delta_max: int = 2
     max_in_flight_candidates: int = 1
+    adaptive_rollout_concurrency: GepaAdaptiveRolloutConcurrencyTomlSection | None = None
     workers: GepaPipelineWorkersTomlSection = Field(default_factory=GepaPipelineWorkersTomlSection)
     speculative_completion: GepaSpeculativeCompletionTomlSection = Field(
         default_factory=GepaSpeculativeCompletionTomlSection
@@ -462,6 +476,7 @@ class GepaTomlSection(BaseModel):
             proposer_concurrency=self.pipeline.workers.propose,
             rollout_concurrency=self.pipeline.workers.rollout,
             evaluator_concurrency=self.pipeline.workers.evaluate,
+            adaptive_rollout_concurrency=self.pipeline.adaptive_rollout_concurrency,
             speculative_alpha=(
                 self.pipeline.speculative_completion.alpha
                 if self.pipeline.speculative_completion.enabled
@@ -1165,6 +1180,7 @@ class GepaPipeline:
     adaptive_stage_workers_max: int = 128
     adaptive_stage_workers_backlog_threshold: int = 2
     adaptive_stage_workers_stale_gap_threshold: int = 2
+    adaptive_rollout_concurrency: GepaAdaptiveRolloutConcurrencyTomlSection | None = None
 
     @classmethod
     def sync_serial(
@@ -1260,6 +1276,10 @@ class GepaPipeline:
                 "stale_gap_threshold": int(self.adaptive_stage_workers_stale_gap_threshold),
             },
         }
+        if self.adaptive_rollout_concurrency is not None:
+            gepa["pipeline"]["adaptive_rollout_concurrency"].update(
+                self.adaptive_rollout_concurrency.model_dump(exclude_none=True)
+            )
 
 
 @dataclass(slots=True)

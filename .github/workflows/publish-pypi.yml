@@ -140,12 +140,19 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Fresh production wheel installation
+      - name: Fresh vendored dependency installation
         run: |
           uv venv .release-smoke --python 3.11
           uv pip install --python .release-smoke/bin/python dist/*.whl vendor/synth-containers/synth_containers-0.4.2-py3-none-any.whl
           .release-smoke/bin/python -c 'from importlib.metadata import distributions; import synth_optimizers._synth_optimizers; assert not any("tblite" in d.metadata["Name"].lower() for d in distributions())'
           .release-smoke/bin/synth-optimizers --help
+
+      - name: Fresh public dependency installation
+        run: |
+          uv venv .public-release-smoke --python 3.11
+          uv pip install --python .public-release-smoke/bin/python --index-url https://pypi.org/simple dist/*.whl
+          .public-release-smoke/bin/python -c 'from importlib.metadata import distributions, version; import synth_optimizers._synth_optimizers; assert version("synth-containers") == "0.4.2"; assert not any("tblite" in d.metadata["Name"].lower() for d in distributions())'
+          .public-release-smoke/bin/synth-optimizers --help
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

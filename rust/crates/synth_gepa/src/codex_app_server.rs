@@ -1,11 +1,23 @@
-use std::{collections::{BTreeMap, BTreeSet}, env, fs, path::{Path, PathBuf}, sync::{Mutex, OnceLock}, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    env, fs,
+    path::{Path, PathBuf},
+    sync::{Mutex, OnceLock},
+    time::Duration,
+};
 
 mod openrouter_usage;
 
 use crate::{CandidateRecord, RolloutScore};
 use reqwest::blocking::Client;
 use serde_json::{json, Map, Value};
-use synth_optimizer_platform::{jesterky_workspace_read_model, looks_like_jesterky_manifest, proposer_delta_chunks_from_protocol, proposer_uses_chatgpt_auth, read_jesterky_manifest, record_manifest_validation, run_turn, AgentTurnOutcome, CodexTurnRequest, NanoAgentTurnIdentity, NanoCodexExecution, NanoCodexSessionPool, NanoCodexTurnRequest, OptimizerError, PromptProgram, Result, SynthOptimizerConfig};
+use synth_optimizer_platform::{
+    jesterky_workspace_read_model, looks_like_jesterky_manifest,
+    proposer_delta_chunks_from_protocol, proposer_uses_chatgpt_auth, read_jesterky_manifest,
+    record_manifest_validation, run_turn, AgentTurnOutcome, CodexTurnRequest,
+    NanoAgentTurnIdentity, NanoCodexExecution, NanoCodexSessionPool, NanoCodexTurnRequest,
+    OptimizerError, PromptProgram, Result, SynthOptimizerConfig,
+};
 
 const GEPA_REFLECTIVE_FRAME_SCHEMA_VERSION: &str = "gepa_reflective_frame.v1";
 const CONTAINER_SENSOR_ADAPTER_ID: &str = "synth.container_sensor_frame_adapter";
@@ -3394,36 +3406,4 @@ fn non_empty(value: Option<&str>) -> Option<&str> {
 }
 
 #[cfg(test)]
-mod cost_tests {
-    use super::*;
-
-    #[test]
-    fn chatgpt_proposer_emits_explicit_zero_incremental_api_cost() {
-        let mut config = SynthOptimizerConfig::default();
-        config.proposer.auth_mode = "chatgpt".to_string();
-        let usage = normalize_proposer_usage(
-            &config,
-            "gpt-5.6-luna",
-            json!({"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}),
-        );
-        assert_eq!(usage.get("cost_usd"), Some(&json!(0.0)));
-        assert_eq!(
-            usage.get("cost_source"),
-            Some(&json!("chatgpt_subscription_no_incremental_api_charge"))
-        );
-        assert_eq!(usage.get("provider"), Some(&json!("chatgpt_subscription")));
-    }
-
-    #[test]
-    fn chatgpt_proposer_preserves_an_explicit_cost_receipt() {
-        let mut config = SynthOptimizerConfig::default();
-        config.proposer.auth_mode = "chatgpt".to_string();
-        let usage = normalize_proposer_usage(
-            &config,
-            "gpt-5.6-luna",
-            json!({"cost_usd": 0.25, "cost_source": "provider"}),
-        );
-        assert_eq!(usage.get("cost_usd"), Some(&json!(0.25)));
-        assert_eq!(usage.get("cost_source"), Some(&json!("provider")));
-    }
-}
+mod cost_tests;

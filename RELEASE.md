@@ -36,14 +36,10 @@ used `LeverBundle` without importing it. It is listed now, and passes (137).
 `synth_optimizers_py` is excluded because linking the PyO3 extension as a test
 binary fails in this environment; that is a harness gap, not a source defect.
 
-**`cargo fmt --check` and the file-size ratchet currently disagree.** Formatting
-`synth_gepa/src/{codex_app_server,lib,service}.rs` and
-`synth_optimizer_platform/src/config.rs` adds 12, 3, 6 and 6 lines respectively,
-and `tests/file_size_cap.rs` allows those four files only to shrink. Running the
-formatter therefore turns a green test red. These four files are left unformatted
-so the ratchet holds; every other file is formatted. Resolving this needs a
-decision that belongs to a review — split the files, or reformat and re-cut the
-ceilings — and it must not be settled by quietly raising them.
+The former formatting/file-size conflict is resolved by extracting four intact
+test modules into separate files. Both formatting and all four file-size checks
+pass. No test assertion was removed and no ceiling was raised; the oversized
+production files shrink to 3,409, 22,094, 6,152, and 2,935 lines respectively.
 
 Run the cookbook acceptance from the repository root when the local environment
 has the package built or installed:

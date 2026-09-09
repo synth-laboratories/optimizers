@@ -32,8 +32,10 @@ runner tests remain in the production unit suite. No paid experiment was run.
 Publication CI now runs Python tests, builds macOS arm64 and Linux x86_64 wheels,
 checks production metadata/native extension presence, and fresh-installs each.
 The Linux jobs have not yet executed remotely; local macOS evidence is not a
-substitute. The four-file formatting/size-ratchet conflict documented in
-RELEASE.md is not silently waived or fixed by raising caps.
+substitute. The four-file formatting/size-ratchet conflict is resolved by
+extracting intact test modules: formatting and all four ratchet checks pass
+without raising any ceiling or removing assertions. All 137 Rust tests passed
+again after extraction, and Clippy passed with `-D warnings`.
 
 ## Built candidate hashes (not public artifacts)
 

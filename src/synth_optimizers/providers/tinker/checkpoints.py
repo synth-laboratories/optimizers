@@ -24,6 +24,7 @@ def save_checkpoint(
         digest=str(payload["digest"]),
         kind=kind,
         resume_token=payload.get("resume_token"),
+        model_id=str(payload.get("model_id") or session.model_id),
     )
 
 

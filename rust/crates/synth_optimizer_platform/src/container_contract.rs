@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use crate::cispo_contract::{CispoOptimizerContract, CISPO_OPTIMIZER_CONTRACT_VERSION};
 use crate::error::{OptimizerError, Result};
 use crate::prompt_program::PromptProgram;
 use crate::GEPA_OPTIMIZER_CONTRACT_VERSION;
@@ -60,6 +61,35 @@ impl ContainerMetadataResponse {
         contract.validate_routes()?;
         Ok(contract)
     }
+
+    pub fn resolved_cispo_contract(&self) -> Result<CispoOptimizerContract> {
+        Ok(self.cispo_contract()?.clone())
+    }
+
+    pub fn cispo_contract(&self) -> Result<&CispoOptimizerContract> {
+        self.metadata
+            .optimizer_contracts
+            .cispo
+            .as_ref()
+            .ok_or_else(|| {
+                OptimizerError::Container(
+                    "container metadata must advertise metadata.optimizer_contracts.cispo"
+                        .to_string(),
+                )
+            })
+    }
+
+    pub fn validate_cispo_contract(&self) -> Result<CispoOptimizerContract> {
+        let contract = self.resolved_cispo_contract()?;
+        if contract.version != CISPO_OPTIMIZER_CONTRACT_VERSION {
+            return Err(OptimizerError::Container(format!(
+                "container does not advertise metadata.optimizer_contracts.cispo.version={}",
+                CISPO_OPTIMIZER_CONTRACT_VERSION
+            )));
+        }
+        contract.validate_routes()?;
+        Ok(contract)
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -74,6 +104,8 @@ pub struct ContainerMetadata {
 pub struct OptimizerContracts {
     #[serde(default)]
     pub gepa: Option<GepaOptimizerContract>,
+    #[serde(default)]
+    pub cispo: Option<CispoOptimizerContract>,
     #[serde(flatten)]
     pub extra: JsonMap,
 }

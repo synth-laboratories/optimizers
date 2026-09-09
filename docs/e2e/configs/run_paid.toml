@@ -1,0 +1,64 @@
+
+schema_version = "cispo.container.v1"
+run_id = "paid_gate_counter_03"
+
+[container]
+url = "http://127.0.0.1:8222"
+
+[taskset]
+train_split = "train"
+evaluation_split = "train"
+train_ids = ["counter.default"]
+evaluation_ids = []
+
+[model]
+provider = "tinker"
+id = "openai/gpt-oss-20b"
+family = "gpt_oss"
+policy_kind = "counter"
+
+[plan]
+preset = "cispo"
+group_size = 2
+groups_per_step = 1
+target_train_updates = 1
+maximum_sampled_groups = 3
+
+[pipeline]
+max_execution_slots = 2
+rollout_queue_capacity = 8
+score_queue_capacity = 8
+scored_result_queue_capacity = 8
+train_ready_capacity = 1
+maximum_policy_lag = 0
+max_open_groups = 1
+expected_horizon_seconds = 2.0
+stale_disposition = "discard"
+
+[topology]
+expected_topology_id = "counter.reference.solo.v1"
+trainable_teams = ["team-0"]
+partial_roster = "refuse"
+
+[opponents]
+match_set_revision = "match-set-0001"
+
+[reward]
+optimized_channel = "score"
+
+[evaluation]
+paired = false
+
+[lifecycle]
+resume_requires_rehandshake = true
+
+[offline]
+mode = "off"
+
+[artifacts]
+# Absolute, and inside the scratchpad: these are relative to the process's cwd,
+# which is the optimizers checkout, and a catalog left there is both shared
+# between runs (a second run collides on its own checkpoint ids) and written
+# into a repository this work does not own.
+catalog = "/tmp/synth-container-first-e2e/reference-paid/checkpoints.sqlite3"
+directory = "/tmp/synth-container-first-e2e/reference-paid/runs"

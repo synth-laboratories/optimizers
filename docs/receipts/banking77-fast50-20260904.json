@@ -1,0 +1,314 @@
+{
+  "additional_updates": 50,
+  "artifact_sha256": {
+    "candidates.json": "7ffcf0f59c5701a489a881522d3002ed6fb168670976ef758ba01e88211bbd6a",
+    "curriculum.json": "35d1ea007ac7c794096827b9ca1b4bcf01b166b77e1228dcd626601e1faf5da5",
+    "experiment.json": "0a9bcd763eee92eb3b632d2183dfee233de9b897f729528498c89c71d18a8181",
+    "final_panel.json": "5854d7de385fdade29777ef3f7382935342699b7749edeb78d772381340b09ea",
+    "recovery.json": "f8753f270a49ce9bdf4ccf6e5dc705687aea0e2afb0685cff950704573f0eade",
+    "training_resume25/manifest.json": "385d130c42fbc964a0f6f22f9ef7a329d137a38fa1f476b71759a1a540d3f75a",
+    "training_resume25/provider_usage.json": "14f95a75f2fc4f6fa55bd8d8228beb662832332cc20495ce32a9a301a6c93d51",
+    "validation_panel.json": "1e55756c6340b2348e11d23b9698def384660d493bbbe5a37e0b3598b12d97ff"
+  },
+  "cost_note": "Not an invoice or complete spend: excludes first interrupted training sampling, unrecorded in-flight/failed calls, and checkpoint storage. Cache hits and provider dollars unavailable; partial screening progress is included only as observed usage. Historical checkpoint training_evidence.provider_cost=0 is a missing-cost placeholder, not evidence of free compute; provider_usage marks missing dollars explicitly.",
+  "counted_token_cost_estimate": {
+    "all_prefill_cached_usd": 1.191831066,
+    "no_prefill_cached_usd": 3.166061418
+  },
+  "counted_usage": {
+    "completed_screening": {
+      "calls": 12320,
+      "completion_tokens": 744800,
+      "prompt_tokens": 7798728
+    },
+    "interrupted_screening_observed": {
+      "calls": 444,
+      "completion_tokens": 23848,
+      "prompt_tokens": 281535
+    },
+    "resumed_training_sampling": {
+      "calls": 4272,
+      "completion_tokens": 373545,
+      "prompt_tokens": 2707448
+    },
+    "validation_and_final": {
+      "calls": 4620,
+      "completion_tokens": 252782,
+      "prompt_tokens": 2922222
+    }
+  },
+  "counted_usage_total": {
+    "calls": 21656,
+    "completion_tokens": 1394975,
+    "prompt_tokens": 13709933
+  },
+  "evaluation": {
+    "attempts": 4620,
+    "elapsed_seconds": 709.645757,
+    "samples_per_minute": 390.6174274497917
+  },
+  "final": {
+    "original_baseline": {
+      "baseline_checkpoint_id": "ckpt_b229ee0836324a7d96b0d4b0",
+      "baseline_mean": 0.8207792207792208,
+      "bootstrap_replicates": 20000,
+      "bootstrap_seed": 20260904,
+      "discordant_pairs": 67,
+      "estimand": "macro intent accuracy on a balanced, deterministically selected 10-example-per-intent Banking77 panel",
+      "exact_two_sided_mcnemar_p": 4.042104433067337e-09,
+      "losses": 10,
+      "mean_delta": 0.06103896103896104,
+      "paired_bootstrap_95_percentile_interval": [
+        0.04025974025974026,
+        0.08181818181818182
+      ],
+      "paired_stdev": 0.2887828563851429,
+      "pairs": 770,
+      "panel_digest": "sha256:a01195e6cd6e271dfd531460055bdcbc201381d74fe34b9036f5b6826db6304a",
+      "receipt_sha256": "sha256:397b187bfcdd6867c7cc929330bf33400e272d3532599855f78ff6732e443a40",
+      "ties": 703,
+      "trained_checkpoint_id": "ckpt_4ce5ae6396994e9f42c890cf",
+      "trained_mean": 0.8818181818181818,
+      "valid": true,
+      "wins": 57
+    },
+    "selected_revision": 74,
+    "update24_baseline": {
+      "baseline_checkpoint_id": "ckpt_d02739fcc0546c017c3cfb94",
+      "baseline_mean": 0.8480519480519481,
+      "bootstrap_replicates": 20000,
+      "bootstrap_seed": 20260904,
+      "discordant_pairs": 54,
+      "estimand": "macro intent accuracy on a balanced, deterministically selected 10-example-per-intent Banking77 panel",
+      "exact_two_sided_mcnemar_p": 0.0014962588853935088,
+      "losses": 15,
+      "mean_delta": 0.03116883116883117,
+      "paired_bootstrap_95_percentile_interval": [
+        0.012987012987012988,
+        0.04935064935064935
+      ],
+      "paired_stdev": 0.26315073049417964,
+      "pairs": 770,
+      "panel_digest": "sha256:a01195e6cd6e271dfd531460055bdcbc201381d74fe34b9036f5b6826db6304a",
+      "receipt_sha256": "sha256:365e504f03d195ac8651292599c281f156289ac9d1931ca0093f0fc7a05ae324",
+      "ties": 716,
+      "trained_checkpoint_id": "ckpt_4ce5ae6396994e9f42c890cf",
+      "trained_mean": 0.8792207792207792,
+      "valid": true,
+      "wins": 39
+    }
+  },
+  "final_revision": 74,
+  "rate_source": "https://tinker-docs.thinkingmachines.ai/tinker/models.json",
+  "rates_usd_per_million": {
+    "cached_prefill": 0.036,
+    "prefill": 0.18,
+    "sample": 0.45,
+    "train": 0.396
+  },
+  "resumed_training": {
+    "group_dispositions": {
+      "skipped": 338,
+      "trained": 196
+    },
+    "host_sleep_wall_seconds": 2378,
+    "sampling_tps": {
+      "clock_source": "LiveRunClock",
+      "end_to_end_generated_tps": 73.12208220933228,
+      "end_to_end_rollouts_per_second": 0.836251416022882,
+      "generated_tokens": 373545,
+      "makespan_seconds": 5108.511529125,
+      "makespan_semantics": "earliest_submit_to_latest_score_seconds",
+      "rollout_count": 4272,
+      "sampling_seconds": 22793.976261344043,
+      "service_time_generated_tps": 16.38788229473983,
+      "service_time_seconds": 22793.976261344043,
+      "service_time_semantics": "sum_of_per_call_submit_to_score_seconds",
+      "weighted_aggregate_tps": 16.38788229473983
+    }
+  },
+  "root": "/Users/joshuapurtell/Documents/ChatGPT/Synth Prod/b77_fast50_19",
+  "schema_version": "banking77.fast50.summary.v1",
+  "screening": {
+    "attempts": 12320,
+    "intent_count": 57,
+    "samples_per_minute": 646.8823669374893,
+    "seconds": 1142.7116239070892,
+    "selected_tasks": 180
+  },
+  "selected_checkpoint": {
+    "artifacts": {
+      "sampler_weights": {
+        "digest": "sha256:1de7f78fe80a5323e9a2128f3ec295182324576a39d5a43ed2d8bb17d835a62c",
+        "ref": "tinker://6a493a6e-2ed2-5ad4-bdab-3645cc5869e8:train:0/sampler_weights/optimizers-sampler_weights-save-572b6a0b00adc3265fda31b04e4264ea"
+      },
+      "training_state": {
+        "digest": "sha256:a4ede8165878c6d19d1bd675f4993b0d4e401546d1798e4a9004d9aa753d2ed4",
+        "ref": "tinker://6a493a6e-2ed2-5ad4-bdab-3645cc5869e8:train:0/weights/optimizers-training_state-save-fdcfef6f39ecb6b58120ff0edfd2fb39"
+      }
+    },
+    "base_model": "openai/gpt-oss-20b",
+    "checkpoint_id": "ckpt_4ce5ae6396994e9f42c890cf",
+    "compatibility": {
+      "container_contract_hash": "sha256:5e35c8321141b067c762c2e1ae6eb5b9ca2d471f4e01f0aaee9cbe6f2011022b",
+      "renderer_profile": "banking77.classify.prompt.v1",
+      "tokenizer": "openai/gpt-oss-20b"
+    },
+    "created_at": "2026-09-04T23:10:43.351923Z",
+    "parameter_group_id": "pg-0",
+    "parent_checkpoint_id": "ckpt_9dc3e350197bb796ef01c1ab",
+    "policy_revision_id": "pg-0@74",
+    "policy_set_revision_ids": [],
+    "policy_type_ids": [
+      "policy-0"
+    ],
+    "publication_status": "staged",
+    "run_id": "b77_fast50_19_resume25",
+    "schema_version": "cispo.checkpoint.v1",
+    "train_call_ids": [
+      "train-c9c7ee18eb67ffd5e8d5ebc8ac1dbeb3"
+    ],
+    "training_evidence": {
+      "examples": 32,
+      "groups": [
+        "b77_fast50_19_resume25::g0515",
+        "b77_fast50_19_resume25::g0517",
+        "b77_fast50_19_resume25::g0526",
+        "b77_fast50_19_resume25::g0533"
+      ],
+      "provider_cost": 0.0,
+      "tokens": 2852
+    },
+    "update_id": "b77_fast50_19_resume25::u0048"
+  },
+  "training_evidence_note": "First update preserved in revision-25 checkpoint; its final metrics receipt was lost on dispatch failure. Remaining 49 calls have nonzero loss and 32 nonzero weights each.",
+  "training_examples": 1600,
+  "training_tokens": 178118,
+  "validation": [
+    {
+      "baseline_checkpoint_id": "ckpt_d02739fcc0546c017c3cfb94",
+      "baseline_mean": 0.8831168831168831,
+      "bootstrap_replicates": 20000,
+      "bootstrap_seed": 20260904,
+      "discordant_pairs": 4,
+      "estimand": "macro intent accuracy on a balanced, deterministically selected 2-example-per-intent Banking77 panel",
+      "exact_two_sided_mcnemar_p": 0.625,
+      "losses": 3,
+      "mean_delta": -0.012987012987012988,
+      "paired_bootstrap_95_percentile_interval": [
+        -0.03896103896103896,
+        0.012987012987012988
+      ],
+      "paired_stdev": 0.16116459280507606,
+      "pairs": 154,
+      "panel_digest": "sha256:f9a8abc08a210f44ae5ca84b2742a4220308add1dff16a61db7a08eb1acf324f",
+      "receipt_sha256": "sha256:bfa166aeec2a68911b16e842d14294af74ee3c38f8ce2da171ed045e7fbf90e6",
+      "revision": 34,
+      "ties": 150,
+      "trained_checkpoint_id": "ckpt_c4ef0ed0386984f26946265a",
+      "trained_mean": 0.8701298701298701,
+      "valid": true,
+      "wins": 1
+    },
+    {
+      "baseline_checkpoint_id": "ckpt_d02739fcc0546c017c3cfb94",
+      "baseline_mean": 0.8831168831168831,
+      "bootstrap_replicates": 20000,
+      "bootstrap_seed": 20260904,
+      "discordant_pairs": 6,
+      "estimand": "macro intent accuracy on a balanced, deterministically selected 2-example-per-intent Banking77 panel",
+      "exact_two_sided_mcnemar_p": 0.21875,
+      "losses": 5,
+      "mean_delta": -0.025974025974025976,
+      "paired_bootstrap_95_percentile_interval": [
+        -0.05844155844155844,
+        0.0
+      ],
+      "paired_stdev": 0.19630748017312252,
+      "pairs": 154,
+      "panel_digest": "sha256:f9a8abc08a210f44ae5ca84b2742a4220308add1dff16a61db7a08eb1acf324f",
+      "receipt_sha256": "sha256:03bf38cb427bac921a947ce3489a936fcc01d08683bc281d05f5703eb8a96148",
+      "revision": 44,
+      "ties": 148,
+      "trained_checkpoint_id": "ckpt_3de3093e81569d2421e96542",
+      "trained_mean": 0.8571428571428571,
+      "valid": true,
+      "wins": 1
+    },
+    {
+      "baseline_checkpoint_id": "ckpt_d02739fcc0546c017c3cfb94",
+      "baseline_mean": 0.8831168831168831,
+      "bootstrap_replicates": 20000,
+      "bootstrap_seed": 20260904,
+      "discordant_pairs": 5,
+      "estimand": "macro intent accuracy on a balanced, deterministically selected 2-example-per-intent Banking77 panel",
+      "exact_two_sided_mcnemar_p": 0.375,
+      "losses": 4,
+      "mean_delta": -0.01948051948051948,
+      "paired_bootstrap_95_percentile_interval": [
+        -0.05194805194805195,
+        0.006493506493506494
+      ],
+      "paired_stdev": 0.1797157967232854,
+      "pairs": 154,
+      "panel_digest": "sha256:f9a8abc08a210f44ae5ca84b2742a4220308add1dff16a61db7a08eb1acf324f",
+      "receipt_sha256": "sha256:6a267bbd8c1875551b2b42eb9ed5eb599a7ddd4daafcdf514b8a301fc51acb87",
+      "revision": 54,
+      "ties": 149,
+      "trained_checkpoint_id": "ckpt_5b1dcbbbc84604551f392dee",
+      "trained_mean": 0.8636363636363636,
+      "valid": true,
+      "wins": 1
+    },
+    {
+      "baseline_checkpoint_id": "ckpt_d02739fcc0546c017c3cfb94",
+      "baseline_mean": 0.8831168831168831,
+      "bootstrap_replicates": 20000,
+      "bootstrap_seed": 20260904,
+      "discordant_pairs": 6,
+      "estimand": "macro intent accuracy on a balanced, deterministically selected 2-example-per-intent Banking77 panel",
+      "exact_two_sided_mcnemar_p": 0.21875,
+      "losses": 5,
+      "mean_delta": -0.025974025974025976,
+      "paired_bootstrap_95_percentile_interval": [
+        -0.05844155844155844,
+        0.0
+      ],
+      "paired_stdev": 0.19630748017312252,
+      "pairs": 154,
+      "panel_digest": "sha256:f9a8abc08a210f44ae5ca84b2742a4220308add1dff16a61db7a08eb1acf324f",
+      "receipt_sha256": "sha256:6a4e2578ca50ad913e6fbf80c736a09f05f9300b93f7d3a73ab3f7f1b66342e9",
+      "revision": 64,
+      "ties": 148,
+      "trained_checkpoint_id": "ckpt_820379d29275e04c501953b6",
+      "trained_mean": 0.8571428571428571,
+      "valid": true,
+      "wins": 1
+    },
+    {
+      "baseline_checkpoint_id": "ckpt_d02739fcc0546c017c3cfb94",
+      "baseline_mean": 0.8766233766233766,
+      "bootstrap_replicates": 20000,
+      "bootstrap_seed": 20260904,
+      "discordant_pairs": 8,
+      "estimand": "macro intent accuracy on a balanced, deterministically selected 2-example-per-intent Banking77 panel",
+      "exact_two_sided_mcnemar_p": 1.0,
+      "losses": 4,
+      "mean_delta": 0.0,
+      "paired_bootstrap_95_percentile_interval": [
+        -0.03896103896103896,
+        0.03896103896103896
+      ],
+      "paired_stdev": 0.2286647801900118,
+      "pairs": 154,
+      "panel_digest": "sha256:f9a8abc08a210f44ae5ca84b2742a4220308add1dff16a61db7a08eb1acf324f",
+      "receipt_sha256": "sha256:fe066c3d1b8be29d504a3c8a3c7a6b655bfb4252f06876687f154895e68de9b7",
+      "revision": 74,
+      "ties": 146,
+      "trained_checkpoint_id": "ckpt_4ce5ae6396994e9f42c890cf",
+      "trained_mean": 0.8766233766233766,
+      "valid": true,
+      "wins": 4
+    }
+  ]
+}

@@ -100,6 +100,41 @@ def tokenize_with_renderer(
     }
 
 
+def bridge_with_renderer(
+    renderer: Any,
+    previous_prompt_token_ids: Sequence[int],
+    previous_completion_token_ids: Sequence[int],
+    messages: Sequence[Mapping[str, str]],
+) -> dict[str, Any] | None:
+    """Extend a sampled turn with the next one, carrying its ids through verbatim.
+
+    ``bridge_to_next_turn`` is the renderers package's own answer to multi-turn:
+    the next prompt is the previous prompt plus the previous completion plus the
+    tokens the new turns add, so nothing sampled is ever tokenized from its text.
+    It returns ``None`` when it cannot prove that contract holds, and so does
+    this -- the caller then has a real history rewrite on its hands, not a
+    rendering choice.
+    """
+
+    bridge = getattr(renderer, "bridge_to_next_turn", None)
+    if not callable(bridge) or not messages:
+        return None
+    rendered = bridge(
+        [int(token) for token in previous_prompt_token_ids],
+        [int(token) for token in previous_completion_token_ids],
+        [dict(message) for message in messages],
+    )
+    if rendered is None:
+        return None
+    prompt = tuple(int(token) for token in getattr(rendered, "token_ids", ()) or ())
+    if not prompt:
+        return None
+    return {
+        "prompt_token_ids": prompt,
+        "stop_token_ids": tuple(int(token) for token in renderer.get_stop_token_ids()),
+    }
+
+
 def parse_completion(renderer: Any, token_ids: Sequence[int]) -> str:
     parsed = renderer.parse_response([int(token) for token in token_ids])
     return str(getattr(parsed, "content", "") or "")

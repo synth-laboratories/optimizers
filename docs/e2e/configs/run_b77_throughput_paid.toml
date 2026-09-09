@@ -1,0 +1,95 @@
+schema_version = "cispo.container.v1"
+run_id = "b77_throughput_uplift_06"
+
+[container]
+url = "http://127.0.0.1:8241"
+
+[taskset]
+train_split = "train"
+evaluation_split = "heldout"
+train_ids = [
+  "banking77/train/601",  # extra_charge_on_statement
+]
+evaluation_ids = [
+  "banking77/heldout/306",
+  "banking77/heldout/173",
+  "banking77/heldout/445",
+  "banking77/heldout/1401",
+  "banking77/heldout/896",
+  "banking77/heldout/258",
+  "banking77/heldout/1243",
+  "banking77/heldout/2484",
+  "banking77/heldout/927",
+  "banking77/heldout/2638",
+  "banking77/heldout/2554",
+  "banking77/heldout/1865",
+  "banking77/heldout/2282",
+  "banking77/heldout/1744",
+  "banking77/heldout/2046",
+  "banking77/heldout/852",
+  "banking77/heldout/2252",
+  "banking77/heldout/2351",
+  "banking77/heldout/645",
+  "banking77/heldout/2646",
+  "banking77/heldout/1032",
+  "banking77/heldout/1623",
+  "banking77/heldout/2117",
+  "banking77/heldout/1807",
+  "banking77/heldout/1168",
+  "banking77/heldout/3003",
+  "banking77/heldout/1200",
+  "banking77/heldout/2737",
+  "banking77/heldout/2890",
+  "banking77/heldout/1099",
+  "banking77/heldout/1496",
+  "banking77/heldout/807",
+]
+
+[model]
+provider = "tinker"
+id = "openai/gpt-oss-20b"
+family = "gpt_oss"
+policy_kind = "banking77_classify"
+learning_rate = 0.001
+
+[plan]
+preset = "cispo"
+group_size = 8
+groups_per_step = 2
+target_train_updates = 5
+maximum_sampled_groups = 12
+
+[pipeline]
+max_execution_slots = 8
+rollout_queue_capacity = 64
+score_queue_capacity = 64
+scored_result_queue_capacity = 64
+train_ready_capacity = 1
+maximum_policy_lag = 0
+max_open_groups = 1
+expected_horizon_seconds = 60.0
+stale_disposition = "discard"
+
+[topology]
+expected_topology_id = "banking77.classify.solo.v1"
+trainable_teams = ["team-0"]
+partial_roster = "refuse"
+
+[opponents]
+match_set_revision = "match-set-0001"
+
+[reward]
+optimized_channel = "score"
+
+[evaluation]
+paired = false
+
+[lifecycle]
+resume_requires_rehandshake = true
+
+[offline]
+mode = "off"
+
+[artifacts]
+catalog = "/tmp/synth-container-first-e2e/banking77-throughput-paid-06/checkpoints.sqlite3"
+directory = "/tmp/synth-container-first-e2e/banking77-throughput-paid-06/runs"

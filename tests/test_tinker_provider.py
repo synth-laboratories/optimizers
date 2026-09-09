@@ -6,10 +6,50 @@ from synth_optimizers.providers.tinker import FakeTinkerProvider, TinkerAdapter,
 from synth_optimizers.providers.protocols import (
     CISPO_REQUIRED_CAPABILITIES,
     ProviderError,
+    ProviderCheckpoint,
     SampleRequest,
     TrainingStepRequest,
     UnsupportedCapability,
 )
+
+
+def test_adapter_forwards_user_metadata_when_it_lazily_connects(monkeypatch) -> None:
+    captured = {}
+
+    def connect(api_key, *, base_url=None, user_metadata=None):
+        captured.update(
+            api_key=api_key, base_url=base_url, user_metadata=user_metadata
+        )
+        return FakeTinkerProvider()
+
+    monkeypatch.setattr(
+        "synth_optimizers.providers.tinker.sdk.TinkerSdkTransport.connect", connect
+    )
+    adapter = TinkerAdapter(
+        TinkerCredentials(api_key="fixture", base_url="https://tinker.invalid"),
+        user_metadata={"project": "synth-optimizers", "task": "rl", "run_id": "run-1"},
+    )
+
+    adapter.discover_capabilities("openai/gpt-oss-20b")
+
+    assert captured == {
+        "api_key": "fixture",
+        "base_url": "https://tinker.invalid",
+        "user_metadata": {
+            "project": "synth-optimizers",
+            "task": "rl",
+            "run_id": "run-1",
+        },
+    }
+
+
+def test_adapter_preserves_default_metadata_for_direct_callers() -> None:
+    adapter = TinkerAdapter(TinkerCredentials(api_key="fixture"), transport=object())
+
+    assert adapter.user_metadata == {
+        "project": "synth-optimizers",
+        "task": "sft-cispo",
+    }
 
 
 def test_adapter_is_idempotent_and_does_not_duplicate_paid_work() -> None:
@@ -20,6 +60,28 @@ def test_adapter_is_idempotent_and_does_not_duplicate_paid_work() -> None:
     second = adapter.create_session("gpt-oss-20b", rank=8, seed=1, request_id=request_id)
     assert first.session_id == second.session_id
     assert first.model_id == "openai/gpt-oss-20b"
+
+
+def test_idempotency_key_cannot_alias_two_checkpoint_samples() -> None:
+    transport = FakeTinkerProvider()
+    adapter = TinkerAdapter(TinkerCredentials(api_key="fixture"), transport=transport)
+    request = SampleRequest(request_id="same", prompt_token_ids=(1, 2), max_tokens=4)
+    first = ProviderCheckpoint("a", "tinker://a", 0, "sha256:a", "sampler_weights")
+    second = ProviderCheckpoint("b", "tinker://b", 1, "sha256:b", "sampler_weights")
+
+    adapter.sample_checkpoint(first, request)
+    with pytest.raises(ProviderError, match="reused for a different"):
+        adapter.sample_checkpoint(second, request)
+
+
+def test_sampler_weights_cannot_be_restored_as_training_state() -> None:
+    adapter = TinkerAdapter(TinkerCredentials(api_key="fixture"), transport=FakeTinkerProvider())
+    sampler = ProviderCheckpoint(
+        "a", "tinker://a", 0, "sha256:a", "sampler_weights", resume_token="tinker://a"
+    )
+
+    with pytest.raises(ProviderError, match="not resumable"):
+        adapter.restore_session(sampler, request_id="restore")
 
 
 def test_retryable_errors_are_classified_and_bounded() -> None:

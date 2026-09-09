@@ -1,0 +1,68 @@
+
+schema_version = "cispo.container.v1"
+run_id = "hb2_final"
+
+[container]
+url = "http://127.0.0.1:8242"
+
+[taskset]
+train_split = "eval"
+evaluation_split = "eval"
+train_ids = [
+  "19ec4833-86e9-4166-8b82-d1da09f31fd7",
+  "8f2a65de-dea7-48e8-8adb-6194eca26c08",
+  "5b294937-13e5-424e-8bb4-5d1904a2344a",
+]
+evaluation_ids = []
+
+[model]
+provider = "fake"
+id = "openai/gpt-oss-20b"
+family = "gpt_oss"
+policy_kind = "healthbench_chat"
+
+[plan]
+preset = "cispo"
+group_size = 4
+groups_per_step = 1
+target_train_updates = 1
+maximum_sampled_groups = 6
+
+[pipeline]
+max_execution_slots = 4
+rollout_queue_capacity = 8
+score_queue_capacity = 8
+scored_result_queue_capacity = 8
+train_ready_capacity = 1
+maximum_policy_lag = 0
+max_open_groups = 1
+expected_horizon_seconds = 600.0
+stale_disposition = "discard"
+
+[topology]
+expected_topology_id = "healthbench.answer.solo.v1"
+trainable_teams = ["team-0"]
+partial_roster = "refuse"
+
+[opponents]
+match_set_revision = "match-set-0001"
+
+[reward]
+optimized_channel = "score"
+
+[evaluation]
+paired = false
+
+[lifecycle]
+resume_requires_rehandshake = true
+
+[offline]
+mode = "off"
+
+[artifacts]
+# Absolute, and inside the scratchpad: these are relative to the process's cwd,
+# which is the optimizers checkout, and a catalog left there is both shared
+# between runs (a second run collides on its own checkpoint ids) and written
+# into a repository this work does not own.
+catalog = "/tmp/synth-container-first-e2e/healthbench2/checkpoints.sqlite3"
+directory = "/tmp/synth-container-first-e2e/healthbench2/runs"

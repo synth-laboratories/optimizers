@@ -56,15 +56,24 @@ class TinkerAdapter:
         credentials: TinkerCredentials,
         *,
         transport: Any | None = None,
+        user_metadata: Mapping[str, str] | None = None,
         max_attempts: int = 3,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.credentials = credentials
         self._transport = transport
+        # Preserve the adapter's historical attribution for existing direct
+        # SFT/CISPO callers. RL assembly supplies its own run-scoped metadata.
+        self.user_metadata = dict(
+            user_metadata
+            if user_metadata is not None
+            else {"project": "synth-optimizers", "task": "sft-cispo"}
+        )
         self.max_attempts = max(1, max_attempts)
         self._sleep = sleep
         self._sessions: dict[str, Any] = {}
         self._completed_requests: dict[str, Any] = {}
+        self._request_fingerprints: dict[str, tuple[Any, ...]] = {}
         self._cancelled: set[str] = set()
 
     def discover_capabilities(self, model_id: str) -> ProviderCapabilities:
@@ -93,6 +102,7 @@ class TinkerAdapter:
     def create_session(
         self, model_id: str, *, rank: int, seed: int, request_id: str
     ) -> ProviderSession:
+        self._claim(request_id, "create_session", model_id, rank, seed)
         cached = self._completed_requests.get(request_id)
         if isinstance(cached, ProviderSession):
             return cached
@@ -108,6 +118,18 @@ class TinkerAdapter:
     def restore_session(
         self, checkpoint: ProviderCheckpoint, *, request_id: str
     ) -> ProviderSession:
+        if checkpoint.kind not in {"training", "training_state"} or not checkpoint.resume_token:
+            raise ProviderError(
+                "checkpoint_not_resumable",
+                f"checkpoint kind {checkpoint.kind!r} is not resumable training state",
+            )
+        self._claim(
+            request_id,
+            "restore_session",
+            checkpoint.checkpoint_id,
+            checkpoint.resume_token,
+            checkpoint.digest,
+        )
         cached = self._completed_requests.get(request_id)
         if isinstance(cached, ProviderSession):
             return cached
@@ -121,6 +143,7 @@ class TinkerAdapter:
 
     def sample(self, session: ProviderSession, request: SampleRequest) -> SampleResult:
         self._ensure_active(session)
+        self._claim(request.request_id, "sample", session.session_id, request)
         cached = self._completed_requests.get(request.request_id)
         if isinstance(cached, SampleResult):
             return cached
@@ -133,6 +156,7 @@ class TinkerAdapter:
 
     def forward(self, session: ProviderSession, request: ForwardRequest) -> ForwardResult:
         self._ensure_active(session)
+        self._claim(request.request_id, "forward", session.session_id, request)
         cached = self._completed_requests.get(request.request_id)
         if isinstance(cached, ForwardResult):
             return cached
@@ -147,6 +171,7 @@ class TinkerAdapter:
         self, session: ProviderSession, request: TrainingStepRequest
     ) -> TrainingStepResult:
         self._ensure_active(session)
+        self._claim(request.request_id, "train_step", session.session_id, request)
         cached = self._completed_requests.get(request.request_id)
         if isinstance(cached, TrainingStepResult):
             return cached
@@ -161,6 +186,7 @@ class TinkerAdapter:
         self, session: ProviderSession, *, step: int, kind: str, request_id: str
     ) -> ProviderCheckpoint:
         self._ensure_active(session)
+        self._claim(request_id, "save_checkpoint", session.session_id, step, kind)
         cached = self._completed_requests.get(request_id)
         if isinstance(cached, ProviderCheckpoint):
             return cached
@@ -174,6 +200,14 @@ class TinkerAdapter:
     def sample_checkpoint(
         self, checkpoint: ProviderCheckpoint, request: SampleRequest
     ) -> SampleResult:
+        self._claim(
+            request.request_id,
+            "sample_checkpoint",
+            checkpoint.checkpoint_id,
+            checkpoint.provider_reference,
+            checkpoint.digest,
+            request,
+        )
         cached = self._completed_requests.get(request.request_id)
         if isinstance(cached, SampleResult):
             return cached
@@ -198,6 +232,23 @@ class TinkerAdapter:
             return tokenizer(messages, add_generation_prompt=add_generation_prompt)
         return fallback_tokenize(messages, add_generation_prompt=add_generation_prompt)
 
+    def bridge_chat(
+        self,
+        previous_prompt_token_ids: Sequence[int],
+        previous_completion_token_ids: Sequence[int],
+        messages: Sequence[Mapping[str, str]],
+    ) -> dict[str, Any] | None:
+        """The renderer's own turn-to-turn bridge, when this client has one.
+
+        ``None`` means no extension was proven, not that one was refused: the
+        caller forks a branch and records why rather than splicing on faith.
+        """
+
+        bridge = getattr(self._client(), "bridge_chat", None)
+        if not callable(bridge):
+            return None
+        return bridge(previous_prompt_token_ids, previous_completion_token_ids, messages)
+
     def decode_tokens(self, token_ids: Sequence[int]) -> str:
         decoder = getattr(self._client(), "decode", None)
         if callable(decoder):
@@ -206,6 +257,18 @@ class TinkerAdapter:
 
     def classify_error(self, error: BaseException) -> ProviderError:
         return classify_tinker_error(error)
+
+    def _claim(self, request_id: str, *fingerprint: Any) -> None:
+        """Bind an idempotency key to exactly one operation and resource."""
+
+        claimed = tuple(fingerprint)
+        previous = self._request_fingerprints.get(request_id)
+        if previous is not None and previous != claimed:
+            raise ProviderError(
+                "idempotency_conflict",
+                f"request id {request_id!r} was reused for a different Tinker operation",
+            )
+        self._request_fingerprints[request_id] = claimed
 
     def receipt_from_usage(
         self,
@@ -228,7 +291,9 @@ class TinkerAdapter:
         from .sdk import TinkerSdkTransport
 
         self._transport = TinkerSdkTransport.connect(
-            self.credentials.api_key, base_url=self.credentials.base_url
+            self.credentials.api_key,
+            base_url=self.credentials.base_url,
+            user_metadata=self.user_metadata,
         )
         return self._transport
 

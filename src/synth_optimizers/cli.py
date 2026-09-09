@@ -2130,11 +2130,11 @@ def build_parser() -> argparse.ArgumentParser:
     gepa_runs_delete.add_argument("--yes", action="store_true", help="Apply the deletion.")
     gepa_runs_delete.add_argument("--json", action="store_true")
 
-    from .eval.commands import register as register_eval
-    from .experiment.commands import register as register_experiment
-
-    register_eval(subcommands)
-    register_experiment(subcommands)
+    from .eval import commands as eval_commands
+    from .experiment import commands as experiment_commands
+    from .rl import cli as rl_cli
+    for family in (eval_commands, experiment_commands, rl_cli):
+        family.register(subcommands)
 
     events = subcommands.add_parser("events")
     events_subcommands = events.add_subparsers(dest="events_command", required=True)
@@ -2179,7 +2179,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "eval":
         from .eval.commands import dispatch as dispatch_eval
         from .eval.models import EvalContractError
-
         try:
             return dispatch_eval(args)
         except EvalContractError as exc:
@@ -2188,12 +2187,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "experiment":
         from .experiment.commands import dispatch as dispatch_experiment
         from .experiment.models import ExperimentContractError
-
         try:
             return dispatch_experiment(args)
         except ExperimentContractError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
+    if args.command == "rl":
+        return args.rl_dispatch(args)
     if args.command == "gepa" and args.gepa_command == "run":
         from .gepa import GepaRun, UsageRegistrationConfig
 

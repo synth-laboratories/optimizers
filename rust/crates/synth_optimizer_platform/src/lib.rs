@@ -4,6 +4,7 @@ pub mod artifacts;
 pub mod cache;
 pub mod candidates;
 pub mod checkpoints;
+pub mod cispo_contract;
 pub mod config;
 pub mod configured_limits;
 pub mod container_contract;
@@ -66,6 +67,26 @@ pub use candidates::{
     PlanLinkInput, PlanLinkRecord,
 };
 pub use checkpoints::{CheckpointInput, CheckpointRecord, CheckpointSummaryRecord};
+pub use cispo_contract::{
+    capability_content_hash, cispo_all_clauses, cispo_clause_group, cispo_mandatory_clauses,
+    decode_cispo_capabilities, decode_cispo_handshake_verdict, decode_cispo_reward_receipt,
+    decode_cispo_rollout_ack, decode_cispo_rollout_state, decode_cispo_trace_reference,
+    AgentInstanceDoc, CispoCapabilityPreflight, CispoCapabilityResponse, CispoHandshakeRequest,
+    CispoHandshakeVerdict, CispoOptimizerContract, CispoRewardReceipt, CispoRolloutAck,
+    CispoRolloutState, CispoRolloutSubmission, CispoTraceReference, ClauseVerdict,
+    CommunicationChannelDoc, EvidenceCapabilities, HandshakeClauseVerdict, HandshakeContainerClock,
+    HandshakeExecutorClock, HandshakeObligations, HandshakeOptimizerIdentity,
+    HandshakePolicyRequest, HandshakeRunPlanRequest, HandshakeTasksetRequest,
+    HandshakeTopologyRequest, HorizonDoc, HorizonEvidenceDoc, LifecycleCapabilities,
+    RendererProfileDoc, RewardAuthorityCapabilities, RewardChannelDoc, RolloutInstanceState,
+    TasksetResolutionEntry, TeamDoc, TopologyDoc, CISPO_ATTEMPT_STATES,
+    CISPO_CAPABILITIES_SCHEMA_VERSION, CISPO_CLAUSE_GROUPS, CISPO_HANDSHAKE_SCHEMA_VERSION,
+    CISPO_HORIZON_KINDS, CISPO_LOGPROB_SENTINEL, CISPO_MANDATORY_ROUTES,
+    CISPO_OPTIMIZER_CONTRACT_VERSION, CISPO_OPTIONAL_CLAUSES, CISPO_OPTIONAL_ROUTES,
+    CISPO_RENDERER_PROFILE_SCHEMA_VERSION, CISPO_REWARD_RECORD_SCHEMA_VERSION,
+    CISPO_SAMPLING_TRANSPORTS, CISPO_TERMINAL_ATTEMPT_STATES, CISPO_TOPOLOGY_ONLY_CLAUSES,
+    CISPO_TOPOLOGY_SCHEMA_VERSION, CISPO_TRAINABLE_EPISODE_SCHEMA_VERSION, CISPO_WIRE_APIS,
+};
 pub use config::{
     proposer_auth_mode_normalized, proposer_uses_chatgpt_auth, resolve_chatgpt_codex_home_source,
     resolve_proposer_auth_launch_mode, validate_chatgpt_proposer_config,

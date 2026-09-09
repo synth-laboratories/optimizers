@@ -8,12 +8,14 @@ import pytest
 
 from synth_optimizers.providers.protocols import (
     ProviderError,
+    ProviderCheckpoint,
     ProviderSession,
     SampleRequest,
     TrainingStepRequest,
 )
 from synth_optimizers.providers.tinker.sdk import (
     TinkerSdkTransport,
+    _train_datum,
     _tinker_loss,
     tinker_checkpoint_name,
 )
@@ -81,6 +83,25 @@ class _Service:
         return _Trainer()
 
 
+def test_checkpoint_sampler_is_created_once_under_concurrent_calls():
+    calls = []
+
+    def create(**kwargs):
+        time.sleep(0.01)
+        calls.append(kwargs)
+        return object()
+
+    transport = TinkerSdkTransport(SimpleNamespace(create_sampling_client=create), tinker_module=None)
+    checkpoint = ProviderCheckpoint('checkpoint', 'tinker://fixed', 24, 'sha256:fixed', 'inference')
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        samplers = list(pool.map(lambda _: transport._sampler_for(checkpoint), range(32)))
+    assert len(calls) == 1
+    assert all(sampler is samplers[0] for sampler in samplers)
+    other = ProviderCheckpoint('other', 'tinker://other', 25, 'sha256:other', 'inference')
+    assert transport._sampler_for(other) is not samplers[0]
+    assert len(calls) == 2
+
+
 class _Tinker:
     class ModelInput:
         @staticmethod
@@ -118,6 +139,15 @@ def _transport(monkeypatch) -> TinkerSdkTransport:
     return TinkerSdkTransport(_Service(), tinker_module=_Tinker())
 
 
+@pytest.mark.parametrize('completion', ['Seek urgent in-person care.\nDo not drive yourself.', '["move_left", "do"]'])
+def test_generic_sampling_preserves_prose_and_json(monkeypatch, completion):
+    transport = _transport(monkeypatch)
+    handle = transport.create_lora_training_client('openai/gpt-oss-20b', rank=8, seed=0)
+    transport._renderer.parse_response = lambda tokens: SimpleNamespace(content=completion)
+    result = transport.sample(handle, SampleRequest(request_id='preserve-text', prompt_token_ids=(1, 2), max_tokens=64))
+    assert result['text'] == completion
+
+
 def test_sdk_maps_slime_to_tinker_cispo_and_refuses_generic_is(monkeypatch) -> None:
     transport = _transport(monkeypatch)
     handle = transport.create_lora_training_client("openai/gpt-oss-20b", rank=8, seed=0)
@@ -141,6 +171,79 @@ def test_sdk_maps_slime_to_tinker_cispo_and_refuses_generic_is(monkeypatch) -> N
     assert trainer.last_config == {"clip_low_threshold": 0.0, "clip_high_threshold": 5.0}
     assert trainer.last_lr == 5e-6
     assert result["step"] == 1
+
+
+def test_sdk_consumes_the_executor_cispo_payload_and_applies_reduction_weights() -> None:
+    datum = _train_datum(
+        _Tinker,
+        {
+            "token_ids": (1, 2, 3, 4),
+            "loss_mask": (0, 1, 1, 0),
+            "behavior_logprobs": (-0.4, -0.3, -0.2, -0.1),
+            "advantage": 0.8,
+            "root_rollout_weight": 0.5,
+            "same_policy_weight": 0.25,
+        },
+        "cispo",
+    )
+
+    # The reduced sequence share is divided across trainable target tokens.
+    assert datum.loss_fn_inputs["advantages"].data == pytest.approx([0.05, 0.05, 0.0])
+
+
+def test_sdk_rejects_a_cispo_payload_without_advantage() -> None:
+    with pytest.raises(ProviderError, match="needs an advantage"):
+        _train_datum(
+            _Tinker,
+            {
+                "token_ids": (1, 2, 3),
+                "loss_mask": (0, 1, 1),
+                "behavior_logprobs": (-0.3, -0.2, -0.1),
+            },
+            "cispo",
+        )
+
+
+def test_sdk_saves_training_state_with_the_resumable_api(monkeypatch) -> None:
+    transport = _transport(monkeypatch)
+    handle = transport.create_lora_training_client("openai/gpt-oss-20b", rank=4, seed=1)
+
+    saved = transport.save_checkpoint(
+        handle.session_id, step=3, kind="training_state", request_id="resume"
+    )
+
+    trainer = transport.sessions[handle.session_id]["training"]
+    assert saved["provider_reference"] == "tinker://state"
+    assert trainer.last_state_name == tinker_checkpoint_name("training_state", "resume")
+
+
+def test_sdk_sampler_checkpoint_is_not_advertised_as_resumable(monkeypatch) -> None:
+    transport = _transport(monkeypatch)
+    handle = transport.create_lora_training_client("openai/gpt-oss-20b", rank=4, seed=1)
+
+    saved = transport.save_checkpoint(
+        handle.session_id, step=0, kind="sampler_weights", request_id="sample"
+    )
+
+    assert saved["resume_token"] is None
+
+
+def test_sdk_restore_preserves_base_model_for_renderer(monkeypatch) -> None:
+    transport = _transport(monkeypatch)
+    checkpoint = ProviderCheckpoint(
+        "state",
+        "tinker://state",
+        3,
+        "sha256:state",
+        "training_state",
+        resume_token="tinker://state",
+        model_id="openai/gpt-oss-20b",
+    )
+
+    restored = transport.load_checkpoint(checkpoint, request_id="restore")
+
+    assert restored["model_id"] == "openai/gpt-oss-20b"
+    assert transport.sessions[restored["session_id"]]["model_id"] == "openai/gpt-oss-20b"
 
 
 def test_sdk_samples_and_parses_the_final_channel(monkeypatch) -> None:

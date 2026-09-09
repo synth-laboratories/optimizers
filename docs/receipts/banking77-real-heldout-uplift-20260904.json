@@ -1,0 +1,302 @@
+{
+    "schema_version": "synth.banking77-real-heldout-uplift.v1",
+    "date": "2026-09-04",
+    "status": "descriptive_uplift_proven",
+    "interpretation": {
+        "claim": "The fixed revision-24 policy improved macro intent accuracy by 3/77 on one sealed final Banking77 panel.",
+        "statistical_significance_proven": false,
+        "reason": "The exact two-sided McNemar p-value is 0.25 and the paired bootstrap interval includes zero."
+    },
+    "model": {
+        "provider": "tinker",
+        "base_model": "openai/gpt-oss-20b",
+        "parameter_group_id": "pg-0",
+        "policy_type_id": "policy-0",
+        "plan_hash": "a9b30c52d6c788cc21f3a08081953485"
+    },
+    "checkpoints": {
+        "original_baseline": {
+            "checkpoint_id": "ckpt_b229ee0836324a7d96b0d4b0",
+            "revision": 0,
+            "sampler": {
+                "ref": "tinker://4fae0a49-e641-5365-92d3-0a4d9f2a47ef:train:0/sampler_weights/optimizers-sampler_weights-save-e3c7b9fb8427cf8edb2b4366d2a519bd",
+                "digest": "sha256:a4732ce4423db6060ac350a3228a3ef1e4910876592a312f2c098ee34e4dc2eb"
+            }
+        },
+        "initial_effective_training": {
+            "checkpoint_id": "ckpt_acfd561eda65c74c9fa351ab",
+            "revision": 8,
+            "sampler": {
+                "ref": "tinker://4fae0a49-e641-5365-92d3-0a4d9f2a47ef:train:0/sampler_weights/optimizers-sampler_weights-save-5eef214380f03727d3f795fea0bb2bfd",
+                "digest": "sha256:5c7026b85724ae867621e2e2263d6acde5cc264f81308abc75872f4b6a8cd6b8"
+            },
+            "training_state": {
+                "ref": "tinker://4fae0a49-e641-5365-92d3-0a4d9f2a47ef:train:0/weights/optimizers-training_state-save-5727010753433ef524586df38e954377",
+                "digest": "sha256:2336628bb3f372152bb768fb1e756d8b1b8b0bf2459cf1e5fa22bc3479e92bbc"
+            }
+        },
+        "stage1_final": {
+            "checkpoint_id": "ckpt_3b5660b22f8a8de4b82cadea",
+            "revision": 16,
+            "sampler": {
+                "ref": "tinker://12bc27f8-cce8-5290-980f-9f43a325a951:train:0/sampler_weights/optimizers-sampler_weights-save-e0a026763b2160aa685b1699769e0b9f",
+                "digest": "sha256:762134748072f78367f0afc25ed04d4e7c3d86e2827d4f143d0dc7615f5b7c7f"
+            },
+            "training_state": {
+                "ref": "tinker://12bc27f8-cce8-5290-980f-9f43a325a951:train:0/weights/optimizers-training_state-save-22c10b80244a2078ea54587ca9ccc110",
+                "digest": "sha256:33474a59fde0a588fbe4b2d3e3f938598b42e1ba002e8a5b730c113ad9ceb894"
+            }
+        },
+        "final": {
+            "checkpoint_id": "ckpt_d02739fcc0546c017c3cfb94",
+            "revision": 24,
+            "sampler": {
+                "ref": "tinker://b577d3c6-caad-5f81-b05e-d26de32c9f43:train:0/sampler_weights/optimizers-sampler_weights-save-4de8d7e9b590a800839c2b6627bdb79e",
+                "digest": "sha256:faa5314f9e12ad2fc1b9a94dba03c07f4efb08e6e7094a204bdc8a03889b8a30"
+            },
+            "training_state": {
+                "ref": "tinker://b577d3c6-caad-5f81-b05e-d26de32c9f43:train:0/weights/optimizers-training_state-save-ca5b3e3089c456204b25946319ab29cf",
+                "digest": "sha256:efdf3c49b10fa464952191393ad0a8b3653dc26ddd5abe3fbf1ea4dcc5aa68f3"
+            }
+        }
+    },
+    "panels": {
+        "validation": {
+            "rows": 77,
+            "unique_labels": 77,
+            "panel_seed": "b77-real-heldout-validation-v1",
+            "panel_digest": "sha256:0a9a0474272801300f62d09a6edd742df9423450754296fbccd6da6270e2725c",
+            "exclusion_set_digest": "sha256:5b72141387dea674f433756f2b1d4962a10a304f2df23b805ce94e336ce0250b",
+            "excluded_task_ids": 416,
+            "path": "/Users/joshuapurtell/Documents/ChatGPT/Synth Prod/b77_real_uplift_18/validation_panel.json",
+            "file_sha256": "sha256:379416bcb54be6203ffcb43fe2a6d71b51c491bd0813b0e723a1adbf9678d63e"
+        },
+        "final_test": {
+            "rows": 77,
+            "unique_labels": 77,
+            "panel_seed": "b77-real-heldout-final-v1",
+            "panel_digest": "sha256:5f1c672211e70f7c2686cf7951a262c53dea834a6837cbccc013901c78e5422f",
+            "exclusion_set_digest": "sha256:e12e96327ef0447179e5b917d4b6bf07c71553dc9570edbc14b4bd8925bd080c",
+            "excluded_task_ids": 493,
+            "historical_overlap": 0,
+            "validation_overlap": 0,
+            "training_overlap": 0,
+            "prior_provider_call_occurrences": 0,
+            "path": "/Users/joshuapurtell/Documents/ChatGPT/Synth Prod/b77_real_uplift_18/final_test_panel.json",
+            "file_sha256": "sha256:294fc12f7753cd68ae27b5e38b3e6b9e471e92093656d30768eb96a37574c47c"
+        },
+        "source": {
+            "path": "/private/tmp/banking77-cache/banking77-heldout.csv",
+            "rows": 3080,
+            "digest": "sha256:d12d6e3bc4c3103966ae786dc435913c0c563dfa328f5a3646d0e62cfeeb474d",
+            "selection_algorithm": "minimum sha256(panel_seed\\0label\\0task_id) among nonexcluded rows"
+        }
+    },
+    "stages": {
+        "initial_effective_training": {
+            "effective_updates": 8,
+            "examples": 128,
+            "training_tokens": 11956,
+            "sampling_rollouts": 144,
+            "sampling_generated_tokens": 14353,
+            "sampling_seconds": 0.0,
+            "weighted_aggregate_tps": null,
+            "recovered_service_time_seconds": 678.2762199609951,
+            "recovered_service_time_generated_tps": 21.16099544345721,
+            "recovered_training_window_seconds": 306.380093,
+            "recovered_training_window_rollouts_per_minute": 28.200265609293357,
+            "recovered_training_window_generated_tps": 46.84703845951245,
+            "revision_start": 0,
+            "revision_end": 8
+        },
+        "stage1_screen": {
+            "candidate_tasks": 56,
+            "samples_per_task": 8,
+            "attempts": 448,
+            "maximum_concurrency": 8,
+            "recovered_window_seconds": 690.3560881614685,
+            "recovered_attempts_per_minute": 38.93642782464025,
+            "selected_tasks": 9,
+            "checkpoint_id": "ckpt_acfd561eda65c74c9fa351ab",
+            "attempts_digest": "83760b4b953612e0af65ba4596a5f42dec30da70b735f24eda7defbd47f7ac6f",
+            "summary_digest": "e46da507f5a03a1adfd55caded3c6d5761d83431c60a2e9b4216ee9ba46708c1"
+        },
+        "stage1_training": {
+            "run_id": "b77_curriculum_stage1_18",
+            "sampled_groups": 14,
+            "trained_groups": 8,
+            "zero_variance_skips": 6,
+            "stale_groups": 0,
+            "effective_updates": 8,
+            "examples": 128,
+            "training_tokens": 14447,
+            "sampling_rollouts": 224,
+            "sampling_generated_tokens": 20561,
+            "sampling_seconds": 0.0,
+            "weighted_aggregate_tps": null,
+            "recovered_service_time_seconds": 847.7162321790292,
+            "recovered_service_time_generated_tps": 24.254578619013305,
+            "recovered_training_window_seconds": 556.669756,
+            "recovered_training_window_rollouts_per_minute": 24.143578585217767,
+            "recovered_training_window_generated_tps": 36.935723161507624,
+            "revision_start": 8,
+            "revision_end": 16
+        },
+        "stage1_validation": {
+            "baseline_mean": 0.8701298701298701,
+            "trained_mean": 0.8571428571428571,
+            "mean_delta": -0.012987012987012988,
+            "wins": 1,
+            "losses": 2,
+            "ties": 74,
+            "exact_two_sided_mcnemar_p": 1.0,
+            "paired_bootstrap_95_percentile_interval": [-0.05194805194805195, 0.025974025974025976]
+        },
+        "stage2_screen": {
+            "candidate_tasks": 56,
+            "samples_per_task": 8,
+            "attempts": 448,
+            "maximum_concurrency": 8,
+            "recovered_window_seconds": 554.7146596908569,
+            "recovered_attempts_per_minute": 48.45734564682363,
+            "selected_tasks": 6,
+            "checkpoint_id": "ckpt_3b5660b22f8a8de4b82cadea",
+            "attempts_digest": "595125941eea1fed398df50c31e4cea54661ca386e8ca8edbffcadadc985229b",
+            "summary_digest": "96f9e3ffedc2697fdb77202be6709705de8cf5b6b3b6ba0d4bc54a9c2c443ea9"
+        },
+        "stage2_training": {
+            "run_id": "b77_curriculum_stage2_18",
+            "sampled_groups": 36,
+            "trained_groups": 8,
+            "zero_variance_skips": 28,
+            "stale_groups": 0,
+            "effective_updates": 8,
+            "examples": 128,
+            "training_tokens": 14160,
+            "sampling_rollouts": 576,
+            "sampling_generated_tokens": 51424,
+            "sampling_seconds": 0.0,
+            "weighted_aggregate_tps": null,
+            "recovered_service_time_seconds": 1964.4392965439765,
+            "recovered_service_time_generated_tps": 26.177444164586742,
+            "recovered_training_window_seconds": 1019.073514,
+            "recovered_training_window_rollouts_per_minute": 33.91315692657674,
+            "recovered_training_window_generated_tps": 50.46152146389706,
+            "revision_start": 16,
+            "revision_end": 24
+        },
+        "stage2_validation": {
+            "baseline_mean": 0.8701298701298701,
+            "trained_mean": 0.8831168831168831,
+            "mean_delta": 0.012987012987012988,
+            "wins": 1,
+            "losses": 0,
+            "ties": 76,
+            "exact_two_sided_mcnemar_p": 1.0,
+            "paired_bootstrap_95_percentile_interval": [0.0, 0.03896103896103896]
+        },
+        "totals_from_original_baseline": {
+            "effective_updates": 24,
+            "examples": 384,
+            "training_tokens": 40563,
+            "sampling_rollouts": 944,
+            "sampling_generated_tokens": 86338,
+            "sampling_seconds": 0.0,
+            "weighted_aggregate_tps": null,
+            "recovered_service_time_seconds": 3490.431748684001,
+            "recovered_service_time_generated_tps": 24.735621899082272,
+            "recovered_training_window_seconds": 1882.123363,
+            "recovered_training_window_rollouts_per_minute": 30.093670326539584,
+            "recovered_training_window_generated_tps": 45.87265728553628,
+            "throughput_interpretation": "The legacy sampling_seconds and weighted_aggregate_tps fields are invalid because live execution used a deterministic clock. Recovered service time comes from environment-authored per-call durations; recovered training-window rates use provider baseline-save to final-save timestamps and include optimization/checkpoint overhead."
+        }
+    },
+    "final_test": {
+        "evaluation_id": "b77_real_uplift_18_final_test",
+        "estimand": "macro intent accuracy: one deterministically selected heldout example per Banking77 intent",
+        "pairs": 77,
+        "baseline_correct": 64,
+        "trained_correct": 67,
+        "baseline_mean": 0.8311688311688312,
+        "trained_mean": 0.8701298701298701,
+        "mean_delta": 0.03896103896103896,
+        "percentage_point_uplift": 3.896103896103896,
+        "wins": 3,
+        "losses": 0,
+        "ties": 74,
+        "discordant_pairs": 3,
+        "paired_stdev": 0.19477101545677747,
+        "paired_bootstrap_95_percentile_interval": [0.0, 0.09090909090909091],
+        "bootstrap_seed": 20260904,
+        "bootstrap_replicates": 20000,
+        "exact_two_sided_mcnemar_p": 0.25,
+        "valid": true
+    },
+    "cost": {
+        "provider_reported_usd": null,
+        "cost_missing": true,
+        "actual_cost_usd": null,
+        "counted_training_usage": {
+            "prompt_tokens": 599520,
+            "completion_tokens": 86338,
+            "training_tokens": 40563
+        },
+        "rate_card_usd_per_million_tokens": {
+            "prefill_uncached": 0.18,
+            "prefill_cached": 0.036,
+            "sample": 0.45,
+            "train": 0.396,
+            "model": "openai/gpt-oss-20b",
+            "source": "https://tinker-docs.thinkingmachines.ai/tinker/models.json",
+            "observed_date": "2026-09-04"
+        },
+        "counted_training_estimate_usd": {
+            "all_prefill_cached": 0.076497768,
+            "all_prefill_uncached": 0.162828648
+        },
+        "excluded_from_estimate": [
+            "896 screening attempts",
+            "616 paired-evaluation attempts",
+            "failed or retried provider calls not represented in successful receipts",
+            "checkpoint storage"
+        ],
+        "interpretation": "Actual total cost remains unknown because immediate Tinker responses do not contain dollars and delayed billing usage for this experiment was not yet ingested. The range is a partial rate-card estimate for the three successful training runs only, not an invoice or whole-experiment bound."
+    },
+    "artifacts": {
+        "root": "/Users/joshuapurtell/Documents/ChatGPT/Synth Prod/b77_real_uplift_18",
+        "critical_files": [
+            {
+                "path": "/Users/joshuapurtell/Documents/ChatGPT/Synth Prod/b77_real_uplift_18/screen_stage1/manifest.json",
+                "sha256": "sha256:1fc22845cd7b936423d412eda711fd1542aa69fc2e775b5cc92a103fee1ffe0e"
+            },
+            {
+                "path": "/Users/joshuapurtell/Documents/ChatGPT/Synth Prod/b77_real_uplift_18/training_stage1/receipts_retry2/manifest.json",
+                "sha256": "sha256:f6ca0ed99817324f15f45293c1ab0e52c381d21a5a368f847f3ab1a49e0d529c"
+            },
+            {
+                "path": "/Users/joshuapurtell/Documents/ChatGPT/Synth Prod/b77_real_uplift_18/evaluation_stage1/validation_result.json",
+                "sha256": "sha256:14aae7301c2dc78afd0ce386931bdeadc574ed5e13125e34773a6b812a94a8fb"
+            },
+            {
+                "path": "/Users/joshuapurtell/Documents/ChatGPT/Synth Prod/b77_real_uplift_18/screen_stage2/manifest.json",
+                "sha256": "sha256:a30c7b8997408094ada0228b429f1c3a91700c9c42bed3a78f30889f6a2ea3ed"
+            },
+            {
+                "path": "/Users/joshuapurtell/Documents/ChatGPT/Synth Prod/b77_real_uplift_18/training_stage2/receipts/manifest.json",
+                "sha256": "sha256:88615e93d2df0be1c874f6183470dedb18151ddfe38c85896c7b3f4ebbe7d369"
+            },
+            {
+                "path": "/Users/joshuapurtell/Documents/ChatGPT/Synth Prod/b77_real_uplift_18/evaluation_stage2/validation_result.json",
+                "sha256": "sha256:09530a7e62cc277fb8fa6120b72d7d7d844192b580aef53a6e4cfcad8aa74e04"
+            },
+            {
+                "path": "/Users/joshuapurtell/Documents/ChatGPT/Synth Prod/b77_real_uplift_18/evaluation_final/b77_real_uplift_18_final_test.evaluation.json",
+                "sha256": "sha256:ece1af538fc0917657ff0bfdf2e64ef756d7aad74444e650162cb2ae7a4cb3e7"
+            },
+            {
+                "path": "/Users/joshuapurtell/Documents/ChatGPT/Synth Prod/b77_real_uplift_18/evaluation_final/final_result.json",
+                "sha256": "sha256:ace86a8edb041427fb85e85f56d8f7d01474146fb0f976c040780553b8921fb4"
+            }
+        ]
+    }
+}

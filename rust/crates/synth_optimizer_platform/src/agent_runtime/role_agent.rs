@@ -8,7 +8,7 @@ use crate::{OptimizerError, ProposerConfig, Result, RuntimeEffectBudgetEstimate}
 
 use super::session::CodexTurnRequest;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct RoleAgentConfig {
     #[serde(default)]
     pub role: String,
@@ -18,17 +18,6 @@ pub struct RoleAgentConfig {
     pub budget_estimate: RuntimeEffectBudgetEstimate,
     #[serde(flatten)]
     pub proposer: ProposerConfig,
-}
-
-impl Default for RoleAgentConfig {
-    fn default() -> Self {
-        Self {
-            role: String::new(),
-            output_schema: None,
-            budget_estimate: RuntimeEffectBudgetEstimate::default(),
-            proposer: ProposerConfig::default(),
-        }
-    }
 }
 
 impl RoleAgentConfig {

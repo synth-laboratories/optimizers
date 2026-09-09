@@ -32,3 +32,11 @@ thiserror = "1.0"
 time = { version = "0.3", features = ["formatting", "macros", "parsing"] }
 toml = "0.8"
 uuid = { version = "1.10", features = ["v4"] }
+
+# Several constructors and snapshot builders take eight or more distinct domain
+# values. Bundling them into parameter structs would only move the arity into a
+# literal at every call site, and the alternative -- an attribute per function --
+# grows source files that the file-size ratchet in
+# `synth_optimizer_platform/tests/file_size_cap.rs` allows only to shrink.
+[workspace.lints.clippy]
+too_many_arguments = "allow"

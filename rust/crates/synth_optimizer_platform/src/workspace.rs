@@ -3084,7 +3084,7 @@ impl WorkspaceStore {
                 upsert_verifier_job_tx(&tx, run_id, &derived.verifier_job)?;
                 upsert_subagent_invocation_tx(&tx, run_id, &derived.subagent_invocation)?;
                 let annotation_job_id =
-                    format!("annotation:{}", &derived.trace_annotation.annotation_id);
+                    format!("annotation:{}", derived.trace_annotation.annotation_id);
                 upsert_optimizer_job_tx(
                     &tx,
                     run_id,
@@ -3115,7 +3115,7 @@ impl WorkspaceStore {
                     },
                 )?;
                 let subagent_job_id =
-                    format!("subagent:{}", &derived.subagent_invocation.invocation_id);
+                    format!("subagent:{}", derived.subagent_invocation.invocation_id);
                 upsert_optimizer_job_tx(
                     &tx,
                     run_id,

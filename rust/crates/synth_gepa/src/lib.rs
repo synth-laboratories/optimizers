@@ -2062,7 +2062,6 @@ fn append_global_gepa_run_index_entry(home: &Path, entry: &Value) -> Result<()> 
     let mut file = OpenOptions::new()
         .create(true)
         .read(true)
-        .write(true)
         .append(true)
         .open(&index_path)
         .map_err(|source| OptimizerError::io(&index_path, source))?;
@@ -9100,7 +9099,7 @@ fn prompt_assertions_for_candidate(
             field.clone(),
             json!({
                 "sha256": sha256_text(prompt),
-                "bytes": prompt.as_bytes().len(),
+                "bytes": prompt.len(),
                 "source": format!("candidate.{field}"),
                 "must_reach": "policy_llm_system_message",
             }),
@@ -17577,7 +17576,7 @@ fn score_vector_frame_matches_split(
     // while the heldout rows retain their dataset split, such as "test".
     frame.split == "heldout"
         && frame.evaluation_stage == "heldout"
-        && source_stages.iter().any(|stage| *stage == "heldout")
+        && source_stages.contains(&"heldout")
 }
 
 fn score_vector_for_candidate(input: CandidateScoreVectorInput<'_>) -> Result<ScoreVectorRecord> {

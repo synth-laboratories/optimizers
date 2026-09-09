@@ -1673,7 +1673,7 @@ fn default_leakage_policy() -> String {
 }
 
 fn default_leakage_min_span_chars() -> usize {
-    32
+    crate::levers::DEFAULT_LEAKAGE_MIN_SPAN_CHARS
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

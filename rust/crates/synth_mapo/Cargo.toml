@@ -13,3 +13,6 @@ sha2.workspace = true
 synth_optimizer_platform = { path = "../synth_optimizer_platform" }
 toml.workspace = true
 uuid.workspace = true
+
+[lints]
+workspace = true

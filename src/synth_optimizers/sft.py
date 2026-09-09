@@ -331,7 +331,6 @@ class SftService:
     def checkpoint_evidence(self, run_id: str, child_id: str) -> dict[str, Any]:
         """Materialize portable evidence from one owned child, without provider calls."""
         import re
-        from pathlib import Path
         if not re.fullmatch(r"eval_[0-9a-f]{32}", child_id):
             raise SftServiceError("invalid child evaluation identity")
         self.store.require(run_id)

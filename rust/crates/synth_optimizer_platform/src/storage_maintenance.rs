@@ -707,7 +707,7 @@ fn top_file_report(run_dir: &Path, limit: usize) -> Result<Vec<Value>> {
     }
     let mut files = Vec::new();
     collect_file_sizes(run_dir, &mut files)?;
-    files.sort_by(|left, right| right.1.cmp(&left.1));
+    files.sort_by_key(|entry| std::cmp::Reverse(entry.1));
     Ok(files
         .into_iter()
         .take(limit)

@@ -604,13 +604,22 @@ class GepaTomlDocument(BaseModel):
 class ContainerCapabilityMetadataPayload(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    policy_ready: bool
+    policy_ready: bool = False
 
 
 class ContainerCapabilitiesPayload(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    metadata: ContainerCapabilityMetadataPayload
+    # Optional because this block is read on exactly one branch: a recipe that
+    # sets `policy = None` and needs the container to supply the policy. A
+    # recipe that configures its own policy never consults `policy_ready`, so
+    # requiring the block turned an unread field into a hard precondition and
+    # refused every container that does not advertise it -- which today is all
+    # of them. Defaulting to not-ready keeps the branch that *does* read it
+    # failing closed, with its own accurate message.
+    metadata: ContainerCapabilityMetadataPayload = Field(
+        default_factory=ContainerCapabilityMetadataPayload
+    )
 
 
 class ContainerMetadataPayload(BaseModel):

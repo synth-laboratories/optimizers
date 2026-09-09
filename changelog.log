@@ -3,18 +3,27 @@
 ## 2026-09-09
 
 * Prepared stable `0.2.22` with Containers `0.4.2`; not yet published.
+* Preserve explicit adaptive rollout concurrency settings through Python config
+  translation; reject unknown adaptive setting names.
 * Fixed proposer replay identity across run-local artifact paths and journals;
   corrected quickstart task selection to the current GEPA schema.
 * Isolated TBLite research dependencies and fixtures from production validation.
 * Added Python release tests and a Linux x86_64 wheel build to publication CI.
 * Fixed terminal event replay truncation for journals longer than two pages.
+* Fixed the PyPI-visible README: the consoles are `synth-optimizers gepa console`
+  and `synth-optimizers gelo console`, not `gepa console` / `gelo console`.
+* Corrected the release docs: cookbooks live in the separate public
+  `synth-cookbooks-public` repo, `code_review_container` exists on no ref of it,
+  and the type gate is `scripts/check-type-debt.py`, not bare `ty check src`.
+* Blocked: the public GEPA cookbook configs still use the legacy `[dataset]`
+  selection and do not load under `0.2.22`.
 * `0.2.22.dev20260909`: made the declared cargo fmt/clippy/ruff gates pass, and
   restored `cargo test`, which had stopped compiling because `identities.rs`
   used `LeverBundle` without importing it. 137 tests.
 * Removed a duplicated leakage default: `synth_gepa` declared its own unread
   copy of `32` while `synth_optimizer_platform::config` carried another. One
   authority now lives in `levers.rs`.
-* Re-pinned `synth-containers` to `0.4.2.dev20260909`.
+* Pinned `synth-containers` to `0.4.2`, now published on PyPI.
 * Added the test suite to the publish workflow, which previously ran only
   `uv build` and `twine check`.
 

@@ -41,10 +41,44 @@ again after extraction, and Clippy passed with `-D warnings`.
 
 - macOS wheel: `022beaa1bc189947bbc4fc807f892872293898609c8f30b21981cb6c814aae3b`
 - source archive: `ed63bdbf004542e9f22442f9eb9d150c729cd413aba9ca63d51f8f4cc083ae10`
-- vendored stable Containers wheel from candidate `30287d0`:
-  `98bb5184ec2661f2a02974f65f373b88e9b28b5d2541dbf644c0d0b552e40e9f`
+- vendored stable Containers wheel, as tracked in this worktree:
+  `02943f7e00e281b04b07b8f5d5f3084ab52a170d76efe400502b8e72b9c3a81b`. The hash
+  previously recorded here,
+  `98bb5184ec2661f2a02974f65f373b88e9b28b5d2541dbf644c0d0b552e40e9f`, matches no
+  blob under `vendor/synth-containers/` and is stale.
+- Containers `0.4.2` **as published on PyPI** on 2026-09-09 is a different blob:
+  wheel `61773e43bfce893437b0b27bcaf03233c8e301e114374d7ea5a159a95ceb2b67`,
+  sdist `2aa064d62debc47647e6a05372475158c3a1bb9da7c8d8fdbdee3f25afb5295a`.
+
+  Reconciled -- three distinct blobs all legitimately carry version `0.4.2`, and
+  hash inequality between them is expected rather than a provenance failure:
+
+  1. The tag-triggered publish run rebuilt the distributions from tag `v0.4.2` in
+     its own `Build 0.4.2` job instead of reusing the candidate CI artifacts, so
+     the published wheel (`61773e43...`) differs from the candidate CI wheel
+     (`7a79b345...`) only in non-reproducible archive metadata. Wheel size is
+     identical at 912483 bytes; the sdist differs by 72 bytes.
+  2. The vendored development copy (`02943f7e...`) was built at Containers
+     `20c4f1a`, the candidate's immediate parent.
+
+  Content equivalence is the correct check, and it was verified directly against
+  the downloaded published wheel: all **224** Python modules are byte-identical
+  to `src/` at the Containers candidate
+  `8cde9e3c6f5daa2fef9fe5fe822263e2c7c34b94`, with zero mismatches and no extra
+  modules, and the published `METADATA` long description is byte-identical to the
+  tagged `README.md`. The vendored copy's 224 modules are likewise byte-identical
+  to that same candidate, because candidate commit `8cde9e3c` changed only
+  `README.md` and `tests/test_readme_smoke.py` and touched no `src/` file -- so
+  the vendored wheel differs from the published one in packaged documentation
+  bytes only, never in code.
+
+  Practical consequence: hash equality against the candidate CI artifact is not a
+  valid release check for a tag-built publish. Verify the published wheel's code
+  against the tagged source instead.
 
 These locally built bytes preceded this documentation commit. Final publication
 must rebuild from the reviewed source and record its own hashes/provenance.
-Merge/release permissions, protected CI, immutable tags, Containers publication
-first, and a public-index installation remain open. Nothing is published yet.
+Merge/release permissions, protected CI, immutable tags, and a public-index
+installation of `synth-optimizers` remain open. Containers `0.4.2` is published
+on PyPI as of 2026-09-09 and is no longer a prerequisite; `synth-optimizers`
+`0.2.22` is still unpublished (PyPI serves `0.2.16`).

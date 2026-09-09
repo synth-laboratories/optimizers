@@ -2,6 +2,31 @@
 
 Date: 2026-05-20
 
+> **Historical record — do not run the paths in this document.** This audit was
+> written on 2026-05-20 against the then-current monorepo layout and is preserved
+> unedited as evidence. Rewriting its paths would falsify what was actually run,
+> so read it as a record, not as instructions:
+>
+> - Source paths carry the `packages/synth-optimizers/` and
+>   `packages/synth-containers/` monorepo prefixes (26 and 5 occurrences). This
+>   repository is now a standalone checkout: drop the
+>   `packages/synth-optimizers/` prefix, and Containers lives in its own
+>   repository.
+> - Cookbook paths (`cookbooks/optimizers/gepa/…`) are **not in this
+>   repository**. They live in the separate public repo
+>   [`synth-laboratories/synth-cookbooks-public`](https://github.com/synth-laboratories/synth-cookbooks-public);
+>   see `RELEASE.md` for how they are invoked now.
+> - `code_review_container` exists on no ref of that public repo, so every
+>   `code-review` row below is unreproducible by an outside reader. The public
+>   GEPA cookbooks on `main` today are `banking77_container`,
+>   `hotpotqa_container`, `minigrid_container`, `crafter_container`,
+>   `tblite_container`, and `healthbench_groq`.
+> - Evidence roots under `/tmp/…` and `/var/folders/…` were ephemeral workspaces
+>   on the machine that ran the audit. They are cited as run identifiers, not as
+>   artifacts anyone can open.
+>
+> For the current release acceptance, see `RELEASE.md`.
+
 Scope: public `synth-optimizers` GEPA v1 vertical slice in
 `synth-cookbooks-public`, including Banking77 plus public-safe TBLite,
 code-review, and Crafter fixtures. This document records validation evidence;
@@ -81,7 +106,7 @@ package, `synth-containers` contract additions, and GEPA cookbooks under
 | Fresh readwrite run writes required artifacts. | PROVED | Current Banking77, TBLite, code-review, and Crafter fresh directories under `/tmp/synth-gepa-status-20260520` each contain `result_manifest.json`, `events.jsonl`, `events.normalized.jsonl`, `cache_profile.json`, `best_candidate.json`, `candidate_registry.json`, `frontier.json`, and `workspace.sqlite` |
 | Immediate cached rerun makes no new policy/proposer/rollout external cache writes. | PROVED | Final cached cache profiles: Banking77 `45 hits, 0 misses, 0 writes`; TBLite `15 hits, 0 misses, 0 writes`; code-review `18 hits, 0 misses, 0 writes`; Crafter `18 hits, 0 misses, 0 writes` |
 | Readonly replay succeeds when fully cached. | PROVED | Final readonly cache profiles: Banking77 `45 hits, 0 misses, 0 writes`; TBLite `15 hits, 0 misses, 0 writes`; code-review `18 hits, 0 misses, 0 writes`; Crafter `18 hits, 0 misses, 0 writes` |
-| `events compare` reports normalized parity between original, cached, and readonly runs. | PROVED | Banking77, TBLite, code-review, and Crafter fresh-vs-cached and fresh-vs-readonly compare commands returned `normalized event feeds match` |
+| `events compare` reports normalized parity between original, cached, and readonly runs. | **SUPERSEDED — do not carry forward** | Historical: Banking77, TBLite, code-review, and Crafter compare commands returned `normalized event feeds match`. This row predates the worker pool, budget forecasts, and child resource refs, and the claim no longer holds as stated: `events compare` is byte equality, and a replay legitimately emits 28 fewer `partial: true` worker-pool progress records because it executes no rollout (240 fresh vs 211 cached/readonly at `c21d6fe`). See `RELEASE.md` for the property that actually holds — byte-identical 199-event feeds once runtime telemetry is excluded. |
 | Optimizer state machine records run lifecycle from created to terminal state. | PROVED | Current `workspace.sqlite` files under `/tmp/synth-gepa-status-20260520` have `optimizer_state_history` rows: Banking77 40, TBLite 19, code-review 19, Crafter 19; manifests end in `completed` |
 | Rollout observations are captured as sensor frames. | PROVED | Current `workspace.sqlite` files under `/tmp/synth-gepa-status-20260520` have `sensor_frames` rows: Banking77 40, TBLite 11, code-review 14, Crafter 14, with rollout jobs persisted 1:1 |
 | Candidate payloads, candidate deltas, acceptance decisions, frontier cells, and plan links are first-class workspace rows. | PROVED | Final current-schema rerun under `/tmp/synth-gepa-final-current-20260520` completed Banking77, TBLite, code-review, and Crafter fresh/cached/readonly runs. Fresh workspaces contain candidate graph rows: Banking77 `candidate_payloads=5`, `candidate_deltas=4`, `acceptance_decisions=5`, `frontier_cells=5`, `plan_links=63`; TBLite `2/1/2/1/18`; code-review `2/1/2/1/21`; Crafter `2/1/2/1/21`. Each fresh run returned `projection_status_counts={fresh: 21}`, `invariant_status_counts={pass: 2}`, zero invariant violations, cached writes `0`, readonly writes `0`, and normalized event comparisons true. |

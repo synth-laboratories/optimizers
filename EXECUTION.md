@@ -1,7 +1,18 @@
 # Lane: local MLX RL — optimizers side
 
+> **Internal engineering lane journal, not stranger-facing documentation.** It
+> records an in-progress work plan dated 2026-08-18 and deliberately cites
+> material outside this repository. The authority doc below is an unpublished
+> local file that is not present at that path today. `scripts/real_mlx_smoke.sh`
+> belongs to the sibling `synth-mlx-rl` repository, and `runtimes/banking77.py`
+> to the sibling Containers repository as it stood in August 2026 — neither is in
+> this repository, and neither path is guaranteed to still resolve in its own
+> repository. The paths are left as written because rewriting them would falsify
+> the record. An outside reader should start from `README.md` and `RELEASE.md`;
+> nothing here is a supported public entry point.
+
 Branch `agent/mlx-local-rl-20260818`, cut from `origin/main` @ `1c89092`.
-Authority doc (read it before touching anything):
+Authority doc (unpublished; not in this repo):
 `~/Documents/Codex/2026-08-18/synth-mlx-rl-dev/outputs/implementation-plan-final.md`
 
 `origin/main` was chosen over `origin/dev` deliberately: dev is 11 commits behind with
@@ -23,7 +34,12 @@ Use `uv run python -m pytest`, never `uv run pytest`.
 ## Cross-repo coupling to watch
 
 `pyproject.toml` pins `synth-containers==0.4.1.dev20260814` via
-`[tool.uv.sources] rev = "e76f8e4ba3edae10dec24bf9e71ec1a7fb332bed"`. Every containers
+`[tool.uv.sources] rev = "e76f8e4ba3edae10dec24bf9e71ec1a7fb332bed"`.
+(Stale as of the `0.2.22` candidate: `pyproject.toml` now pins
+`synth-containers==0.4.2`, and `[tool.uv.sources]` resolves it from the vendored
+wheel under `vendor/synth-containers/` rather than a git rev. Containers `0.4.2`
+is also published on PyPI as of 2026-09-09, so the rev-bump ritual below no
+longer applies.) Every containers
 change in this campaign (provider admission, `/compatibility` on the platform app,
 `TokenCaptureV5` extension) requires bumping that rev here. The containers work is a
 separate lane; this lane must not vendor around the pin.

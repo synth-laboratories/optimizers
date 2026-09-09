@@ -19,8 +19,8 @@ contract.
 
 | Algorithm | Status | In this repo | Paper & docs |
 | --- | --- | --- | --- |
-| **GEPA** — reflective prompt evolution | Supported | [`rust/crates/synth_gepa/`](rust/crates/synth_gepa/) (Rust engine + service), [`src/synth_optimizers/gepa.py`](src/synth_optimizers/gepa.py) (Python API), [`skills/gepa/SKILL.md`](skills/gepa/SKILL.md) (agent runbook) | [Paper](https://arxiv.org/abs/2507.19457) · [gepa-ai docs](https://gepa-ai.github.io/gepa/) · bundled HTML via `gepa console` |
-| **GELO** — Go-Explore in prompt space (hosted) | Hosted submit | [`src/synth_optimizers/gelo.py`](src/synth_optimizers/gelo.py), [`skills/gelo/SKILL.md`](skills/gelo/SKILL.md), [`GELO_HOSTED_SDK_CLI_SPEC.md`](GELO_HOSTED_SDK_CLI_SPEC.md) | Bundled HTML via `gelo console` — [`src/synth_optimizers/docs/gelo/`](src/synth_optimizers/docs/gelo/) |
+| **GEPA** — reflective prompt evolution | Supported | [`rust/crates/synth_gepa/`](rust/crates/synth_gepa/) (Rust engine + service), [`src/synth_optimizers/gepa.py`](src/synth_optimizers/gepa.py) (Python API), [`skills/gepa/SKILL.md`](skills/gepa/SKILL.md) (agent runbook) | [Paper](https://arxiv.org/abs/2507.19457) · [gepa-ai docs](https://gepa-ai.github.io/gepa/) · bundled HTML via `synth-optimizers gepa console` |
+| **GELO** — Go-Explore in prompt space (hosted) | Hosted submit | [`src/synth_optimizers/gelo.py`](src/synth_optimizers/gelo.py), [`skills/gelo/SKILL.md`](skills/gelo/SKILL.md), [`GELO_HOSTED_SDK_CLI_SPEC.md`](GELO_HOSTED_SDK_CLI_SPEC.md) | Bundled HTML via `synth-optimizers gelo console` — [`src/synth_optimizers/docs/gelo/`](src/synth_optimizers/docs/gelo/) |
 | **SFT** — supervised fine-tuning | Local + hosted submit | `HostedOptimizerClient.submit_sft()` / `SftService` / `TinkerSftExecutor` | In-process Tinker executor in this repo. Default model `openai/gpt-oss-20b`. |
 | **CISPO** — `cispo.slime.v1` | Local + hosted submit | `HostedOptimizerClient.submit_cispo()` / `TinkerCispoExecutor` | True slime CISPO only. Generic importance sampling is not CISPO. |
 
@@ -73,13 +73,18 @@ pip install synth-optimizers
 uv add synth-optimizers
 ```
 
+This source targets `synth-optimizers==0.2.22` with `synth-containers==0.4.2`.
+For an unpublished candidate, build from a checkout as shown below; published
+versions are listed on PyPI.
+
 Install [`uv`](https://github.com/astral-sh/uv) for local development and editable installs.
 
 ## Local development
 
-Sync the repo and install the local Python/Rust extension in editable mode:
+Clone the repo and install the local Python/Rust extension in editable mode:
 
 ```bash
+git clone https://github.com/synth-laboratories/optimizers.git
 cd optimizers
 uv sync --group dev
 uv pip install -e .
@@ -136,8 +141,23 @@ synth-optimizers gepa service --db service.sqlite
 synth-optimizers events compare --left a.jsonl --right b.jsonl
 ```
 
-Runnable task examples: [GEPA cookbooks](https://github.com/synth-laboratories/synth-cookbooks-public/tree/main/cookbooks/optimizers/gepa)
-(Banking77, HotpotQA, MiniGrid, TBLite, Crafter).
+Runnable task examples are **not in this repository**. They live in the separate
+public repo
+[`synth-laboratories/synth-cookbooks-public`](https://github.com/synth-laboratories/synth-cookbooks-public/tree/main/cookbooks/optimizers/gepa)
+— Banking77, HotpotQA, MiniGrid, and Crafter. TBLite is optional evaluation
+infrastructure. HealthBench is parked because Containers 0.4.2 does not include
+its runtime. Config-relative paths resolve against the config file's directory.
+Follow the selected cookbook's setup instructions before launching:
+
+```bash
+git clone https://github.com/synth-laboratories/synth-cookbooks-public.git
+cd synth-cookbooks-public/cookbooks/optimizers/gepa/banking77_container
+synth-optimizers gepa run --config gepa.toml
+```
+
+The cookbook configs published there still declare the legacy `[dataset]` seed
+selection, which `0.2.22` ignores; add `[taskset]` and `[gepa.task_pools]`
+blocks like the ones in the quickstart above before one of them will load.
 
 <details>
 <summary><strong>Authentication and models</strong></summary>

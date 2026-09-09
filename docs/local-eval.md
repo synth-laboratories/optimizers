@@ -15,6 +15,8 @@ runner. Those are containers implementing one contract, `eval.target.v1`.
 
 ## The pieces
 
+Module paths in this table are relative to `src/synth_optimizers/`.
+
 | Module | Owns |
 | --- | --- |
 | `eval/models.py` | every wire schema, and the validation that refuses partial input |

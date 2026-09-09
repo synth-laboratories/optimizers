@@ -1,0 +1,10 @@
+{
+  "algorithm": "cispo",
+  "artifact_base_url": "/v1/runs/cispo_canary/artifacts",
+  "error": null,
+  "events_url": "/v1/runs/cispo_canary/optimizer-events",
+  "job_id": "cispo_canary",
+  "run_id": "cispo_canary",
+  "status": "completed",
+  "status_url": "/v1/runs/cispo_canary"
+}

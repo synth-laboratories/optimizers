@@ -14,7 +14,7 @@
     "policy_version": "checkpoint:step-4"
   },
   "producer": {
-    "service": "optimizers-beta",
+    "service": "synth-optimizers",
     "version": "0.1.0",
     "commit": "032366c2215a498524b456fbd713c1574ca830bc"
   }

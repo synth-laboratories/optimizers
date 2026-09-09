@@ -133,14 +133,13 @@ cannot reach the host proxy) and `required_artifacts = ["trace"]`.
 
 ### O6 — local SFT backend
 
-`src/synth_optimizers/sft.py`. `SftConfig.from_mapping` currently raises
-`"backend must be fixture or tinker"`. Add the local MLX value plus an executor
-implementing the `SftExecutor` protocol at `sft.py:44`.
+`src/synth_optimizers/sft.py` and `src/synth_optimizers/sft_executor.py`.
+`SftConfig.from_mapping` accepts `fixture` or `tinker`. The in-process
+`TinkerSftExecutor` implements estimate/submit/status/cancel/resume.
 
-Mirror the hosted contract in optimizers-beta `crates/synth_sft/src/config.rs:39`, whose
-comments record two already-paid-for lessons: `checkpoint_steps` silently setting
-training length, and `max_seq_len` silently deciding which rows train at all. Carry
-`dataset_digest`, `training_steps`, `max_seq_len`, and `max_dropped_fraction`.
+Carry `dataset_digest`, `training_steps`, `max_seq_len`, and `max_dropped_fraction`.
+Do not silently let `checkpoint_steps` set training length or `max_seq_len` drop
+rows without recording them.
 
 ### O7 — local `grpo` / `cispo_minimax` algorithms
 

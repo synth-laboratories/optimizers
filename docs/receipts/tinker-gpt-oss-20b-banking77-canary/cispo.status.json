@@ -1,0 +1,10 @@
+{
+  "algorithm": "cispo",
+  "artifact_base_url": "/v1/runs/cispo_canary/artifacts",
+  "error": "tinker_fatal: Request failed: Unknown user error: Invalid checkpoint name 'optimizers-inference-327bf988-a131-5d14-9c38-ece24f71ae32:train:0-live': must start with an alphanumeric character or underscore and contain only alphanumeric characters, hyphens, underscores, and dots for self.request_id='327bf988-a131-5d14-9c38-ece24f71ae32:train:0:1' and expected type self.model_cls=<class 'tinker.types._pydantic_types.save_weights_for_sampler_response.SaveWeightsForSamplerResponseInternal'>",
+  "events_url": "/v1/runs/cispo_canary/optimizer-events",
+  "job_id": "cispo_canary",
+  "run_id": "cispo_canary",
+  "status": "failed",
+  "status_url": "/v1/runs/cispo_canary"
+}

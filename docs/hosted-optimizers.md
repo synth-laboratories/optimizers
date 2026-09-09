@@ -107,6 +107,17 @@ Hosted GEPA and GELO share the generic optimizer observability routes:
 GELO also exposes compatibility aliases `goex_events()` and `goex_event_stream()`.
 Prefer the generic `algorithm_*` methods for new SDK and CLI integrations.
 
+## SFT and CISPO
+
+Standalone SFT and CISPO execute in the public `optimizers` repository against
+Tinker. Hosted `submit_sft` / `submit_cispo` keep the shared run API. Local
+execution uses `SftService` / `TinkerSftExecutor` and `TinkerCispoExecutor`.
+See [`sft-cispo-identity.md`](sft-cispo-identity.md) and
+[`MIGRATION_TINKER_SFT_CISPO.md`](MIGRATION_TINKER_SFT_CISPO.md).
+
+CISPO may advertise `algorithm_id="cispo"` only with `cispo.slime.v1`. A generic
+importance-sampling run is `unsupported`, not a silent downgrade.
+
 ### Extension fields
 
 The public hosted GELO path accepts the documented base Go-Explore prompt-space

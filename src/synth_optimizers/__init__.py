@@ -120,7 +120,6 @@ from .training import (
 from .hosted_config import HostedOptimizerConfig
 from .sft import (
     SFT_ALGORITHM_ID,
-    BetaSftExecutorClient,
     SftArtifact,
     SftConfig,
     SftPublicServiceClient,
@@ -129,6 +128,20 @@ from .sft import (
     create_sft_http_server,
     serve_sft_service,
 )
+from .sft_executor import SftExecutor, TinkerSftExecutor
+from .cispo import ALGORITHM_ID as CISPO_ALGORITHM_ID
+from .cispo import IMPLEMENTATION as CISPO_IMPLEMENTATION
+from .cispo import IMPLEMENTATION_VERSION as CISPO_IMPLEMENTATION_VERSION
+from .cispo_executor import TinkerCispoExecutor
+from .cispo_service import (
+    CispoArtifact,
+    CispoPublicServiceClient,
+    CispoService,
+    CispoServiceError,
+    create_cispo_http_server,
+    serve_cispo_service,
+)
+from .recipes import cispo_recipe, sft_recipe
 from .future_algorithms import (
     FUTURE_HOSTED_ALGORITHMS,
     FutureHostedAlgorithm,
@@ -304,14 +317,27 @@ __all__ = [
     "validate_training_capabilities",
     "validate_provider_training_capabilities",
     "SFT_ALGORITHM_ID",
-    "BetaSftExecutorClient",
     "SftArtifact",
     "SftConfig",
+    "SftExecutor",
     "SftPublicServiceClient",
     "SftService",
     "SftServiceError",
+    "TinkerSftExecutor",
+    "TinkerCispoExecutor",
+    "CispoArtifact",
+    "CispoPublicServiceClient",
+    "CispoService",
+    "CispoServiceError",
+    "create_cispo_http_server",
+    "serve_cispo_service",
+    "CISPO_ALGORITHM_ID",
+    "CISPO_IMPLEMENTATION",
+    "CISPO_IMPLEMENTATION_VERSION",
     "create_sft_http_server",
     "serve_sft_service",
+    "cispo_recipe",
+    "sft_recipe",
     "FUTURE_HOSTED_ALGORITHMS",
     "FutureHostedAlgorithm",
     "FutureHostedAlgorithmSlug",

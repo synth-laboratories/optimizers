@@ -80,6 +80,28 @@ class TinkerSdkTransport:
         service = tinker.ServiceClient(user_metadata=dict(user_metadata or {}), **kwargs)
         return cls(service, tinker_module=tinker, validation_receipt=default_receipt_path())
 
+    def describe_artifact(self, reference: str) -> dict[str, Any]:
+        """Read provider checkpoint metadata without downloading weights."""
+        from datetime import datetime, timezone
+
+        if not reference.startswith('tinker://') or len(reference[9:].split('/')) != 3:
+            raise ValueError('invalid Tinker checkpoint reference')
+        run_id, kind, _ = reference[9:].split('/')
+        if kind not in {'weights', 'sampler_weights'}:
+            raise ValueError('invalid Tinker checkpoint role')
+        result = self._service.create_rest_client().list_checkpoints(run_id).result()
+        for checkpoint in result.checkpoints:
+            if checkpoint.tinker_path == reference:
+                expiry = checkpoint.expires_at
+                if expiry is not None and expiry.tzinfo is None:
+                    expiry = expiry.replace(tzinfo=timezone.utc)
+                return {'available': expiry is None or expiry > datetime.now(timezone.utc),
+                        'expires_at': expiry.isoformat() if expiry else None,
+                        'digest': 'sha256:' + hashlib.sha256(reference.encode()).hexdigest(),
+                        'verification': 'provider_listing_reference_fingerprint',
+                        'size_bytes': checkpoint.size_bytes}
+        return {'available': False, 'verification': 'provider_listing', 'expires_at': None}
+
     def capabilities(self, model_id: str) -> dict[str, Any]:
         resolved = resolve_tinker_model(model_id)
         return {
@@ -89,6 +111,11 @@ class TinkerSdkTransport:
             },
             "model_id": resolved,
         }
+
+    def prepare_renderer(self, model_id: str) -> None:
+        """Initialize tokenization without creating or restoring training state."""
+        sampler = self._service.create_sampling_client(base_model=resolve_tinker_model(model_id))
+        self._bind_tokenizer(sampler, resolve_tinker_model(model_id))
 
     def create_lora_training_client(self, base_model: str, rank: int, seed: int) -> Any:
         trainer = self._service.create_lora_training_client(
@@ -137,10 +164,12 @@ class TinkerSdkTransport:
 
     def decode(self, token_ids: Sequence[int]) -> str:
         if self._tokenizer is None:
-            return "".join(chr(32 + (int(token) % 95)) for token in token_ids)
+            raise ProviderError("tokenizer_missing", "real tokenizer required for decoding")
         return str(self._tokenizer.decode(list(token_ids), skip_special_tokens=False))
 
     def sample(self, handle: Any, request: SampleRequest) -> dict[str, Any]:
+        if self._renderer is None or self._tokenizer is None:
+            raise ProviderError("renderer_missing", "sampling requires the model renderer and tokenizer")
         sampler = self._sampler_for(handle)
         stop_ids = list(self._renderer.get_stop_token_ids()) if self._renderer is not None else None
         result = sampler.sample(
@@ -155,12 +184,15 @@ class TinkerSdkTransport:
         ).result()
         sequence = result.sequences[0]
         tokens = [int(token) for token in sequence.tokens]
-        logprobs = [float(value) for value in (sequence.logprobs or [0.0] * len(tokens))]
-        raw = self.decode(tokens)
-        parsed = parse_completion(self._renderer, tokens) if self._renderer is not None else ""
+        if sequence.logprobs is None or len(sequence.logprobs) != len(tokens):
+            raise ProviderError("invalid_behavior_logprobs", "sampling must return one real log-probability per token")
+        logprobs = [float(value) for value in sequence.logprobs]
+        if not all(math.isfinite(value) for value in logprobs):
+            raise ProviderError("invalid_behavior_logprobs", "sampling returned non-finite log-probabilities")
+        parsed = parse_completion(self._renderer, tokens)
         # This transport serves prose, action JSON, and other domains too.
         # Task-specific label normalization belongs in the task evaluator.
-        text = parsed or raw
+        text = parsed
         return {
             "token_ids": tokens,
             "logprobs": logprobs,
@@ -193,11 +225,14 @@ class TinkerSdkTransport:
         data = [_train_datum(self._tinker, item, loss_fn) for item in request.data]
         output = trainer.forward_backward(data, loss_fn=loss_fn, loss_fn_config=config).result()
         learning_rate = float((request.metadata or {}).get("learning_rate") or 2e-5)
-        trainer.optim_step(self._tinker.AdamParams(learning_rate=learning_rate)).result()
+        optimizer_output = trainer.optim_step(self._tinker.AdamParams(learning_rate=learning_rate)).result()
         state = self.sessions.setdefault(session.session_id, {"step": 0})
         state["step"] = int(state.get("step", 0)) + 1
         self._samplers.pop(session.session_id, None)
         metrics = {str(key): float(value) for key, value in dict(getattr(output, "metrics", {}) or {}).items()}
+        metrics.update({"optimizer."+str(key):float(value)
+            for key,value in dict(getattr(optimizer_output,"metrics",{}) or {}).items()})
+        metrics['learning_rate'] = learning_rate
         return {
             "step": state["step"],
             "metrics": metrics or {"loss": 0.0},
@@ -234,13 +269,19 @@ class TinkerSdkTransport:
                 f"checkpoint kind {checkpoint.kind!r} is not resumable training state",
             )
         path = checkpoint.resume_token
-        trainer = self._service.create_training_client_from_state(path)
-        session_id = str(getattr(trainer, "model_id", request_id))
         model_id = checkpoint.model_id
         if not model_id:
             raise ProviderError(
                 "checkpoint_model_missing", "restored training state needs its base model identity"
             )
+        restore = getattr(self._service, "create_training_client_from_state_with_optimizer", None)
+        if not callable(restore):
+            raise ProviderError(
+                "optimizer_resume_unsupported",
+                "Tinker SDK must support optimizer-state restore; weights-only fallback is unsafe",
+            )
+        trainer = restore(path)
+        session_id = str(getattr(trainer, "model_id", request_id))
         self.sessions[session_id] = {
             "training": trainer,
             "model_id": model_id,

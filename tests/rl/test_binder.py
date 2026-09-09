@@ -372,8 +372,8 @@ def test_train_receipts_loss_weight_magnitude(tmp_path: Path) -> None:
     outcome = harness.binder.train(
         parameter_group_id=GROUP_A,
         batch=[
-            {"group_id": "g1", "token_ids": [1, 2], "loss_weight": 0.25},
-            {"group_id": "g1", "token_ids": [1, 2], "loss_weight": -0.5},
+            {"group_id": "g1", "token_ids": [1, 2], "loss_weight": 0.25, "loss_mask": [0, 1]},
+            {"group_id": "g1", "token_ids": [1, 2], "loss_weight": -0.5, "loss_mask": [1, 1]},
         ],
         update_id="update_0001",
         plan_hash="sha256:" + "aa" * 32,
@@ -381,6 +381,7 @@ def test_train_receipts_loss_weight_magnitude(tmp_path: Path) -> None:
 
     assert outcome.metrics["loss_weight_nonzero"] == 2
     assert outcome.metrics["loss_weight_l1"] == pytest.approx(0.75)
+    assert outcome.metrics["loss_weight_token_mass"] == pytest.approx(1.25)
     assert outcome.metrics["loss_weight_l2_squared"] == pytest.approx(0.3125)
     assert outcome.metrics["loss_weight_min"] == pytest.approx(-0.5)
     assert outcome.metrics["loss_weight_max"] == pytest.approx(0.25)

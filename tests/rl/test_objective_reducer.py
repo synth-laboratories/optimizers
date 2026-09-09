@@ -262,7 +262,8 @@ def test_fixed_token_denominator_needs_its_denominator() -> None:
     assert result.value == pytest.approx(0.25)
 
 
-def test_streaming_coefficients_land_on_the_same_loss() -> None:
+@pytest.mark.parametrize("root_weights", [[1.0, 1.0, 1.0], [0.5, 0.5, 1.0]])
+def test_streaming_coefficients_land_on_the_same_loss(root_weights) -> None:
     per_item_loss = [2.0, 4.0, 9.0]
     per_item_tokens = [1, 3, 3]
     root_ids = ["root-a", "root-a", "root-b"]
@@ -276,20 +277,28 @@ def test_streaming_coefficients_land_on_the_same_loss() -> None:
         "branch_aware_root_mean",
         per_item_tokens=per_item_tokens,
         root_ids=root_ids,
-        root_weights=[1.0, 1.0, 1.0],
+        root_weights=root_weights,
     )
     streamed = sum(
         loss * scalar for loss, scalar in zip(per_item_loss, scalars, strict=True)
     )
     assert streamed == pytest.approx(batched.value)
     assert scalars == branch_aware_root_coefficients(
-        per_item_tokens=per_item_tokens, root_ids=root_ids, root_weights=[1.0, 1.0, 1.0]
+        per_item_tokens=per_item_tokens, root_ids=root_ids, root_weights=root_weights
     )
 
 
 def test_reducers_without_a_streaming_form_say_so() -> None:
     with pytest.raises(ReducerError, match="no streaming coefficient form"):
-        coefficients("token_mean", per_item_tokens=[1], root_ids=["a"], root_weights=[1.0])
+        coefficients("fixed_token_denominator", per_item_tokens=[1], root_ids=["a"], root_weights=[1.0])
+
+
+def test_token_mean_coefficients_match_reference_reduction():
+    lengths = [10, 90, 200, 0]
+    losses = [2.0, 7.0, -4.0, 0.0]
+    weights = coefficients("token_mean", per_item_tokens=lengths)
+    assert weights == pytest.approx([1/300, 1/300, 1/300, 0])
+    assert sum(weight*loss for weight,loss in zip(weights, losses)) == pytest.approx(sum(losses)/300)
 
 
 def test_misaligned_reducer_inputs_raise() -> None:

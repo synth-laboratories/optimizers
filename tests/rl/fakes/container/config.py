@@ -158,6 +158,7 @@ class ContainerConfig:
     task_family: str = "family_a"
     splits: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     taskset_version: str = "1"
+    strong_task_digests: bool = False
     model_id: str = "openai/gpt-oss-20b"
     model_family: str = "gpt_oss"
     policy_kind: str = "declared_policy"

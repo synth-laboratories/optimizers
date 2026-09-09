@@ -42,6 +42,7 @@ from .reducer import coefficients
 #: The parameter group a single-policy run trains. A solo run still names its
 #: parameter group, so a solo batch and a joint batch have the same shape.
 SOLO_PARAMETER_GROUP = "actor"
+ASSEMBLY_SEMANTICS = "stream_share_root_token_mean.v2"
 
 DROP_FOREIGN_AUTHOR = "foreign_author"
 DROP_UNATTRIBUTED_AUTHOR = "unattributed_author"
@@ -272,6 +273,7 @@ class TrainingBatch:
 
         return [
             {
+                "assembly_semantics": ASSEMBLY_SEMANTICS,
                 "parameter_group_id": batch.parameter_group_id,
                 "same_policy": batch.same_policy.receipt(),
                 "steps": [
@@ -729,9 +731,18 @@ def assemble(
             root_weights=[item.root_rollout_weight for item in flat],
         )
         total_tokens = reduction.total_tokens
+        stream_tokens = {
+            (stream.sample_key, stream.agent_instance_id): stream.trainable_tokens
+            for stream in reduction.streams
+        }
         weighted: list[SpanBatchItem] = []
         for item, coefficient in zip(flat, base, strict=True):
-            naive_share = item.trainable_tokens / total_tokens if total_tokens else 0.0
+            instance = item.agent_instance_id or item.rollout_id
+            # same_policy_weight is a whole episode/instance stream's share.
+            # Compare it with that same stream's naive share, not this span's:
+            # the latter amplifies short calls and makes `none` non-identity.
+            tokens = stream_tokens[(item.rollout_id, instance)]
+            naive_share = tokens / total_tokens if total_tokens else 0.0
             multiplier = item.same_policy_weight / naive_share if naive_share else 0.0
             weighted.append(replace(item, loss_weight=coefficient * multiplier))
         cursor = 0

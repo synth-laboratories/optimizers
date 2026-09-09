@@ -915,6 +915,9 @@ class CheckpointCatalog:
         self._conn.execute("PRAGMA synchronous=FULL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(_SCHEMA)
+        from .catalog_events import install
+
+        install(self._conn)
         self._install_append_only_triggers()
         self._conn.execute(
             "INSERT OR IGNORE INTO catalog_meta (key, value) VALUES ('checkpoint_schema', ?)",
@@ -971,6 +974,27 @@ class CheckpointCatalog:
 
     def now(self) -> str:
         return self._clock()
+
+    def event_page(
+        self, run_id: str, *, after_sequence: int = 0, limit: int = 500
+    ) -> dict[str, Any]:
+        """Read committed checkpoint facts; a cursor never marks events consumed."""
+        from .catalog_events import page
+
+        try:
+            return page(self._conn, run_id, after_sequence=after_sequence, limit=limit)
+        except ValueError as error:
+            raise CatalogError(str(error)) from error
+
+    def event_head(self, run_id: str) -> dict[str, Any]:
+        """Current checkpoint-stream cursor, suitable for an atomic snapshot."""
+        _require_text(run_id, "run_id")
+        sequence = self._conn.execute(
+            "SELECT COALESCE(MAX(sequence_number), 0) FROM checkpoint_event_outbox WHERE run_id=?",
+            (run_id,),
+        ).fetchone()[0]
+        page = self.event_page(run_id, after_sequence=sequence, limit=1)
+        return {"log_id": page["log_id"], "after_sequence": sequence}
 
     # --------------------------------------------------------------- writes
 
@@ -1758,6 +1782,32 @@ class CheckpointCatalog:
             target_id=str(row["target_id"]),
             updated_at=str(row["updated_at"]),
         )
+
+    def alias_history(self, checkpoint_id: str) -> tuple[Mapping[str, Any], ...]:
+        self.describe_checkpoint(checkpoint_id)
+        rows = self._conn.execute(
+            "SELECT * FROM checkpoint_alias_history WHERE "
+            "(target_kind='checkpoint' AND target_id=?) OR "
+            "(previous_kind='checkpoint' AND previous_id=?) ORDER BY seq",
+            (checkpoint_id, checkpoint_id),
+        ).fetchall()
+        return tuple(dict(row) for row in rows)
+
+    def record_artifact_observation(self, checkpoint_id: str, payload: Mapping[str, Any]) -> None:
+        import uuid
+        from .evidence import EvidenceStore
+        self.describe_checkpoint(checkpoint_id)
+        EvidenceStore._refuse_secrets(payload)
+        body = json.dumps(dict(payload), sort_keys=True, allow_nan=False)
+        with self.transaction():
+            self._conn.execute('INSERT INTO checkpoint_artifact_observations VALUES (?,?,?,?)',
+                               (uuid.uuid4().hex, checkpoint_id, self.now(), body))
+
+    def artifact_observations(self, checkpoint_id: str) -> tuple[Mapping[str, Any], ...]:
+        self.describe_checkpoint(checkpoint_id)
+        rows = self._conn.execute('SELECT * FROM checkpoint_artifact_observations WHERE checkpoint_id=? ORDER BY rowid',
+                                  (checkpoint_id,)).fetchall()
+        return tuple({**dict(row), 'payload': json.loads(row['payload'])} for row in rows)
 
     def list_aliases(self) -> tuple[AliasPointer, ...]:
         rows = self._conn.execute("SELECT alias FROM aliases ORDER BY alias").fetchall()

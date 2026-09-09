@@ -509,6 +509,7 @@ class PairedEvaluation:
         binder: PolicyBinder,
         clock: Any = utc_now,
         monotonic_clock: Any = time.monotonic,
+        attempt_sink: Any = None,
     ) -> None:
         self._resolver = resolver
         self._session = session
@@ -516,6 +517,7 @@ class PairedEvaluation:
         self._binder = binder
         self._clock = clock
         self._monotonic_clock = monotonic_clock
+        self._attempt_sink = attempt_sink
 
     # ------------------------------------------------------------------ run
 
@@ -540,6 +542,9 @@ class PairedEvaluation:
             TRAINED_ARM: self._load(TRAINED_ARM, trained, request),
         }
         tasks = self._tasks(request)
+
+        if self._attempt_sink is not None:
+            self._attempt_sink.begin(request)
 
         # --- only now does anything run ---
         for arm in ARMS:
@@ -950,7 +955,7 @@ class PairedEvaluation:
                 f"arm {bound.arm} attempt {rollout_id} terminated "
                 f"{episode.terminal_status!r}; a failed attempt is not a zero reward"
             )
-        return AttemptRow(
+        row = AttemptRow(
             arm=bound.arm,
             task_id=held.task_id,
             seed=held.seed,
@@ -965,6 +970,9 @@ class PairedEvaluation:
             trace_digest=episode.trace_digest,
             usage=dict(episode.usage),
         )
+        if self._attempt_sink is not None:
+            self._attempt_sink.record(request.evaluation_id, row.to_payload())
+        return row
 
     # ------------------------------------------------------------ recording
 

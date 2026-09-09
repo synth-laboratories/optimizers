@@ -319,7 +319,7 @@ def _handshake(state: _State, request: Mapping[str, Any]) -> tuple[int, dict[str
     resolution = [
         {
             "task_id": task_id,
-            "content_digest": digest([cfg.taskset_id, cfg.taskset_version, task_id], length=32),
+            "content_digest": ("sha256:" if cfg.strong_task_digests else "") + digest([cfg.taskset_id, cfg.taskset_version, task_id], length=64 if cfg.strong_task_digests else 32),
             "topology_ref": cfg.topology.topology_id,
             "task_family": cfg.task_family,
         }
@@ -766,9 +766,9 @@ def _handle(
                     "task_id": task_id,
                     "topology_ref": cfg.topology.topology_id,
                     "task_family": cfg.task_family,
-                    "seed": index,
-                    "content_digest": digest(
-                        [cfg.taskset_id, cfg.taskset_version, task_id], length=32
+                    "seed": cfg.task_ids.index(task_id) if cfg.strong_task_digests else index,
+                    "content_digest": ("sha256:" if cfg.strong_task_digests else "") + digest(
+                        [cfg.taskset_id, cfg.taskset_version, task_id], length=64 if cfg.strong_task_digests else 32
                     ),
                 }
                 for index, task_id in enumerate(requested)

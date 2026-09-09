@@ -19,7 +19,7 @@ from fakes.container import ContainerConfig
 from plane_harness import build_plane, config_text
 from synth_optimizers.contracts.rl_records import SamplingProfile
 from synth_optimizers.rl import config as config_module
-from synth_optimizers.rl.executor import RUN_ARTIFACTS, ContainerRunExecutor
+from synth_optimizers.rl.executor import RUN_ARTIFACTS, ContainerRunExecutor, ExecutorError
 from synth_optimizers.rl.handshake import ClauseRejected
 from synth_optimizers.rl.session import start_session
 
@@ -56,6 +56,20 @@ def _advance(plane):
         plane.clock.advance(1.0)
 
     return _tick
+
+
+@pytest.mark.parametrize('operation', ['stop', 'finish'])
+def test_shutdown_errors_are_receipted_and_raised(tmp_path, monkeypatch, operation):
+    with build_plane(_solo(), tmp_path) as plane:
+        executor = _executor(plane, tmp_path, group_size=2, target_train_updates=1)
+        executor.register_baseline()
+        original = executor.lifecycle.stop
+        def failed_stop(**kwargs):
+            return replace(original(**kwargs), terminate_failures={'attempt': 'termination refused'})
+        monkeypatch.setattr(executor.lifecycle, 'stop', failed_stop)
+        with pytest.raises(ExecutorError, match='shutdown failed'):
+            getattr(executor, operation)(reason='test')
+        assert (tmp_path/'receipts/lifecycle.jsonl').exists()
 
 
 def test_bounded_on_policy_admission_counts_pending_credit_groups(tmp_path):
@@ -228,6 +242,33 @@ def test_the_sampled_group_bound_ends_a_run_that_never_finds_an_ordering(tmp_pat
         assert len(report.skipped_groups) == 3
         assert plane.binder.train_calls == []
         assert plane.binder.published == []
+
+
+@pytest.mark.parametrize('failure_stage',['poll','finalize'])
+def test_infrastructure_failure_replaces_slot_without_reusing_sampler_route(tmp_path,monkeypatch,failure_stage):
+    from synth_optimizers.rl.contract import ContainerStatusError
+    with build_plane(_solo(),tmp_path) as plane:
+        executor=_executor(plane,tmp_path,group_size=2,slots=2,max_open_groups=1,
+            target_train_updates=1,maximum_sampled_groups=3)
+        original=getattr(executor.session,failure_stage)
+        failed=[]
+        def fail_once(rollout_id):
+            if not failed:
+                failed.append(rollout_id)
+                if failure_stage=='poll':return {'state':'failed','terminal':True}
+                raise ContainerStatusError('/finalize',500,'provider unavailable')
+            return original(rollout_id)
+        monkeypatch.setattr(executor.session,failure_stage,fail_once)
+        report=executor.run(max_ticks=100,on_tick=_advance(plane))
+        assert report.stop_reason=='target_train_updates_reached'
+        replacements=[a for g in executor._pins for a in executor.queues.group_members(g)
+            if a.replacement_index]
+        assert len(replacements)==1
+        replacement=replacements[0]
+        prior=executor.store.attempt(replacement.replaced_attempt_id)
+        assert prior.state=='failed'
+        assert (prior.task_id,prior.seed,prior.sample_index,prior.policy_revision)==(
+            replacement.task_id,replacement.seed,replacement.sample_index,replacement.policy_revision)
 
 
 def test_multiple_groups_keep_their_admitted_revision_across_updates(tmp_path) -> None:

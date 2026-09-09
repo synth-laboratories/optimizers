@@ -30,6 +30,7 @@ file selects a code path by algorithm name -- ``preset = "cispo"`` and
 from __future__ import annotations
 
 import os
+import math
 import tomllib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -521,6 +522,34 @@ class ArtifactPolicy:
 
 
 @dataclass(frozen=True, slots=True)
+class BudgetPolicy:
+    experiment_id: str
+    ledger: str
+    cap_usd: float
+    input_usd_per_million: float
+    output_usd_per_million: float
+    training_usd_per_million: float
+
+    def to_payload(self) -> dict[str, Any]:
+        from dataclasses import asdict
+        return asdict(self)
+
+
+def _budget_section(payload: Mapping[str, Any] | None) -> BudgetPolicy | None:
+    if payload is None:
+        return None
+    reader = _Reader("budget", payload)
+    policy = BudgetPolicy(reader.text("experiment_id"), reader.text("ledger"),
+                          reader.number("cap_usd"), reader.number("input_usd_per_million"),
+                          reader.number("output_usd_per_million"), reader.number("training_usd_per_million"))
+    reader.done()
+    if policy.cap_usd <= 0 or any(not math.isfinite(value) for value in
+        (policy.cap_usd, policy.input_usd_per_million, policy.output_usd_per_million, policy.training_usd_per_million)):
+        raise ConfigError("[budget] requires finite nonnegative prices and a positive cap")
+    return policy
+
+
+@dataclass(frozen=True, slots=True)
 class RunConfig:
     """One validated ``cispo.container.v1`` document."""
 
@@ -538,6 +567,7 @@ class RunConfig:
     offline: OfflineMode
     artifacts: ArtifactPolicy
     run_id: str = "run"
+    budget: BudgetPolicy | None = None
 
     def expanded_plan(self) -> AlgorithmPlan:
         return self.plan.expand()
@@ -577,6 +607,7 @@ class RunConfig:
             "expanded_plan": expanded.to_dict(),
             "plan_hash": expanded.plan_hash,
             "maximum_sampled_groups": self.maximum_sampled_groups,
+            **({"budget": self.budget.to_payload()} if self.budget else {}),
         }
 
     def with_plan_overrides(self, **sizing: Any) -> "RunConfig":
@@ -586,6 +617,7 @@ class RunConfig:
 
 
 SECTIONS: tuple[str, ...] = (
+    "budget",
     "container",
     "taskset",
     "model",
@@ -808,6 +840,13 @@ def _assert_startup_invariants(config: RunConfig) -> None:
             f"{pipeline.maximum_policy_lag}; the dequeue gate would reject work the "
             "queue was told to hold"
         )
+    if pipeline.maximum_policy_lag > plan.correction.max_weight_staleness:
+        raise ConfigError(
+            '[pipeline] maximum_policy_lag exceeds [plan.correction] '
+            'max_weight_staleness; queue admission and training assembly must agree'
+        )
+    if pipeline.maximum_policy_lag and plan.schedule.weight_mode != 'async_lag':
+        raise ConfigError('[plan.schedule] weight_mode must be async_lag when maximum_policy_lag is positive')
     ceiling = plan.max_steps_per_round
     if config.plan.target_train_updates > ceiling:
         raise ConfigError(
@@ -869,6 +908,7 @@ def from_mapping(payload: Mapping[str, Any], *, run_id: str = "run") -> RunConfi
         lifecycle=_lifecycle_section(payload.get("lifecycle")),
         offline=_offline_section(payload.get("offline")),
         artifacts=_artifacts_section(payload.get("artifacts")),
+        budget=_budget_section(payload.get("budget")),
         run_id=str(declared_run_id).strip() if declared_run_id else run_id,
     )
     _assert_startup_invariants(config)

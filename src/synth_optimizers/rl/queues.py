@@ -475,6 +475,11 @@ class QueueEngine:
         self.store.close_leases_for(attempt_id, state="released", reason=reason)
         return attempt
 
+    def retry_infrastructure(self, attempt_id: str, *, reason: str) -> AttemptRow | None:
+        """Replace a failed, unscored slot without changing its task or policy pin."""
+        attempt = self.fail(attempt_id, reason=reason)
+        return self._replacement(attempt)
+
     def cancel(
         self, attempt_id: str, *, reason: str, route: str = "terminate"
     ) -> AttemptRow:
@@ -645,7 +650,10 @@ class QueueEngine:
                 "terminate_error": error,
             },
         )
-        if not policy.may_replace(attempt.replacement_index):
+        return self._replacement(attempt)
+
+    def _replacement(self, attempt: AttemptRow) -> AttemptRow | None:
+        if not self.leases.straggler.may_replace(attempt.replacement_index):
             return None
         index = attempt.replacement_index + 1
         group = self.store.group(attempt.group_id)

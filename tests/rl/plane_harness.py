@@ -627,6 +627,8 @@ group_size = {group_size}
 groups_per_step = {groups_per_step}
 target_train_updates = {target_train_updates}
 maximum_sampled_groups = {maximum_sampled_groups}
+correction = {{max_weight_staleness = {maximum_policy_lag}}}
+schedule = {{weight_mode = "{weight_mode}"}}
 
 [pipeline]
 max_execution_slots = {slots}
@@ -703,6 +705,7 @@ def config_text(
         rollout_capacity=rollout_capacity,
         train_ready_capacity=train_ready_capacity,
         maximum_policy_lag=maximum_policy_lag,
+        weight_mode='async_lag' if maximum_policy_lag else 'sync_pin',
         max_open_groups=max_open_groups,
         stale_disposition=stale_disposition,
         topology_id=config.topology.topology_id,

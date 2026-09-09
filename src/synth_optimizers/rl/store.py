@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+import uuid
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -479,6 +480,7 @@ class JournalStore:
                 "INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', ?)",
                 (JOURNAL_SCHEMA_VERSION,),
             )
+            cur.execute("INSERT OR IGNORE INTO meta (key,value) VALUES ('event_log_id',?)", (str(uuid.uuid4()),))
 
     # -- plumbing ---------------------------------------------------------
 
@@ -1200,6 +1202,21 @@ class JournalStore:
             sql += " LIMIT ?"
             params.append(int(limit))
         return tuple(_journal(row) for row in self._query(sql, params))
+
+    def event_page(self, run_id: str, cursor: int = 0, limit: int = 500) -> dict:
+        """Compact event references over the same transactional queue journal."""
+        if type(cursor) is not int or cursor < 0 or type(limit) is not int or not 1 <= limit <= 2000:
+            raise ValueError('invalid journal cursor or limit')
+        log_id = self._query("SELECT value FROM meta WHERE key='event_log_id'", ())[0][0]
+        rows = self.journal_since(cursor, limit=limit+1, run_id=run_id)
+        events = [{'event_id': f'{log_id}:{r.cursor}', 'sequence': r.cursor,
+            'event_type': 'runtime.'+r.kind, 'timestamp': None,
+            'payload': {'segment_run_id': run_id, 'subject': r.subject,
+                'from_state': r.from_state, 'to_state': r.to_state, 'source_clock_seconds': r.at,
+                'from_queue': r.from_queue, 'to_queue': r.to_queue,
+                'evidence_reference': {'journal': self.path, 'cursor': r.cursor}}} for r in rows[:limit]]
+        return {'log_id': log_id, 'events': events, 'has_more': len(rows)>limit,
+                'next_sequence': events[-1]['sequence'] if events else cursor}
 
     def recover(self, run_id: str) -> RecoverySnapshot:
         """What the queues held at the last durable write, after a restart."""

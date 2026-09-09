@@ -8,11 +8,13 @@ requires-python = ">=3.11"
 license = "Apache-2.0"
 dependencies = [
     "pydantic>=2.0.0",
-    "synth-containers==0.4.1",
+    "synth-containers==0.4.2.dev20260905",
     "websocket-client>=1.8.0",
 ]
 
 [project.optional-dependencies]
+daytona = ["daytona==0.210.0"]
+benchmark-server = ["fastapi>=0.115", "uvicorn>=0.30", "httpx>=0.27"]
 banking77 = [
     "datasets>=2.19.0",
     "openai>=1.0.0",
@@ -61,7 +63,8 @@ include = ["src/synth_optimizers/docs/**/*", "src/synth_optimizers/eval/catalog/
 package = true
 
 [tool.uv.sources]
-synth-containers = { git = "https://github.com/synth-laboratories/containers.git", rev = "5453731dabc078fc4aae700015f7ecd2ae95a969" }
+# Coordinated-release candidate; no sibling checkout is required by uv users.
+synth-containers = { path = "vendor/synth-containers/synth_containers-0.4.2.dev20260905-py3-none-any.whl" }
 
 [tool.ruff]
 line-length = 100

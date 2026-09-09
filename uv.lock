@@ -2397,8 +2397,8 @@ wheels = [
 
 [[package]]
 name = "synth-containers"
-version = "0.4.2.dev20260903"
-source = { path = "vendor/synth-containers/synth_containers-0.4.2.dev20260903-py3-none-any.whl" }
+version = "0.4.2.dev20260908"
+source = { path = "vendor/synth-containers/synth_containers-0.4.2.dev20260908-py3-none-any.whl" }
 dependencies = [
     { name = "certifi" },
     { name = "fastapi" },
@@ -2409,7 +2409,7 @@ dependencies = [
     { name = "zstandard" },
 ]
 wheels = [
-    { filename = "synth_containers-0.4.2.dev20260903-py3-none-any.whl", hash = "sha256:84ae7ce35474fef1a423c1479f851093ba557169547b4c392e31c5dbf6466a93" },
+    { filename = "synth_containers-0.4.2.dev20260908-py3-none-any.whl", hash = "sha256:329e92e2a29a96487c28bf2786082349165d29845bd97a0d10ae2b996e6685b2" },
 ]
 
 [package.metadata]
@@ -2430,21 +2430,21 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "synth-harbor-tblite"
-version = "0.1.0.dev20260908"
-source = { path = "vendor/synth-harbor-tblite/synth_harbor_tblite-0.1.0.dev20260908-py3-none-any.whl" }
+version = "0.1.1.dev20260908"
+source = { path = "vendor/synth-harbor-tblite/synth_harbor_tblite-0.1.1.dev20260908-py3-none-any.whl" }
 dependencies = [
     { name = "synth-containers" },
 ]
 wheels = [
-    { filename = "synth_harbor_tblite-0.1.0.dev20260908-py3-none-any.whl", hash = "sha256:2e67deaa8698369db0312753db10ec69f86a7a66e539777a785a1bcdafac687e" },
+    { filename = "synth_harbor_tblite-0.1.1.dev20260908-py3-none-any.whl", hash = "sha256:002018a074fc6d84be526dc01619d4b3416e8ccb31cde8e3f99c9f7fedff9289" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "synth-containers", specifier = "==0.4.2.dev20260903" }]
+requires-dist = [{ name = "synth-containers", specifier = "==0.4.2.dev20260908" }]
 
 [[package]]
 name = "synth-optimizers"
-version = "0.2.20"
+version = "0.2.21"
 source = { editable = "." }
 dependencies = [
     { name = "pydantic" },
@@ -2503,7 +2503,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "renderers", marker = "extra == 'tinker'", specifier = ">=0.1.9" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6.0" },
-    { name = "synth-containers", path = "vendor/synth-containers/synth_containers-0.4.2.dev20260903-py3-none-any.whl" },
+    { name = "synth-containers", path = "vendor/synth-containers/synth_containers-0.4.2.dev20260908-py3-none-any.whl" },
     { name = "tinker", marker = "extra == 'tinker'" },
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.32" },
     { name = "uvicorn", marker = "extra == 'benchmark-server'", specifier = ">=0.30" },
@@ -2516,7 +2516,7 @@ dev = [
     { name = "maturin", specifier = ">=1.7.0" },
     { name = "pytest", specifier = ">=8.0.0" },
     { name = "ruff", specifier = ">=0.6.0" },
-    { name = "synth-harbor-tblite", path = "vendor/synth-harbor-tblite/synth_harbor_tblite-0.1.0.dev20260908-py3-none-any.whl" },
+    { name = "synth-harbor-tblite", path = "vendor/synth-harbor-tblite/synth_harbor_tblite-0.1.1.dev20260908-py3-none-any.whl" },
     { name = "ty", specifier = ">=0.0.32" },
 ]
 

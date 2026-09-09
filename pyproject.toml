@@ -1,6 +1,6 @@
 [project]
 name = "synth-optimizers"
-version = "0.2.20"
+version = "0.2.21"
 description = "Public Synth optimizer tooling with a Rust GEPA core."
 authors = [{name = "Synth Laboratories", email = "josh@usesynth.ai"}]
 readme = "README.md"
@@ -8,7 +8,7 @@ requires-python = ">=3.11"
 license = "Apache-2.0"
 dependencies = [
     "pydantic>=2.0.0",
-    "synth-containers==0.4.2.dev20260903",
+    "synth-containers==0.4.2.dev20260908",
     "websocket-client>=1.8.0",
 ]
 
@@ -33,7 +33,7 @@ dev = [
 
 [dependency-groups]
 dev = [
-    "synth-harbor-tblite==0.1.0.dev20260908",
+    "synth-harbor-tblite==0.1.1.dev20260908",
     "maturin>=1.7.0",
     "pytest>=8.0.0",
     "ruff>=0.6.0",
@@ -65,9 +65,9 @@ include = ["src/synth_optimizers/docs/**/*", "src/synth_optimizers/eval/catalog/
 package = true
 
 [tool.uv.sources]
-synth-harbor-tblite = { path = "vendor/synth-harbor-tblite/synth_harbor_tblite-0.1.0.dev20260908-py3-none-any.whl" }
+synth-harbor-tblite = { path = "vendor/synth-harbor-tblite/synth_harbor_tblite-0.1.1.dev20260908-py3-none-any.whl" }
 # Coordinated-release candidate; no sibling checkout is required by uv users.
-synth-containers = { path = "vendor/synth-containers/synth_containers-0.4.2.dev20260903-py3-none-any.whl" }
+synth-containers = { path = "vendor/synth-containers/synth_containers-0.4.2.dev20260908-py3-none-any.whl" }
 
 [tool.ruff]
 line-length = 100

@@ -107,6 +107,7 @@ jobs:
           cargo fmt --check
           cargo clippy --workspace -- -D warnings
           uv run --locked --project . --group dev ruff check src
+          python3 scripts/check-type-debt.py
           git diff --check
 
   build:

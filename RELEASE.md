@@ -17,6 +17,14 @@ fixtures are documented in `evals/tblite/README.md`.
 
 ## Validation
 
+The inherited shell handoff explicitly deferred 226 type diagnostics. The
+production-only environment reports 228: the additional two unresolved imports
+are `harbor_tblite.cispo` in optional eval paths, whose dependency was deliberately
+removed from production. CI runs `scripts/check-type-debt.py` against exact
+path/code/message signatures, rejects additions, and allows removals. This is
+an explicit existing-debt gate, not a claim that `ty check src` is clean; TBLite
+is not installed to hide the optional-import diagnostics.
+
 Run from the repository root:
 
 ```bash

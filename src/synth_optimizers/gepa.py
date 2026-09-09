@@ -1607,21 +1607,14 @@ def _bearer_header_from_env(env_name: str) -> str:
     return f"Bearer {token}"
 
 
+#: The one backend URL name. Seven aliases used to be tried in order, so which
+#: backend a run talked to depended on which of them a shell happened to carry.
+BACKEND_BASE_URL_ENV = "SYNTH_BACKEND_URL"
+
+
 def _backend_base_url_from_env() -> str | None:
-    for name in (
-        "SYNTH_BACKEND_URL_OVERRIDE",
-        "SYNTH_BACKEND_URL",
-        "SYNTH_API_URL",
-        "DEV_SYNTH_BACKEND_URL",
-        "DEV_BACKEND_URL",
-        "PROD_SYNTH_BACKEND_URL",
-        "PROD_BACKEND_URL",
-        "BACKEND_URL",
-    ):
-        value = os.getenv(name, "").strip()
-        if value:
-            return value
-    return None
+    value = os.getenv(BACKEND_BASE_URL_ENV, "").strip()
+    return value or None
 
 
 def _normalize_backend_base_url(url: str) -> str:

@@ -36,6 +36,7 @@ from __future__ import annotations
 import html
 import json
 import logging
+import re
 import socket
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -3086,3 +3087,150 @@ var GepaBoard = (function () {
   }};
 })();
 """
+
+
+# ---------------------------------------------------------------------------
+# Event vocabulary export (P0-5)
+#
+# Three feeds leave this repo and Workshop matches string literals against all
+# three. Two are Rust (`observability.rs` declares them); one is Python: the
+# eval worker feed written by ``synth_optimizers.eval.runner.EventLog.emit``.
+#
+# ``contracts/event_vocabulary.json`` is the committed union. It is the truth
+# about what is *emitted* — a name a consumer matches that is absent here has
+# no producer, and the fix is on the consumer side, never a new emitter here.
+#
+# Regenerate with:
+#     uv run python -m synth_optimizers.o11y --write-event-vocabulary
+# ---------------------------------------------------------------------------
+
+EVENT_VOCABULARY_SCHEMA = "optimizer_event_vocabulary.v1"
+EVENT_VOCABULARY_FILENAME = "event_vocabulary.json"
+
+#: Feed written by ``EventLog.emit`` in ``synth_optimizers.eval.runner``.
+EVAL_WORKER_EVENT_FEED = "eval.worker-event.v1"
+
+#: Complete, sorted set of event names the Python eval worker feed can carry.
+PYTHON_EVENT_TYPES: tuple[str, ...] = (
+    "eval.candidate.eliminated",
+    "eval.candidate.scored",
+    "eval.run.paused",
+    "eval.run.planned",
+    "eval.run.resumed",
+    "eval.run.terminal",
+    "eval.seed_ledger.sealed",
+    "eval.selection.completed",
+    "eval.trial.event",
+    "eval.trial.evidence_incomplete",
+    "eval.trial.queued",
+    "eval.trial.started",
+    "eval.trial.terminal",
+)
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_RUST_OBSERVABILITY = (
+    _REPO_ROOT / "rust" / "crates" / "synth_optimizer_platform" / "src" / "observability.rs"
+)
+
+
+def event_vocabulary_path() -> Path:
+    """Absolute path of the committed ``event_vocabulary.json``.
+
+    Repo-checkout only. The file is a cross-repo contract that consumers vendor
+    with a checksum (P0-8); it is deliberately not shipped in the wheel, so an
+    installed package has nothing to disagree with.
+    """
+
+    path = _REPO_ROOT / "contracts" / EVENT_VOCABULARY_FILENAME
+    if not path.is_file():
+        raise FileNotFoundError(f"event_vocabulary.json not found at {path}")
+    return path
+
+
+def load_event_vocabulary() -> dict:
+    """Parsed contents of the committed ``event_vocabulary.json``."""
+
+    return json.loads(event_vocabulary_path().read_text())
+
+
+def _rust_string_list(name: str, source: str) -> tuple[str, ...]:
+    """Read a ``pub const NAME: &[&str] = &[ "a", "b" ];`` list out of Rust source."""
+
+    marker = f"pub const {name}: &[&str] = &["
+    start = source.index(marker) + len(marker)
+    end = source.index("];", start)
+    return tuple(re.findall(r'"([^"]+)"', source[start:end]))
+
+
+def build_event_vocabulary() -> dict:
+    """Compute the union of what Rust and Python can emit.
+
+    The Rust half is read from the constants in ``observability.rs``; the Rust
+    test in that module independently proves those constants match its own
+    emitters, so a misparse here cannot pass unnoticed.
+    """
+
+    source = _RUST_OBSERVABILITY.read_text()
+    optimizer_feed = _rust_string_list("OPTIMIZER_EVENT_TYPES", source)
+    projection_feed = _rust_string_list("SERVICE_RUN_EVENT_KINDS", source)
+
+    feeds: dict[str, dict[str, object]] = {}
+
+    def add(event_type: str, emitter: str, feed: str) -> None:
+        entry = feeds.setdefault(
+            event_type, {"event_type": event_type, "emitter": emitter, "feeds": []}
+        )
+        if entry["emitter"] != emitter:
+            raise ValueError(
+                f"{event_type} is emitted by both rust and python; the vocabulary "
+                "assumes one emitter per event type"
+            )
+        feed_list = entry["feeds"]
+        assert isinstance(feed_list, list)
+        if feed not in feed_list:
+            feed_list.append(feed)
+
+    for name in optimizer_feed:
+        add(name, "rust", "optimizer_event.v1")
+    for name in projection_feed:
+        add(name, "rust", "service_run_events.v1")
+    for name in PYTHON_EVENT_TYPES:
+        add(name, "python", EVAL_WORKER_EVENT_FEED)
+
+    for entry in feeds.values():
+        feed_list = entry["feeds"]
+        assert isinstance(feed_list, list)
+        feed_list.sort()
+
+    return {
+        "schema_version": EVENT_VOCABULARY_SCHEMA,
+        "description": (
+            "Event type strings the optimizers package can emit. Sorted union of "
+            "the Rust feeds declared in observability.rs and the Python eval "
+            "worker feed. A name absent here has no producer."
+        ),
+        "feeds": {
+            "optimizer_event.v1": "Per-run canonical spool (events.optimizer.jsonl), Rust.",
+            "service_run_events.v1": "GET /runs/{id}/events projection, Rust.",
+            EVAL_WORKER_EVENT_FEED: "synth_optimizers.eval worker feed, Python.",
+        },
+        "event_types": [feeds[name] for name in sorted(feeds)],
+    }
+
+
+def write_event_vocabulary(path: Path | None = None) -> Path:
+    """Write the computed vocabulary to ``contracts/event_vocabulary.json``."""
+
+    target = path or (_REPO_ROOT / "contracts" / EVENT_VOCABULARY_FILENAME)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(build_event_vocabulary(), indent=2, sort_keys=False) + "\n")
+    return target
+
+
+if __name__ == "__main__":  # pragma: no cover - regeneration entry point
+    import sys
+
+    if "--write-event-vocabulary" in sys.argv:
+        print(write_event_vocabulary())
+    else:
+        raise SystemExit("usage: python -m synth_optimizers.o11y --write-event-vocabulary")

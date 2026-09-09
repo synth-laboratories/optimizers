@@ -2239,6 +2239,33 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _apply_proposer_overrides(config: Any, args: Any) -> None:
+    """Apply `gepa run --proposer-*` to the loaded config, in process.
+
+    These flags used to be exported as `SYNTH_OPTIMIZERS_PROPOSER_*` and read
+    back by the Rust config loader after the TOML was parsed, which made the
+    process environment a second config authority — the same variables could be
+    set by anything else in the shell and silently change what ran. The flags
+    now mutate the config object that is written out and executed, so the
+    resolved config is the only authority.
+    """
+
+    if args.proposer_execution_mode:
+        config.proposer.execution_mode = args.proposer_execution_mode.strip().lower()
+    if args.proposer_model:
+        config.proposer.model = args.proposer_model.strip()
+    if args.proposer_reasoning_effort:
+        config.proposer.reasoning_effort = args.proposer_reasoning_effort.strip().lower()
+    if args.proposer_service_tier:
+        config.proposer.service_tier = args.proposer_service_tier.strip().lower()
+    if args.proposer_auth_mode:
+        # `to_toml` drops api_key_env for chatgpt/host, so auth mode is the only
+        # field this has to set.
+        config.proposer.auth_mode = args.proposer_auth_mode.strip().lower().replace("-", "_")
+    if args.proposer_codex_home:
+        config.proposer.codex_home = args.proposer_codex_home
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "eval":
@@ -2263,30 +2290,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         from .gepa import GepaRun, UsageRegistrationConfig
 
         old_terminal = os.environ.get("SYNTH_OPTIMIZERS_TERMINAL")
-        old_proposer_execution_mode = os.environ.get("SYNTH_OPTIMIZERS_PROPOSER_EXECUTION_MODE")
-        old_proposer_model = os.environ.get("SYNTH_OPTIMIZERS_PROPOSER_MODEL")
-        old_proposer_reasoning_effort = os.environ.get("SYNTH_OPTIMIZERS_PROPOSER_REASONING_EFFORT")
-        old_proposer_service_tier = os.environ.get("SYNTH_OPTIMIZERS_PROPOSER_SERVICE_TIER")
-        old_proposer_auth_mode = os.environ.get("SYNTH_OPTIMIZERS_PROPOSER_AUTH_MODE")
-        old_proposer_codex_home = os.environ.get("SYNTH_OPTIMIZERS_PROPOSER_CODEX_HOME")
         if not args.json:
+            # Presentation only: this selects the Rust terminal renderer. It is
+            # not a run-config override and never reaches the resolved config.
             os.environ["SYNTH_OPTIMIZERS_TERMINAL"] = "1"
-        if args.proposer_execution_mode:
-            os.environ["SYNTH_OPTIMIZERS_PROPOSER_EXECUTION_MODE"] = args.proposer_execution_mode
-        if args.proposer_model:
-            os.environ["SYNTH_OPTIMIZERS_PROPOSER_MODEL"] = args.proposer_model
-        if args.proposer_reasoning_effort:
-            os.environ["SYNTH_OPTIMIZERS_PROPOSER_REASONING_EFFORT"] = (
-                args.proposer_reasoning_effort
-            )
-        if args.proposer_service_tier:
-            os.environ["SYNTH_OPTIMIZERS_PROPOSER_SERVICE_TIER"] = args.proposer_service_tier
-        if args.proposer_auth_mode:
-            os.environ["SYNTH_OPTIMIZERS_PROPOSER_AUTH_MODE"] = args.proposer_auth_mode
-        if args.proposer_codex_home:
-            os.environ["SYNTH_OPTIMIZERS_PROPOSER_CODEX_HOME"] = args.proposer_codex_home
         try:
             gepa_run = GepaRun.from_toml(args.config)
+            _apply_proposer_overrides(gepa_run.config, args)
             if args.disable_usage_registration:
                 gepa_run.config.usage_registration = UsageRegistrationConfig(enabled=False)
             project_gepa_run_started(
@@ -2306,32 +2316,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 os.environ.pop("SYNTH_OPTIMIZERS_TERMINAL", None)
             else:
                 os.environ["SYNTH_OPTIMIZERS_TERMINAL"] = old_terminal
-            if old_proposer_execution_mode is None:
-                os.environ.pop("SYNTH_OPTIMIZERS_PROPOSER_EXECUTION_MODE", None)
-            else:
-                os.environ["SYNTH_OPTIMIZERS_PROPOSER_EXECUTION_MODE"] = old_proposer_execution_mode
-            if old_proposer_model is None:
-                os.environ.pop("SYNTH_OPTIMIZERS_PROPOSER_MODEL", None)
-            else:
-                os.environ["SYNTH_OPTIMIZERS_PROPOSER_MODEL"] = old_proposer_model
-            if old_proposer_reasoning_effort is None:
-                os.environ.pop("SYNTH_OPTIMIZERS_PROPOSER_REASONING_EFFORT", None)
-            else:
-                os.environ["SYNTH_OPTIMIZERS_PROPOSER_REASONING_EFFORT"] = (
-                    old_proposer_reasoning_effort
-                )
-            if old_proposer_service_tier is None:
-                os.environ.pop("SYNTH_OPTIMIZERS_PROPOSER_SERVICE_TIER", None)
-            else:
-                os.environ["SYNTH_OPTIMIZERS_PROPOSER_SERVICE_TIER"] = old_proposer_service_tier
-            if old_proposer_auth_mode is None:
-                os.environ.pop("SYNTH_OPTIMIZERS_PROPOSER_AUTH_MODE", None)
-            else:
-                os.environ["SYNTH_OPTIMIZERS_PROPOSER_AUTH_MODE"] = old_proposer_auth_mode
-            if old_proposer_codex_home is None:
-                os.environ.pop("SYNTH_OPTIMIZERS_PROPOSER_CODEX_HOME", None)
-            else:
-                os.environ["SYNTH_OPTIMIZERS_PROPOSER_CODEX_HOME"] = old_proposer_codex_home
         if args.json:
             print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
         else:

@@ -3,6 +3,8 @@
 ## 2026-09-09
 
 * Prepared stable `0.2.22` with Containers `0.4.2`; not yet published.
+* Fixed proposer replay identity across run-local artifact paths and journals;
+  corrected quickstart task selection to the current GEPA schema.
 * Isolated TBLite research dependencies and fixtures from production validation.
 * Added Python release tests and a Linux x86_64 wheel build to publication CI.
 * Fixed terminal event replay truncation for journals longer than two pages.

@@ -761,6 +761,33 @@ pub fn normalize_for_cache(value: &Value) -> Value {
 }
 
 pub fn normalize_for_cache_profile(value: &Value, profile: &str) -> Value {
+    // Proposer requests include delivery locations and a snapshot of the live
+    // workspace database. The database contains this run's job/cache journal,
+    // so its byte hash is not the identity of the candidate evidence already
+    // embedded in the request. Keep trace/content hashes; discard only these
+    // run-local delivery details.
+    if profile == "gepa_proposer" {
+        let mut request = value.clone();
+        if let Some(map) = request.as_object_mut() {
+            map.remove("run_artifact_dir");
+            map.remove("proposal_artifact_dir");
+            for key in ["rollout_trace_artifact_refs", "merge_evidence_artifacts"] {
+                if let Some(refs) = map.get_mut(key).and_then(Value::as_array_mut) {
+                    if key == "merge_evidence_artifacts" {
+                        refs.retain(|item| {
+                            item.get("kind").and_then(Value::as_str) != Some("workspace_sqlite")
+                        });
+                    }
+                    for item in refs {
+                        if let Some(reference) = item.as_object_mut() {
+                            reference.remove("path");
+                        }
+                    }
+                }
+            }
+        }
+        return normalize_for_cache_value(&request, profile);
+    }
     normalize_for_cache_value(value, normalized_profile(profile))
 }
 

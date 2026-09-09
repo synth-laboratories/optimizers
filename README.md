@@ -102,39 +102,31 @@ target_modules = ["stage2_system"]
 [seed_candidate]
 stage2_system = "Classify the query into exactly one Banking77 intent. Return only the label."
 
-[dataset]
-train_seeds = [0, 1, 2, 3, 4, 5, 6, 7]
-heldout_seeds = [100, 101, 102, 103]
+[taskset]
+train_ids = ["train:0", "train:1", "train:2", "train:3"]
+heldout_ids = ["test:100", "test:101"]
+
+[gepa.task_pools]
+pareto = ["train:0", "train:1", "train:2", "train:3"]
+minibatch = ["train:0", "train:1"]
+reflection = ["train:0", "train:1", "train:2", "train:3"]
+heldout = ["test:100", "test:101"]
 ```
 
 ```python
-from synth_containers import Container
-from synth_optimizers import GepaConfig, GepaRun, GepaTaskPools, OptimizerRun, TasksetSelection
+from synth_optimizers import GepaRun
 
-container = Container("my-task")
-
-with container.serve() as handle:
-    result = OptimizerRun(
-        GepaConfig(
-            container=handle.connection(),
-            taskset=TasksetSelection(train_ids=["train:0", "train:1"], heldout_ids=["test:100"]),
-            task_pools=GepaTaskPools(
-                pareto=["train:0"],
-                minibatch=["train:0"],
-                reflection=["train:0", "train:1"],
-                heldout=["test:100"],
-            ),
-            program=None,
-            objectives=None,
-            policy=None,
-        )
-    ).execute()
+# Use a complete cookbook config with its task service, policy, and proposer.
+# Configure authorized provider credentials before executing a paid run.
+result = GepaRun.from_toml("gepa.toml").execute()
 
 print(result.best_candidate)
 print("cost: unknown" if result.cost_usd is None else f"cost: ${result.cost_usd:.2f}")
 ```
 
-Or load TOML directly: `GepaRun.from_toml("gepa.toml").execute()`.
+The TOML above illustrates task selection, not a standalone task server. Run it
+from the GEPA cookbook directory and add the recipe's policy/proposer settings.
+The legacy `[dataset]` seed selection is not the current GEPA schema.
 
 CLI:
 

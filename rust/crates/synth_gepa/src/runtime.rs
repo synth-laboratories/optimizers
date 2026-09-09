@@ -282,6 +282,13 @@ pub struct RuntimeRolloutFailure {
     pub failure: FailurePayload,
 }
 
+/// Callback invoked for each rollout progress event.
+pub type RuntimeRolloutProgressObserver<'a> = dyn FnMut(&RuntimeRolloutProgress) -> Result<()> + 'a;
+
+// 928 bytes against 176 for the next largest, but this is only ever built once
+// per rollout event and handed to the observer by reference, so the size is
+// never copied on a hot path. Boxing would break a published enum for nothing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug)]
 pub enum RuntimeRolloutProgress {
     Started {
@@ -344,7 +351,7 @@ pub struct GepaRuntimeExecutor<'a> {
     config: &'a SynthOptimizerConfig,
     client: &'a ContainerClient,
     executor_config: RuntimeEffectExecutorConfig,
-    progress_observer: Option<&'a mut dyn FnMut(&RuntimeRolloutProgress) -> Result<()>>,
+    progress_observer: Option<&'a mut RuntimeRolloutProgressObserver<'a>>,
 }
 
 pub fn execute_one_pending_optimizer_job_from_run_workspace(
@@ -369,7 +376,7 @@ pub fn execute_one_pending_optimizer_job_with_progress(
     run_id: &str,
     job_id: &str,
     executor_config: RuntimeEffectExecutorConfig,
-    progress_observer: &mut dyn FnMut(&RuntimeRolloutProgress) -> Result<()>,
+    progress_observer: &mut RuntimeRolloutProgressObserver<'_>,
 ) -> Result<RuntimeEffectOutcome> {
     let mut executor = GepaRuntimeExecutor {
         workspace,

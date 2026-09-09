@@ -5,6 +5,11 @@ use serde_json::{Map, Value};
 
 use crate::prompt_program::PromptProgram;
 
+/// Shortest example span worth reporting as leakage. One authority: the
+/// `synth_gepa` scanner and this crate's config default both read it, and a
+/// second copy of `32` per crate is exactly how the two would drift.
+pub const DEFAULT_LEAKAGE_MIN_SPAN_CHARS: usize = 32;
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum LeverKind {

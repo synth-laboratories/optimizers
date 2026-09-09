@@ -4256,7 +4256,7 @@ fn percentile(values: &[f64], quantile: f64) -> Option<f64> {
     ordered.sort_by(|left, right| left.total_cmp(right));
     if (quantile - 0.50).abs() < f64::EPSILON {
         let middle = ordered.len() / 2;
-        if ordered.len() % 2 == 0 {
+        if ordered.len().is_multiple_of(2) {
             return Some((ordered[middle - 1] + ordered[middle]) / 2.0);
         }
         return Some(ordered[middle]);

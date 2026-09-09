@@ -2397,8 +2397,8 @@ wheels = [
 
 [[package]]
 name = "synth-containers"
-version = "0.4.2.dev20260908"
-source = { path = "vendor/synth-containers/synth_containers-0.4.2.dev20260908-py3-none-any.whl" }
+version = "0.4.2.dev20260909"
+source = { path = "vendor/synth-containers/synth_containers-0.4.2.dev20260909-py3-none-any.whl" }
 dependencies = [
     { name = "certifi" },
     { name = "fastapi" },
@@ -2409,7 +2409,7 @@ dependencies = [
     { name = "zstandard" },
 ]
 wheels = [
-    { filename = "synth_containers-0.4.2.dev20260908-py3-none-any.whl", hash = "sha256:329e92e2a29a96487c28bf2786082349165d29845bd97a0d10ae2b996e6685b2" },
+    { filename = "synth_containers-0.4.2.dev20260909-py3-none-any.whl", hash = "sha256:1b8fe59dc29edc6bd4b98eeafbe7b3459b5642dca107f1be4b3bef5550e3988d" },
 ]
 
 [package.metadata]
@@ -2419,6 +2419,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.110.0" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "pydantic", specifier = ">=2.0.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6.0" },
     { name = "twine", marker = "extra == 'dev'", specifier = ">=5.0.0" },
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.32" },
@@ -2430,21 +2431,21 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "synth-harbor-tblite"
-version = "0.1.1.dev20260908"
-source = { path = "vendor/synth-harbor-tblite/synth_harbor_tblite-0.1.1.dev20260908-py3-none-any.whl" }
+version = "0.1.1.dev20260909"
+source = { path = "vendor/synth-harbor-tblite/synth_harbor_tblite-0.1.1.dev20260909-py3-none-any.whl" }
 dependencies = [
     { name = "synth-containers" },
 ]
 wheels = [
-    { filename = "synth_harbor_tblite-0.1.1.dev20260908-py3-none-any.whl", hash = "sha256:002018a074fc6d84be526dc01619d4b3416e8ccb31cde8e3f99c9f7fedff9289" },
+    { filename = "synth_harbor_tblite-0.1.1.dev20260909-py3-none-any.whl", hash = "sha256:5bee0da541230ad3dc499cc75bc0750279fcdd874b5c2da6796dbfc8bed91dff" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "synth-containers", specifier = "==0.4.2.dev20260908" }]
+requires-dist = [{ name = "synth-containers", specifier = "==0.4.2.dev20260909" }]
 
 [[package]]
 name = "synth-optimizers"
-version = "0.2.21"
+version = "0.2.22.dev20260909"
 source = { editable = "." }
 dependencies = [
     { name = "pydantic" },
@@ -2503,7 +2504,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "renderers", marker = "extra == 'tinker'", specifier = ">=0.1.9" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6.0" },
-    { name = "synth-containers", path = "vendor/synth-containers/synth_containers-0.4.2.dev20260908-py3-none-any.whl" },
+    { name = "synth-containers", path = "vendor/synth-containers/synth_containers-0.4.2.dev20260909-py3-none-any.whl" },
     { name = "tinker", marker = "extra == 'tinker'" },
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.32" },
     { name = "uvicorn", marker = "extra == 'benchmark-server'", specifier = ">=0.30" },
@@ -2516,7 +2517,7 @@ dev = [
     { name = "maturin", specifier = ">=1.7.0" },
     { name = "pytest", specifier = ">=8.0.0" },
     { name = "ruff", specifier = ">=0.6.0" },
-    { name = "synth-harbor-tblite", path = "vendor/synth-harbor-tblite/synth_harbor_tblite-0.1.1.dev20260908-py3-none-any.whl" },
+    { name = "synth-harbor-tblite", path = "vendor/synth-harbor-tblite/synth_harbor_tblite-0.1.1.dev20260909-py3-none-any.whl" },
     { name = "ty", specifier = ">=0.0.32" },
 ]
 

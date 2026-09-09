@@ -1,5 +1,17 @@
 # synth-optimizers changelog
 
+## 2026-09-09
+
+* `0.2.22.dev20260909`: made the declared cargo fmt/clippy/ruff gates pass, and
+  restored `cargo test`, which had stopped compiling because `identities.rs`
+  used `LeverBundle` without importing it. 137 tests.
+* Removed a duplicated leakage default: `synth_gepa` declared its own unread
+  copy of `32` while `synth_optimizer_platform::config` carried another. One
+  authority now lives in `levers.rs`.
+* Re-pinned `synth-containers` to `0.4.2.dev20260909`.
+* Added the test suite to the publish workflow, which previously ran only
+  `uv build` and `twine check`.
+
 ## 2026-08-21
 
 * Prepared `0.2.16` from the fully promoted v0.7 `main`, including the local eval targets, correlation envelopes, bounded experiment dispatch, service-ownership fixes, and published catalog pins.

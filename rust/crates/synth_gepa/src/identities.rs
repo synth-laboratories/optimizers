@@ -1,7 +1,7 @@
 use serde_json::{json, Map, Value};
 use synth_optimizer_platform::{
     GepaCandidateIdentity, GepaDeploymentCandidate, GepaHeldoutMeasurement,
-    GepaReconciliationStatus, GepaRunResult, LeverBundle,
+    GepaReconciliationStatus, GepaRunResult,
 };
 
 use crate::CandidateRecord;
@@ -282,6 +282,7 @@ pub fn idx_for_candidate_id(
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+    use synth_optimizer_platform::LeverBundle;
 
     fn candidate(
         id: &str,

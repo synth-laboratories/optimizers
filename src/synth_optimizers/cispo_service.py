@@ -418,7 +418,7 @@ def create_cispo_http_server(
                 self._write(HTTPStatus.CONFLICT, {'error': 'experiment_state_conflict', 'reconciliation_required': True})
             except ValueError:
                 self._write(HTTPStatus.BAD_REQUEST, {'error': 'invalid_experiment_request'})
-            except Exception as exc:  # pragma: no cover - final HTTP boundary
+            except Exception:  # pragma: no cover - final HTTP boundary
                 self._write(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal_service_error"})
 
         def _body(self) -> dict[str, Any]:

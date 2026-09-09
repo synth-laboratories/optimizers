@@ -53,9 +53,7 @@ impl ProcessIdentity {
         let pid = std::process::id();
         Self {
             pid,
-            start_identity: START
-                .get_or_init(|| process_start_identity(pid))
-                .clone(),
+            start_identity: START.get_or_init(|| process_start_identity(pid)).clone(),
             exe_digest: current_exe_digest(),
         }
     }
@@ -151,6 +149,9 @@ pub fn current_exe_digest() -> Option<String> {
 /// `(workshop_instance_id, db_path)`.
 pub struct ServiceOwnershipGuard {
     lock: Option<File>,
+    // Held for the tests that assert the lease file exists; the lock itself is
+    // the open `File` above.
+    #[cfg_attr(not(test), allow(dead_code))]
     lock_path: PathBuf,
     heartbeat_path: PathBuf,
     pid: u32,
@@ -161,10 +162,13 @@ pub struct ServiceOwnershipGuard {
 }
 
 impl ServiceOwnershipGuard {
+    // Read only by this module's tests, which assert the lease files exist.
+    #[cfg(test)]
     pub fn heartbeat_path(&self) -> &Path {
         &self.heartbeat_path
     }
 
+    #[cfg(test)]
     pub fn lock_path(&self) -> &Path {
         &self.lock_path
     }
@@ -248,13 +252,7 @@ pub(crate) fn acquire_service_ownership_in(
                             Some(stale_heartbeat_crash(&peer, identity.pid, quarantine));
                     }
                 }
-                return start_owned_guard(
-                    file,
-                    lock_path,
-                    heartbeat_path,
-                    config,
-                    adopted_crash,
-                );
+                return start_owned_guard(file, lock_path, heartbeat_path, config, adopted_crash);
             }
             Err(err) if err.kind() == ErrorKind::WouldBlock => {
                 match read_heartbeat(&heartbeat_path)? {
@@ -407,10 +405,7 @@ pub fn process_identity_payload(config: &GepaServiceConfig) -> Value {
     let identity = ProcessIdentity::current();
     let mut payload = identity.to_json();
     if let Some(object) = payload.as_object_mut() {
-        object.insert(
-            "ownership_protocol".to_string(),
-            json!(OWNERSHIP_PROTOCOL),
-        );
+        object.insert("ownership_protocol".to_string(), json!(OWNERSHIP_PROTOCOL));
         // Recorded only when Workshop set SYNTH_WORKSHOP_INSTANCE_ID.
         if let Some(instance_id) = config.workshop_instance_id.as_deref() {
             object.insert("instance_id".to_string(), json!(instance_id));
@@ -677,10 +672,8 @@ mod tests {
 
     fn scratch_home(label: &str) -> PathBuf {
         let nanos = OffsetDateTime::now_utc().unix_timestamp_nanos();
-        let dir = std::env::temp_dir().join(format!(
-            "gepa-own-{label}-{}-{nanos}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("gepa-own-{label}-{}-{nanos}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -748,13 +741,19 @@ mod tests {
     #[test]
     fn heartbeat_carries_protocol_2_identity() {
         let config = test_config(PathBuf::from("/tmp/gepa-identity.sqlite"), "workshop-id");
-        let payload = owned_heartbeat_payload(&config, "http://127.0.0.1:9", "2000-01-01T00:00:00Z", None);
+        let payload =
+            owned_heartbeat_payload(&config, "http://127.0.0.1:9", "2000-01-01T00:00:00Z", None);
         assert_eq!(payload["ownership_protocol"], OWNERSHIP_PROTOCOL);
         assert_eq!(payload["pid"], std::process::id());
         assert_eq!(payload["instance_id"], "workshop-id");
-        let start = payload["start_identity"].as_str().expect("start identity present");
+        let start = payload["start_identity"]
+            .as_str()
+            .expect("start identity present");
         assert!(!start.is_empty());
-        assert_eq!(Some(start.to_string()), process_start_identity(std::process::id()));
+        assert_eq!(
+            Some(start.to_string()),
+            process_start_identity(std::process::id())
+        );
         let exe = payload["exe_digest"].as_str().expect("exe digest present");
         assert!(exe.starts_with("sha256:"));
         assert!(ProcessIdentity::from_heartbeat(&payload).matches_live_process());
@@ -763,8 +762,12 @@ mod tests {
             workshop_instance_id: None,
             ..config
         };
-        let payload = owned_heartbeat_payload(&unset, "http://127.0.0.1:9", "2000-01-01T00:00:00Z", None);
-        assert!(payload.get("instance_id").is_none(), "instance_id is recorded only when set");
+        let payload =
+            owned_heartbeat_payload(&unset, "http://127.0.0.1:9", "2000-01-01T00:00:00Z", None);
+        assert!(
+            payload.get("instance_id").is_none(),
+            "instance_id is recorded only when set"
+        );
         let process = process_identity_payload(&unset);
         assert_eq!(process["ownership_protocol"], OWNERSHIP_PROTOCOL);
         assert_eq!(process["pid"], std::process::id());
@@ -778,7 +781,10 @@ mod tests {
             if unsafe { libc::geteuid() } == 0 {
                 return; // root may signal pid 1; the EPERM branch is unobservable
             }
-            assert!(!pid_is_alive(1), "pid 1 answers EPERM to kill(1, 0) and must not read as alive");
+            assert!(
+                !pid_is_alive(1),
+                "pid 1 answers EPERM to kill(1, 0) and must not read as alive"
+            );
         }
         assert!(!pid_is_alive(0));
         assert!(pid_is_alive(std::process::id()));
@@ -869,16 +875,16 @@ mod tests {
         let guard = acquire_service_ownership_in(home.clone(), &config)
             .expect("dead-pid heartbeat must be adoptable");
         assert!(guard.lock_path().exists());
-        let crash = guard
-            .adopted_crash
-            .as_ref()
-            .expect("adopted crash record");
+        let crash = guard.adopted_crash.as_ref().expect("adopted crash record");
         assert_eq!(crash["cause"], "service_crash");
         assert_eq!(crash["reason"], "stale_heartbeat");
         assert_eq!(crash["pid"], dead_pid);
         let (stale_heartbeat, _) = stale_files(&services, &service_id, dead_pid);
         assert!(stale_heartbeat.is_file(), "heartbeat renamed, not deleted");
-        assert_eq!(crash["quarantined"]["heartbeat"], stale_heartbeat.display().to_string());
+        assert_eq!(
+            crash["quarantined"]["heartbeat"],
+            stale_heartbeat.display().to_string()
+        );
         let quarantined: Value =
             serde_json::from_slice(&fs::read(&stale_heartbeat).unwrap()).unwrap();
         assert_eq!(quarantined["pid"], dead_pid);
@@ -903,7 +909,10 @@ mod tests {
 
         // A live process we did not spawn as a sidecar, with a heartbeat that
         // names its pid but not its start identity (a reused pid).
-        let mut sleeper = Command::new("sleep").arg("60").spawn().expect("spawn sleep");
+        let mut sleeper = Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .expect("spawn sleep");
         let foreign_pid = sleeper.id();
         assert!(pid_is_alive(foreign_pid));
         let holder = OpenOptions::new()
@@ -922,7 +931,11 @@ mod tests {
         );
         payload["pid"] = json!(foreign_pid);
         payload["start_identity"] = json!("not-the-start-identity-of-that-pid");
-        fs::write(&heartbeat_path, serde_json::to_vec_pretty(&payload).unwrap()).unwrap();
+        fs::write(
+            &heartbeat_path,
+            serde_json::to_vec_pretty(&payload).unwrap(),
+        )
+        .unwrap();
 
         let guard = acquire_service_ownership_in(home.clone(), &config)
             .expect("identity mismatch must be adopted, not refused");
@@ -933,11 +946,17 @@ mod tests {
         assert!(pid_is_alive(foreign_pid));
         let (stale_heartbeat, stale_lock) = stale_files(&services, &service_id, foreign_pid);
         assert!(stale_heartbeat.is_file(), "heartbeat renamed aside");
-        assert!(stale_lock.is_file(), "held lock renamed aside, holder keeps its inode");
+        assert!(
+            stale_lock.is_file(),
+            "held lock renamed aside, holder keeps its inode"
+        );
         let crash = guard.adopted_crash.as_ref().expect("adopted crash record");
         assert_eq!(crash["reason"], "stale_heartbeat");
         assert_eq!(crash["pid"], foreign_pid);
-        assert_eq!(crash["quarantined"]["lock"], stale_lock.display().to_string());
+        assert_eq!(
+            crash["quarantined"]["lock"],
+            stale_lock.display().to_string()
+        );
         let own: Value = serde_json::from_slice(&fs::read(&heartbeat_path).unwrap()).unwrap();
         assert_eq!(own["pid"], std::process::id());
         assert_eq!(guard.lock_path(), lock_path.as_path());

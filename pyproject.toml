@@ -8,7 +8,7 @@ requires-python = ">=3.11"
 license = "Apache-2.0"
 dependencies = [
     "pydantic>=2.0.0",
-    "synth-containers==0.4.2",
+    "synth-containers==0.4.3",
     "websocket-client>=1.8.0",
 ]
 
@@ -67,7 +67,7 @@ package = true
 
 [tool.uv.sources]
 # Coordinated-release candidate; no sibling checkout is required by uv users.
-synth-containers = { path = "vendor/synth-containers/synth_containers-0.4.2-py3-none-any.whl" }
+synth-containers = { path = "vendor/synth-containers/synth_containers-0.4.3-py3-none-any.whl" }
 
 [tool.ruff]
 line-length = 100

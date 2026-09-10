@@ -1,18 +1,18 @@
 # Release: synth-optimizers
 
 Current candidate: stable `0.2.22` (not yet published), depending on Containers
-`0.4.2`. Rust and Python package versions must agree — `pyproject.toml` and
+`0.4.3`. Rust and Python package versions must agree — `pyproject.toml` and
 `Cargo.toml` `[workspace.package]` both read `0.2.22`.
 
 Publication state, verified against PyPI on 2026-09-09: `synth-optimizers` is
 published up to `0.2.16`, so `pip install synth-optimizers==0.2.22` cannot
-resolve until this candidate ships. Containers `0.4.2` **is** published —
-`pip install synth-containers==0.4.2` resolves from the public index (wheel
-sha256 `61773e43bfce893437b0b27bcaf03233c8e301e114374d7ea5a159a95ceb2b67`) — so
-it is no longer a publication prerequisite. Where the checkout still resolves
-Containers from a vendored wheel through `[tool.uv.sources]` instead of from
-PyPI, confirm those bytes against the published artifact before publishing; the
-two are not the same blob today.
+resolve until this candidate ships. Containers `0.4.3` **is** published —
+`pip install synth-containers==0.4.3` resolves from the public index (wheel
+sha256 `eaff16ec40b6e2c9a569751f415912178f3aa0ac63396749466ec92e1d734bf5`).
+The vendored wheel and lock now use these exact public bytes, verified after
+protected publication run `34419184253` succeeded. The release CI separately
+installs from the public index without source overrides. Re-run the package
+gates after this dependency update before publishing Optimizers.
 
 Production release acceptance covers the supported optimizer behavior below.
 TBLite is eval/testing-only: it is not an installation dependency, production

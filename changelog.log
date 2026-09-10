@@ -2,7 +2,8 @@
 
 ## 2026-09-09
 
-* Prepared stable `0.2.22` with Containers `0.4.2`; not yet published.
+* Prepared stable `0.2.22` with published Containers `0.4.3`; not yet published.
+* Reconciled vendored Containers bytes with PyPI and refreshed security floors.
 * Preserve explicit adaptive rollout concurrency settings through Python config
   translation; reject unknown adaptive setting names.
 * Fixed proposer replay identity across run-local artifact paths and journals;

@@ -1,18 +1,20 @@
 # Release: synth-optimizers
 
-Current candidate: stable `0.2.22` (not yet published), depending on Containers
+Published stable: `0.2.22`, depending on Containers
 `0.4.3`. Rust and Python package versions must agree — `pyproject.toml` and
 `Cargo.toml` `[workspace.package]` both read `0.2.22`.
 
-Publication state, verified against PyPI on 2026-09-09: `synth-optimizers` is
-published up to `0.2.16`, so `pip install synth-optimizers==0.2.22` cannot
-resolve until this candidate ships. Containers `0.4.3` **is** published —
+Publication state, verified against PyPI on 2026-09-10: `synth-optimizers==0.2.22`
+is published from tag `v0.2.22` at `c34bb0ccfcbbe510d0caf6f45f05d9d12c1a06b7`.
+Protected publication run `34426296628` passed all gates. A separate fresh
+Python 3.11 macOS environment installed/imported it directly from PyPI with
+Containers `0.4.3` and no TBLite. Containers `0.4.3` **is** published —
 `pip install synth-containers==0.4.3` resolves from the public index (wheel
 sha256 `eaff16ec40b6e2c9a569751f415912178f3aa0ac63396749466ec92e1d734bf5`).
 The vendored wheel and lock now use these exact public bytes, verified after
 protected publication run `34419184253` succeeded. The release CI separately
-installs from the public index without source overrides. Re-run the package
-gates after this dependency update before publishing Optimizers.
+installs from the public index without source overrides. Native wheels target
+macOS arm64 11+ and Linux x86_64 glibc 2.39+, Python 3.11+.
 
 Production release acceptance covers the supported optimizer behavior below.
 TBLite is eval/testing-only: it is not an installation dependency, production
@@ -147,17 +149,13 @@ Treat it as an open acceptance gap. The public repo also ships
 `tblite_container` is deliberately excluded because TBLite is eval/testing-only
 and not a release gate.
 
-**Blocker, verified 2026-09-09.** As the cookbook repo currently publishes them,
-none of these configs loads under `0.2.22`. `GepaTomlDocument` ignores unknown
-sections, and the
-cookbook configs still declare the legacy `[dataset]`/`train_seeds` selection
-with no `[taskset]` or `[gepa.task_pools]`, so `GepaConfig.validate()` raises
-`ValueError: GepaTaskPools.pareto must not be empty` before any container or
-provider call. Reproduced for all five container configs on `main` and for
-Banking77/HotpotQA/Crafter on `v0.7`. The cookbook repo needs `[taskset]` and
-`[gepa.task_pools]` blocks (shape shown in `README.md`'s quickstart) before this
-acceptance list is executable; all five `run_fresh_gepa.sh` launchers there also
-still pin `synth-optimizers==0.2.0`.
+The former public-main cookbook schema blocker was repaired and promoted in
+`synth-cookbooks-public` commit `d6e46e0019d4889ef3eabdfd368448e0e38eae88`
+(CI `34421755635` passed). Current configs use `[taskset]` and
+`[gepa.task_pools]`; the historical `v0.7` tag remains unchanged.
+HealthBench remains explicitly parked because its required runtime target is
+missing; replacing a provider alone does not repair it. Live provider-backed
+acceptance remains deferred, not implied by schema or offline checks.
 
 ## Changelog
 

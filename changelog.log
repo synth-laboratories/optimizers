@@ -1,5 +1,11 @@
 # synth-optimizers changelog
 
+## 2026-09-10
+
+* Published PyPI `0.2.22` with Containers `0.4.3`; fresh public install verified.
+* macOS arm64 and Linux x86_64 wheels available; TBLite remains eval-only.
+* Public cookbook schema fixes shipped separately; live GEPA acceptance deferred.
+
 ## 2026-09-09
 
 * Prepared stable `0.2.22` with published Containers `0.4.3`; not yet published.

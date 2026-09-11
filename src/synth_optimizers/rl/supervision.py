@@ -109,7 +109,7 @@ def supervise_run(args: Any, *, run_id: str, plan_hash: str, config_source: byte
                     max_output_bytes=args.supervision_max_output_bytes,
                     env=dict(os.environ),
                     redact=tuple(value for key, value in os.environ.items()
-                                 if any(word in key.upper() for word in ("KEY", "TOKEN", "SECRET", "PASSWORD"))),
+                                 if value and any(word in key.upper() for word in ("KEY", "TOKEN", "SECRET", "PASSWORD"))),
                 )
             returncode = await supervisor.run_phase("work", work)
             receipt["worker_returncode"] = returncode

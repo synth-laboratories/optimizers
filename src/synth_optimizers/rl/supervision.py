@@ -77,8 +77,18 @@ def supervise_run(args: Any, *, run_id: str, plan_hash: str, config_source: byte
             "plan_hash": plan_hash, "deadline": supervisor.deadline.isoformat(),
             "config_sha256": hashlib.sha256(config_source).hexdigest(),
             "execution_error": None, "worker_returncode": None,
-            "host_process_cleanup": "pending", "remote_resource_cleanup": "pending",
-            "remote_cleanup_reason": "worker exit does not establish remote provider absence",
+            "host_process_cleanup": "pending",
+            "remote_resource_scope": "configured_http_target" if not args.plane else "custom_plane",
+            "remote_resource_cleanup": "not_owned" if not args.plane else "pending",
+            "remote_cleanup_reason": (
+                "default plane connects to a pre-existing HTTP target; parent has no target deletion authority"
+                if not args.plane else "custom plane resource ownership is not declared to the supervisor"
+            ),
+            "worker_created_session_cleanup": "pending",
+            "worker_session_cleanup_reason": (
+                "worker-created rollout/training sessions retain their own remote lifecycle; "
+                "parent has no durable attempt-to-rollout ownership or independent absence contract"
+            ),
         }
         command = [
             sys.executable, "-c",

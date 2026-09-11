@@ -91,7 +91,7 @@ def supervise_run(args: Any, *, run_id: str, plan_hash: str, config_source: byte
             ),
         }
         command = [
-            sys.executable, "-c",
+            sys.executable, "-u", "-c",
             "import sys; from synth_optimizers.rl.cli import main; raise SystemExit(main(sys.argv[1:]))",
             "run", "--config", str(snapshot),
             "--receipts", str(root), "--max-ticks", str(args.max_ticks),
@@ -101,9 +101,14 @@ def supervise_run(args: Any, *, run_id: str, plan_hash: str, config_source: byte
             command.extend(["--plane", args.plane])
         if args.json:
             command.append("--json")
+        follower = None
         failure: BaseException | None = None
         try:
             async def work() -> int:
+                nonlocal follower
+                from synth_optimizers.rl.log_follower import LogFollower
+                if not (custody / "worker.log").exists():
+                    follower = LogFollower(custody / "worker.log", args.supervision_max_output_bytes)
                 return await run_bounded_process(
                     command, output=custody / "worker.log",
                     max_output_bytes=args.supervision_max_output_bytes,
@@ -115,9 +120,6 @@ def supervise_run(args: Any, *, run_id: str, plan_hash: str, config_source: byte
             receipt["worker_returncode"] = returncode
             # The bounded actuator fences the process group before returning.
             receipt["host_process_cleanup"] = "confirmed"
-            # Preserve the established CLI report while retaining the bounded,
-            # redacted log as independent evidence if the viewer disconnects.
-            sys.stdout.write((custody / "worker.log").read_text(encoding="utf-8", errors="replace"))
             return returncode
         except BaseException as error:
             failure = error
@@ -125,6 +127,11 @@ def supervise_run(args: Any, *, run_id: str, plan_hash: str, config_source: byte
             receipt["execution_error"] = type(error).__name__
             raise
         finally:
+            if follower is not None:
+                try:
+                    await follower.close()
+                except Exception:
+                    pass  # Viewer failure cannot replace the scientific outcome.
             receipt["recorded_at"] = datetime.now(UTC).isoformat()
             try:
                 _publish_receipt(custody / "receipt.json", receipt)

@@ -8,7 +8,7 @@ requires-python = ">=3.11"
 license = "Apache-2.0"
 dependencies = [
     "pydantic>=2.0.0",
-    "synth-containers==0.4.3.dev2026091123",
+    "synth-containers==0.4.3.dev2026091127",
     "websocket-client>=1.8.0",
 ]
 
@@ -61,7 +61,7 @@ include = ["src/synth_optimizers/docs/**/*", "src/synth_optimizers/eval/catalog/
 package = true
 
 [tool.uv.sources]
-synth-containers = { path = "vendor/synth-containers/synth_containers-0.4.3.dev2026091123-py3-none-any.whl" }
+synth-containers = { path = "vendor/synth-containers/synth_containers-0.4.3.dev2026091127-py3-none-any.whl" }
 
 [tool.ruff]
 line-length = 100

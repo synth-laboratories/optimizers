@@ -210,3 +210,9 @@ Agent docs: [skills/gepa/SKILL.md](skills/gepa/SKILL.md).
 ## License
 
 Apache-2.0
+
+RL supervised CLI progress follows the retained redacted `worker.log` live.
+The disposable viewer reads each retained byte once with bounded buffers; it
+never receives provider credentials. A slow or disconnected stdout cannot block
+the worker: the viewer has a separate process and is terminated after a bounded
+final-drain interval. The retained log remains available if display is truncated.

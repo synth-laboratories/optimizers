@@ -23,8 +23,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+from synth_containers.operator_journal import OperatorJournal
+
 from .executor import (
     ContainerRuntimeError,
+    ContainerStopUnconfirmed,
     OciTrialExecutor,
     TrialExecutor,
     TrialRunRequest,
@@ -48,7 +51,6 @@ from .models import (
     SelectionDecision,
     TrialKey,
     TrialRecord,
-    append_jsonl,
     canonical_json,
     digest_of,
     digest_of_tree,
@@ -144,21 +146,23 @@ class EventEmitter:
         self.run_id = run_id
         self.stream = stream
         self._lock = threading.Lock()
-        self._sequence = 0
+        self._journal = OperatorJournal(path, run_id=run_id)
         self.stream_broken_at: int | None = None
 
     def emit(self, event: str, **fields: Any) -> dict[str, Any]:
         with self._lock:
-            self._sequence += 1
-            payload = {
-                "schema_version": WORKER_EVENT_SCHEMA,
-                "seq": self._sequence,
-                "event": event,
-                "occurred_at": _now(),
-                "run_id": self.run_id,
-                **fields,
-            }
-            append_jsonl(self.path, [payload])
+            if {"seq", "schema_version", "run_id", "event", "occurred_at"} & fields.keys():
+                raise EvalContractError("event fields cannot override worker identity")
+            payload = self._journal.append(
+                lambda sequence: {
+                    **fields,
+                    "schema_version": WORKER_EVENT_SCHEMA,
+                    "seq": sequence,
+                    "event": event,
+                    "occurred_at": _now(),
+                    "run_id": self.run_id,
+                }
+            )
             if self.stream is not None:
                 try:
                     self.stream.write(canonical_json(payload) + "\n")
@@ -168,7 +172,7 @@ class EventEmitter:
                     # reader that reconnects can tell a gap in the stream from a
                     # gap in the run. events.jsonl stays complete either way.
                     self.stream = None
-                    self.stream_broken_at = self._sequence
+                    self.stream_broken_at = payload["seq"]
             return payload
 
 
@@ -697,7 +701,10 @@ class EvalRunner:
             **key.to_json(),
         )
         try:
-            execution = self._resolve_executor().run(
+            executor = self._resolve_executor()
+            if isinstance(executor, OciTrialExecutor):
+                self.semaphore.bind_resource(lease, executor.resource_identity(key.trial_id))
+            execution = executor.run(
                 TrialRunRequest(
                     trial_id=key.trial_id,
                     image_reference=self._image_reference,
@@ -719,6 +726,12 @@ class EvalRunner:
                 heartbeat=lambda: self.semaphore.heartbeat(lease),
             )
         except ContainerRuntimeError as error:
+            if isinstance(error, ContainerStopUnconfirmed):
+                self.cancel.cancel()
+                self.semaphore.quarantine(lease, error.to_payload())
+                receipt = {"trial_id": key.trial_id, "observed_at": _now(), **error.to_payload()}
+                write_json(self._trial_dir(key) / "stop_unconfirmed.json", receipt)
+                self.events.emit("eval.trial.stop_unconfirmed", **receipt)
             return self._record(
                 key,
                 status="failed",
@@ -730,6 +743,15 @@ class EvalRunner:
         finally:
             self.semaphore.release(lease)
 
+        if execution.output_limit_exceeded:
+            return self._record(
+                key,
+                status="failed",
+                started_at=started_at,
+                error="container exceeded its observed output-byte limit during execution",
+                container=None,
+                exit_code=execution.exit_code,
+            )
         if execution.cancelled:
             return self._record(
                 key,

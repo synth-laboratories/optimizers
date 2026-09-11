@@ -5,9 +5,9 @@ product surface. There is exactly one lease store per `eval` home, shared by
 every local run in every worker process, so the concurrency ceiling is a
 property of the machine rather than of whichever run happened to start first.
 
-Leases are files guarded by an exclusive lock. A lease whose owning process
-died, or whose heartbeat lapsed past the configured TTL, is reclaimed by the
-next acquirer: a crashed worker cannot strand capacity.
+Leases are files guarded by an exclusive lock. An expired lease with a bound
+provider intent is quarantined: worker death is not proof of container death.
+Unbound leases can be reclaimed because they have not authorized a launch.
 """
 
 from __future__ import annotations
@@ -21,6 +21,8 @@ import uuid
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
+
+from .models import write_json
 
 
 class SemaphoreTimeout(RuntimeError):
@@ -56,20 +58,29 @@ class TrialSemaphore:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     def _live_leases(self) -> list[dict[str, object]]:
-        """Read the store, deleting leases whose owner is gone or stale."""
+        """Retain uncertain provider capacity when an owner disappears."""
 
         now = time.time()
         live: list[dict[str, object]] = []
         for path in sorted(self.directory.glob("*.json")):
             try:
                 record = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                path.unlink(missing_ok=True)
+            except (OSError, json.JSONDecodeError) as error:
+                raise RuntimeError(
+                    "unreadable eval lease; reconcile before admitting work"
+                ) from error
+            if record.get("quarantined") is True:
+                live.append(record)
                 continue
             expires_at = float(record.get("expires_at", 0.0))
             pid = int(record.get("pid", 0))
             if expires_at < now or not _process_alive(pid):
-                path.unlink(missing_ok=True)
+                if record.get("resource"):
+                    record.update({"quarantined": True, "quarantine_reason": "owner_lost"})
+                    write_json(path, record)
+                    live.append(record)
+                else:
+                    path.unlink(missing_ok=True)
                 continue
             live.append(record)
         return live
@@ -82,7 +93,13 @@ class TrialSemaphore:
             "leased": len(live),
             "available": max(0, self.capacity - len(live)),
             "leases": [
-                {"run_id": item.get("run_id"), "trial_id": item.get("trial_id")} for item in live
+                {
+                    "run_id": item.get("run_id"),
+                    "trial_id": item.get("trial_id"),
+                    "quarantined": item.get("quarantined", False),
+                    "resource": item.get("resource"),
+                }
+                for item in live
             ],
         }
 
@@ -104,18 +121,16 @@ class TrialSemaphore:
                     lease_id = f"lease_{uuid.uuid4().hex[:12]}"
                     path = self.directory / f"{lease_id}.json"
                     now = time.time()
-                    path.write_text(
-                        json.dumps(
-                            {
-                                "lease_id": lease_id,
-                                "run_id": run_id,
-                                "trial_id": trial_id,
-                                "pid": os.getpid(),
-                                "acquired_at": now,
-                                "expires_at": now + self.ttl_seconds,
-                            }
-                        ),
-                        encoding="utf-8",
+                    write_json(
+                        path,
+                        {
+                            "lease_id": lease_id,
+                            "run_id": run_id,
+                            "trial_id": trial_id,
+                            "pid": os.getpid(),
+                            "acquired_at": now,
+                            "expires_at": now + self.ttl_seconds,
+                        },
                     )
                     return Lease(
                         id=lease_id,
@@ -135,18 +150,37 @@ class TrialSemaphore:
         """Keep a long trial's token alive without widening the TTL for others."""
 
         with self._locked():
-            if not lease.path.is_file():
-                return
-            try:
-                record = json.loads(lease.path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                return
+            record = json.loads(lease.path.read_text(encoding="utf-8"))
+            if record.get("quarantined") is True:
+                raise RuntimeError("eval lease is quarantined; stop execution")
             record["expires_at"] = time.time() + self.ttl_seconds
-            lease.path.write_text(json.dumps(record), encoding="utf-8")
+            write_json(lease.path, record)
 
     def release(self, lease: Lease) -> None:
         with self._locked():
+            if lease.path.is_file():
+                record = json.loads(lease.path.read_text(encoding="utf-8"))
+                if record.get("quarantined") is True:
+                    return
             lease.path.unlink(missing_ok=True)
+
+    def bind_resource(self, lease: Lease, resource: dict[str, object]) -> None:
+        """Persist launch identity before execution can create a remote resource."""
+        if not resource.get("runtime") or not resource.get("container_id"):
+            raise ValueError("eval launch intent requires runtime and container identity")
+        with self._locked():
+            record = json.loads(lease.path.read_text(encoding="utf-8"))
+            if record.get("quarantined") is True or record.get("resource"):
+                raise RuntimeError("eval lease cannot bind a second resource")
+            record["resource"] = dict(resource)
+            write_json(lease.path, record)
+
+    def quarantine(self, lease: Lease, resource: dict[str, object]) -> None:
+        """Retain capacity after an unconfirmed stop, including across restart."""
+        with self._locked():
+            record = json.loads(lease.path.read_text(encoding="utf-8"))
+            record.update({"quarantined": True, "resource": resource})
+            write_json(lease.path, record)
 
     def release_run(self, run_id: str) -> int:
         """Drop every lease a run still holds. Used on resume and on cancel."""
@@ -156,10 +190,16 @@ class TrialSemaphore:
             for path in sorted(self.directory.glob("*.json")):
                 try:
                     record = json.loads(path.read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError):
-                    path.unlink(missing_ok=True)
+                except (OSError, json.JSONDecodeError) as error:
+                    raise RuntimeError("unreadable eval lease; reconcile before release") from error
+                if record.get("run_id") != run_id or record.get("quarantined") is True:
                     continue
-                if record.get("run_id") == run_id:
+                if record.get("resource"):
+                    record.update(
+                        {"quarantined": True, "quarantine_reason": "run_release_without_stop"}
+                    )
+                    write_json(path, record)
+                else:
                     path.unlink(missing_ok=True)
                     removed += 1
         return removed

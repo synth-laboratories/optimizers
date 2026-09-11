@@ -1975,8 +1975,8 @@ wheels = [
 
 [[package]]
 name = "synth-containers"
-version = "0.4.1.dev20260817"
-source = { git = "https://github.com/synth-laboratories/containers.git?rev=5453731dabc078fc4aae700015f7ecd2ae95a969#5453731dabc078fc4aae700015f7ecd2ae95a969" }
+version = "0.4.3.dev20260910"
+source = { path = "vendor/synth-containers/synth_containers-0.4.3.dev20260910-py3-none-any.whl" }
 dependencies = [
     { name = "certifi" },
     { name = "fastapi" },
@@ -1986,6 +1986,25 @@ dependencies = [
     { name = "websockets" },
     { name = "zstandard" },
 ]
+wheels = [
+    { filename = "synth_containers-0.4.3.dev20260910-py3-none-any.whl", hash = "sha256:e0c55c7d81f026138c126661922ff757a61dbfed404043be17bcb2045bed782a" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "build", marker = "extra == 'dev'", specifier = ">=1.2.1" },
+    { name = "certifi", specifier = ">=2024.0.0" },
+    { name = "fastapi", specifier = ">=0.110.0" },
+    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "pydantic", specifier = ">=2.0.0" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6.0" },
+    { name = "twine", marker = "extra == 'dev'", specifier = ">=5.0.0" },
+    { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.32" },
+    { name = "uvicorn", specifier = ">=0.30.0" },
+    { name = "websockets", specifier = ">=14.0" },
+    { name = "zstandard", specifier = ">=0.23.0" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "synth-optimizers"
@@ -2030,7 +2049,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "renderers", marker = "extra == 'tinker'", specifier = ">=0.1.9" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6.0" },
-    { name = "synth-containers", git = "https://github.com/synth-laboratories/containers.git?rev=5453731dabc078fc4aae700015f7ecd2ae95a969" },
+    { name = "synth-containers", path = "vendor/synth-containers/synth_containers-0.4.3.dev20260910-py3-none-any.whl" },
     { name = "tinker", marker = "extra == 'tinker'" },
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.32" },
     { name = "websocket-client", specifier = ">=1.8.0" },

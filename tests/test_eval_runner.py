@@ -11,6 +11,7 @@ import importlib.util
 import json
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -288,6 +289,26 @@ def test_full_run_scores_every_candidate_and_promotes_the_winner(tmp_path):
     assert len(result_manifest["trials"]) == 3 * 2 + 2 * 2
     for trial in result_manifest["trials"]:
         assert Path(trial["evidence"]).is_file()
+
+
+def test_output_stop_cannot_be_scored_from_an_otherwise_valid_result(tmp_path):
+    class OverflowExecutor(FakeExecutor):
+        def run(self, *args, **kwargs):
+            return replace(super().run(*args, **kwargs), output_limit_exceeded=True)
+
+    home = make_home(tmp_path)
+    candidate_set = stage(home, tmp_path)
+    manifest = write_manifest(home, tmp_path, candidate_set, "run_output_stop")
+    EvalRunner(WorkerManifest.load(manifest), executor=OverflowExecutor()).execute()
+    terminal = [
+        event["trial"]
+        for event in read_events(home, "run_output_stop")
+        if event["event"] == "eval.trial.terminal"
+    ]
+    assert terminal
+    assert all(trial["status"] == "failed" for trial in terminal)
+    assert all(trial["metrics"] == {} for trial in terminal)
+    assert all("output-byte limit" in trial["error"] for trial in terminal)
 
 
 def test_elimination_is_recorded_and_keeps_screening_evidence(tmp_path):
@@ -600,8 +621,11 @@ def test_a_budget_exhausted_policy_is_visible_on_the_scorecard():
         "llm-policy.v1",
         [
             # 20 of 500 steps were the model\'s; the rest was fallback filler.
-            {"cost_usd": 0.01, "budget_exhausted": "call cap reached (20)",
-             "policy_step_fraction": 0.04},
+            {
+                "cost_usd": 0.01,
+                "budget_exhausted": "call cap reached (20)",
+                "policy_step_fraction": 0.04,
+            },
             # Died before the budget mattered, so the model played it all.
             {"cost_usd": 0.01, "budget_exhausted": None, "policy_step_fraction": 1.0},
         ],
@@ -641,3 +665,32 @@ def test_a_policy_with_no_budget_reports_no_coverage_rather_than_zero():
     payload = _scored("python-code.v1", [{"cost_usd": 0.0}])
     assert payload["policy_step_fraction"] is None
     assert payload["trials"]["budget_exhausted"] == 0
+
+
+def test_unconfirmed_stop_saves_control_evidence_and_streams_identity(tmp_path):
+    from synth_optimizers.eval.executor import ContainerStopUnconfirmed, StopFailureReason
+
+    class UnconfirmedExecutor(FakeExecutor):
+        def run(self, request, **kwargs):
+            raise ContainerStopUnconfirmed("owned-container", "docker", StopFailureReason.TIMEOUT)
+
+    home = make_home(tmp_path)
+    candidate_set = stage(home, tmp_path)
+    manifest = write_manifest(home, tmp_path, candidate_set, "run_unknown_stop")
+    EvalRunner(WorkerManifest.load(manifest), executor=UnconfirmedExecutor()).execute()
+    events = read_events(home, "run_unknown_stop")
+    stops = [event for event in events if event["event"] == "eval.trial.stop_unconfirmed"]
+    terminal = [event["trial"] for event in events if event["event"] == "eval.trial.terminal"]
+    assert len(terminal) >= len(stops) > 0
+    assert all(trial["metrics"] == {} for trial in terminal)
+    for trial in terminal:
+        if trial["status"] == "cancelled":
+            continue
+        receipt_path = Path(trial["evidence_dir"]) / "stop_unconfirmed.json"
+        receipt = json.loads(receipt_path.read_text())
+        assert receipt["trial_id"] == trial["trial_id"]
+        assert receipt["container_id"] == "owned-container"
+        assert receipt["reconciliation_required"] is True
+        assert trial["status"] == "failed"
+        assert trial["metrics"] == {}
+        assert any(event["trial_id"] == trial["trial_id"] for event in stops)

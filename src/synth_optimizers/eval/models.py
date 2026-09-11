@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -707,7 +709,11 @@ class SelectionSpec:
 
 @dataclass(frozen=True, slots=True)
 class TrialLimits:
-    """Hard per-trial resource ceilings enforced at the container boundary."""
+    """Trial policy: native CPU/memory controls and observed time/output stops.
+
+    max_output_bytes is sampled during OCI execution and checked at completion;
+    it is not a hard filesystem quota.
+    """
 
     max_parallel_trials: int
     timeout_seconds: int
@@ -1021,9 +1027,21 @@ def write_json(path: Path, payload: Any) -> None:
     """Atomic write: evidence is either the old file or the whole new one."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.partial")
-    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str), "utf-8")
-    temporary.replace(path)
+    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".partial", dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True, default=str, allow_nan=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def append_jsonl(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:

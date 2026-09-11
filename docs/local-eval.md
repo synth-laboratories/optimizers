@@ -179,3 +179,20 @@ Publish a container conforming to `eval.target.v1`, pin it by digest in an
 allowlisted recipe, and choose the recipe-owned metric and selection policy.
 That is the whole change. It is not a new algorithm, not an agent-supplied
 Docker command, and not a new Workshop orchestration path.
+
+### Required execution guarantees
+
+Recipes may declare `limits.required_limit_capabilities` as an array of objects
+with `dimension`, `enforcement`, and boolean `survives_supervisor_loss`. These
+requirements are sealed with the run and forwarded to the shared executor.
+For example, `{"dimension":"memory_bytes","enforcement":"native_control",
+"survives_supervisor_loss":true}` requires a provider memory control that remains
+in force if the Python supervisor exits. Admission rejects unsupported guarantees
+before image resolution or trial launch. An executor without a capability
+catalog satisfies no declared guarantees. Existing recipes that omit this field
+retain their existing serialized limits and recipe digests.
+
+A sampled output threshold is not a hard filesystem quota. The OCI executor does
+not currently claim workspace quotas, generic provider-spend reservations, or a
+work deadline that survives supervisor loss. Requesting those guarantees fails
+closed; adding a requested numeric limit cannot manufacture enforcement.

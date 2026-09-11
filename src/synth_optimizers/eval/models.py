@@ -22,6 +22,13 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from synth_containers.limit_capabilities import (
+    LimitCapability,
+    LimitDimension,
+    LimitEnforcement,
+    unsupported_limit_capabilities,
+)
+
 EVAL_ALGORITHM_ID = "eval"
 EVAL_ALGORITHM_VERSION = "1"
 
@@ -720,6 +727,13 @@ class TrialLimits:
     cpus: float
     memory_mb: int
     max_output_bytes: int
+    required_limit_capabilities: tuple[LimitCapability, ...] = ()
+
+    def __post_init__(self) -> None:
+        try:
+            unsupported_limit_capabilities(self.required_limit_capabilities, ())
+        except ValueError as error:
+            raise EvalContractError(str(error)) from error
 
     @classmethod
     def from_mapping(cls, value: Any) -> TrialLimits:
@@ -727,6 +741,23 @@ class TrialLimits:
         cpus = data.get("cpus", 1.0)
         if not isinstance(cpus, (int, float)) or isinstance(cpus, bool) or cpus <= 0:
             raise EvalContractError("limits.cpus must be a positive number")
+        requirements = data.get("required_limit_capabilities", [])
+        if not isinstance(requirements, list) or len(requirements) > 32:
+            raise EvalContractError("limits.required_limit_capabilities must be an array of at most 32 entries")
+        capabilities = []
+        for requirement in requirements:
+            if not isinstance(requirement, dict) or set(requirement) != {
+                "dimension", "enforcement", "survives_supervisor_loss"
+            }:
+                raise EvalContractError("required limit capability must declare dimension, enforcement and survives_supervisor_loss")
+            try:
+                capabilities.append(LimitCapability(
+                    LimitDimension(requirement["dimension"]),
+                    LimitEnforcement(requirement["enforcement"]),
+                    requirement["survives_supervisor_loss"],
+                ))
+            except (ValueError, TypeError) as error:
+                raise EvalContractError(f"invalid required limit capability: {error}") from error
         return cls(
             max_parallel_trials=_positive_int(
                 data.get("max_parallel_trials", 1), field_name="limits.max_parallel_trials"
@@ -740,6 +771,7 @@ class TrialLimits:
                 data.get("max_output_bytes", 256 * 1024 * 1024),
                 field_name="limits.max_output_bytes",
             ),
+            required_limit_capabilities=tuple(capabilities),
         )
 
     def to_json(self) -> dict[str, Any]:
@@ -749,6 +781,10 @@ class TrialLimits:
             "cpus": self.cpus,
             "memory_mb": self.memory_mb,
             "max_output_bytes": self.max_output_bytes,
+            # Preserve existing recipe digests when no guarantees are declared.
+            **({"required_limit_capabilities": [
+                capability.to_payload() for capability in self.required_limit_capabilities
+            ]} if self.required_limit_capabilities else {}),
         }
 
 

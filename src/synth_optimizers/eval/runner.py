@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from synth_containers.operator_journal import OperatorJournal
+from synth_containers.limit_capabilities import unsupported_limit_capabilities
 
 from .executor import (
     ContainerRuntimeError,
@@ -463,6 +464,15 @@ class EvalRunner:
                 )
         self._secrets()  # fail before a single container starts, not mid-matrix
         executor = self._resolve_executor()
+        unsupported = unsupported_limit_capabilities(
+            self.recipe.limits.required_limit_capabilities,
+            getattr(executor, "limit_capabilities", ()),
+        )
+        if unsupported:
+            raise EvalContractError(
+                "executor does not support required limit capabilities: "
+                + json.dumps([capability.to_payload() for capability in unsupported])
+            )
         resolve = getattr(executor, "resolve_reference", None)
         self._image_reference = (
             resolve(self.recipe.image, self.recipe.image_digest)
@@ -712,6 +722,7 @@ class EvalRunner:
                     policy_dir=self.candidate_set.artifact_path(candidate),
                     output_dir=output_dir,
                     limits=self.recipe.limits,
+                    required_limit_capabilities=self.recipe.limits.required_limit_capabilities,
                     network=self.recipe.target.network,
                     secrets=self._secrets(),
                     extra_hosts=tuple(

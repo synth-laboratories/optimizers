@@ -258,6 +258,64 @@ def test_catalog_recipes_are_pinned_or_honestly_unavailable():
 # ------------------------------------------------------------------- runs
 
 
+def test_required_limits_survive_recipe_sealing_and_execution(tmp_path):
+    from synth_containers.limit_capabilities import LimitCapability, LimitDimension, LimitEnforcement
+    requirement = LimitCapability(LimitDimension.WORK_TIME, LimitEnforcement.OBSERVED_THRESHOLD)
+
+    class GuaranteedExecutor(FakeExecutor):
+        limit_capabilities = (requirement,)
+
+        def run(self, request, **kwargs):
+            assert request.required_limit_capabilities == (requirement,)
+            return super().run(request, **kwargs)
+
+    home = make_home(tmp_path)
+    candidates = stage(home, tmp_path)
+    manifest = write_manifest(home, tmp_path, candidates, "run_required")
+    runner = EvalRunner(WorkerManifest.load(manifest), executor=GuaranteedExecutor())
+    limits = replace(runner.recipe.limits, required_limit_capabilities=(requirement,))
+    assert type(limits).from_mapping(limits.to_json()) == limits
+    runner.recipe = replace(runner.recipe, limits=limits)
+    assert runner.execute() == 0
+    sealed = json.loads((runner.run_dir / "input_manifest.json").read_text())
+    assert sealed["limits"]["required_limit_capabilities"] == [requirement.to_payload()]
+
+
+def test_required_limits_refuse_before_image_resolution_or_trial(tmp_path):
+    from synth_containers.limit_capabilities import LimitCapability, LimitDimension, LimitEnforcement
+
+    class UnqualifiedExecutor(FakeExecutor):
+        def resolve_reference(self, *args):
+            pytest.fail("image resolution must follow capability admission")
+
+    home = make_home(tmp_path)
+    candidates = stage(home, tmp_path)
+    manifest = write_manifest(home, tmp_path, candidates, "run_refused")
+    executor = UnqualifiedExecutor()
+    runner = EvalRunner(WorkerManifest.load(manifest), executor=executor)
+    runner.recipe = replace(runner.recipe, limits=replace(
+        runner.recipe.limits,
+        required_limit_capabilities=(LimitCapability(
+            LimitDimension.WORK_TIME, LimitEnforcement.OBSERVED_THRESHOLD, True
+        ),),
+    ))
+    assert runner.execute() == 1
+    assert executor.calls == []
+    assert "does not support required limit" in read_events(home, "run_refused")[-1]["error"]
+
+
+@pytest.mark.parametrize("requirements", [None, {}, [True], [{
+    "dimension": "work_time", "enforcement": "observed_threshold",
+    "survives_supervisor_loss": "false",
+}], [{"dimension": "unknown", "enforcement": "native_control", "survives_supervisor_loss": False}]])
+def test_required_limits_reject_malformed_recipe(requirements):
+    from synth_optimizers.eval.models import TrialLimits
+    payload = TrialLimits(1, 30, 1, 64, 1024).to_json()
+    payload["required_limit_capabilities"] = requirements
+    with pytest.raises(EvalContractError):
+        TrialLimits.from_mapping(payload)
+
+
 def test_full_run_scores_every_candidate_and_promotes_the_winner(tmp_path):
     home = make_home(tmp_path)
     candidate_set = stage(home, tmp_path)

@@ -10,9 +10,35 @@ import hashlib
 import json
 import os
 import sys
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+
+def _publish_receipt(path: Path, receipt: dict[str, Any]) -> None:
+    """Atomically retain the first outcome; replay diagnostics stay in the journal."""
+    descriptor, name = tempfile.mkstemp(prefix=".receipt-", dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+            json.dump(receipt, output, indent=2, allow_nan=False)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            # A replay must neither replace the original outcome nor mask the
+            # supervisor's original refusal with an incidental publication error.
+            return
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def supervise_run(args: Any, *, run_id: str, plan_hash: str, config_source: bytes) -> int:
@@ -65,6 +91,7 @@ def supervise_run(args: Any, *, run_id: str, plan_hash: str, config_source: byte
             command.extend(["--plane", args.plane])
         if args.json:
             command.append("--json")
+        failure: BaseException | None = None
         try:
             async def work() -> int:
                 return await run_bounded_process(
@@ -83,15 +110,18 @@ def supervise_run(args: Any, *, run_id: str, plan_hash: str, config_source: byte
             sys.stdout.write((custody / "worker.log").read_text(encoding="utf-8", errors="replace"))
             return returncode
         except BaseException as error:
+            failure = error
             supervisor.decide_stop(type(error).__name__)
             receipt["execution_error"] = type(error).__name__
             raise
         finally:
             receipt["recorded_at"] = datetime.now(UTC).isoformat()
             try:
-                with (custody / "receipt.json").open("x", encoding="utf-8") as output:
-                    json.dump(receipt, output, indent=2, allow_nan=False)
-                    output.write("\n")
+                _publish_receipt(custody / "receipt.json", receipt)
+            except Exception as publication_error:
+                if failure is None:
+                    raise
+                failure.add_note("Supervision receipt publication failed: " + type(publication_error).__name__)
             finally:
                 supervisor.close()
     return asyncio.run(execute())

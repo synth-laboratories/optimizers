@@ -291,14 +291,15 @@ def dispatch(args: argparse.Namespace) -> int:
 def _run(args: argparse.Namespace) -> int:
     """Start a training run. The loop is the executor's; the assembly is a seam."""
 
-    from .config import load as load_run_config
+    from .config import loads as load_run_config
     from .executor import ExecutionPlan, execute
     from .session import RunClock
 
     config_path = Path(args.config)
     if not config_path.is_file():
         raise SystemExit(f"cannot read {args.config}: no such config file")
-    config = load_run_config(config_path)
+    config_source = config_path.read_bytes()
+    config = load_run_config(config_source.decode("utf-8"), run_id=config_path.stem)
     plan_hash = config.expanded_plan().plan_hash
     if args.validate_only or args.supervised_worker_deadline:
         print(f"run {config.run_id}: plan={plan_hash} target={config.plan.target_train_updates}")
@@ -309,7 +310,7 @@ def _run(args: argparse.Namespace) -> int:
         raise SystemExit("--receipts is required: a run that leaves no receipt is not a run")
     if not args.supervised_worker_deadline:
         from .supervision import supervise_run
-        return supervise_run(args, run_id=config.run_id, plan_hash=plan_hash)
+        return supervise_run(args, run_id=config.run_id, plan_hash=plan_hash, config_source=config_source)
     # Only the existing worker executes the plane. It inherits the parent's
     # immutable deadline; this marker prevents recursive parent processes.
     from datetime import datetime

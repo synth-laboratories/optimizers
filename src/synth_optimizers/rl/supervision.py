@@ -6,6 +6,7 @@ finalization and training. Process fencing is not remote resource deletion.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import sys
@@ -14,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 
-def supervise_run(args: Any, *, run_id: str, plan_hash: str) -> int:
+def supervise_run(args: Any, *, run_id: str, plan_hash: str, config_source: bytes) -> int:
     from synth_containers.bounded_process import run_bounded_process
     from synth_containers.lifecycle_limits import DurableRolloutSupervisor, LifecycleLimits
 
@@ -28,9 +29,27 @@ def supervise_run(args: Any, *, run_id: str, plan_hash: str) -> int:
 
     async def execute() -> int:
         supervisor = DurableRolloutSupervisor(custody, run_id, limits)
+        try:
+            custody.chmod(0o700)
+            snapshots = custody / "config"
+            snapshots.mkdir(mode=0o700, exist_ok=True)
+            snapshot = snapshots / Path(args.config).name
+            if snapshot.exists():
+                if snapshot.read_bytes() != config_source:
+                    raise ValueError("Resumed RL configuration cannot change")
+            else:
+                descriptor = os.open(snapshot, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(descriptor, "wb") as output:
+                    output.write(config_source)
+                    output.flush()
+                    os.fsync(output.fileno())
+        except BaseException:
+            supervisor.close()
+            raise
         receipt: dict[str, Any] = {
             "schema_version": "synth.rl.execution-supervision.v1", "run_id": run_id,
             "plan_hash": plan_hash, "deadline": supervisor.deadline.isoformat(),
+            "config_sha256": hashlib.sha256(config_source).hexdigest(),
             "execution_error": None, "worker_returncode": None,
             "host_process_cleanup": "pending", "remote_resource_cleanup": "pending",
             "remote_cleanup_reason": "worker exit does not establish remote provider absence",
@@ -38,7 +57,7 @@ def supervise_run(args: Any, *, run_id: str, plan_hash: str) -> int:
         command = [
             sys.executable, "-c",
             "import sys; from synth_optimizers.rl.cli import main; raise SystemExit(main(sys.argv[1:]))",
-            "run", "--config", str(Path(args.config).resolve()),
+            "run", "--config", str(snapshot),
             "--receipts", str(root), "--max-ticks", str(args.max_ticks),
             "--supervised-worker-deadline", supervisor.deadline.isoformat(),
         ]

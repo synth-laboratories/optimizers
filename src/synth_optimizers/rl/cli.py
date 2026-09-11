@@ -23,6 +23,7 @@ import json
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
@@ -131,6 +132,11 @@ def register(subcommands: argparse._SubParsersAction) -> None:
         help="Load and validate the configuration, print its plan hash, and start nothing.",
     )
     run.add_argument("--json", action="store_true")
+    run.add_argument("--supervision-timeout-seconds", type=float, default=86400,
+                     help="Shared host deadline including a 30-second cleanup reserve (default: 24h)")
+    run.add_argument("--supervision-max-output-bytes", type=int, default=16 * 1024 * 1024,
+                     help="Maximum merged worker log bytes; credentials are redacted before writes")
+    run.add_argument("--supervised-worker-deadline", help=argparse.SUPPRESS)
 
     evaluate = commands.add_parser(
         "evaluate", help="Paired baseline/trained evaluation of a selector."
@@ -294,12 +300,22 @@ def _run(args: argparse.Namespace) -> int:
         raise SystemExit(f"cannot read {args.config}: no such config file")
     config = load_run_config(config_path)
     plan_hash = config.expanded_plan().plan_hash
-    print(f"run {config.run_id}: plan={plan_hash} target={config.plan.target_train_updates}")
+    if args.validate_only or args.supervised_worker_deadline:
+        print(f"run {config.run_id}: plan={plan_hash} target={config.plan.target_train_updates}")
     if args.validate_only:
         print("configuration is valid; nothing was started (--validate-only)")
         return 0
     if not args.receipts:
         raise SystemExit("--receipts is required: a run that leaves no receipt is not a run")
+    if not args.supervised_worker_deadline:
+        from .supervision import supervise_run
+        return supervise_run(args, run_id=config.run_id, plan_hash=plan_hash)
+    # Only the existing worker executes the plane. It inherits the parent's
+    # immutable deadline; this marker prevents recursive parent processes.
+    from datetime import datetime
+    deadline = datetime.fromisoformat(args.supervised_worker_deadline)
+    if deadline.tzinfo is None or datetime.now(UTC) >= deadline:
+        raise SystemExit("supervised RL worker deadline already expired")
     plane = _open_plane(args, config)
     # An assembly that opened a listener and a catalog closes them when the run
     # ends, however it ends. A plane that owns nothing declares no ``close``.

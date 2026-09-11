@@ -1975,8 +1975,8 @@ wheels = [
 
 [[package]]
 name = "synth-containers"
-version = "0.4.3.dev2026091107"
-source = { path = "vendor/synth-containers/synth_containers-0.4.3.dev2026091107-py3-none-any.whl" }
+version = "0.4.3.dev2026091123"
+source = { path = "vendor/synth-containers/synth_containers-0.4.3.dev2026091123-py3-none-any.whl" }
 dependencies = [
     { name = "certifi" },
     { name = "fastapi" },
@@ -1987,7 +1987,7 @@ dependencies = [
     { name = "zstandard" },
 ]
 wheels = [
-    { filename = "synth_containers-0.4.3.dev2026091107-py3-none-any.whl", hash = "sha256:52906b24ea7a4fdf54f03d38814d5ad7da208ad084d61a57898acb1c0d22b265" },
+    { filename = "synth_containers-0.4.3.dev2026091123-py3-none-any.whl", hash = "sha256:3d8d0cb54f593351659fb50da2a0e0536ac646ac7ae12c3c5d63a9dea9d46acb" },
 ]
 
 [package.metadata]
@@ -1995,7 +1995,10 @@ requires-dist = [
     { name = "build", marker = "extra == 'dev'", specifier = ">=1.2.1" },
     { name = "certifi", specifier = ">=2024.0.0" },
     { name = "daytona", marker = "python_full_version >= '3.12' and extra == 'native-harbor-daytona'", specifier = "==0.210.0" },
+    { name = "docker", marker = "python_full_version >= '3.12' and extra == 'native-harbor-docker'", specifier = "==7.1.0" },
     { name = "fastapi", specifier = ">=0.110.0" },
+    { name = "harbor", marker = "python_full_version >= '3.12' and extra == 'native-harbor'", specifier = "==0.22.0" },
+    { name = "harbor", marker = "python_full_version >= '3.12' and extra == 'native-harbor-docker'", specifier = "==0.22.0" },
     { name = "harbor", extras = ["daytona"], marker = "python_full_version >= '3.12' and extra == 'native-harbor-daytona'", specifier = "==0.22.0" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "pydantic", specifier = ">=2.0.0" },
@@ -2006,7 +2009,7 @@ requires-dist = [
     { name = "websockets", specifier = ">=14.0" },
     { name = "zstandard", specifier = ">=0.23.0" },
 ]
-provides-extras = ["native-harbor-daytona", "dev"]
+provides-extras = ["native-harbor", "native-harbor-docker", "native-harbor-daytona", "dev"]
 
 [[package]]
 name = "synth-optimizers"
@@ -2051,7 +2054,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "renderers", marker = "extra == 'tinker'", specifier = ">=0.1.9" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6.0" },
-    { name = "synth-containers", path = "vendor/synth-containers/synth_containers-0.4.3.dev2026091107-py3-none-any.whl" },
+    { name = "synth-containers", path = "vendor/synth-containers/synth_containers-0.4.3.dev2026091123-py3-none-any.whl" },
     { name = "tinker", marker = "extra == 'tinker'" },
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.32" },
     { name = "websocket-client", specifier = ">=1.8.0" },

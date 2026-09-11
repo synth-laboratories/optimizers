@@ -1,0 +1,6 @@
+{
+  "source_commit": "e69de603fde6bd95dcc142da9233f14c74df97b6",
+  "sha256": "3d8d0cb54f593351659fb50da2a0e0536ac646ac7ae12c3c5d63a9dea9d46acb",
+  "qualification": "not_run",
+  "consumer": "existing RL HTTP worker supervision"
+}

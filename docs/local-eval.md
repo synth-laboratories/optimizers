@@ -104,6 +104,23 @@ lease store per home, shared by every worker process, so the ceiling belongs to
 the machine rather than to whichever run started first. A lease whose owner died
 or whose heartbeat lapsed is reclaimed by the next acquirer.
 
+## Reconnect to a local run
+
+```bash
+synth-optimizers eval events --home /path/to/eval-home --run-id RUN_ID
+synth-optimizers eval events --home /path/to/eval-home --run-id RUN_ID --after-sequence 12
+synth-optimizers eval events --home /path/to/eval-home --run-id RUN_ID --follow --timeout-seconds 300
+```
+
+Replay returns a bounded page with `events`, `next_sequence`, `high_water` and
+`has_more`. Follow emits the original worker event schema as flushed JSON lines;
+save the last processed `seq` to reconnect. Both read the append-first shared
+operator journal. Observation neither creates a home nor depends on runtime
+configuration, results indexes, Docker or provider credentials. Viewer exit does
+not cancel the worker. Corrupt history, foreign run identity and future cursors
+fail explicitly. The reader caps local custody at 64 MiB; large runs need an
+indexed/hosted reader. Child traces remain separate evidence references.
+
 ## Operating it
 
 ```bash

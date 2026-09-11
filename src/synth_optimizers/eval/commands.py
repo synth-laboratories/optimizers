@@ -68,6 +68,14 @@ def register(subcommands: argparse._SubParsersAction) -> None:
     worker = commands.add_parser("worker", help="Execute one sealed eval run.")
     worker.add_argument("--manifest", required=True, help="App-owned worker manifest path.")
 
+    events = commands.add_parser("events", help="Replay or follow committed local eval events.")
+    events.add_argument("--home", required=True)
+    events.add_argument("--run-id", required=True)
+    events.add_argument("--after-sequence", type=int, default=0)
+    events.add_argument("--limit", type=int, default=100)
+    events.add_argument("--follow", action="store_true")
+    events.add_argument("--timeout-seconds", type=float, default=300)
+
     cancel = commands.add_parser("cancel", help="Ask a running worker to stop and seal.")
     cancel.add_argument("--home", required=True)
     cancel.add_argument("--run-id", required=True)
@@ -75,6 +83,8 @@ def register(subcommands: argparse._SubParsersAction) -> None:
 
 def dispatch(args: argparse.Namespace) -> int:
     command = args.eval_command
+    if command == "events":
+        return _events(args)
     if command == "recipes":
         return _recipes(args)
     if command == "doctor":
@@ -93,6 +103,42 @@ def dispatch(args: argparse.Namespace) -> int:
         print(f"cancellation requested for {args.run_id}")
         return 0
     raise SystemExit(f"unknown eval command {command}")
+
+
+def _events(args: argparse.Namespace) -> int:
+    from synth_containers.operator_journal import follow_operator_events, read_operator_events
+
+    from .models import _identifier
+
+    try:
+        run_id = _identifier(args.run_id, field_name="run_id")
+        runs = (Path(args.home).expanduser() / "runs").resolve()
+        path = (runs / run_id / "events.jsonl").resolve()
+        if not path.is_relative_to(runs):
+            raise EvalContractError("eval event journal escapes the run home")
+        # A known run remains observable even if runtime config or result indexes
+        # are broken. Observation must not initialize a new home or read secrets.
+        if args.follow:
+            for event in follow_operator_events(
+                path,
+                run_id=run_id,
+                after_sequence=args.after_sequence,
+                limit=args.limit,
+                timeout_seconds=args.timeout_seconds,
+            ):
+                print(json.dumps(event, sort_keys=True), flush=True)
+        else:
+            page = read_operator_events(
+                path,
+                run_id=run_id,
+                after_sequence=args.after_sequence,
+                limit=args.limit,
+            )
+            print(json.dumps(page, sort_keys=True))
+        return 0
+    except (ValueError, OSError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
 
 
 def _recipes(args: argparse.Namespace) -> int:

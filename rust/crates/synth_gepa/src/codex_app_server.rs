@@ -216,12 +216,13 @@ pub(crate) fn run_deepseek_chat_proposer(input: CodexProposerInput<'_>) -> Resul
             }
         ],
         "response_format": {"type": "json_object"},
-        // Keep OpenRouter-compatible requests inside common 128k context windows.
-        // Two GEPA proposals fit comfortably in 8k while 32k can make the
-        // provider reject otherwise-valid evidence packets before generation.
-        "max_tokens": CHAT_COMPLETIONS_PROPOSER_MAX_TOKENS,
         "stream": false
     });
+    // OpenAI's current reasoning models reject the legacy `max_tokens` key.
+    // Other OpenAI-compatible providers still use it, so choose the wire field
+    // from the declared provider instead of guessing from a model name.
+    request[chat_completions_token_limit_field(&provider)] =
+        json!(CHAT_COMPLETIONS_PROPOSER_MAX_TOKENS);
     // DeepSeek-specific switch that suppresses its reasoning channel so `content` is the
     // bare JSON manifest. NVIDIA rejects unknown request fields, so only send it for DeepSeek.
     if deepseek_thinking {
@@ -349,6 +350,14 @@ fn deepseek_chat_prompt(input: &CodexProposerInput<'_>) -> Result<String> {
     Ok(prompt)
 }
 
+fn chat_completions_token_limit_field(provider: &str) -> &'static str {
+    if provider == "openai" {
+        "max_completion_tokens"
+    } else {
+        "max_tokens"
+    }
+}
+
 fn post_deepseek_chat_completion(
     client: &Client,
     base_url: &str,
@@ -402,7 +411,14 @@ fn write_deepseek_chat_artifacts(
         &json!({
             "model": request.get("model"),
             "message_count": request.get("messages").and_then(Value::as_array).map(Vec::len),
-            "max_tokens": request.get("max_tokens"),
+            "max_tokens": request
+                .get("max_completion_tokens")
+                .or_else(|| request.get("max_tokens")),
+            "max_tokens_field": if request.get("max_completion_tokens").is_some() {
+                "max_completion_tokens"
+            } else {
+                "max_tokens"
+            },
             "response_format": request.get("response_format"),
             "thinking": request.get("thinking"),
         }),

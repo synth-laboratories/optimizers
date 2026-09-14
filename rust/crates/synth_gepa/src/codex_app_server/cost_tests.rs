@@ -1,6 +1,19 @@
 use super::*;
 
 #[test]
+fn openai_chat_completions_use_the_current_token_limit_field() {
+    assert_eq!(
+        chat_completions_token_limit_field("openai"),
+        "max_completion_tokens"
+    );
+    assert_eq!(
+        chat_completions_token_limit_field("openrouter"),
+        "max_tokens"
+    );
+    assert_eq!(chat_completions_token_limit_field("deepseek"), "max_tokens");
+}
+
+#[test]
 fn chatgpt_proposer_emits_explicit_zero_incremental_api_cost() {
     let mut config = SynthOptimizerConfig::default();
     config.proposer.auth_mode = "chatgpt".to_string();

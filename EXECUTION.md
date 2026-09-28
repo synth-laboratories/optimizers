@@ -35,10 +35,10 @@ Use `uv run python -m pytest`, never `uv run pytest`.
 
 `pyproject.toml` pins `synth-containers==0.4.1.dev20260814` via
 `[tool.uv.sources] rev = "e76f8e4ba3edae10dec24bf9e71ec1a7fb332bed"`.
-(Stale as of the `0.2.22` candidate: `pyproject.toml` now pins
-`synth-containers==0.4.2`, and `[tool.uv.sources]` resolves it from the vendored
-wheel under `vendor/synth-containers/` rather than a git rev. Containers `0.4.2`
-is also published on PyPI as of 2026-09-09, so the rev-bump ritual below no
+(Stale as of the `0.2.22` release: `pyproject.toml` now pins
+`synth-containers==0.4.3`, and `[tool.uv.sources]` resolves it from the vendored
+wheel under `vendor/synth-containers/` rather than a git rev. Containers `0.4.3`
+is published on PyPI with the same wheel bytes, so the rev-bump ritual below no
 longer applies.) Every containers
 change in this campaign (provider admission, `/compatibility` on the platform app,
 `TokenCaptureV5` extension) requires bumping that rev here. The containers work is a

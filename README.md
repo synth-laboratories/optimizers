@@ -73,7 +73,8 @@ pip install synth-optimizers
 uv add synth-optimizers
 ```
 
-This source targets `synth-optimizers==0.2.22` with `synth-containers==0.4.2`.
+This source targets `synth-optimizers==0.2.22` with `synth-containers==0.4.3`
+(the pair pinned in `pyproject.toml`/`uv.lock` and published together on PyPI).
 For an unpublished candidate, build from a checkout as shown below; published
 versions are listed on PyPI.
 
@@ -145,7 +146,7 @@ Runnable task examples are **not in this repository**. They live in the separate
 public repo
 [`synth-laboratories/synth-cookbooks-public`](https://github.com/synth-laboratories/synth-cookbooks-public/tree/main/cookbooks/optimizers/gepa)
 — Banking77, HotpotQA, MiniGrid, and Crafter. TBLite is optional evaluation
-infrastructure. HealthBench is parked because Containers 0.4.2 does not include
+infrastructure. HealthBench is parked because Containers 0.4.3 does not include
 its runtime. Config-relative paths resolve against the config file's directory.
 Follow the selected cookbook's setup instructions before launching:
 

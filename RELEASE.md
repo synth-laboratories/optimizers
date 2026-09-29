@@ -1,5 +1,17 @@
 # Release: synth-optimizers
 
+## Local 0.2.23 candidate — not published
+
+The 2026-09-29 candidate depends on the locally built Containers `0.4.4`
+artifact from commit `10b5507`. The vendored wheel SHA-256 is
+`398fecb9185c88f2647cec46c3e1d81f8112d73640d2855cec767a6568f43650`.
+This wheel is qualification evidence, not a claim that `0.4.4` is on PyPI.
+Before publication or stable promotion, publish the qualified Containers
+artifact with release-owner authorization, download it from PyPI, and require
+its hash to match before rerunning the consumer install checks. Python and
+Rust candidate versions both use `0.2.23`; the published versions described
+below remain unchanged. No publishing workflows were restored.
+
 Published stable: `0.2.22`, depending on Containers
 `0.4.3`. Rust and Python package versions must agree — `pyproject.toml` and
 `Cargo.toml` `[workspace.package]` both read `0.2.22`.

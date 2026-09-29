@@ -1,6 +1,6 @@
 [project]
 name = "synth-optimizers"
-version = "0.2.22"
+version = "0.2.23"
 description = "Public Synth optimizer tooling with a Rust GEPA core."
 authors = [{name = "Synth Laboratories", email = "josh@usesynth.ai"}]
 readme = "README.md"
@@ -8,7 +8,7 @@ requires-python = ">=3.11"
 license = "Apache-2.0"
 dependencies = [
     "pydantic>=2.0.0",
-    "synth-containers==0.4.3",
+    "synth-containers==0.4.4",
     "websocket-client>=1.8.0",
 ]
 
@@ -67,7 +67,7 @@ package = true
 
 [tool.uv.sources]
 # Coordinated-release candidate; no sibling checkout is required by uv users.
-synth-containers = { path = "vendor/synth-containers/synth_containers-0.4.3-py3-none-any.whl" }
+synth-containers = { path = "vendor/synth-containers/synth_containers-0.4.4-py3-none-any.whl" }
 
 [tool.ruff]
 line-length = 100

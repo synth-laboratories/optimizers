@@ -65,10 +65,6 @@ include = ["src/synth_optimizers/docs/**/*", "src/synth_optimizers/eval/catalog/
 [tool.uv]
 package = true
 
-[tool.uv.sources]
-# Coordinated-release candidate; no sibling checkout is required by uv users.
-synth-containers = { path = "vendor/synth-containers/synth_containers-0.4.4-py3-none-any.whl" }
-
 [tool.ruff]
 line-length = 100
 target-version = "py311"

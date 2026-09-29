@@ -3,8 +3,8 @@
 ## Local 0.2.23 candidate — not published
 
 The 2026-09-29 candidate depends on the locally built Containers `0.4.4`
-artifact from commit `10b5507`. The vendored wheel SHA-256 is
-`398fecb9185c88f2647cec46c3e1d81f8112d73640d2855cec767a6568f43650`.
+artifact from commit `aa83dda`. The vendored wheel SHA-256 is
+`fb226fa105f057078217d9058bdee622ee08e6792c199c9cba47364d7742c909`.
 This wheel is qualification evidence, not a claim that `0.4.4` is on PyPI.
 Before publication or stable promotion, publish the qualified Containers
 artifact with release-owner authorization, download it from PyPI, and require

@@ -663,10 +663,13 @@ impl<'a> GepaRuntimeExecutor<'a> {
         }
         let reported_cost_usd = response
             .get("usage")
-            .and_then(|usage| usage.get("cost_usd"))
-            .or_else(|| response.get("cost_usd"))
-            .and_then(Value::as_f64)
-            .filter(|value| value.is_finite() && *value > 0.0)
+            .and_then(proposer_reported_cost_usd)
+            .or_else(|| {
+                response
+                    .get("cost_usd")
+                    .and_then(Value::as_f64)
+                    .filter(|value| value.is_finite() && *value > 0.0)
+            })
             .or_else(|| proposer_static_cost_usd(self.config, &usage, &response));
         let cost_usd = reported_cost_usd.unwrap_or(0.0);
         let backend = response
@@ -933,6 +936,17 @@ impl<'a> GepaRuntimeExecutor<'a> {
             RuntimeRolloutBatchOutcome { outcomes, failures },
         ))
     }
+}
+
+/// Provider-reported proposer spend from a usage payload. `cost_usd` is the normalized
+/// field; OpenRouter reports the same amount as `cost`.
+fn proposer_reported_cost_usd(usage: &Value) -> Option<f64> {
+    ["cost_usd", "cost"].into_iter().find_map(|key| {
+        usage
+            .get(key)
+            .and_then(Value::as_f64)
+            .filter(|value| value.is_finite() && *value > 0.0)
+    })
 }
 
 fn proposer_static_cost_usd(
@@ -1664,6 +1678,22 @@ mod cost_tests {
         normalize_rollout_cost("openai", "gpt-4.1-nano", &mut response);
         assert_eq!(response.pointer("/usage/cost_usd"), Some(&json!(0.73)));
         assert!(response.pointer("/usage/cost_source").is_none());
+    }
+
+    #[test]
+    fn proposer_reads_openrouter_usage_cost() {
+        assert_eq!(
+            proposer_reported_cost_usd(&json!({"total_tokens": 43254, "cost": 0.0123})),
+            Some(0.0123)
+        );
+        assert_eq!(
+            proposer_reported_cost_usd(&json!({"cost_usd": 0.02, "cost": 0.0123})),
+            Some(0.02)
+        );
+        assert_eq!(
+            proposer_reported_cost_usd(&json!({"total_tokens": 10})),
+            None
+        );
     }
 
     #[test]

@@ -6955,6 +6955,11 @@ fn advance_pending_runtime_job(
                                 ),
                             });
                         }
+                        if let Some(message) =
+                            post_completion_runtime_error_message(&updated_job.status, &error)
+                        {
+                            return terminalize_aborted_gepa_run(context, state, &error, message);
+                        }
                         if updated_job.status.is_terminal() {
                             if let Some(outcome) = schedule_failed_rollout_retry_if_allowed(
                                 context,
@@ -7120,6 +7125,74 @@ fn advance_pending_runtime_job(
                 job.status.as_str()
             ),
         }),
+    }
+}
+
+/// A runtime executor can mark its job `completed` and then fail a post-completion
+/// check, such as the budget ledger breach raised by `record_runtime_effect_completed`.
+/// The job row then looks successful, so treating it as an ordinary terminal job would
+/// report "GEPA runtime job … completed" and drop the actual error. Return the terminal
+/// message to use when the error must become the run's failure reason.
+fn post_completion_runtime_error_message(
+    status: &OptimizerJobStatus,
+    error: &OptimizerError,
+) -> Option<&'static str> {
+    if !matches!(status, OptimizerJobStatus::Completed) {
+        return None;
+    }
+    Some(
+        terminal_message_for_run_loop_error(error)
+            .unwrap_or("GEPA runtime job failed after completion"),
+    )
+}
+
+#[cfg(test)]
+mod post_completion_runtime_error_tests {
+    use super::*;
+
+    fn budget_breach() -> OptimizerError {
+        OptimizerError::BudgetExceeded {
+            run_id: "gepa_post_completion".to_string(),
+            limit: "max_cost_usd".to_string(),
+            requested: "unknown_cost".to_string(),
+            available: "0.5".to_string(),
+        }
+    }
+
+    #[test]
+    fn budget_breach_after_completed_job_is_the_run_failure() {
+        let error = budget_breach();
+        assert_eq!(
+            post_completion_runtime_error_message(&OptimizerJobStatus::Completed, &error),
+            Some("GEPA budget exhausted")
+        );
+        assert_eq!(error.error_code(), "synth_optimizer_budget_exceeded");
+        let rendered = error.to_string();
+        assert!(rendered.contains("max_cost_usd"), "{rendered}");
+        assert!(rendered.contains("unknown_cost"), "{rendered}");
+    }
+
+    #[test]
+    fn other_errors_after_completed_job_are_not_swallowed() {
+        let error = OptimizerError::Container("ledger write failed".to_string());
+        assert_eq!(
+            post_completion_runtime_error_message(&OptimizerJobStatus::Completed, &error),
+            Some("GEPA runtime job failed after completion")
+        );
+    }
+
+    #[test]
+    fn failed_or_cancelled_jobs_keep_the_failed_job_path() {
+        let error = budget_breach();
+        for status in [
+            OptimizerJobStatus::Failed,
+            OptimizerJobStatus::Cancelled,
+            OptimizerJobStatus::Expired,
+            OptimizerJobStatus::RetryScheduled,
+            OptimizerJobStatus::Pending,
+        ] {
+            assert_eq!(post_completion_runtime_error_message(&status, &error), None);
+        }
     }
 }
 

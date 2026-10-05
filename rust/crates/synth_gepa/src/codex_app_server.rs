@@ -553,6 +553,7 @@ fn normalize_proposer_usage(config: &SynthOptimizerConfig, model: &str, usage: V
     let Some(mut usage_map) = usage.as_object().cloned() else {
         return usage;
     };
+    promote_provider_reported_cost(&mut usage_map);
     let provider = config.proposer.provider.trim().to_ascii_lowercase();
     let model_lower = model.trim().to_ascii_lowercase();
     let reported_cost = usage_f64_from_map(&usage_map, "cost_usd")
@@ -591,6 +592,27 @@ fn normalize_proposer_usage(config: &SynthOptimizerConfig, model: &str, usage: V
         return Value::Object(usage_map);
     }
     Value::Object(usage_map)
+}
+
+/// OpenRouter reports the billed amount as `usage.cost` (USD). Other providers and
+/// earlier normalization use `usage.cost_usd`. Copy a finite, non-negative `cost`
+/// into `cost_usd` when `cost_usd` is absent so the budget ledger sees a known cost.
+fn promote_provider_reported_cost(usage_map: &mut Map<String, Value>) {
+    let has_cost_usd = usage_f64_from_map(usage_map, "cost_usd")
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .is_some();
+    if has_cost_usd {
+        return;
+    }
+    let Some(cost) =
+        usage_f64_from_map(usage_map, "cost").filter(|value| value.is_finite() && *value >= 0.0)
+    else {
+        return;
+    };
+    usage_map.insert("cost_usd".to_string(), json!(cost));
+    usage_map
+        .entry("cost_source".to_string())
+        .or_insert_with(|| Value::String("provider_usage_cost".to_string()));
 }
 
 fn normalize_openrouter_grok43_usage(model: &str, mut usage_map: Map<String, Value>) -> Value {
@@ -3375,5 +3397,50 @@ fn non_empty(value: Option<&str>) -> Option<&str> {
         None
     } else {
         Some(value)
+    }
+}
+
+#[cfg(test)]
+mod proposer_usage_cost_tests {
+    use super::*;
+
+    fn promoted(usage: Value) -> Map<String, Value> {
+        let mut map = usage.as_object().cloned().unwrap();
+        promote_provider_reported_cost(&mut map);
+        map
+    }
+
+    #[test]
+    fn openrouter_usage_cost_becomes_cost_usd() {
+        let map = promoted(json!({
+            "prompt_tokens": 40000,
+            "completion_tokens": 3254,
+            "total_tokens": 43254,
+            "cost": 0.0157
+        }));
+        assert_eq!(map.get("cost_usd"), Some(&json!(0.0157)));
+        assert_eq!(map.get("cost_source"), Some(&json!("provider_usage_cost")));
+    }
+
+    #[test]
+    fn openrouter_string_cost_is_parsed() {
+        let map = promoted(json!({"cost": "0.004"}));
+        assert_eq!(map.get("cost_usd"), Some(&json!(0.004)));
+    }
+
+    #[test]
+    fn existing_cost_usd_wins_over_cost() {
+        let map = promoted(json!({"cost_usd": 0.02, "cost": 0.0157}));
+        assert_eq!(map.get("cost_usd"), Some(&json!(0.02)));
+        assert!(map.get("cost_source").is_none());
+    }
+
+    #[test]
+    fn missing_or_invalid_cost_stays_unknown() {
+        assert!(promoted(json!({"total_tokens": 10}))
+            .get("cost_usd")
+            .is_none());
+        assert!(promoted(json!({"cost": -1.0})).get("cost_usd").is_none());
+        assert!(promoted(json!({"cost": "n/a"})).get("cost_usd").is_none());
     }
 }

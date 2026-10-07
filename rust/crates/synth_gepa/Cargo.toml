@@ -6,6 +6,10 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 
+[[bin]]
+name = "synth-gepa-run"
+path = "src/bin/run.rs"
+
 [dependencies]
 base64.workspace = true
 fs2.workspace = true

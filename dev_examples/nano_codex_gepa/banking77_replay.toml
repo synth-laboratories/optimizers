@@ -11,7 +11,7 @@ command = [
   "BANKING77_TEST_SAMPLE=4",
   "BANKING77_POLICY_CONCURRENCY=4",
   "BANKING77_POLICY_MODEL=gpt-4.1-nano",
-  "BANKING77_POLICY_API_KEY_ENV=OPENAI_API_KEY",
+  "BANKING77_POLICY_API_KEY_ENV=SYNTH_GATEWAY_SESSION_TOKEN",
   "uv", "run", "--project", "banking77_container",
   "python", "banking77_container/synth_service_app.py",
   "--host", "127.0.0.1", "--port", "8875",
@@ -34,7 +34,7 @@ stage2_system = "Classify the customer banking query into exactly one Banking77 
 [policy]
 provider = "openai"
 model = "gpt-4.1-nano"
-api_key_env = "OPENAI_API_KEY"
+gateway_session = "gateway-session://env"
 max_tokens = 16
 
 [proposer]

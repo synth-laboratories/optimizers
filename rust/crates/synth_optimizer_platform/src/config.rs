@@ -1423,7 +1423,7 @@ pub fn resolve_chatgpt_codex_home_source(proposer: &ProposerConfig) -> Result<Pa
 fn validate_proposer_auth_config(proposer: &ProposerConfig) -> Result<()> {
     let auth_mode = proposer_auth_mode_normalized(&proposer.auth_mode);
     match auth_mode.as_str() {
-        "auto" | "api_key" | "chatgpt" => {}
+        "auto" | "api_key" | "gateway_session" | "chatgpt" => {}
         mode => {
             return Err(OptimizerError::Config(format!(
                 "unsupported proposer.auth_mode {mode:?}; expected auto, api_key, or chatgpt \
@@ -1543,76 +1543,16 @@ fn validate_openrouter_proposer_config(proposer: &ProposerConfig) -> Result<()> 
     if !proposer.provider.eq_ignore_ascii_case("openrouter") {
         return Ok(());
     }
-    let model = proposer
-        .model
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| {
-            OptimizerError::Config(
-                "proposer.provider = \"openrouter\" requires proposer.model".to_string(),
-            )
-        })?;
-    // Curated allowlist of first-class OpenRouter proposers (verified, with a
-    // known static price). Any other slug requires the explicit
-    // proposer.allow_unverified_model opt-in, after which OpenRouter validates
-    // the slug and cost flows through from its reported usage.
-    const VERIFIED_OPENROUTER_MODELS: [&str; 1] = ["x-ai/grok-4.3"];
-    let normalized_model = model.trim().to_ascii_lowercase();
-    if !proposer.allow_unverified_model
-        && !VERIFIED_OPENROUTER_MODELS.contains(&normalized_model.as_str())
-    {
-        return Err(OptimizerError::Config(format!(
-            "OpenRouter proposer.model {model:?} is not in the verified allowlist ({}); \
-             set proposer.allow_unverified_model = true to use any OpenRouter model",
-            VERIFIED_OPENROUTER_MODELS.join(", ")
-        )));
-    }
-    if proposer.backend != "codex_app_server" {
-        return Err(OptimizerError::Config(
-            "OpenRouter proposer requires proposer.backend = \"codex_app_server\"".to_string(),
-        ));
-    }
-    let auth_mode = proposer_auth_mode_normalized(&proposer.auth_mode);
-    if !matches!(auth_mode.as_str(), "api_key" | "auto") {
-        return Err(OptimizerError::Config(
-            "OpenRouter proposer requires proposer.auth_mode = \"api_key\" or \"auto\"".to_string(),
-        ));
-    }
-    let api_key_env = proposer
-        .api_key_env
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| {
-            OptimizerError::Config(
-                "OpenRouter proposer requires proposer.api_key_env, usually OPENROUTER_API_KEY"
-                    .to_string(),
-            )
-        })?;
-    if api_key_env == "OPENAI_API_KEY" {
-        return Err(OptimizerError::Config(
-            "OpenRouter proposer must not use OPENAI_API_KEY; set \
-             proposer.api_key_env = \"OPENROUTER_API_KEY\""
-                .to_string(),
-        ));
-    }
-    let api_family = normalize_enum_value(&proposer.api_family);
-    if !matches!(api_family.as_str(), "chat_completions" | "responses") {
-        return Err(OptimizerError::Config(format!(
-            "OpenRouter proposer supports chat_completions or responses; got {:?}",
-            proposer.api_family
-        )));
-    }
-    if let Some(reasoning_effort) = proposer.reasoning_effort.as_deref() {
-        let normalized_effort = normalize_enum_value(reasoning_effort);
-        if !matches!(
-            normalized_effort.as_str(),
-            "none" | "low" | "medium" | "high"
-        ) {
-            return Err(OptimizerError::Config(format!(
-                "OpenRouter proposer.reasoning_effort must be none, low, medium, \
-                 or high; got {reasoning_effort:?}"
-            )));
-        }
+    // The session issuer owns model/pricing admission; provider labels are descriptive.
+    let handle = if proposer.backend == "codex_app_server" {
+        proposer.gateway_session.as_deref()
+    } else {
+        proposer.base_url.as_deref()
+    }.ok_or_else(|| OptimizerError::Config("OpenRouter proposer requires a scoped gateway session".into()))?;
+    synth_gateway_client::SessionHandle::parse(handle)
+        .map_err(|error| OptimizerError::Config(error.to_string()))?;
+    if proposer.api_key_env.is_some() {
+        return Err(OptimizerError::Config("gateway proposer cannot carry provider credential env refs".into()));
     }
     Ok(())
 }
@@ -2952,6 +2892,14 @@ mod tests {
         let mut direct = policy;
         direct.base_url = Some("https://example.com".into());
         assert!(validate_policy_config(&direct).is_err());
+    }
+
+    #[test]
+    fn scoped_native_auth_accepts_gateway_mode_without_provider_key() {
+        let proposer = ProposerConfig { provider: "openrouter".into(), auth_mode: "gateway_session".into(),
+            gateway_session: Some("gateway-session://env".into()), ..ProposerConfig::default() };
+        validate_proposer_auth_config(&proposer).unwrap();
+        validate_openrouter_proposer_config(&proposer).unwrap();
     }
 
     #[test]

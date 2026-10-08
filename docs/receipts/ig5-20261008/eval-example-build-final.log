@@ -1,0 +1,5 @@
+{"schema": "core-build-admission.v1", "status": "admitted", "mode": "build", "owner_pid": 94776, "lane": null, "required_bytes": 21474836480, "available_bytes": 57326133248, "authority_root": "/Users/joshuapurtell/GitHub/worktrees/core-dev-finish-handoff-20261003"}
+   Compiling synth_optimizer_platform v0.2.5 (/Users/joshuapurtell/GitHub/worktrees/optimizers-ig5-20261008/rust/crates/synth_optimizer_platform)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.12s
+mbx[cache]: 0 hits, 0 misses, 1 not looked up, 1 incremental; 0 B downloaded, 0 B uploaded, 0 B stored locally
+mbx[savings]: 1.5 TiB logical of old build output has been shown the door.

@@ -4,15 +4,15 @@ use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write as IoWrite};
 use std::path::{Path, PathBuf};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use synth_optimizer_platform::limits::{
     BudgetCommitInput, BudgetCommitRecord, BudgetLimitBreach, BudgetReleaseInput,
@@ -20,29 +20,29 @@ use synth_optimizer_platform::limits::{
     RuntimeEffectAdmissionInput, RuntimeEffectAdmissionRecord, RuntimeEffectBudgetEstimate,
 };
 use synth_optimizer_platform::{
-    budget_limit_engine_input, container_child_eval_ref, fold_reported_cost, normalize_event_feed,
-    proposer_delta_chunks_from_response, stable_json_hash, task_identity, write_run_storage_report,
     ArtifactPaths, ArtifactRef, CacheMode, CacheProfileRecord, CandidateOverlay, CheckpointInput,
     CheckpointRecord, CheckpointSummaryRecord, ConfiguredGepaRunLimits, ContainerClient,
     ContainerContractSnapshotInput, ContainerContractSnapshotRecord, DiskBudget,
     EvaluationCacheRecord, EvaluationCacheRecordInput, EventStreamRecord, EventWriter,
     EvidenceFrame, FailurePayload, ForecastConfidence, GepaBatchSamplerConfig,
     GepaCandidateSelectorConfig, GepaObjectiveAcceptanceConfig, GepaPipelineMode, GepaRunResult,
-    LeverBundle, LeverKind, LeverManifest, LimitDefinition, LimitEngine, LimitEngineInput,
-    LimitForecast, LimitKind, LimitObservation, LimitSnapshot, LimitStatus,
-    ManagedContainerProcess, MaterializationRecord, MaterializationRecordInput, ObjectiveScore,
-    ObjectiveSetRecord, ObjectiveSpec, OptimizerError, OptimizerJob, OptimizerJobKind,
-    OptimizerJobStatus, OptimizerRunState, OptimizerStateMachine, OptimizerTransition,
-    OptimizerTransitionTrigger, ParetoComparisonRecord, PlanLinkInput, PlanLinkRecord,
-    PromptCandidatePayload, PromptProgram, PromptProgramSnapshotInput, PromptProgramSnapshotRecord,
-    RequestCache, ResolvedRunConfigInput, ResolvedRunConfigRecord, Result, RetryPolicy,
-    RolloutMaterializationIdentity, RunArtifactStore, RunPhaseTimingInput, RunRegistry,
-    RunRegistryEntry, RunStorageInspectionInput, RuntimeEffectInput, RuntimeEffectRecord,
-    ScoreRecord, ScoreVectorRecord, SensorFrame, StateMachineEntity, StopperStateInput,
-    StopperStateRecord, SynthOptimizerConfig, TasksetResponse, TasksetSnapshotInput,
-    TasksetSnapshotRecord, TasksetTasksRequest, TasksetTasksResponse, TransitionInput,
-    TransitionLog, TransitionSink, UsageLedgerInput, UsageLedgerRecord, WorkspaceStore,
-    LIMIT_ENGINE_SCHEMA_VERSION,
+    LIMIT_ENGINE_SCHEMA_VERSION, LeverBundle, LeverKind, LeverManifest, LimitDefinition,
+    LimitEngine, LimitEngineInput, LimitForecast, LimitKind, LimitObservation, LimitSnapshot,
+    LimitStatus, ManagedContainerProcess, MaterializationRecord, MaterializationRecordInput,
+    ObjectiveScore, ObjectiveSetRecord, ObjectiveSpec, OptimizerError, OptimizerJob,
+    OptimizerJobKind, OptimizerJobStatus, OptimizerRunState, OptimizerStateMachine,
+    OptimizerTransition, OptimizerTransitionTrigger, ParetoComparisonRecord, PlanLinkInput,
+    PlanLinkRecord, PromptCandidatePayload, PromptProgram, PromptProgramSnapshotInput,
+    PromptProgramSnapshotRecord, RequestCache, ResolvedRunConfigInput, ResolvedRunConfigRecord,
+    Result, RetryPolicy, RolloutMaterializationIdentity, RunArtifactStore, RunPhaseTimingInput,
+    RunRegistry, RunRegistryEntry, RunStorageInspectionInput, RuntimeEffectInput,
+    RuntimeEffectRecord, ScoreRecord, ScoreVectorRecord, SensorFrame, StateMachineEntity,
+    StopperStateInput, StopperStateRecord, SynthOptimizerConfig, TasksetResponse,
+    TasksetSnapshotInput, TasksetSnapshotRecord, TasksetTasksRequest, TasksetTasksResponse,
+    TransitionInput, TransitionLog, TransitionSink, UsageLedgerInput, UsageLedgerRecord,
+    WorkspaceStore, budget_limit_engine_input, container_child_eval_ref, fold_reported_cost,
+    normalize_event_feed, proposer_delta_chunks_from_response, stable_json_hash, task_identity,
+    write_run_storage_report,
 };
 
 mod codex_app_server;
@@ -67,11 +67,11 @@ use pipeline::{
     GepaStaleItemDisposition, GepaSyncSerialPlan,
 };
 use planner::{
-    GepaAdaptiveRolloutConcurrencyAdjustment, GepaAdaptiveStageWorkersAdjustment,
-    GepaAsyncCandidatePartial, GepaAsyncLaneLease, GepaAsyncLaneWorkItem, GepaCursor,
-    GepaCursorPhase, GepaRolloutChunkPartial, GepaRolloutCircuitBreaker, GepaRolloutFailureSample,
-    GepaRolloutResilienceState, GepaSpeculativeReleaseRecord, GepaStalenessReviewRecord,
-    GEPA_CURSOR_CHECKPOINT_KIND,
+    GEPA_CURSOR_CHECKPOINT_KIND, GepaAdaptiveRolloutConcurrencyAdjustment,
+    GepaAdaptiveStageWorkersAdjustment, GepaAsyncCandidatePartial, GepaAsyncLaneLease,
+    GepaAsyncLaneWorkItem, GepaCursor, GepaCursorPhase, GepaRolloutChunkPartial,
+    GepaRolloutCircuitBreaker, GepaRolloutFailureSample, GepaRolloutResilienceState,
+    GepaSpeculativeReleaseRecord, GepaStalenessReviewRecord,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2426,7 +2426,14 @@ fn open_gepa_run_context(
 }
 
 fn ensure_container_inputs(context: &mut GepaRunContext) -> Result<GepaContainerInputs> {
-    let container_process = ManagedContainerProcess::maybe_start(&context.config.container)?;
+    let container_process = if context.config.policy.local_key_env.is_some() {
+        ManagedContainerProcess::maybe_start(&context.config.container)?
+    } else {
+        ManagedContainerProcess::maybe_start_with_gateway(
+            &context.config.container,
+            &context.config.policy,
+        )?
+    };
     let container_url = context
         .config
         .container
@@ -7386,11 +7393,13 @@ fn emit_runtime_job_completed_event(
             );
             fields.insert(
                 "failed_example_ids".to_string(),
-                json!(outcomes
-                    .failures
-                    .iter()
-                    .map(|failure| failure.example_id.as_str())
-                    .collect::<Vec<_>>()),
+                json!(
+                    outcomes
+                        .failures
+                        .iter()
+                        .map(|failure| failure.example_id.as_str())
+                        .collect::<Vec<_>>()
+                ),
             );
             fields.insert("model".to_string(), json!(&context.config.policy.model));
             fields.insert("rollout_count".to_string(), json!(rollout_count));
@@ -8816,7 +8825,7 @@ fn plan_rollout_runtime_batch_job_for_candidates(
                 "candidate": overlay.candidate.to_value(),
                 "candidate_overlay": overlay,
                 "prompt_assertions": prompt_assertions,
-                "policy": rollout_policy_for_request(&context.config),
+                "policy": rollout_policy_for_request(&context.config)?,
                 "task": row,
                 "metadata": {
                     "candidate_id": group.candidate.candidate_id,
@@ -8930,11 +8939,11 @@ fn rollout_submission_mode_for_request(config: &SynthOptimizerConfig) -> String 
     }
 }
 
-fn rollout_policy_for_request(config: &SynthOptimizerConfig) -> Value {
+fn rollout_policy_for_request(config: &SynthOptimizerConfig) -> Result<Value> {
     if config.policy.enabled {
-        json!(&config.policy)
+        config.policy.sandbox_wire_config()
     } else {
-        Value::Null
+        Ok(Value::Null)
     }
 }
 
@@ -10017,7 +10026,7 @@ fn record_rollout_materialization_from_outcome(
         "candidate": overlay.candidate.to_value(),
         "candidate_overlay": overlay,
         "prompt_assertions": prompt_assertions,
-        "policy": rollout_policy_for_request(&context.config),
+        "policy": rollout_policy_for_request(&context.config)?,
         "task": row,
         "metadata": {
                 "candidate_id": candidate.candidate_id,
@@ -10301,9 +10310,11 @@ mod child_evaluation_resource_ref_tests {
     fn rejects_rollout_without_declared_stream() {
         let response = response(json!({"rollout_id": "roll_123", "reward": 1.0}));
         let error = child_evaluation_resource_ref(&response).unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("omitted its declared stream descriptor"));
+        assert!(
+            error
+                .to_string()
+                .contains("omitted its declared stream descriptor")
+        );
     }
 }
 
@@ -10313,8 +10324,8 @@ mod proposer_delta_producer_tests {
     use serde_json::json;
     use std::time::{SystemTime, UNIX_EPOCH};
     use synth_optimizer_platform::{
-        proposer_delta_chunks_from_response, ObservationOptimizerAlgorithm, OptimizerEvent,
-        PROPOSER_DELTA_EVENT_TYPE,
+        ObservationOptimizerAlgorithm, OptimizerEvent, PROPOSER_DELTA_EVENT_TYPE,
+        proposer_delta_chunks_from_response,
     };
 
     fn scratch_dir() -> PathBuf {
@@ -15098,15 +15109,13 @@ fn execute_gepa_monolithic_with_options(
                         .position(|candidate| &candidate.candidate_id == candidate_id)
                 })
                 .unwrap_or(parent_selection.candidate_index);
-            let proposal_parent =
-                candidates
-                    .get(proposal_parent_idx)
-                    .cloned()
-                    .ok_or_else(|| {
-                        OptimizerError::Invariant(format!(
+            let proposal_parent = candidates.get(proposal_parent_idx).cloned().ok_or_else(
+                || {
+                    OptimizerError::Invariant(format!(
                         "proposal parent index {proposal_parent_idx} is outside candidate registry"
                     ))
-                    })?;
+                },
+            )?;
             let mut proposal_parent = proposal_parent;
             if parent_minibatch_reward_for_rows(
                 &proposal_parent,
@@ -17432,10 +17441,12 @@ fn compare_score_vectors(input: ScoreVectorPreferenceInput<'_>) -> Result<ScoreV
     metadata.insert("decision_source".to_string(), json!("score_vector"));
     metadata.insert(
         "comparison_result".to_string(),
-        json!(score
-            .get("comparison_result")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown")),
+        json!(
+            score
+                .get("comparison_result")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+        ),
     );
     Ok(ScoreVectorPreference {
         preferred,
@@ -17582,10 +17593,12 @@ fn acceptance_preference_from_vectors(
     metadata.insert("acceptance_reason".to_string(), json!(reason));
     metadata.insert(
         "comparison_result".to_string(),
-        json!(score
-            .get("comparison_result")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown")),
+        json!(
+            score
+                .get("comparison_result")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+        ),
     );
     Ok(ScoreVectorPreference {
         preferred: accepted,
@@ -20740,7 +20753,7 @@ fn evaluate_candidate(call: EvaluationCall<'_>) -> Result<CandidateEvaluation> {
             "candidate": overlay.candidate.to_value(),
             "candidate_overlay": overlay,
             "prompt_assertions": prompt_assertions,
-            "policy": rollout_policy_for_request(call.config),
+            "policy": rollout_policy_for_request(call.config)?,
             "task": row,
             "metadata": {
                 "candidate_id": call.candidate.candidate_id,

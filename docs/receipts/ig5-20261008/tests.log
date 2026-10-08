@@ -1,0 +1,171 @@
+{"schema": "core-build-admission.v1", "status": "admitted", "mode": "build", "owner_pid": 3877, "lane": null, "required_bytes": 21474836480, "available_bytes": 83798179840, "authority_root": "/Users/joshuapurtell/GitHub/worktrees/core-dev-finish-handoff-20261003"}
+   Compiling libc v0.2.186
+   Compiling zerofrom v0.1.8
+   Compiling stable_deref_trait v1.2.1
+   Compiling yoke v0.8.2
+   Compiling cfg-if v1.0.4
+   Compiling zerovec v0.11.6
+   Compiling pin-project-lite v0.2.17
+   Compiling itoa v1.0.18
+   Compiling bytes v1.11.1
+   Compiling once_cell v1.21.4
+   Compiling smallvec v1.15.1
+   Compiling futures-core v0.3.32
+   Compiling tinystr v0.8.3
+   Compiling litemap v0.8.2
+   Compiling writeable v0.6.3
+   Compiling icu_locale_core v2.2.0
+   Compiling serde_core v1.0.228
+   Compiling zerotrie v0.2.4
+   Compiling potential_utf v0.1.5
+   Compiling socket2 v0.6.3
+   Compiling mio v1.2.0
+   Compiling futures-sink v0.3.32
+   Compiling utf8_iter v1.0.4
+   Compiling icu_collections v2.2.0
+   Compiling tokio v1.52.3
+   Compiling icu_provider v2.2.0
+   Compiling http v1.4.0
+   Compiling percent-encoding v2.3.2
+   Compiling zeroize v1.8.2
+   Compiling memchr v2.8.0
+   Compiling rustls-pki-types v1.14.1
+   Compiling serde v1.0.228
+   Compiling http-body v1.0.1
+   Compiling icu_properties_data v2.2.0
+   Compiling icu_normalizer_data v2.2.0
+   Compiling getrandom v0.2.17
+   Compiling untrusted v0.9.0
+   Compiling futures-io v0.3.32
+   Compiling slab v0.4.12
+   Compiling futures-task v0.3.32
+   Compiling futures-util v0.3.32
+   Compiling ring v0.17.14
+   Compiling icu_normalizer v2.2.0
+   Compiling icu_properties v2.2.0
+   Compiling tower-service v0.3.3
+   Compiling try-lock v0.2.5
+   Compiling want v0.3.1
+   Compiling idna_adapter v1.2.2
+   Compiling rustls-webpki v0.103.13
+   Compiling httparse v1.10.1
+   Compiling form_urlencoded v1.2.2
+   Compiling futures-channel v0.3.32
+   Compiling tracing-core v0.1.36
+   Compiling atomic-waker v1.1.2
+   Compiling unicase v2.9.0
+   Compiling subtle v2.6.1
+   Compiling rustls v0.23.40
+   Compiling mime_guess v2.0.5
+   Compiling hyper v1.9.0
+   Compiling tracing v0.1.44
+   Compiling idna v1.1.0
+   Compiling sync_wrapper v1.0.2
+   Compiling bitflags v2.11.1
+   Compiling base64 v0.22.1
+   Compiling ipnet v2.12.0
+   Compiling typenum v1.20.0
+   Compiling tower-layer v0.3.3
+   Compiling tower v0.5.3
+mbx[progress]: 15s elapsed; 36 hits, 31 misses, 0 bypassed, 0 not looked up; ~6.04s compiler work saved
+   Compiling generic-array v0.14.7
+   Compiling hyper-util v0.1.20
+   Compiling url v2.5.8
+   Compiling zerocopy v0.8.48
+   Compiling zmij v1.0.21
+   Compiling tokio-rustls v0.26.4
+   Compiling webpki-roots v1.0.7
+   Compiling ryu v1.0.23
+   Compiling powerfmt v0.2.0
+   Compiling time-core v0.1.8
+   Compiling num-conv v0.2.2
+   Compiling mime v0.3.17
+   Compiling time-macros v0.2.27
+   Compiling deranged v0.5.8
+   Compiling serde_urlencoded v0.7.1
+   Compiling hyper-rustls v0.27.9
+   Compiling serde_json v1.0.149
+   Compiling ahash v0.8.12
+   Compiling tower-http v0.6.11
+   Compiling http-body-util v0.1.3
+   Compiling equivalent v1.0.2
+   Compiling hashbrown v0.17.1
+   Compiling log v0.4.29
+   Compiling reqwest v0.12.28
+   Compiling indexmap v2.14.0
+   Compiling thiserror v1.0.69
+   Compiling hashbrown v0.14.5
+   Compiling time v0.3.47
+mbx[progress]: 30s elapsed; 51 hits, 46 misses, 0 bypassed, 0 not looked up; ~9.85s compiler work saved
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling toml_datetime v0.6.11
+   Compiling serde_spanned v0.6.9
+   Compiling toml_write v0.1.2
+   Compiling winnow v0.7.15
+   Compiling toml_edit v0.22.27
+   Compiling digest v0.10.7
+   Compiling libsqlite3-sys v0.30.1
+   Compiling hashlink v0.9.1
+   Compiling getrandom v0.4.2
+   Compiling cpufeatures v0.2.17
+   Compiling fallible-iterator v0.3.0
+   Compiling fallible-streaming-iterator v0.1.9
+   Compiling rusqlite v0.32.1
+   Compiling sha2 v0.10.9
+   Compiling uuid v1.23.1
+   Compiling toml v0.8.23
+   Compiling synth_gateway_client v0.2.5 (/Users/joshuapurtell/GitHub/worktrees/optimizers-ig5-20261008/rust/crates/synth_gateway_client)
+   Compiling fs2 v0.4.3
+   Compiling synth_optimizer_platform v0.2.5 (/Users/joshuapurtell/GitHub/worktrees/optimizers-ig5-20261008/rust/crates/synth_optimizer_platform)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 42.16s
+     Running unittests src/lib.rs (target/debug/deps/synth_gateway_client-4bf8dc2b2c349a91)
+
+running 7 tests
+test tests::run_handle_round_trips_and_carries_no_secret ... ok
+test tests::provider_urls_and_malformed_handles_are_refused ... ok
+test tests::optimizer_usage_hands_billing_to_the_gateway_receipt ... ok
+test tests::request_is_responses_shaped_with_json_object_format ... ok
+test tests::output_text_and_truncation_follow_the_responses_wire ... ok
+test tests::issue_response_parses_and_redacts ... ok
+test tests::sandbox_binding_pins_model_origin_and_hides_token ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/synth_optimizer_platform-f5b392e70f35afd4)
+mbx[progress]: 45s elapsed; 61 hits, 58 misses, 0 bypassed, 1 not looked up; ~11.36s compiler work saved
+
+running 28 tests
+test disk_budget::tests::validate_allows_disabled_with_any_values ... ok
+test config::tests::flash_evolve_accepts_reflective_speculative_and_adaptive_stage_workers ... ok
+test config::tests::locked_luna_and_sol_chatgpt_proposers_are_allowed ... ok
+test events::tests::optimizer_event_feed_path_for_siblings_events_jsonl ... ok
+test config::tests::speculative_completion_requires_flash_evolve_mode ... ok
+test disk_budget::tests::validate_rejects_zero_or_inverted ... ok
+test config::tests::unknown_chatgpt_proposer_still_fails_closed ... ok
+test config::tests::sync_serial_rejects_staleness_policy ... ok
+test config::tests::adaptive_stage_worker_bounds_are_validated ... ok
+test limits::tests::unknown_settled_cost_blocks_the_next_paid_effect ... ok
+test limits::tests::explicit_zero_cost_remains_admissible ... ok
+test observability::tests::child_eval_ref_is_resource_ref_not_signed_blob ... ok
+test config::tests::remote_policy_cannot_request_library_local_credentials ... ok
+test observability::tests::luna_and_sol_are_policy_configs_not_tasks ... ok
+test observability::tests::missing_sequence_deserializes_as_none_not_zero ... ok
+test observability::tests::present_sequence_is_preserved ... ok
+test observability::tests::proposer_delta_delta_is_generation_channel_text ... ok
+test observability::tests::proposer_delta_missing_generation_is_omitted_not_zero ... ok
+test observability::tests::protocol_item_deltas_become_channel_text_chunks ... ok
+test usage::tests::reported_cost_fold_is_any_unknown_to_none ... ok
+test disk_budget::tests::classifies_healthy_soft_hard_thresholds ... ok
+test usage::tests::usage_ledger_preserves_unknown_and_real_zero_costs ... ok
+test events::tests::dual_writes_optimizer_event_sidecar_for_gepa ... ok
+test disk_budget::tests::directory_size_sums_regular_files ... ok
+test agent_runtime::codex_home::tests::chatgpt_home_staging_is_clean_and_never_copies_model_cache ... ok
+test events::tests::proposer_delta_dual_writes_on_the_same_optimizer_stream ... ok
+test events::tests::two_spools_do_not_cross_logs ... ok
+test workspace::nullable_cost_migration_tests::opening_legacy_workspace_makes_reported_cost_columns_nullable ... ok
+
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
+mbx[cache]: 61 hits, 58 misses, 1 not looked up; 0 B downloaded, 0 B uploaded, 204.6 MiB stored locally
+mbx[savings]: 245.3 GiB of outputs materialized without a copy. the copy machine stays off.

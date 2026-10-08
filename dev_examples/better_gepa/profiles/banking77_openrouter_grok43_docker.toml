@@ -1,19 +1,18 @@
 # Banking77 acceptance profile — OpenRouter Grok 4.3 Docker proposer.
-# Requires: OPENAI_API_KEY, OPENROUTER_API_KEY, Docker/OrbStack, and the pinned proposer image.
+# Requires an explicitly minted scoped gateway session.
 
 [policy]
 provider = "openai"
 model = "gpt-4.1-nano"
-api_key_env = "OPENAI_API_KEY"
+gateway_session = "gateway-session://env"
 
 [proposer]
 backend = "codex_app_server"
 runtime_substrate = "docker"
 execution_mode = "local_process"
 provider = "openrouter"
-base_url = "https://openrouter.ai/api/v1"
-auth_mode = "api_key"
-api_key_env = "OPENROUTER_API_KEY"
+auth_mode = "gateway_session"
+gateway_session = "gateway-session://env"
 copy_host_auth = false
 model = "x-ai/grok-4.3"
 reasoning_effort = "medium"

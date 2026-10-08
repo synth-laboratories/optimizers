@@ -6,7 +6,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use reqwest::blocking::multipart;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::{OptimizerError, ProposerConfig, ProposerDaytonaConfig, Result};
 
@@ -17,8 +17,8 @@ use super::codex_home::{
 use super::jsonrpc_read_window::JsonRpcReadWindow;
 use super::limits;
 use super::session::{
-    command_exec_params, AgentCommandExecOutcome, AgentRuntimeSubstrate, AgentTurnOutcome,
-    CodexCommandExecRequest, CodexTurnRequest,
+    AgentCommandExecOutcome, AgentRuntimeSubstrate, AgentTurnOutcome, CodexCommandExecRequest,
+    CodexTurnRequest, command_exec_params,
 };
 use super::supervisor::SupervisorReceipt;
 use super::usage::{usage_from_message, usage_from_messages};
@@ -393,8 +393,14 @@ fn run_daytona_command_with_staged_workspace(
 }
 
 fn sandbox_env(daytona: &ProposerDaytonaConfig) -> Result<BTreeMap<String, String>> {
+    if daytona.env.keys().any(|key| synth_gateway_client::is_sandbox_authority_environment(key)) {
+        return Err(OptimizerError::Config("sandbox gateway authority cannot be overridden by env".into()));
+    }
     let mut env_map = daytona.env.clone();
     for (sandbox_key, host_key) in &daytona.extra_env {
+        if synth_gateway_client::is_sandbox_authority_environment(sandbox_key) || synth_gateway_client::is_sandbox_authority_environment(host_key) {
+            return Err(OptimizerError::Config("sandbox gateway authority cannot be overridden by extra_env".into()));
+        }
         let value = env::var(host_key).map_err(|source| {
             OptimizerError::Config(format!(
                 "proposer.daytona.extra_env maps {sandbox_key} to host env {host_key}, but it is unavailable: {source}"
@@ -433,8 +439,11 @@ fn remote_codex_env(
         "CODEX_HOME".to_string(),
         remote_join(&daytona.remote_workspace_dir, codex_home),
     );
-    if let Some(api_key) = host_env.get("OPENAI_API_KEY") {
-        env_map.insert("OPENAI_API_KEY".to_string(), api_key.clone());
+    if let Some(api_key) = host_env.get(synth_gateway_client::SESSION_TOKEN_ENV) {
+        env_map.insert(
+            synth_gateway_client::SESSION_TOKEN_ENV.to_string(),
+            api_key.clone(),
+        );
     }
     Ok(env_map)
 }
@@ -879,7 +888,11 @@ impl DaytonaAppServerClient {
             {
                 return Err(OptimizerError::Proposer(format!(
                     "daytona codex app-server exited before next JSON-RPC message; exit_code={exit_code}; stderr_tail={}",
-                    self.stderr_tail.iter().cloned().collect::<Vec<_>>().join("\\n")
+                    self.stderr_tail
+                        .iter()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join("\\n")
                 )));
             }
             if Instant::now() >= deadline {
@@ -1140,7 +1153,7 @@ impl DaytonaControlClient {
                     return Err(OptimizerError::Proposer(format!(
                         "daytona sandbox {sandbox_id} failed to start: state={:?} error_reason={:?}",
                         sandbox.state, sandbox.error_reason
-                    )))
+                    )));
                 }
                 _ => {}
             }

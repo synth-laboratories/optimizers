@@ -5,15 +5,15 @@
 [policy]
 provider = "openai"
 model = "gpt-4.1-nano"
-api_key_env = "OPENAI_API_KEY"
+gateway_session = "gateway-session://env"
 
 [proposer]
 backend = "codex_app_server"
 runtime_substrate = "local"
 execution_mode = "local_process"
 provider = "openai"
-auth_mode = "api_key"
-api_key_env = "OPENAI_API_KEY"
+auth_mode = "gateway_session"
+gateway_session = "gateway-session://env"
 copy_host_auth = false
 model = "gpt-5.4-mini"
 reasoning_effort = "medium"

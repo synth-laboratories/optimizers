@@ -12,7 +12,7 @@ use super::app_server::{CodexAppServerClient, CodexAppServerProcessLaunch};
 use super::codex_home::prepare_proposer_codex_launch;
 use super::limits;
 use super::session::{
-    run_codex_jsonrpc_turn, AgentRuntimeSubstrate, AgentTurnOutcome, CodexTurnRequest,
+    AgentRuntimeSubstrate, AgentTurnOutcome, CodexTurnRequest, run_codex_jsonrpc_turn,
 };
 use super::supervisor::SupervisorReceipt;
 
@@ -119,10 +119,16 @@ fn run_docker_with_staged_workspace(
     docker_args.push(format!("CODEX_HOME={container_codex_home}"));
     docker_args.push("-e".to_string());
     docker_args.push(format!("SYNTH_WORKSPACE={workspace_mount_path}"));
-    if let Some(api_key) = launch_state.env_map.get("OPENAI_API_KEY") {
-        docker_process_env.insert("OPENAI_API_KEY".to_string(), api_key.clone());
+    if let Some(api_key) = launch_state
+        .env_map
+        .get(synth_gateway_client::SESSION_TOKEN_ENV)
+    {
+        docker_process_env.insert(
+            synth_gateway_client::SESSION_TOKEN_ENV.to_string(),
+            api_key.clone(),
+        );
         docker_args.push("-e".to_string());
-        docker_args.push("OPENAI_API_KEY".to_string());
+        docker_args.push(synth_gateway_client::SESSION_TOKEN_ENV.to_string());
     }
     add_extra_env_refs(extra_env, &mut docker_process_env, &mut docker_args)?;
     docker_args.push(image.to_string());
@@ -293,6 +299,9 @@ fn add_extra_env_refs(
     docker_args: &mut Vec<String>,
 ) -> Result<()> {
     for (container_key, host_key) in extra_env {
+        if synth_gateway_client::is_sandbox_authority_environment(container_key) || synth_gateway_client::is_sandbox_authority_environment(host_key) {
+            return Err(OptimizerError::Config("sandbox gateway authority cannot be overridden by extra_env".into()));
+        }
         let value = env::var(host_key).map_err(|source| {
             OptimizerError::Config(format!(
                 "proposer.docker.extra_env maps {container_key} to host env {host_key}, but it is unavailable: {source}"

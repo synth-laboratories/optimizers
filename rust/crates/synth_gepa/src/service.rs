@@ -4,35 +4,36 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc, Condvar, Mutex,
+    atomic::{AtomicBool, Ordering},
 };
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use sha1::{Digest as Sha1Digest, Sha1};
 use sha2::{Digest as Sha2Digest, Sha256};
 use synth_optimizer_platform::{
-    compact_run_storage, delete_run_storage, fold_reported_cost, inspect_run_storage,
-    inspect_workspace_storage_health, optimizer_event_feed_path_for, ArtifactPaths, CacheMode,
-    CheckpointInput, CheckpointRecord, ContainerClient, FailurePayload, GepaPipelineMode,
-    GepaStalenessPolicy, GepaTaskPoolsConfig, OptimizerError, OptimizerEvent, OptimizerJob,
-    OptimizerJobKind, OptimizerJobStatus, PromptProgram, Result, RunPhaseTimingRecord,
-    RunStorageInspectionInput, RunStorageMaintenanceInput, RuntimeEffectInput, RuntimeEffectRecord,
-    StorageHealthThresholds, StorageMaintenanceProfile, SynthOptimizerConfig, TransitionLog,
-    TransitionRow, WorkspaceRunRequestStatus, WorkspaceStorageHealthInput, WorkspaceStore,
+    ArtifactPaths, CacheMode, CheckpointInput, CheckpointRecord, ContainerClient, FailurePayload,
+    GepaPipelineMode, GepaStalenessPolicy, GepaTaskPoolsConfig, OptimizerError, OptimizerEvent,
+    OptimizerJob, OptimizerJobKind, OptimizerJobStatus, PromptProgram, Result,
+    RunPhaseTimingRecord, RunStorageInspectionInput, RunStorageMaintenanceInput,
+    RuntimeEffectInput, RuntimeEffectRecord, StorageHealthThresholds, StorageMaintenanceProfile,
+    SynthOptimizerConfig, TransitionLog, TransitionRow, WorkspaceRunRequestStatus,
+    WorkspaceStorageHealthInput, WorkspaceStore, compact_run_storage, delete_run_storage,
+    fold_reported_cost, inspect_run_storage, inspect_workspace_storage_health,
+    optimizer_event_feed_path_for,
 };
 
 use crate::{
-    advance_gepa_config_once, execute_gepa_from_toml_with_options,
+    GepaAdvanceMode, GepaAdvanceOutcome, GepaCancellationSource, GepaExecutionOptions,
+    GepaRunResult, advance_gepa_config_once, execute_gepa_from_toml_with_options,
     planner::{
-        GepaCursor, GepaCursorPhase, GepaTickAction, GepaTickOutcome, GEPA_CURSOR_CHECKPOINT_KIND,
+        GEPA_CURSOR_CHECKPOINT_KIND, GepaCursor, GepaCursorPhase, GepaTickAction, GepaTickOutcome,
     },
-    project_gepa_limit_snapshot, record_initial_platform_snapshots, GepaAdvanceMode,
-    GepaAdvanceOutcome, GepaCancellationSource, GepaExecutionOptions, GepaRunResult,
+    project_gepa_limit_snapshot, record_initial_platform_snapshots,
 };
 
 const DEFAULT_SERVICE_WORKER_COUNT: usize = 10;
@@ -419,16 +420,18 @@ fn start_service_workers(
         let worker_id = service_worker_id(&config.worker_id, worker_count, slot);
         let scheduler = scheduler.clone();
         let service_url = service_url.clone();
-        thread::spawn(move || loop {
-            match tick_next_auto_unit(&db_path, &worker_id, lease_seconds, Some(&service_url)) {
-                Ok(outcome) => {
-                    if outcome.request.is_none() {
-                        scheduler.wait(SERVICE_WORKER_IDLE_WAIT);
+        thread::spawn(move || {
+            loop {
+                match tick_next_auto_unit(&db_path, &worker_id, lease_seconds, Some(&service_url)) {
+                    Ok(outcome) => {
+                        if outcome.request.is_none() {
+                            scheduler.wait(SERVICE_WORKER_IDLE_WAIT);
+                        }
                     }
-                }
-                Err(error) => {
-                    eprintln!("[gepa-worker:{worker_id}] run loop error: {error}");
-                    scheduler.wait(SERVICE_WORKER_ERROR_WAIT);
+                    Err(error) => {
+                        eprintln!("[gepa-worker:{worker_id}] run loop error: {error}");
+                        scheduler.wait(SERVICE_WORKER_ERROR_WAIT);
+                    }
                 }
             }
         });
@@ -3256,7 +3259,7 @@ fn apply_policy_credentials(
         "env" => {
             let env_var = required_env_var(credentials, "policy.credentials.env_var")?;
             config.policy.credential_mode = "byok".to_string();
-            config.policy.api_key_env = Some(env_var.clone());
+            config.policy.local_key_env = Some(env_var.clone());
             config
                 .policy
                 .config
@@ -4303,7 +4306,7 @@ fn project_run_config(config: &SynthOptimizerConfig, manual_step: bool) -> Value
         .get("credential_env_var")
         .and_then(Value::as_str)
         .map(str::to_string)
-        .or_else(|| config.policy.api_key_env.clone());
+        .or_else(|| config.policy.local_key_env.clone());
     json!({
         "container_url": config.container.url,
         "policy": {

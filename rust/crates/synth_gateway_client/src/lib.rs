@@ -48,7 +48,10 @@ pub enum GatewayError {
     #[error("gateway session unavailable: {0}")]
     SessionUnavailable(String),
     #[error("model {model:?} is not admitted by the gateway session (admitted: {admitted:?})")]
-    ModelNotAdmitted { model: String, admitted: Vec<String> },
+    ModelNotAdmitted {
+        model: String,
+        admitted: Vec<String>,
+    },
     #[error("gateway call refused: status {status} code {code}")]
     CallRefused { status: u16, code: String },
     #[error("gateway call failed after {attempts} attempts: {last}")]
@@ -57,14 +60,21 @@ pub enum GatewayError {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SessionHandle {
-    Run { run_id: String, org_id: String, route_set: String },
+    Run {
+        run_id: String,
+        org_id: String,
+        route_set: String,
+    },
     Env,
 }
 
 impl SessionHandle {
     pub fn parse(base_url: &str) -> Result<Self, GatewayError> {
         let invalid = || GatewayError::InvalidHandle(base_url.to_string());
-        let rest = base_url.trim().strip_prefix(HANDLE_SCHEME).ok_or_else(invalid)?;
+        let rest = base_url
+            .trim()
+            .strip_prefix(HANDLE_SCHEME)
+            .ok_or_else(invalid)?;
         if rest == "env" {
             return Ok(Self::Env);
         }
@@ -82,11 +92,19 @@ impl SessionHandle {
         let valid = |value: &str| {
             !value.is_empty()
                 && value.len() <= 128
-                && value.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.:".contains(&b))
+                && value
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-_.:".contains(&b))
         };
         match (org_id, route_set) {
-            (Some(org_id), Some(route_set)) if valid(run_id) && valid(&org_id) && valid(&route_set) => {
-                Ok(Self::Run { run_id: run_id.to_string(), org_id, route_set })
+            (Some(org_id), Some(route_set))
+                if valid(run_id) && valid(&org_id) && valid(&route_set) =>
+            {
+                Ok(Self::Run {
+                    run_id: run_id.to_string(),
+                    org_id,
+                    route_set,
+                })
             }
             _ => Err(invalid()),
         }
@@ -148,12 +166,19 @@ pub fn session(handle: &SessionHandle) -> Result<Session, GatewayError> {
     }
     let issued = match handle {
         SessionHandle::Env => env_session()?,
-        SessionHandle::Run { run_id, org_id, route_set } => {
+        SessionHandle::Run {
+            run_id,
+            org_id,
+            route_set,
+        } => {
             let issuer = ISSUER.get().ok_or(GatewayError::IssuerMissing)?;
             issue_run_session(issuer, run_id, org_id, route_set)?
         }
     };
-    cache.lock().expect("session cache").insert(handle.clone(), issued.clone());
+    cache
+        .lock()
+        .expect("session cache")
+        .insert(handle.clone(), issued.clone());
     Ok(issued)
 }
 
@@ -165,7 +190,12 @@ fn env_session() -> Result<Session, GatewayError> {
             "{SESSION_TOKEN_ENV} (gw_…) and {GATEWAY_URL_ENV} are required for gateway-session://env"
         )));
     }
-    Ok(Session { token, gateway_url, models: Vec::new(), renew_at: None })
+    Ok(Session {
+        token,
+        gateway_url,
+        models: Vec::new(),
+        renew_at: None,
+    })
 }
 
 fn issue_run_session(
@@ -213,23 +243,40 @@ fn issue_run_session(
 /// Parse the backend's `synth.gateway-caller-session.v1` answer.
 pub fn session_from_issue_response(body: &Value, now: Instant) -> Result<Session, GatewayError> {
     let malformed = || GatewayError::SessionUnavailable("malformed session response".into());
-    if body.get("schema_version").and_then(Value::as_str) != Some("synth.gateway-caller-session.v1") {
+    if body.get("schema_version").and_then(Value::as_str) != Some("synth.gateway-caller-session.v1")
+    {
         return Err(malformed());
     }
-    let token = body.get("token").and_then(Value::as_str).filter(|t| t.starts_with("gw_"));
-    let gateway_url = body.get("gateway_url").and_then(Value::as_str).filter(|u| !u.is_empty());
+    let token = body
+        .get("token")
+        .and_then(Value::as_str)
+        .filter(|t| t.starts_with("gw_"));
+    let gateway_url = body
+        .get("gateway_url")
+        .and_then(Value::as_str)
+        .filter(|u| !u.is_empty());
     let expires_at = body.get("expires_at").and_then(Value::as_str);
-    let (Some(token), Some(gateway_url), Some(expires_at)) = (token, gateway_url, expires_at) else {
+    let (Some(token), Some(gateway_url), Some(expires_at)) = (token, gateway_url, expires_at)
+    else {
         return Err(malformed());
     };
-    let expires = time::OffsetDateTime::parse(expires_at, &time::format_description::well_known::Rfc3339)
-        .map_err(|_| malformed())?;
-    let remaining = (expires - time::OffsetDateTime::now_utc()).whole_seconds().max(0) as u64;
+    let expires =
+        time::OffsetDateTime::parse(expires_at, &time::format_description::well_known::Rfc3339)
+            .map_err(|_| malformed())?;
+    let remaining = (expires - time::OffsetDateTime::now_utc())
+        .whole_seconds()
+        .max(0) as u64;
     let renew_in = Duration::from_secs(remaining).saturating_sub(RENEW_MARGIN);
     let models = body
         .get("models")
         .and_then(Value::as_array)
-        .map(|models| models.iter().filter_map(Value::as_str).map(str::to_string).collect())
+        .map(|models| {
+            models
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
         .unwrap_or_default();
     Ok(Session {
         token: token.to_string(),
@@ -286,7 +333,9 @@ pub fn output_text(response: &Value) -> Option<String> {
 /// `finish_reason = "length"`).
 pub fn truncated(response: &Value) -> bool {
     response.get("status").and_then(Value::as_str) == Some("incomplete")
-        && response.pointer("/incomplete_details/reason").and_then(Value::as_str)
+        && response
+            .pointer("/incomplete_details/reason")
+            .and_then(Value::as_str)
             == Some("max_output_tokens")
 }
 
@@ -333,7 +382,10 @@ pub fn post_responses(
         .timeout(timeout)
         .redirect(reqwest::redirect::Policy::none())
         .build()
-        .map_err(|e| GatewayError::CallFailed { attempts: 0, last: e.to_string() })?;
+        .map_err(|e| GatewayError::CallFailed {
+            attempts: 0,
+            last: e.to_string(),
+        })?;
     let mut last = String::new();
     let attempts = max_attempts.max(1);
     for attempt in 1..=attempts {
@@ -360,13 +412,19 @@ pub fn post_responses(
             .map(str::to_string);
         let text = response.text().unwrap_or_default();
         if (200..300).contains(&status) {
-            let body = serde_json::from_str(&text)
-                .map_err(|e| GatewayError::CallFailed { attempts: attempt, last: e.to_string() })?;
+            let body = serde_json::from_str(&text).map_err(|e| GatewayError::CallFailed {
+                attempts: attempt,
+                last: e.to_string(),
+            })?;
             return Ok(GatewayResponse { body, receipt_id });
         }
         let code = serde_json::from_str::<Value>(&text)
             .ok()
-            .and_then(|v| v.get("error_code").and_then(Value::as_str).map(str::to_string))
+            .and_then(|v| {
+                v.get("error_code")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
             .unwrap_or_else(|| "gateway_error".to_string());
         if attempt < attempts && matches!(status, 429 | 500 | 502 | 503 | 504) {
             last = format!("status {status} {code}");
@@ -392,7 +450,11 @@ mod tests {
 
     #[test]
     fn run_handle_round_trips_and_carries_no_secret() {
-        let handle = SessionHandle::for_run("run_1", "6f6c1f2e-1d1a-4d55-9a6f-3a3b9f0c0001", "optimizer_openrouter_v1");
+        let handle = SessionHandle::for_run(
+            "run_1",
+            "6f6c1f2e-1d1a-4d55-9a6f-3a3b9f0c0001",
+            "optimizer_openrouter_v1",
+        );
         assert!(!handle.contains("gw_") && !handle.contains("sk_"));
         assert_eq!(
             SessionHandle::parse(&handle).unwrap(),
@@ -402,7 +464,10 @@ mod tests {
                 route_set: "optimizer_openrouter_v1".into(),
             }
         );
-        assert_eq!(SessionHandle::parse("gateway-session://env").unwrap(), SessionHandle::Env);
+        assert_eq!(
+            SessionHandle::parse("gateway-session://env").unwrap(),
+            SessionHandle::Env
+        );
     }
 
     #[test]

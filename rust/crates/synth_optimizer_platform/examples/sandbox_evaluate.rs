@@ -18,7 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut evaluation: Evaluation = serde_json::from_str(&input)?;
     let _process = ManagedContainerProcess::maybe_start_with_gateway(&evaluation.container, &evaluation.policy)?;
     evaluation.request["policy"]["config"] = evaluation.policy.sandbox_wire_config()?;
-    evaluation.request["policy"]["config"]["agent"] = serde_json::json!("codex");
+    evaluation.request["policy"]["config"]["agent"] = evaluation.policy.config.get("agent").cloned().unwrap_or_else(|| serde_json::json!("opencode"));
     evaluation.request["policy"]["config"]["timeout"] = serde_json::json!(120);
     let url = evaluation.container.url.as_deref().ok_or("container.url missing")?;
     let client = ContainerClient::with_headers_bearer_env_and_timeout(url,

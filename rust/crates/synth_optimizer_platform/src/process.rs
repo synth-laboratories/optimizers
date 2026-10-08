@@ -37,11 +37,39 @@ struct LockHolder {
 
 impl ManagedContainerProcess {
     pub fn maybe_start(config: &ContainerConfig) -> Result<Option<Self>> {
+        Self::maybe_start_with_environment(config, &std::collections::BTreeMap::new())
+    }
+    pub fn maybe_start_with_gateway(
+        config: &ContainerConfig,
+        policy: &crate::config::PolicyConfig,
+    ) -> Result<Option<Self>> {
+        let environment = if policy.enabled {
+            let handle = synth_gateway_client::SessionHandle::parse(
+                policy.gateway_session.as_deref().ok_or_else(|| {
+                    OptimizerError::Config("policy.gateway_session missing".into())
+                })?,
+            )
+            .map_err(|error| OptimizerError::Config(error.to_string()))?;
+            synth_gateway_client::session(&handle)
+                .and_then(|session| session.sandbox_environment(&policy.model))
+                .map_err(|error| OptimizerError::Config(format!("sandbox gateway: {error}")))?
+        } else {
+            std::collections::BTreeMap::new()
+        };
+        Self::maybe_start_with_environment(config, &environment)
+    }
+    pub fn maybe_start_with_environment(
+        config: &ContainerConfig,
+        environment: &std::collections::BTreeMap<String, String>,
+    ) -> Result<Option<Self>> {
         if config.command.is_empty() {
             return Ok(None);
         }
         if let Some(url) = &config.url {
             if is_healthy(url) {
+                if !environment.is_empty() {
+                    return Err(OptimizerError::Config("sandbox_gateway_container_already_running: launch an owned per-run container".into()));
+                }
                 return Ok(Some(Self {
                     child: None,
                     lock: None,
@@ -54,13 +82,39 @@ impl ManagedContainerProcess {
         };
         if let Some(url) = &config.url {
             if is_healthy(url) {
+                if !environment.is_empty() {
+                    return Err(OptimizerError::Config("sandbox_gateway_container_already_running: launch an owned per-run container".into()));
+                }
                 return Ok(Some(Self { child: None, lock }));
             }
         }
         let program = &config.command[0];
         let args = &config.command[1..];
         let mut command = Command::new(program);
-        command.args(args);
+        if Path::new(program)
+            .file_name()
+            .is_some_and(|name| name == "docker")
+            && !environment.is_empty()
+        {
+            if args.first().map(String::as_str) != Some("run") {
+                return Err(OptimizerError::Config(
+                    "scoped policy launch requires docker run or a direct child process".into(),
+                ));
+            }
+            command.arg("run");
+            for key in environment.keys() {
+                command.args(["--env", key]);
+            }
+            command.args(&args[1..]);
+        } else {
+            command.args(args);
+        }
+        for (key, _) in std::env::vars() {
+            if synth_gateway_client::is_sandbox_authority_environment(&key) {
+                command.env_remove(key);
+            }
+        }
+        command.envs(environment);
         #[cfg(unix)]
         {
             command.process_group(0);

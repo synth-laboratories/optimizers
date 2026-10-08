@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub const BACKEND: &str = "gateway_responses";
 pub const HANDLE_SCHEME: &str = "gateway-session://";
@@ -115,11 +115,19 @@ impl SessionHandle {
     }
 }
 
+/// Authority names cannot be supplied as arbitrary sandbox overrides.
+pub fn is_sandbox_authority_environment(name: &str) -> bool {
+    name.starts_with("SYNTH_GATEWAY_")
+        || matches!(name, "OPENAI_API_KEY" | "OPENAI_BASE_URL" | "OPENROUTER_API_KEY" | "OPENROUTER_BASE_URL" | "ANTHROPIC_API_KEY" | "ANTHROPIC_AUTH_TOKEN" | "ANTHROPIC_BASE_URL" | "NVIDIA_API_KEY" | "DEEPSEEK_API_KEY" | "GEMINI_API_KEY" | "GOOGLE_API_KEY" | "SYNTH_API_KEY")
+}
+
 /// Where hosted sessions come from: the backend origin and this service's enrolled
 /// optimizer identity per org. Installed once at service start.
+pub type CredentialForOrg = dyn Fn(&str) -> Option<String> + Send + Sync;
+
 pub struct Issuer {
     pub backend_url: String,
-    pub credential_for_org: Box<dyn Fn(&str) -> Option<String> + Send + Sync>,
+    pub credential_for_org: Box<CredentialForOrg>,
 }
 
 static ISSUER: OnceLock<Issuer> = OnceLock::new();
@@ -150,6 +158,39 @@ impl std::fmt::Debug for Session {
 impl Session {
     pub fn responses_url(&self) -> String {
         format!("{}/v1/responses", self.gateway_url.trim_end_matches('/'))
+    }
+
+    /// Runtime-only sandbox environment. Values never enter persisted config.
+    pub fn sandbox_environment(
+        &self,
+        model: &str,
+    ) -> Result<std::collections::BTreeMap<String, String>, GatewayError> {
+        if !self.admits(model) {
+            return Err(GatewayError::ModelNotAdmitted {
+                model: model.into(),
+                admitted: self.models.clone(),
+            });
+        }
+        let url = reqwest::Url::parse(&self.gateway_url)
+            .map_err(|_| GatewayError::SessionUnavailable("gateway origin invalid".into()))?;
+        if !matches!(url.scheme(), "http" | "https")
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err(GatewayError::SessionUnavailable(
+                "gateway origin invalid".into(),
+            ));
+        }
+        Ok(std::collections::BTreeMap::from([
+            (SESSION_TOKEN_ENV.into(), self.token.clone()),
+            (
+                "SYNTH_GATEWAY_SANDBOX_BASE_URL".into(),
+                format!("{}/v1", self.gateway_url.trim_end_matches('/')),
+            ),
+            ("SYNTH_GATEWAY_SANDBOX_MODEL".into(), model.into()),
+        ]))
     }
 
     pub fn admits(&self, model: &str) -> bool {
@@ -447,6 +488,18 @@ fn backoff(attempt: usize) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sandbox_binding_pins_model_origin_and_hides_token() {
+        let session = Session { token: "gw_fixture".into(), gateway_url: "http://127.0.0.1:8123".into(), models: vec!["admitted-model".into()], renew_at: None };
+        let env = session.sandbox_environment("admitted-model").unwrap();
+        assert_eq!(env["SYNTH_GATEWAY_SANDBOX_BASE_URL"], "http://127.0.0.1:8123/v1");
+        assert_eq!(env[SESSION_TOKEN_ENV], "gw_fixture");
+        assert!(session.sandbox_environment("other-model").is_err());
+        assert!(!format!("{session:?}").contains("gw_fixture"));
+        let invalid = Session { gateway_url: "https://user:secret@localhost".into(), ..session };
+        assert!(invalid.sandbox_environment("admitted-model").is_err());
+    }
 
     #[test]
     fn run_handle_round_trips_and_carries_no_secret() {

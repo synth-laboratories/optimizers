@@ -106,6 +106,7 @@ fn execute_mapo_with_options_inner(
         .url
         .as_deref()
         .ok_or_else(|| OptimizerError::Config("container.url is required".to_string()))?;
+    let _container_process = synth_optimizer_platform::ManagedContainerProcess::maybe_start_with_gateway(&config.container, &config.policy)?;
     let client = ContainerClient::with_headers_bearer_env_and_timeout(
         container_url,
         config.container.headers.clone(),
@@ -121,7 +122,7 @@ fn execute_mapo_with_options_inner(
         config.taskset.train_seeds[0],
         0,
         "mapo_preview_train",
-    ));
+    )?);
     let rollout_request_preview = json!({
         "schema_version": "mapo_rollout_request_preview.v1",
         "run_id": &config.run.run_id,

@@ -1,4 +1,4 @@
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use synth_optimizer_platform::{ContainerClient, OptimizerError, Result};
 
 use crate::candidate::{MapoBranchCheckpoint, MapoCandidate, MapoRolloutRecord};
@@ -33,7 +33,7 @@ pub fn execute_candidate_rollouts(
                 *seed,
                 episode_index,
                 &rollout_id,
-            );
+            )?;
             let response = client.rollout(&request)?;
             records.push(rollout_record(
                 &rollout_id,
@@ -74,7 +74,7 @@ pub fn execute_candidate_task_rollouts(
                 seed,
                 episode_index,
                 &rollout_id,
-            );
+            )?;
             apply_task_instance_id(&mut request, task_instance_id)?;
             let response = client.rollout(&request)?;
             records.push(rollout_record(
@@ -113,7 +113,7 @@ pub fn execute_branch_discovery_seed_rollouts(
             *seed,
             0,
             &rollout_id,
-        );
+        )?;
         set_request_steps(&mut request, config.mapo.branch_discovery_steps);
         attach_checkpoint_schedule(&mut request, &rollout_id);
         let response = client.rollout(&request)?;
@@ -162,7 +162,7 @@ pub fn execute_branch_discovery_task_rollouts(
             seed,
             0,
             &rollout_id,
-        );
+        )?;
         apply_task_instance_id(&mut request, task_instance_id)?;
         set_request_steps(&mut request, config.mapo.branch_discovery_steps);
         attach_checkpoint_schedule(&mut request, &rollout_id);
@@ -220,7 +220,7 @@ pub fn execute_candidate_branch_rollouts(
             checkpoint.seed,
             episode_index,
             &rollout_id,
-        );
+        )?;
         set_request_steps(&mut request, config.mapo.branch_rollout_steps);
         let response = client.resume_rollout(
             &checkpoint.parent_rollout_id,
@@ -250,7 +250,7 @@ pub fn rollout_request(
     seed: i64,
     episode_index: usize,
     rollout_id: &str,
-) -> Value {
+) -> Result<Value> {
     let mut env_config = config.taskset.env_config.clone();
     env_config.insert(
         "communication_protocol".to_string(),
@@ -260,24 +260,21 @@ pub fn rollout_request(
     env_config.insert("segment_steps".to_string(), json!(config.mapo.max_steps));
     env_config.insert("seed".to_string(), json!(seed));
 
-    let mut policy_config = Map::new();
+    let mut policy_config = config.policy.config.clone();
+    let wire = config.policy.sandbox_wire_config()?;
+    for name in ["gateway_session", "base_url", "inference_url", "api_key_env", "billing_authority"] {
+        if let Some(value) = wire.get(name) {
+            policy_config.insert(name.into(), value.clone());
+        }
+    }
     policy_config.insert("kind".to_string(), json!("openai"));
     policy_config.insert("provider".to_string(), json!(&config.policy.provider));
     policy_config.insert("model".to_string(), json!(&config.policy.model));
-    if let Some(api_key_env) = config.policy.api_key_env.as_deref() {
-        policy_config.insert("api_key_env".to_string(), json!(api_key_env));
-    }
-    if let Some(inference_url) = config.policy.inference_url.as_deref() {
-        policy_config.insert("inference_url".to_string(), json!(inference_url));
-    }
     if let Some(max_tokens) = config.policy.max_tokens {
         policy_config.insert("max_tokens".to_string(), json!(max_tokens));
     }
     if !candidate.roles.is_empty() {
         policy_config.insert("role_prompts".to_string(), json!(&candidate.roles));
-    }
-    for (key, value) in &config.policy.config {
-        policy_config.insert(key.clone(), value.clone());
     }
 
     let mut env = Map::new();
@@ -308,7 +305,7 @@ pub fn rollout_request(
     if let Some(task_instance_id) = task_instance_id(config, split, seed) {
         request["task_instance_id"] = json!(task_instance_id);
     }
-    request
+    Ok(request)
 }
 
 fn set_request_steps(request: &mut Value, steps: usize) {

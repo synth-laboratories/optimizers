@@ -4,20 +4,20 @@
 # support (github.com/openai/codex/discussions/7782) — it speaks the Responses wire only.
 # (If you don't have an NVIDIA key, use the openrouter_nemotron_ultra profile instead —
 # OpenRouter hosts the same paid model and proxies the Responses wire through Codex.)
-# Requires: NVIDIA_API_KEY (build.nvidia.com "nvapi-..." key), OPENAI_API_KEY (policy rollouts).
+# Requires an explicitly minted scoped gateway session.
 
 [policy]
 provider = "openai"
 model = "gpt-4.1-nano"
-api_key_env = "OPENAI_API_KEY"
+gateway_session = "gateway-session://env"
 
 [proposer]
-backend = "chat_completions"
+backend = "gateway_responses"
+base_url = "gateway-session://env"
 execution_mode = "local_process"
 provider = "nvidia"
-base_url = "https://integrate.api.nvidia.com/v1"
-auth_mode = "api_key"
-api_key_env = "NVIDIA_API_KEY"
+auth_mode = "gateway_session"
+gateway_session = "gateway-session://env"
 copy_host_auth = false
 model = "nvidia/nemotron-3-ultra-550b-a55b"
 allow_unverified_model = true

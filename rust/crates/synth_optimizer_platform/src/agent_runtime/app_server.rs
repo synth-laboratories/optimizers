@@ -88,7 +88,7 @@ impl CodexAppServerClient {
                 return Err(OptimizerError::Proposer(format!(
                     "unsupported codex app-server execution mode {:?}",
                     launch.execution_mode
-                )))
+                )));
             }
         }
         if launch.command.is_empty() {
@@ -99,6 +99,7 @@ impl CodexAppServerClient {
         let mut cmd = Command::new(&launch.command[0]);
         cmd.args(&launch.command[1..])
             .current_dir(&launch.current_dir)
+            .env_clear()
             .envs(&launch.env_map)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -151,6 +152,7 @@ impl CodexAppServerClient {
         let mut cmd = Command::new(&command[0]);
         cmd.args(&command[1..])
             .current_dir(&launch.current_dir)
+            .env_clear()
             .envs(&launch.env_map)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

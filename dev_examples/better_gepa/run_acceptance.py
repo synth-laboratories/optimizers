@@ -41,14 +41,8 @@ PROFILE_FILES = {
 }
 
 PROFILE_REQUIRED_ENV = {
-    "openai_baseline": ("OPENAI_API_KEY",),
-    "openai_baseline_docker": ("OPENAI_API_KEY",),
-    "openrouter_grok43": ("OPENAI_API_KEY", "OPENROUTER_API_KEY"),
-    "openrouter_grok43_docker": ("OPENAI_API_KEY", "OPENROUTER_API_KEY"),
-    "openrouter_nemotron_ultra": ("OPENAI_API_KEY", "OPENROUTER_API_KEY"),
-    "nvidia_nemotron_ultra": ("OPENAI_API_KEY", "NVIDIA_API_KEY"),
-    "deepseek_v4_flash": ("OPENAI_API_KEY", "DEEPSEEK_API_KEY"),
-    "chatgpt_mini": ("OPENAI_API_KEY",),
+    profile: ("SYNTH_GATEWAY_SESSION_TOKEN", "SYNTH_RESPONSES_GATEWAY_URL")
+    for profile in PROFILE_FILES
 }
 
 

@@ -1,0 +1,333 @@
+{"schema": "core-build-admission.v1", "status": "admitted", "mode": "build", "owner_pid": 21363, "lane": null, "required_bytes": 21474836480, "available_bytes": 82373869568, "authority_root": "/Users/joshuapurtell/GitHub/worktrees/core-dev-finish-handoff-20261003"}
+    Checking synth_gateway_client v0.2.5 (/Users/joshuapurtell/GitHub/worktrees/optimizers-ig5-20261008/rust/crates/synth_gateway_client)
+mbx[warning]: incremental state was not reused: compiler environment input changed: CLIPPY_ARGS
+    Checking synth_optimizer_platform v0.2.5 (/Users/joshuapurtell/GitHub/worktrees/optimizers-ig5-20261008/rust/crates/synth_optimizer_platform)
+warning: this `if` statement can be collapsed
+   --> rust/crates/synth_optimizer_platform/src/agent_runtime/daytona.rs:814:13
+    |
+814 | /             if message_matches_turn(&message, turn_id) {
+815 | |                 if is_terminal_turn_event(&message) {
+816 | |                     return Ok(message);
+817 | |                 }
+818 | |             }
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if
+    = note: `#[warn(clippy::collapsible_if)]` on by default
+help: collapse nested if block
+    |
+814 ~             if message_matches_turn(&message, turn_id)
+815 ~                 && is_terminal_turn_event(&message) {
+816 |                     return Ok(message);
+817 ~                 }
+    |
+
+warning: this manual char comparison can be written more succinctly
+   --> rust/crates/synth_optimizer_platform/src/agent_runtime/daytona.rs:941:37
+    |
+941 |                 .trim_start_matches(|c| c == '\r' || c == '\n');
+    |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider using an array of `char`: `['\r', '\n']`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#manual_pattern_char_comparison
+    = note: `#[warn(clippy::manual_pattern_char_comparison)]` on by default
+
+warning: needless call to `as_bytes`
+   --> rust/crates/synth_optimizer_platform/src/agent_runtime/daytona.rs:982:16
+    |
+982 |             if self.stdout_remainder.as_bytes().len() < body_end {
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: `len()` can be called directly on strings: `self.stdout_remainder.len()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_as_bytes
+    = note: `#[warn(clippy::needless_as_bytes)]` on by default
+
+warning: this `impl` can be derived
+  --> rust/crates/synth_optimizer_platform/src/agent_runtime/role_agent.rs:23:1
+   |
+23 | / impl Default for RoleAgentConfig {
+24 | |     fn default() -> Self {
+25 | |         Self {
+26 | |             role: String::new(),
+...  |
+32 | | }
+   | |_^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#derivable_impls
+   = note: `#[warn(clippy::derivable_impls)]` on by default
+help: replace the manual implementation with a derive attribute
+   |
+12 + #[derive(Default)]
+13 | pub struct RoleAgentConfig {
+   |
+
+warning: manual checked division
+   --> rust/crates/synth_optimizer_platform/src/event_visualization.rs:672:21
+    |
+672 |     let filled = if total > 0 {
+    |                     ^^^^^^^^^ check performed here
+673 |         (done.saturating_mul(width) + total / 2) / total
+    |         ------------------------------------------------ division performed here
+    |
+    = help: consider using `checked_div`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#manual_checked_ops
+    = note: `#[warn(clippy::manual_checked_ops)]` on by default
+
+warning: this function has too many arguments (8/7)
+   --> rust/crates/synth_optimizer_platform/src/fsm.rs:251:5
+    |
+251 | /     pub fn transition_entity_at<E: StateMachineEntity>(
+252 | |         &self,
+253 | |         ts_unix_ms: Option<i64>,
+254 | |         entity_id: &str,
+...   |
+259 | |         metadata: Value,
+260 | |     ) -> Result<TransitionRow> {
+    | |______________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+    = note: `#[warn(clippy::too_many_arguments)]` on by default
+
+warning: this function has too many arguments (8/7)
+   --> rust/crates/synth_optimizer_platform/src/limit_engine.rs:233:1
+    |
+233 | / pub fn budget_limit_snapshot(
+234 | |     run_id: &str,
+235 | |     limits: &RunLimitsRecord,
+236 | |     ledger: &BudgetLedgerSnapshot,
+...   |
+241 | |     generated_at: Option<String>,
+242 | | ) -> LimitSnapshot {
+    | |__________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+
+warning: this function has too many arguments (8/7)
+   --> rust/crates/synth_optimizer_platform/src/limit_engine.rs:255:1
+    |
+255 | / pub fn budget_limit_engine_input(
+256 | |     run_id: &str,
+257 | |     limits: &RunLimitsRecord,
+258 | |     ledger: &BudgetLedgerSnapshot,
+...   |
+263 | |     generated_at: Option<String>,
+264 | | ) -> LimitEngineInput {
+    | |_____________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+
+warning: this function has too many arguments (8/7)
+   --> rust/crates/synth_optimizer_platform/src/limit_engine.rs:356:1
+    |
+356 | / fn budget_limit_observations(
+357 | |     run_id: &str,
+358 | |     ledger: &BudgetLedgerSnapshot,
+359 | |     definitions: &[LimitDefinition],
+...   |
+364 | |     generated_at: Option<&str>,
+365 | | ) -> Vec<LimitObservation> {
+    | |__________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+
+warning: this function has too many arguments (8/7)
+   --> rust/crates/synth_optimizer_platform/src/registry.rs:115:5
+    |
+115 | /     pub fn finished(
+116 | |         paths: &ArtifactPaths,
+117 | |         config: &SynthOptimizerConfig,
+118 | |         cache_mode: CacheMode,
+...   |
+123 | |         storage: Option<Value>,
+124 | |     ) -> Self {
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+
+warning: consider using `sort_by_key`
+   --> rust/crates/synth_optimizer_platform/src/storage_maintenance.rs:710:5
+    |
+710 |     files.sort_by(|left, right| right.1.cmp(&left.1));
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unnecessary_sort_by
+    = note: `#[warn(clippy::unnecessary_sort_by)]` on by default
+help: try
+    |
+710 -     files.sort_by(|left, right| right.1.cmp(&left.1));
+710 +     files.sort_by_key(|right| std::cmp::Reverse(right.1));
+    |
+
+warning: redundant reference in `format!` argument
+    --> rust/crates/synth_optimizer_platform/src/workspace.rs:2798:46
+     |
+2798 |                     format!("annotation:{}", &derived.trace_annotation.annotation_id);
+     |                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: remove the redundant `&`: `derived.trace_annotation.annotation_id`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#useless_borrows_in_formatting
+     = note: `#[warn(clippy::useless_borrows_in_formatting)]` on by default
+
+warning: redundant reference in `format!` argument
+    --> rust/crates/synth_optimizer_platform/src/workspace.rs:2829:44
+     |
+2829 |                     format!("subagent:{}", &derived.subagent_invocation.invocation_id);
+     |                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: remove the redundant `&`: `derived.subagent_invocation.invocation_id`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#useless_borrows_in_formatting
+
+warning: `synth_optimizer_platform` (lib) generated 13 warnings (run `cargo clippy --fix --lib -p synth_optimizer_platform -- ` to apply 6 suggestions)
+    Checking synth_gepa v0.2.5 (/Users/joshuapurtell/GitHub/worktrees/optimizers-ig5-20261008/rust/crates/synth_gepa)
+warning: large size difference between variants
+   --> rust/crates/synth_gepa/src/runtime.rs:287:1
+    |
+287 | /   pub enum RuntimeRolloutProgress {
+288 | |       Started {
+289 | |           active_workers: usize,
+290 | |           semaphore_size: usize,
+...   |
+293 | | /     Completed {
+294 | | |         outcome: RuntimeRolloutOutcome,
+295 | | |         active_workers: usize,
+296 | | |         semaphore_size: usize,
+297 | | |         queued: usize,
+298 | | |     },
+    | | |_____- the largest variant contains at least 928 bytes
+299 | | /     Failed {
+300 | | |         failure: RuntimeRolloutFailure,
+301 | | |         active_workers: usize,
+302 | | |         semaphore_size: usize,
+303 | | |         queued: usize,
+304 | | |     },
+    | | |_____- the second-largest variant contains at least 176 bytes
+305 | |   }
+    | |___^ the entire enum is at least 928 bytes
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#large_enum_variant
+    = note: `#[warn(clippy::large_enum_variant)]` on by default
+help: consider boxing the large fields or introducing indirection in some other way to reduce the total size of the enum
+    |
+294 -         outcome: RuntimeRolloutOutcome,
+294 +         outcome: Box<RuntimeRolloutOutcome>,
+    |
+
+warning: very complex type used. Consider factoring parts into `type` definitions
+   --> rust/crates/synth_gepa/src/runtime.rs:348:24
+    |
+348 |     progress_observer: Option<&'a mut dyn FnMut(&RuntimeRolloutProgress) -> Result<()>>,
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#type_complexity
+    = note: `#[warn(clippy::type_complexity)]` on by default
+
+warning: this function has too many arguments (8/7)
+    --> rust/crates/synth_gepa/src/runtime.rs:1237:1
+     |
+1237 | / fn rollout_outcome_from_value(
+1238 | |     candidate_id: String,
+1239 | |     value: Value,
+1240 | |     cache_key: String,
+...    |
+1245 | |     model: &str,
+1246 | | ) -> Result<RuntimeRolloutOutcome> {
+     | |__________________________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+     = note: `#[warn(clippy::too_many_arguments)]` on by default
+
+warning: manual implementation of `.is_multiple_of()`
+    --> rust/crates/synth_gepa/src/service.rs:4181:12
+     |
+4181 |         if ordered.len() % 2 == 0 {
+     |            ^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `ordered.len().is_multiple_of(2)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#manual_is_multiple_of
+     = note: `#[warn(clippy::manual_is_multiple_of)]` on by default
+
+warning: unnecessary use of `.write(true)` because there is `.append(true)`
+    --> rust/crates/synth_gepa/src/lib.rs:1990:9
+     |
+1990 |         .write(true)
+     |         ^^^^^^^^^^^^ help: remove `.write(true)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#ineffective_open_options
+     = note: `#[warn(clippy::ineffective_open_options)]` on by default
+
+warning: this function has too many arguments (14/7)
+    --> rust/crates/synth_gepa/src/lib.rs:8290:1
+     |
+8290 | / fn record_rollout_transition_span(
+8291 | |     context: &GepaRunContext,
+8292 | |     state: &GepaRunState,
+8293 | |     job_id: &str,
+...    |
+8304 | |     end_ms: i64,
+8305 | | ) -> Result<()> {
+     | |_______________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+
+warning: needless call to `as_bytes`
+    --> rust/crates/synth_gepa/src/lib.rs:8963:26
+     |
+8963 |                 "bytes": prompt.as_bytes().len(),
+     |                          ^^^^^^^^^^^^^^^^^^^^^^^ help: `len()` can be called directly on strings: `prompt.len()`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_as_bytes
+     = note: `#[warn(clippy::needless_as_bytes)]` on by default
+
+warning: using `contains()` instead of `iter().any()` is more efficient
+     --> rust/crates/synth_gepa/src/lib.rs:17182:12
+      |
+17182 |         && source_stages.iter().any(|stage| *stage == "heldout")
+      |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `source_stages.contains(&"heldout")`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#manual_contains
+      = note: `#[warn(clippy::manual_contains)]` on by default
+
+warning: this function has too many arguments (8/7)
+     --> rust/crates/synth_gepa/src/lib.rs:20421:1
+      |
+20421 | / fn record_run_phase_timing_from_effect(
+20422 | |     workspace: &WorkspaceStore,
+20423 | |     planned: &RuntimeEffectRecord,
+20424 | |     completed: &RuntimeEffectRecord,
+...     |
+20429 | |     metadata: Map<String, Value>,
+20430 | | ) -> Result<()> {
+      | |_______________^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+
+warning: this function has too many arguments (8/7)
+     --> rust/crates/synth_gepa/src/lib.rs:21423:1
+      |
+21423 | / fn transition_run(
+21424 | |     workspace: &WorkspaceStore,
+21425 | |     events: &mut EventWriter,
+21426 | |     state_machine: &mut OptimizerStateMachine,
+...     |
+21431 | |     details: Value,
+21432 | | ) -> Result<()> {
+      | |_______________^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+
+warning: `synth_gepa` (lib) generated 10 warnings (run `cargo clippy --fix --lib -p synth_gepa -- ` to apply 4 suggestions)
+    Checking synth_mapo v0.2.5 (/Users/joshuapurtell/GitHub/worktrees/optimizers-ig5-20261008/rust/crates/synth_mapo)
+warning: this function has too many arguments (9/7)
+   --> rust/crates/synth_mapo/src/executor.rs:488:1
+    |
+488 | / fn rollout_record(
+489 | |     rollout_id: &str,
+490 | |     candidate: &MapoCandidate,
+491 | |     split: &str,
+...   |
+497 | |     response: Value,
+498 | | ) -> Result<MapoRolloutRecord> {
+    | |______________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_arguments
+    = note: `#[warn(clippy::too_many_arguments)]` on by default
+
+warning: `synth_mapo` (lib) generated 1 warning
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.28s
+mbx[cache]: 0 hits, 1 misses, 3 not looked up; 0 B downloaded, 0 B uploaded, 7.1 MiB stored locally
+mbx[savings]: 126082 compilations served. ask rustc how many it remembers doing.

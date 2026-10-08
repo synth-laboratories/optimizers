@@ -1,0 +1,54 @@
+{"schema": "core-build-admission.v1", "status": "admitted", "mode": "build", "owner_pid": 12511, "lane": null, "required_bytes": 21474836480, "available_bytes": 52070207488, "authority_root": "/Users/joshuapurtell/GitHub/worktrees/core-dev-finish-handoff-20261003"}
+   Compiling synth_optimizer_platform v0.2.5 (/Users/joshuapurtell/GitHub/worktrees/optimizers-ig5-20261008/rust/crates/synth_optimizer_platform)
+   Compiling synth_gateway_client v0.2.5 (/Users/joshuapurtell/GitHub/worktrees/optimizers-ig5-20261008/rust/crates/synth_gateway_client)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.60s
+     Running unittests src/lib.rs (target/debug/deps/synth_gateway_client-4bf8dc2b2c349a91)
+
+running 7 tests
+test tests::run_handle_round_trips_and_carries_no_secret ... ok
+test tests::provider_urls_and_malformed_handles_are_refused ... ok
+test tests::optimizer_usage_hands_billing_to_the_gateway_receipt ... ok
+test tests::output_text_and_truncation_follow_the_responses_wire ... ok
+test tests::request_is_responses_shaped_with_json_object_format ... ok
+test tests::issue_response_parses_and_redacts ... ok
+test tests::sandbox_binding_pins_model_origin_and_hides_token ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/synth_optimizer_platform-f5b392e70f35afd4)
+
+running 29 tests
+test events::tests::optimizer_event_feed_path_for_siblings_events_jsonl ... ok
+test disk_budget::tests::validate_rejects_zero_or_inverted ... ok
+test config::tests::sync_serial_rejects_staleness_policy ... ok
+test config::tests::adaptive_stage_worker_bounds_are_validated ... ok
+test disk_budget::tests::validate_allows_disabled_with_any_values ... ok
+test config::tests::flash_evolve_accepts_reflective_speculative_and_adaptive_stage_workers ... ok
+test config::tests::speculative_completion_requires_flash_evolve_mode ... ok
+test config::tests::locked_luna_and_sol_chatgpt_proposers_are_allowed ... ok
+test config::tests::unknown_chatgpt_proposer_still_fails_closed ... ok
+test config::tests::scoped_native_auth_accepts_gateway_mode_without_provider_key ... ok
+test limits::tests::explicit_zero_cost_remains_admissible ... ok
+test limits::tests::unknown_settled_cost_blocks_the_next_paid_effect ... ok
+test observability::tests::child_eval_ref_is_resource_ref_not_signed_blob ... ok
+test config::tests::remote_policy_cannot_request_library_local_credentials ... ok
+test observability::tests::luna_and_sol_are_policy_configs_not_tasks ... ok
+test observability::tests::missing_sequence_deserializes_as_none_not_zero ... ok
+test observability::tests::present_sequence_is_preserved ... ok
+test observability::tests::proposer_delta_delta_is_generation_channel_text ... ok
+test observability::tests::proposer_delta_missing_generation_is_omitted_not_zero ... ok
+test observability::tests::protocol_item_deltas_become_channel_text_chunks ... ok
+test usage::tests::reported_cost_fold_is_any_unknown_to_none ... ok
+test disk_budget::tests::classifies_healthy_soft_hard_thresholds ... ok
+test usage::tests::usage_ledger_preserves_unknown_and_real_zero_costs ... ok
+test disk_budget::tests::directory_size_sums_regular_files ... ok
+test events::tests::dual_writes_optimizer_event_sidecar_for_gepa ... ok
+test events::tests::two_spools_do_not_cross_logs ... ok
+test events::tests::proposer_delta_dual_writes_on_the_same_optimizer_stream ... ok
+test agent_runtime::codex_home::tests::chatgpt_home_staging_is_clean_and_never_copies_model_cache ... ok
+test workspace::nullable_cost_migration_tests::opening_legacy_workspace_makes_reported_cost_columns_nullable ... ok
+
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+mbx[cache]: 0 hits, 1 misses, 1 not looked up, 2 incremental; 0 B downloaded, 0 B uploaded, 0 B stored locally
+mbx[savings]: 676.3 GiB logical of target/ was waiting for checkouts that are never coming back. it has stopped waiting.

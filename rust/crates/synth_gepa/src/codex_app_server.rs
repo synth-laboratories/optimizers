@@ -6,13 +6,13 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use crate::{CandidateRecord, RolloutScore};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use synth_optimizer_platform::{
-    jesterky_workspace_read_model, looks_like_jesterky_manifest,
-    proposer_delta_chunks_from_protocol, read_jesterky_manifest, record_manifest_validation,
-    run_turn, AgentTurnOutcome, CodexTurnRequest, NanoAgentTurnIdentity, NanoCodexExecution,
+    AgentTurnOutcome, CodexTurnRequest, NanoAgentTurnIdentity, NanoCodexExecution,
     NanoCodexSessionPool, NanoCodexTurnRequest, OptimizerError, PromptProgram, Result,
-    SynthOptimizerConfig,
+    SynthOptimizerConfig, jesterky_workspace_read_model, looks_like_jesterky_manifest,
+    proposer_delta_chunks_from_protocol, read_jesterky_manifest, record_manifest_validation,
+    run_turn,
 };
 
 const GEPA_REFLECTIVE_FRAME_SCHEMA_VERSION: &str = "gepa_reflective_frame.v1";
@@ -153,14 +153,18 @@ pub(crate) fn run_deepseek_chat_proposer(input: CodexProposerInput<'_>) -> Resul
         .model
         .clone()
         .filter(|model| !model.trim().is_empty())
-        .ok_or_else(|| OptimizerError::Config("gateway proposer requires proposer.model".to_string()))?;
+        .ok_or_else(|| {
+            OptimizerError::Config("gateway proposer requires proposer.model".to_string())
+        })?;
     let base_url = non_empty(input.config.proposer.base_url.as_deref()).ok_or_else(|| {
         OptimizerError::Config(
             "gateway proposer requires proposer.base_url = a gateway-session:// handle".to_string(),
         )
     })?;
     let handle = synth_gateway_client::SessionHandle::parse(base_url).map_err(|error| {
-        OptimizerError::Config(format!("gateway proposer: {error}; direct provider URLs are retired"))
+        OptimizerError::Config(format!(
+            "gateway proposer: {error}; direct provider URLs are retired"
+        ))
     })?;
     // Two GEPA proposals fit comfortably in 8k output tokens.
     let request = synth_gateway_client::responses_request(
@@ -919,7 +923,8 @@ fn find_jesterky_manifest_for_proposer(input: &CodexProposerInput<'_>) -> Result
         return read_jesterky_manifest(&annotate_path).map(Some);
     }
     let program_metadata = Value::Object(input.program.metadata.clone());
-    if let Some(manifest) = find_jesterky_manifest_in_value(&program_metadata, &input.workspace_dir)?
+    if let Some(manifest) =
+        find_jesterky_manifest_in_value(&program_metadata, &input.workspace_dir)?
     {
         return Ok(Some(manifest));
     }
@@ -967,7 +972,8 @@ fn find_jesterky_manifest_in_value(value: &Value, workspace_dir: &Path) -> Resul
                     if let Some(manifest) = find_jesterky_manifest_in_value(child, workspace_dir)? {
                         return Ok(Some(manifest));
                     }
-                } else if let Some(manifest) = find_jesterky_manifest_in_value(child, workspace_dir)?
+                } else if let Some(manifest) =
+                    find_jesterky_manifest_in_value(child, workspace_dir)?
                 {
                     return Ok(Some(manifest));
                 }
@@ -1229,10 +1235,9 @@ fn write_agent_artifacts(
 
 fn workspace_readme(input: &CodexProposerInput<'_>) -> String {
     let proposal_policy = proposer_policy_text(input);
-    let jesterky_rule = crate::jesterky_workflow::jesterky_workspace_rule(
-        input.config.jesterky_workflow.enabled,
-    )
-    .unwrap_or("");
+    let jesterky_rule =
+        crate::jesterky_workflow::jesterky_workspace_rule(input.config.jesterky_workflow.enabled)
+            .unwrap_or("");
     let jesterky_section = if input.config.jesterky_workflow.enabled {
         "13. REQUIRED: `state/jesterky_proposer_context.md`, `state/jesterky_theme_registry.json`, and `state/jesterky_trace_annotations.jsonl` for jesterky annotate themes.\n14. If present, `state/jesterky_manifest_summary.json`, `state/jesterky_trace_rows.json`, `state/jesterky_optimizer_triples.json`, and `state/jesterky_evidence_refs.json` for jesterky process-tree evidence."
     } else {
@@ -3019,11 +3024,7 @@ fn last_json_value_from_stream(input: &str) -> Option<Value> {
         count += 1;
         last = Some(value);
     }
-    if count > 1 {
-        last
-    } else {
-        None
-    }
+    if count > 1 { last } else { None }
 }
 
 fn proposals_from_manifest(manifest: &Value) -> Result<Value> {
@@ -3258,9 +3259,5 @@ fn write_text(path: &Path, text: &str) -> Result<()> {
 
 fn non_empty(value: Option<&str>) -> Option<&str> {
     let value = value?.trim();
-    if value.is_empty() {
-        None
-    } else {
-        Some(value)
-    }
+    if value.is_empty() { None } else { Some(value) }
 }

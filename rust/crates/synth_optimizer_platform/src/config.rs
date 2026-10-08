@@ -4,9 +4,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
-use crate::agent_runtime::{validate_execution_mode_compat, ExecutionSubstrate};
+use crate::agent_runtime::{ExecutionSubstrate, validate_execution_mode_compat};
 use crate::configured_limits::validate_gepa_limit_config;
 use crate::disk_budget::DiskBudgetConfig;
 use crate::error::{OptimizerError, Result};
@@ -60,7 +60,7 @@ fn default_policy_proxy_mode() -> String {
 }
 
 fn default_policy_credential_mode() -> String {
-    "byok".to_string()
+    "proxy".to_string()
 }
 
 fn default_proposer_backend() -> String {
@@ -802,7 +802,10 @@ impl SynthOptimizerConfig {
         }
         validate_execution_mode_compat(&self.proposer.execution_mode)?;
         validate_proposer_runtime_substrate_config(&self.proposer)?;
-        if matches!(backend, "gateway_responses" | "deepseek_chat" | "chat_completions") {
+        if matches!(
+            backend,
+            "gateway_responses" | "deepseek_chat" | "chat_completions"
+        ) {
             validate_chat_completions_proposer_config(&self.proposer)?;
         }
         validate_openrouter_proposer_config(&self.proposer)?;
@@ -1013,10 +1016,37 @@ pub struct PolicyConfig {
     pub proxy_mode: String,
     #[serde(default = "default_policy_credential_mode")]
     pub credential_mode: String,
-    #[serde(default, skip_serializing)]
-    pub api_key_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway_session: Option<String>,
+    // Only the explicitly excluded user-local SDK service sets this in process.
+    #[serde(skip)]
+    pub local_key_env: Option<String>,
     #[serde(default, skip_serializing_if = "Map::is_empty")]
     pub config: Map<String, Value>,
+}
+
+impl PolicyConfig {
+    /// SDK wire config contains only the scoped token environment name, never its value.
+    pub fn sandbox_wire_config(&self) -> Result<Value> {
+        let mut body = serde_json::to_value(self)
+            .map_err(|error| OptimizerError::Config(error.to_string()))?;
+        if let Some(key) = &self.local_key_env {
+            body["api_key_env"] = json!(key);
+        } else if self.enabled {
+            let handle = synth_gateway_client::SessionHandle::parse(
+                self.gateway_session.as_deref().ok_or_else(|| OptimizerError::Config("policy.gateway_session missing".into()))?
+            ).map_err(|error| OptimizerError::Config(error.to_string()))?;
+            let environment = synth_gateway_client::session(&handle)
+                .and_then(|session| session.sandbox_environment(&self.model))
+                .map_err(|error| OptimizerError::Config(error.to_string()))?;
+            let base_url = &environment["SYNTH_GATEWAY_SANDBOX_BASE_URL"];
+            body["base_url"] = json!(base_url);
+            body["inference_url"] = json!(base_url);
+            body["api_key_env"] = json!(synth_gateway_client::SESSION_TOKEN_ENV);
+            body["billing_authority"] = json!(synth_gateway_client::BILLING_AUTHORITY);
+        }
+        Ok(body)
+    }
 }
 
 impl Default for PolicyConfig {
@@ -1034,7 +1064,8 @@ impl Default for PolicyConfig {
             tool_call_style: default_policy_tool_call_style(),
             proxy_mode: default_policy_proxy_mode(),
             credential_mode: default_policy_credential_mode(),
-            api_key_env: None,
+            gateway_session: None,
+            local_key_env: None,
             config: Map::new(),
         }
     }
@@ -1073,6 +1104,8 @@ pub struct ProposerConfig {
     pub codex_home: Option<PathBuf>,
     #[serde(default)]
     pub api_key_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway_session: Option<String>,
     #[serde(default = "default_timeout_seconds")]
     pub timeout_seconds: u64,
     /// Max gap between JSON-RPC messages before a turn is flagged as stalled.
@@ -1114,6 +1147,7 @@ impl Default for ProposerConfig {
             copy_host_auth: false,
             codex_home: None,
             api_key_env: None,
+            gateway_session: None,
             timeout_seconds: default_timeout_seconds(),
             message_stall_timeout_seconds: default_message_stall_timeout_seconds(),
             model: None,
@@ -1280,7 +1314,7 @@ pub fn resolve_proposer_auth_launch_mode(
 ) -> Result<ProposerAuthLaunchMode> {
     let auth_mode = proposer_auth_mode_normalized(&proposer.auth_mode);
     match auth_mode.as_str() {
-        "api_key" => Ok(ProposerAuthLaunchMode::ApiKey),
+        "api_key" | "gateway_session" => Ok(ProposerAuthLaunchMode::ApiKey),
         "chatgpt" => Ok(ProposerAuthLaunchMode::Chatgpt),
         "auto" => {
             if proposer_model_requires_chatgpt_auth(proposer) {
@@ -1299,8 +1333,7 @@ pub fn resolve_proposer_auth_launch_mode(
                 Ok(ProposerAuthLaunchMode::Chatgpt)
             } else {
                 Err(OptimizerError::Config(
-                    "proposer.auth_mode = \"auto\" did not resolve: export an API key \
-                     (proposer.api_key_env, default OPENAI_API_KEY) or set proposer.codex_home \
+                    "proposer.auth_mode = \"auto\" did not resolve: set proposer.gateway_session or proposer.codex_home \
                      for ChatGPT subscription auth"
                         .to_string(),
                 ))
@@ -1390,7 +1423,7 @@ pub fn resolve_chatgpt_codex_home_source(proposer: &ProposerConfig) -> Result<Pa
 fn validate_proposer_auth_config(proposer: &ProposerConfig) -> Result<()> {
     let auth_mode = proposer_auth_mode_normalized(&proposer.auth_mode);
     match auth_mode.as_str() {
-        "auto" | "api_key" | "chatgpt" => {}
+        "auto" | "api_key" | "gateway_session" | "chatgpt" => {}
         mode => {
             return Err(OptimizerError::Config(format!(
                 "unsupported proposer.auth_mode {mode:?}; expected auto, api_key, or chatgpt \
@@ -1489,7 +1522,11 @@ fn validate_chat_completions_proposer_config(proposer: &ProposerConfig) -> Resul
                 .to_string(),
         ));
     }
-    if proposer.model.as_deref().is_none_or(|model| model.trim().is_empty()) {
+    if proposer
+        .model
+        .as_deref()
+        .is_none_or(|model| model.trim().is_empty())
+    {
         return Err(OptimizerError::Config(
             "gateway proposer backend requires proposer.model".to_string(),
         ));
@@ -1506,76 +1543,16 @@ fn validate_openrouter_proposer_config(proposer: &ProposerConfig) -> Result<()> 
     if !proposer.provider.eq_ignore_ascii_case("openrouter") {
         return Ok(());
     }
-    let model = proposer
-        .model
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| {
-            OptimizerError::Config(
-                "proposer.provider = \"openrouter\" requires proposer.model".to_string(),
-            )
-        })?;
-    // Curated allowlist of first-class OpenRouter proposers (verified, with a
-    // known static price). Any other slug requires the explicit
-    // proposer.allow_unverified_model opt-in, after which OpenRouter validates
-    // the slug and cost flows through from its reported usage.
-    const VERIFIED_OPENROUTER_MODELS: [&str; 1] = ["x-ai/grok-4.3"];
-    let normalized_model = model.trim().to_ascii_lowercase();
-    if !proposer.allow_unverified_model
-        && !VERIFIED_OPENROUTER_MODELS.contains(&normalized_model.as_str())
-    {
-        return Err(OptimizerError::Config(format!(
-            "OpenRouter proposer.model {model:?} is not in the verified allowlist ({}); \
-             set proposer.allow_unverified_model = true to use any OpenRouter model",
-            VERIFIED_OPENROUTER_MODELS.join(", ")
-        )));
-    }
-    if proposer.backend != "codex_app_server" {
-        return Err(OptimizerError::Config(
-            "OpenRouter proposer requires proposer.backend = \"codex_app_server\"".to_string(),
-        ));
-    }
-    let auth_mode = proposer_auth_mode_normalized(&proposer.auth_mode);
-    if !matches!(auth_mode.as_str(), "api_key" | "auto") {
-        return Err(OptimizerError::Config(
-            "OpenRouter proposer requires proposer.auth_mode = \"api_key\" or \"auto\"".to_string(),
-        ));
-    }
-    let api_key_env = proposer
-        .api_key_env
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| {
-            OptimizerError::Config(
-                "OpenRouter proposer requires proposer.api_key_env, usually OPENROUTER_API_KEY"
-                    .to_string(),
-            )
-        })?;
-    if api_key_env == "OPENAI_API_KEY" {
-        return Err(OptimizerError::Config(
-            "OpenRouter proposer must not use OPENAI_API_KEY; set \
-             proposer.api_key_env = \"OPENROUTER_API_KEY\""
-                .to_string(),
-        ));
-    }
-    let api_family = normalize_enum_value(&proposer.api_family);
-    if !matches!(api_family.as_str(), "chat_completions" | "responses") {
-        return Err(OptimizerError::Config(format!(
-            "OpenRouter proposer supports chat_completions or responses; got {:?}",
-            proposer.api_family
-        )));
-    }
-    if let Some(reasoning_effort) = proposer.reasoning_effort.as_deref() {
-        let normalized_effort = normalize_enum_value(reasoning_effort);
-        if !matches!(
-            normalized_effort.as_str(),
-            "none" | "low" | "medium" | "high"
-        ) {
-            return Err(OptimizerError::Config(format!(
-                "OpenRouter proposer.reasoning_effort must be none, low, medium, \
-                 or high; got {reasoning_effort:?}"
-            )));
-        }
+    // The session issuer owns model/pricing admission; provider labels are descriptive.
+    let handle = if proposer.backend == "codex_app_server" {
+        proposer.gateway_session.as_deref()
+    } else {
+        proposer.base_url.as_deref()
+    }.ok_or_else(|| OptimizerError::Config("OpenRouter proposer requires a scoped gateway session".into()))?;
+    synth_gateway_client::SessionHandle::parse(handle)
+        .map_err(|error| OptimizerError::Config(error.to_string()))?;
+    if proposer.api_key_env.is_some() {
+        return Err(OptimizerError::Config("gateway proposer cannot carry provider credential env refs".into()));
     }
     Ok(())
 }
@@ -2313,6 +2290,11 @@ fn validate_policy_config(config: &PolicyConfig) -> Result<()> {
     if !config.enabled {
         return Ok(());
     }
+    if config.local_key_env.is_none() {
+        let handle = config.gateway_session.as_deref().ok_or_else(||OptimizerError::Config("policy.gateway_session is required; local runs need an explicitly minted gateway-session://env session".into()))?;
+        synth_gateway_client::SessionHandle::parse(handle)
+            .map_err(|error| OptimizerError::Config(format!("policy.gateway_session: {error}")))?;
+    }
     if config.provider.trim().is_empty() {
         return Err(OptimizerError::Config(
             "policy.provider must be non-empty".to_string(),
@@ -2373,15 +2355,12 @@ fn validate_policy_config(config: &PolicyConfig) -> Result<()> {
             config.credential_mode
         )));
     }
-    if credential_mode == "proxy"
-        && config
-            .inference_url
-            .as_deref()
-            .is_none_or(|value| value.trim().is_empty())
+    if config.local_key_env.is_none()
+        && (credential_mode != "proxy"
+            || config.inference_url.is_some()
+            || config.base_url.is_some())
     {
-        return Err(OptimizerError::Config(
-            "policy.inference_url must be set when policy.credential_mode is proxy".to_string(),
-        ));
+        return Err(OptimizerError::Config("policy.gateway_session owns the proxy URL and credentials; direct policy URLs/BYOK keys are retired".into()));
     }
     for key in config.config.keys() {
         let normalized = normalize_enum_value(key);
@@ -2905,6 +2884,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn remote_policy_cannot_request_library_local_credentials() {
+        assert!(serde_json::from_value::<PolicyConfig>(json!({"api_key_env": "provider-key"})).is_err());
+        assert!(serde_json::from_value::<PolicyConfig>(json!({"local_key_env": "provider-key"})).is_err());
+        let policy: PolicyConfig = serde_json::from_value(json!({"gateway_session": "gateway-session://env"})).unwrap();
+        validate_policy_config(&policy).unwrap();
+        let mut direct = policy;
+        direct.base_url = Some("https://example.com".into());
+        assert!(validate_policy_config(&direct).is_err());
+    }
+
+    #[test]
+    fn scoped_native_auth_accepts_gateway_mode_without_provider_key() {
+        let proposer = ProposerConfig { provider: "openrouter".into(), auth_mode: "gateway_session".into(),
+            gateway_session: Some("gateway-session://env".into()), ..ProposerConfig::default() };
+        validate_proposer_auth_config(&proposer).unwrap();
+        validate_openrouter_proposer_config(&proposer).unwrap();
+    }
+
+    #[test]
     fn locked_luna_and_sol_chatgpt_proposers_are_allowed() {
         for model in ["gpt-5.6-luna", "gpt-5.6-sol"] {
             assert!(CHATGPT_PROPOSER_MODELS.contains(&model));
@@ -2944,9 +2942,11 @@ mod tests {
         let error = validate_gepa_pipeline_config(&config)
             .expect_err("speculative completion should reject async_pipelined");
 
-        assert!(error
-            .to_string()
-            .contains("speculative_completion requires mode"));
+        assert!(
+            error
+                .to_string()
+                .contains("speculative_completion requires mode")
+        );
     }
 
     #[test]
@@ -2970,8 +2970,10 @@ mod tests {
         let error =
             validate_gepa_pipeline_config(&config).expect_err("max below min should be invalid");
 
-        assert!(error
-            .to_string()
-            .contains("adaptive_stage_workers.max must be >= min"));
+        assert!(
+            error
+                .to_string()
+                .contains("adaptive_stage_workers.max must be >= min")
+        );
     }
 }

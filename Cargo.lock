@@ -1305,6 +1305,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "synth_gateway_client"
+version = "0.2.5"
+dependencies = [
+ "reqwest",
+ "serde_json",
+ "thiserror 1.0.69",
+ "time",
+]
+
+[[package]]
 name = "synth_gepa"
 version = "0.2.5"
 dependencies = [
@@ -1315,6 +1325,7 @@ dependencies = [
  "serde_json",
  "sha1",
  "sha2",
+ "synth_gateway_client",
  "synth_optimizer_platform",
  "time",
 ]

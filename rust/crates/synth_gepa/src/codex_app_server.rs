@@ -6,7 +6,6 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use crate::{CandidateRecord, RolloutScore};
-use reqwest::blocking::Client;
 use serde_json::{json, Map, Value};
 use synth_optimizer_platform::{
     jesterky_workspace_read_model, looks_like_jesterky_manifest,
@@ -141,156 +140,94 @@ pub(crate) fn run_codex_staleness_reviewer(
     build_staleness_review_response(&input, &model, outcome)
 }
 
-/// Direct OpenAI-compatible Chat Completions proposer. Works for any provider whose
-/// `/chat/completions` endpoint matches the OpenAI shape.
-/// This is the path NVIDIA must use: the codex_app_server route speaks the Responses
-/// wire, which `integrate.api.nvidia.com` does not serve.
+/// Direct (non-agentic) proposer through the inference gateway (SYN-4192). The
+/// proposer holds no provider key: `proposer.base_url` names a gateway session
+/// handle (`gateway-session://run/<run>?org=<org>&route_set=<set>` for hosted runs,
+/// `gateway-session://env` for local ones) and the call speaks the Responses wire.
+/// The gateway's usage receipt is the money record for the call.
 pub(crate) fn run_deepseek_chat_proposer(input: CodexProposerInput<'_>) -> Result<Value> {
-    let provider = input.config.proposer.provider.trim().to_ascii_lowercase();
-    // (default base_url, default api_key_env, default model, send DeepSeek `thinking` field)
-    let (default_base_url, default_api_key_env, default_model, deepseek_thinking) =
-        match provider.as_str() {
-            "deepseek" => (
-                "https://api.deepseek.com",
-                "DEEPSEEK_API_KEY",
-                "deepseek-v4-flash",
-                true,
-            ),
-            "nvidia" => (
-                "https://integrate.api.nvidia.com/v1",
-                "NVIDIA_API_KEY",
-                "nvidia/nemotron-3-ultra-550b-a55b",
-                false,
-            ),
-            "openai" => (
-                "https://api.openai.com/v1",
-                "OPENAI_API_KEY",
-                "gpt-4.1-mini",
-                false,
-            ),
-            other => {
-                return Err(OptimizerError::Config(format!(
-                    "chat-completions proposer backend requires proposer.provider = \"deepseek\", \"nvidia\", or \"openai\"; got {other:?}"
-                )))
-            }
-        };
     materialize_workspace(&input)?;
     let model = input
         .config
         .proposer
         .model
         .clone()
-        .unwrap_or_else(|| default_model.to_string());
-    let api_key_env =
-        non_empty(input.config.proposer.api_key_env.as_deref()).unwrap_or(default_api_key_env);
-    let api_key = env::var(api_key_env)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| {
-            OptimizerError::Proposer(format!(
-                "chat-completions proposer ({provider}) requires non-empty {api_key_env}"
-            ))
-        })?;
-    let base_url = input
-        .config
-        .proposer
-        .base_url
-        .as_deref()
-        .unwrap_or(default_base_url)
-        .trim_end_matches('/')
-        .to_string();
-    let mut request = json!({
-        "model": model,
-        "messages": [
-            {
-                "role": "system",
-                "content": "You are the GEPA workspace proposer. Return only a JSON object that matches the requested manifest schema."
-            },
-            {
-                "role": "user",
-                "content": deepseek_chat_prompt(&input)?
-            }
-        ],
-        "response_format": {"type": "json_object"},
-        // Keep OpenRouter-compatible requests inside common 128k context windows.
-        // Two GEPA proposals fit comfortably in 8k while 32k can make the
-        // provider reject otherwise-valid evidence packets before generation.
-        "max_tokens": CHAT_COMPLETIONS_PROPOSER_MAX_TOKENS,
-        "stream": false
-    });
-    // DeepSeek-specific switch that suppresses its reasoning channel so `content` is the
-    // bare JSON manifest. NVIDIA rejects unknown request fields, so only send it for DeepSeek.
-    if deepseek_thinking {
-        request["thinking"] = json!({"type": "disabled"});
-    }
-    let client = Client::builder()
-        .timeout(Duration::from_secs(
-            input.config.proposer.timeout_seconds.max(1),
-        ))
-        .build()?;
-    // Resilience: retry the whole request when the response can't be decoded,
-    // the content is missing, or the model's manifest JSON is malformed/truncated
-    // (transient DeepSeek errors). HTTP 429/5xx are already retried inside
-    // post_deepseek_chat_completion; this outer loop also covers decode/parse.
-    let (chat_response, manifest) = {
+        .filter(|model| !model.trim().is_empty())
+        .ok_or_else(|| OptimizerError::Config("gateway proposer requires proposer.model".to_string()))?;
+    let base_url = non_empty(input.config.proposer.base_url.as_deref()).ok_or_else(|| {
+        OptimizerError::Config(
+            "gateway proposer requires proposer.base_url = a gateway-session:// handle".to_string(),
+        )
+    })?;
+    let handle = synth_gateway_client::SessionHandle::parse(base_url).map_err(|error| {
+        OptimizerError::Config(format!("gateway proposer: {error}; direct provider URLs are retired"))
+    })?;
+    // Two GEPA proposals fit comfortably in 8k output tokens.
+    let request = synth_gateway_client::responses_request(
+        &model,
+        "You are the GEPA workspace proposer. Return only a JSON object that matches the requested manifest schema.",
+        &deepseek_chat_prompt(&input)?,
+        CHAT_COMPLETIONS_PROPOSER_MAX_TOKENS,
+        true,
+        None,
+    );
+    let timeout = Duration::from_secs(input.config.proposer.timeout_seconds.max(1));
+    // Retry the whole request when the output is missing, truncated or malformed
+    // (transient); typed gateway refusals (e.g. ceiling_exhausted) stop at once.
+    let (response, receipt_id, manifest) = {
         let mut last_err: Option<String> = None;
-        let mut result: Option<(Value, Value)> = None;
+        let mut result: Option<(Value, Option<String>, Value)> = None;
         for attempt in 1..=3usize {
-            match post_deepseek_chat_completion(&client, &base_url, &api_key, &request, 4) {
-                Ok(resp) => {
-                    match resp
-                        .pointer("/choices/0/message/content")
-                        .and_then(Value::as_str)
-                    {
-                        Some(content) => match serde_json::from_str::<Value>(content.trim()) {
-                            Ok(m) => {
-                                result = Some((resp, m));
-                                break;
-                            }
-                            Err(e) => last_err = Some(format!("manifest JSON parse failed: {e}")),
-                        },
-                        None => {
-                            last_err =
-                                Some("response missing choices[0].message.content".to_string())
+            let reply = synth_gateway_client::post_responses(&handle, &model, &request, timeout, 4)
+                .map_err(|error| OptimizerError::Proposer(format!("gateway proposer: {error}")))?;
+            if synth_gateway_client::truncated(&reply.body) {
+                last_err = Some("output truncated at max_output_tokens".to_string());
+            } else {
+                match synth_gateway_client::output_text(&reply.body) {
+                    Some(content) => match serde_json::from_str::<Value>(content.trim()) {
+                        Ok(m) => {
+                            result = Some((reply.body, reply.receipt_id, m));
+                            break;
                         }
-                    }
+                        Err(e) => last_err = Some(format!("manifest JSON parse failed: {e}")),
+                    },
+                    None => last_err = Some("response missing output text".to_string()),
                 }
-                Err(e) => last_err = Some(e.to_string()),
             }
             if attempt < 3 {
                 std::thread::sleep(Duration::from_secs(2 * attempt as u64));
             }
         }
-        match result {
-            Some(pair) => pair,
-            None => {
-                return Err(OptimizerError::Proposer(format!(
-                    "chat-completions proposer failed after 3 attempts: {}",
-                    last_err.unwrap_or_else(|| "unknown error".to_string())
-                )))
-            }
-        }
+        result.ok_or_else(|| {
+            OptimizerError::Proposer(format!(
+                "gateway proposer failed after 3 attempts: {}",
+                last_err.unwrap_or_else(|| "unknown error".to_string())
+            ))
+        })?
     };
     let manifest_path = input.workspace_dir.join("proposal").join("manifest.json");
     write_json(&manifest_path, &manifest)?;
     let manifest = read_manifest(&input.workspace_dir)?;
     let proposals = proposals_from_manifest(&manifest)?;
     let evidence_warnings = manifest_evidence_warnings(&input, &manifest, &proposals);
-    let usage = chat_response.get("usage").cloned().ok_or_else(|| {
-        OptimizerError::Proposer("chat-completions proposer response missing usage".to_string())
-    })?;
-    let usage = normalize_proposer_usage(input.config, &model, usage);
-    write_deepseek_chat_artifacts(&input, &request, &chat_response)?;
+    let mut usage = synth_gateway_client::optimizer_usage(&response, receipt_id.as_deref());
+    if let Value::Object(map) = &mut usage {
+        map.insert("model".to_string(), Value::String(model.clone()));
+    }
+    write_deepseek_chat_artifacts(&input, &request, &response)?;
     write_workspace_pack_manifest(&input.workspace_dir)?;
     Ok(json!({
-        "backend": input.config.proposer.backend,
+        "backend": synth_gateway_client::BACKEND,
         "runtime_substrate": "local",
         "workspace": input.workspace_dir,
         "manifest": manifest,
         "proposals": proposals,
         "usage": usage,
         "evidence_warnings": evidence_warnings,
-        "proposer_stream_chunks": chat_content_stream_chunks(&chat_response),
+        "gateway_receipt_id": receipt_id,
+        "proposer_stream_chunks": synth_gateway_client::output_text(&response)
+            .map(|text| vec![text])
+            .unwrap_or_default(),
     }))
 }
 
@@ -345,46 +282,6 @@ fn deepseek_chat_prompt(input: &CodexProposerInput<'_>) -> Result<String> {
     Ok(prompt)
 }
 
-fn post_deepseek_chat_completion(
-    client: &Client,
-    base_url: &str,
-    api_key: &str,
-    request: &Value,
-    max_attempts: usize,
-) -> Result<Value> {
-    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    for attempt in 1..=max_attempts {
-        let response = client
-            .post(&url)
-            .bearer_auth(api_key)
-            .json(request)
-            .send()?;
-        let status = response.status();
-        let text = response.text()?;
-        if status.is_success() {
-            return Ok(serde_json::from_str(&text)?);
-        }
-        if attempt < max_attempts && matches!(status.as_u16(), 429 | 500 | 502 | 503 | 504) {
-            let delay = match attempt {
-                1 => Duration::from_secs(2),
-                2 => Duration::from_secs(5),
-                _ => Duration::from_secs(10),
-            };
-            std::thread::sleep(delay);
-            continue;
-        }
-        return Err(OptimizerError::Proposer(format!(
-            "DeepSeek chat proposer failed after {attempt}/{max_attempts} attempts with status \
-             {}: {}",
-            status,
-            text.chars().take(1000).collect::<String>()
-        )));
-    }
-    Err(OptimizerError::Proposer(
-        "DeepSeek chat proposer retry loop exited unexpectedly".to_string(),
-    ))
-}
-
 fn write_deepseek_chat_artifacts(
     input: &CodexProposerInput<'_>,
     request: &Value,
@@ -411,16 +308,6 @@ fn proposer_stream_chunks_from_messages(messages: &[Value]) -> Vec<Value> {
         .into_iter()
         .map(|(channel, text)| json!({"channel": channel, "text": text}))
         .collect()
-}
-
-fn chat_content_stream_chunks(chat_response: &Value) -> Vec<Value> {
-    chat_response
-        .pointer("/choices/0/message/content")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-        .map(|text| vec![json!({"channel": "content", "text": text})])
-        .unwrap_or_default()
 }
 
 fn build_response_from_outcome(

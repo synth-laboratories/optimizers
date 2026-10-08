@@ -788,7 +788,7 @@ impl SynthOptimizerConfig {
         self.disk_budget.validate()?;
         let backend = self.proposer.backend.trim();
         match backend {
-            "codex_app_server" | "deepseek_chat" | "chat_completions" => {}
+            "codex_app_server" | "gateway_responses" | "deepseek_chat" | "chat_completions" => {}
             "local_process_json" => {
                 return Err(OptimizerError::Config(
                     "unsupported proposer.backend \"local_process_json\"; GEPA proposer work must use codex_app_server workspace-backed proposing".to_string(),
@@ -796,13 +796,13 @@ impl SynthOptimizerConfig {
             }
             _ => {
                 return Err(OptimizerError::Config(format!(
-                    "unsupported proposer.backend {backend:?}; expected codex_app_server, chat_completions, or deepseek_chat"
+                    "unsupported proposer.backend {backend:?}; expected codex_app_server or gateway_responses"
                 )));
             }
         }
         validate_execution_mode_compat(&self.proposer.execution_mode)?;
         validate_proposer_runtime_substrate_config(&self.proposer)?;
-        if matches!(backend, "deepseek_chat" | "chat_completions") {
+        if matches!(backend, "gateway_responses" | "deepseek_chat" | "chat_completions") {
             validate_chat_completions_proposer_config(&self.proposer)?;
         }
         validate_openrouter_proposer_config(&self.proposer)?;
@@ -1469,24 +1469,34 @@ fn validate_proposer_runtime_substrate_config(proposer: &ProposerConfig) -> Resu
     }
 }
 
+/// Direct proposers speak the Responses wire to the inference gateway (SYN-4192):
+/// `base_url` names a gateway session handle, never a provider endpoint, and no
+/// provider key is configured.
 fn validate_chat_completions_proposer_config(proposer: &ProposerConfig) -> Result<()> {
-    let provider = proposer.provider.trim().to_ascii_lowercase();
-    if !matches!(provider.as_str(), "deepseek" | "nvidia" | "openai") {
-        return Err(OptimizerError::Config(format!(
-            "chat-completions proposer backend requires proposer.provider = \"deepseek\", \"nvidia\", or \"openai\"; got {:?}",
-            proposer.provider
-        )));
-    }
-    if proposer_auth_mode_normalized(&proposer.auth_mode) != "api_key" {
+    if !proposer
+        .base_url
+        .as_deref()
+        .is_some_and(|url| url.trim().starts_with("gateway-session://"))
+    {
         return Err(OptimizerError::Config(
-            "chat-completions proposer backend requires proposer.auth_mode = \"api_key\""
+            "gateway proposer backend requires proposer.base_url = a gateway-session:// handle; direct provider URLs are retired"
                 .to_string(),
+        ));
+    }
+    if proposer.api_key_env.is_some() {
+        return Err(OptimizerError::Config(
+            "gateway proposer backend takes no proposer.api_key_env; the gateway holds provider credentials"
+                .to_string(),
+        ));
+    }
+    if proposer.model.as_deref().is_none_or(|model| model.trim().is_empty()) {
+        return Err(OptimizerError::Config(
+            "gateway proposer backend requires proposer.model".to_string(),
         ));
     }
     if !matches!(proposer.runtime_substrate, ExecutionSubstrate::Local) {
         return Err(OptimizerError::Config(
-            "chat-completions proposer backend requires proposer.runtime_substrate = \"local\""
-                .to_string(),
+            "gateway proposer backend requires proposer.runtime_substrate = \"local\"".to_string(),
         ));
     }
     Ok(())

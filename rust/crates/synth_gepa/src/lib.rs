@@ -21230,9 +21230,9 @@ fn run_proposer(
                 error
             })
         }
-        // Direct OpenAI-compatible /chat/completions proposer. "deepseek_chat" is the
-        // back-compat name; "chat_completions" is the provider-agnostic one (deepseek | nvidia).
-        "deepseek_chat" | "chat_completions" => {
+        // Direct proposer through the inference gateway (Responses wire, SYN-4192).
+        // "chat_completions"/"deepseek_chat" are older names for the same backend.
+        "gateway_responses" | "deepseek_chat" | "chat_completions" => {
             codex_app_server::run_deepseek_chat_proposer(codex_app_server::CodexProposerInput {
                 config,
                 program,
@@ -21244,8 +21244,8 @@ fn run_proposer(
             })
             .map_err(|error| {
                 eprintln!(
-                    "[gepa-proposer] chat_completions proposer ({}) failed: {error}",
-                    config.proposer.provider
+                    "[gepa-proposer] gateway proposer ({}) failed: {error}",
+                    config.proposer.model.as_deref().unwrap_or("<unset>")
                 );
                 error
             })
@@ -21254,7 +21254,7 @@ fn run_proposer(
             "unsupported proposer.backend \"local_process_json\"; GEPA proposer work must use codex_app_server workspace-backed proposing".to_string(),
         )),
         backend => Err(OptimizerError::Config(format!(
-            "unsupported proposer.backend {backend:?}; expected codex_app_server, chat_completions, or deepseek_chat"
+            "unsupported proposer.backend {backend:?}; expected codex_app_server or gateway_responses"
         ))),
     }
 }

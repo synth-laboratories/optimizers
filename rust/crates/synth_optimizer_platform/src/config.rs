@@ -792,6 +792,10 @@ pub struct ContainerAuthRefreshConfig {
     pub lease_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connector_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offer_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<String>,
     #[serde(default)]
     pub refresh_interval_seconds: Option<u64>,
 }

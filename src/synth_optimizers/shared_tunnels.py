@@ -8,8 +8,11 @@ from __future__ import annotations
 import secrets
 import threading
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from uuid import UUID, uuid4
 
+from .tunnel_custody import CallerLeaseCustody
+from .tunnel_custody_journal import FileLeaseCustodyJournal, TunnelCustodyInDoubt
 from .tunnels import (
     SynthTunnelLease,
     TunnelError,
@@ -33,6 +36,7 @@ class SharedSynthTunnelLease(SynthTunnelLease):
         local_url: str,
         client,
         expires_at: str,
+        custody: CallerLeaseCustody,
     ) -> None:
         super().__init__(
             provider=TunnelProvider.SYNTH_TUNNEL,
@@ -49,16 +53,41 @@ class SharedSynthTunnelLease(SynthTunnelLease):
         self.agent_connect_required = False
         self._stop_refresh = threading.Event()
         self._refresh_thread: threading.Thread | None = None
-        self._close_payload: dict | None = None
+        self._custody = custody
+        self.receipt_path = custody.journal.path
 
     def hosted_auth_refresh(self) -> dict:
         """Only this job lease is delegated to the enrolled hosted executor."""
-        return {
+        descriptor = {
             "provider": "synth_tunnel_v2",
             "connector_id": str(self.connector),
             "lease_id": self.lease_id,
             "refresh_interval_seconds": 30,
         }
+        offer = self._custody.receipt.get("offer_request")
+        if offer:
+            descriptor.update(offer_id=offer["offer"], job_id=offer["job_id"])
+        return descriptor
+
+    def prepare_handoff(self, job_id: str | None = None) -> dict:
+        with self._credentials_lock:
+            if self._closed:
+                raise TunnelError("shared tunnel lease is closed")
+            return self._custody.prepare_handoff(job_id)
+
+    def handoff_status(self) -> dict:
+        with self._credentials_lock:
+            return self._custody.handoff_status()
+
+    def submit_once(self, payload: dict) -> dict:
+        with self._credentials_lock:
+            if self._closed:
+                raise TunnelError("shared tunnel lease is closed")
+            return self._custody.submit_once(payload)
+
+    def submission_status(self) -> dict:
+        with self._credentials_lock:
+            return self._custody.submission_status()
 
     def refresh_worker_token(self) -> str:
         with self._credentials_lock:
@@ -115,21 +144,7 @@ class SharedSynthTunnelLease(SynthTunnelLease):
             if self._closed:
                 return
             self._stop_refresh.set()
-            if self._close_payload is None:
-                status = self.client._json_request(
-                    "GET", f"/api/v1/synthtunnel/v2/connectors/{self.connector}"
-                )
-                self._close_payload = {
-                    "command_id": str(uuid4()),
-                    "expected_revision": status["revision"],
-                    "deadline_at": (datetime.now(UTC) + timedelta(seconds=30)).isoformat(),
-                    "expected_lease_revision": 1,
-                }
-            self.client._json_request(
-                "POST",
-                f"/api/v1/synthtunnel/v2/connectors/{self.connector}/leases/{self.lease_id}/revoke",
-                self._close_payload,
-            )
+            self._custody.close()
             self._closed = True
         # No agent.stop(), registration removal, or shared connector shutdown.
 
@@ -143,6 +158,7 @@ def borrow_shared_synth_tunnel(
     gateway_url: str,
     local_url: str,
     requested_ttl_seconds: int = 3600,
+    custody_directory: Path | str | None = None,
 ) -> SharedSynthTunnelLease:
     """Acquire a distinct job lease on registered routes without owning their lifetime."""
     import re
@@ -173,22 +189,36 @@ def borrow_shared_synth_tunnel(
     status = client._json_request("GET", f"/api/v1/synthtunnel/v2/connectors/{connector}")
     lease = uuid4()
     expiry = datetime.now(UTC) + timedelta(seconds=requested_ttl_seconds)
-    client._json_request(
-        "POST",
-        f"/api/v1/synthtunnel/v2/connectors/{connector}/leases",
-        {
-            "command_id": str(uuid4()),
-            "expected_revision": status["revision"],
-            "deadline_at": (datetime.now(UTC) + timedelta(seconds=30)).isoformat(),
-            "lease_id": str(lease),
-            "route_token": "rt_" + secrets.token_urlsafe(24),
-            "routes": [str(route) for route in routes],
-            "expires_at": expiry.isoformat(),
-            "owner_binding": str(uuid4()),
-            "owner_kind": "job",
-            "max_inflight": 64,
-        },
+    request = {
+        "command_id": str(uuid4()),
+        "expected_revision": status["revision"],
+        "deadline_at": (datetime.now(UTC) + timedelta(seconds=30)).isoformat(),
+        "lease_id": str(lease),
+        "route_token": "rt_" + secrets.token_urlsafe(24),
+        "routes": [str(route) for route in routes],
+        "expires_at": expiry.isoformat(),
+        "owner_binding": str(uuid4()),
+        "owner_kind": "job",
+        "max_inflight": 64,
+    }
+    journal = FileLeaseCustodyJournal(
+        Path(custody_directory or Path.cwd() / ".synth/tunnel-leases"), lease
     )
+    receipt = journal.save(
+        {
+            "connector": str(connector),
+            "phase": "grant_in_doubt",
+            "grant_request": request,
+            "public_url": f"{gateway_url.rstrip('/')}/v2/leases/{lease}/routes/{route_name}",
+            "local_url": local_url,
+        }
+    )
+    custody = CallerLeaseCustody(client, journal, receipt)
+    try:
+        client._json_request("POST", custody.connector_path + "/leases", request)
+    except Exception as error:
+        raise TunnelCustodyInDoubt(journal.path, "grant") from error
+    custody.settle_grant()
     capability = client._json_request(
         "POST",
         f"/api/v1/synthtunnel/v2/connectors/{connector}/leases/{lease}/forward-capability",
@@ -202,4 +232,33 @@ def borrow_shared_synth_tunnel(
         local_url=local_url,
         client=client,
         expires_at=expiry.isoformat(),
+        custody=custody,
+    )
+
+
+def recover_shared_synth_tunnel(client, receipt_path: Path | str) -> SharedSynthTunnelLease:
+    """Read retained custody and current authority; never repeat a control effect."""
+    path = Path(receipt_path)
+    journal = FileLeaseCustodyJournal(path.parent, UUID(path.stem))
+    if path.name != journal.path.name:
+        raise TunnelError("invalid custody receipt filename")
+    custody = CallerLeaseCustody(client, journal, journal.read())
+    if custody.receipt["phase"] in {"closed", "detached", "close_in_doubt"}:
+        custody.close()
+        raise TunnelError("shared tunnel handle is closed")
+    current = custody.settle_grant()
+    if custody.receipt.get("offer_request"):
+        custody.handoff_status()
+    capability = client._json_request(
+        "POST", custody.lease_path + "/forward-capability", {"ttl_seconds": 300}
+    )
+    return SharedSynthTunnelLease(
+        connector=UUID(custody.receipt["connector"]),
+        lease=journal.lease,
+        public_url=custody.receipt["public_url"],
+        local_url=custody.receipt["local_url"],
+        worker_token=capability["token"],
+        expires_at=current["expires_at"],
+        client=client,
+        custody=custody,
     )

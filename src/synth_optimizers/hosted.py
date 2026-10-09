@@ -435,6 +435,9 @@ class HostedOptimizerClient:
                 raise HostedOptimizerError(f"invalid GEPA config_toml: {exc}") from exc
             usage_registration_enabled = _usage_registration_enabled_from_config(config_json)
             usage_registration_models = _usage_registration_models_from_config(config_json)
+            prepare = getattr(container_tunnel, "prepare_handoff", None)
+            if prepare:
+                run_id = prepare(run_id or idempotency_key)["job_id"]
             config_json = _with_tunnel_container(config_json, container_tunnel)
             payload: dict[str, Any] = {
                 "algorithm": OptimizerAlgorithmSlug.GEPA.value,
@@ -452,7 +455,8 @@ class HostedOptimizerClient:
             project_id=project_id,
             container_pool=container_pool,
         )
-        response = self._json_request("POST", "/api/v1/optimizers/runs", payload)
+        submit_once = getattr(container_tunnel, "submit_once", None)
+        response = submit_once(payload) if submit_once else self._json_request("POST", "/api/v1/optimizers/runs", payload)
         submit_response = OptimizerRunSubmitResponse.from_payload(response)
         if usage_registration_enabled:
             self.register_usage_submit(
@@ -1023,6 +1027,7 @@ class HostedOptimizerClient:
         gateway_url: str,
         local_url: str,
         requested_ttl_seconds: int = 3600,
+        custody_directory: Path | str | None = None,
     ) -> SynthTunnelLease:
         """Borrow job authorization while the connector service keeps its attachment and routes."""
         from uuid import UUID
@@ -1037,7 +1042,13 @@ class HostedOptimizerClient:
             gateway_url=gateway_url,
             local_url=local_url,
             requested_ttl_seconds=requested_ttl_seconds,
+            custody_directory=custody_directory,
         )
+
+    def recover_shared_synth_tunnel(self, receipt_path: Path | str) -> SynthTunnelLease:
+        """Recover a retained job lease through canonical reads without effect replay."""
+        from .shared_tunnels import recover_shared_synth_tunnel
+        return recover_shared_synth_tunnel(self, receipt_path)
 
     def open_synth_tunnel(
         self,
@@ -1287,6 +1298,9 @@ class HostedOptimizerClient:
         usage_registration_enabled = _usage_registration_enabled_from_config(config_json)
         usage_registration_models = _usage_registration_models_from_config(config_json)
         if container_tunnel is not None:
+            prepare = getattr(container_tunnel, "prepare_handoff", None)
+            if prepare:
+                run_id = prepare(run_id or idempotency_key)["job_id"]
             config_json = _with_tunnel_container(config_json, container_tunnel)
         payload: dict[str, Any] = {
             "algorithm": algorithm.value,
@@ -1300,7 +1314,8 @@ class HostedOptimizerClient:
             container_pool=container_pool,
             billing_mode=billing_mode,
         )
-        response = self._json_request("POST", "/api/v1/optimizers/runs", payload)
+        submit_once = getattr(container_tunnel, "submit_once", None)
+        response = submit_once(payload) if submit_once else self._json_request("POST", "/api/v1/optimizers/runs", payload)
         submit_response = OptimizerRunSubmitResponse.from_payload(response)
         if usage_registration_enabled:
             self.register_usage_submit(algorithm=algorithm, models=usage_registration_models)

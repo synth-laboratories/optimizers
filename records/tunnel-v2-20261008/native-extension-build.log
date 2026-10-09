@@ -1,0 +1,5 @@
+{"schema": "core-build-admission.v1", "status": "admitted", "mode": "build", "owner_pid": 98260, "lane": 0, "required_bytes": 21474836480, "available_bytes": 31110656000, "authority_root": "/Users/joshuapurtell/GitHub/worktrees/core-dev-finish-handoff-20261003"}
+   Compiling synth_optimizers_py v0.2.22 (/Users/joshuapurtell/GitHub/worktrees/optimizers-tunnel-v2-20261008/rust/crates/synth_optimizers_py)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.31s
+mbx[cache]: 0 hits, 0 misses, 1 bypassed; 0 B downloaded, 0 B uploaded, 0 B stored locally
+mbx[savings]: 165355 compilations, each compiled once and served warm ever since

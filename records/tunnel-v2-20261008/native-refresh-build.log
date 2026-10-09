@@ -1,0 +1,15 @@
+{"schema": "core-build-admission.v1", "status": "admitted", "mode": "build", "owner_pid": 65329, "lane": 1, "required_bytes": 21474836480, "available_bytes": 35516108800, "authority_root": "/Users/joshuapurtell/GitHub/worktrees/core-dev-finish-handoff-20261003"}
+   Compiling target-lexicon v0.12.16
+   Compiling libsqlite3-sys v0.30.1
+   Compiling pyo3-build-config v0.22.6
+   Compiling rusqlite v0.32.1
+   Compiling synth_optimizer_platform v0.2.22 (/Users/joshuapurtell/GitHub/worktrees/optimizers-tunnel-v2-20261008/rust/crates/synth_optimizer_platform)
+   Compiling pyo3-macros-backend v0.22.6
+   Compiling pyo3-ffi v0.22.6
+   Compiling pyo3 v0.22.6
+   Compiling pyo3-macros v0.22.6
+   Compiling synth_gepa v0.2.22 (/Users/joshuapurtell/GitHub/worktrees/optimizers-tunnel-v2-20261008/rust/crates/synth_gepa)
+   Compiling synth_optimizers_py v0.2.22 (/Users/joshuapurtell/GitHub/worktrees/optimizers-tunnel-v2-20261008/rust/crates/synth_optimizers_py)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.08s
+mbx[cache]: 16 hits, 2 misses, 1 bypassed; 0 B downloaded, 0 B uploaded, 130.9 MiB stored locally
+mbx[savings]: rustc believes it compiled everything. it is down 1d 6h across 8857 builds. let it believe.

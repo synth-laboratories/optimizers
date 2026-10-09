@@ -1014,6 +1014,31 @@ class HostedOptimizerClient:
             "receipt_summaries_included": include_receipt_summaries,
         }
 
+    def borrow_shared_synth_tunnel(
+        self,
+        *,
+        connector_id: str,
+        route_ids: tuple[str, ...],
+        route_name: str,
+        gateway_url: str,
+        local_url: str,
+        requested_ttl_seconds: int = 3600,
+    ) -> SynthTunnelLease:
+        """Borrow job authorization while the connector service keeps its attachment and routes."""
+        from uuid import UUID
+
+        from .shared_tunnels import borrow_shared_synth_tunnel
+
+        return borrow_shared_synth_tunnel(
+            self,
+            connector=UUID(connector_id),
+            routes=tuple(UUID(value) for value in route_ids),
+            route_name=route_name,
+            gateway_url=gateway_url,
+            local_url=local_url,
+            requested_ttl_seconds=requested_ttl_seconds,
+        )
+
     def open_synth_tunnel(
         self,
         local_base_url: str,
@@ -1879,7 +1904,8 @@ def _with_tunnel_container(config_json: dict[str, Any], lease: TunnelLease) -> d
     if auth_bearer_env:
         container["auth_bearer_env"] = auth_bearer_env
     if tunnel_provider_value(getattr(lease, "provider", None)) == TunnelProvider.SYNTH_TUNNEL.value:
-        container["auth_refresh"] = {
+        refresh_descriptor = getattr(lease, "hosted_auth_refresh", None)
+        container["auth_refresh"] = refresh_descriptor() if refresh_descriptor else {
             "provider": "synth_tunnel",
             "lease_id": _required_text(
                 lease.lease_id,

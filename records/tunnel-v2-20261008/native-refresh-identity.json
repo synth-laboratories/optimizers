@@ -1,0 +1,7 @@
+{
+  "source_base": "71126c6135d4d6dd2a1376119d7bbabca73e3684",
+  "sha256": "8624d06122dff31807624fa53c89ae11fe57494f0056a1600f5a7d2e3ac9b8ce",
+  "path": "src/synth_optimizers/_synth_optimizers.abi3.so",
+  "build": "maintained core_dev_build -> mbx cargo rustc with macOS extension dynamic lookup",
+  "scope": "actual public HostedOptimizerClient in canonical-restart run d7b8c2eb1552; paired hosted executor source qualification, not deployed provider runs"
+}

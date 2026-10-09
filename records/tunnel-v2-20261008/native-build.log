@@ -1,0 +1,394 @@
+{"schema": "core-build-admission.v1", "status": "admitted", "mode": "build", "owner_pid": 94217, "lane": 0, "required_bytes": 21474836480, "available_bytes": 32302915584, "authority_root": "/Users/joshuapurtell/GitHub/worktrees/core-dev-finish-handoff-20261003"}
+   Compiling proc-macro2 v1.0.106
+   Compiling quote v1.0.45
+   Compiling unicode-ident v1.0.24
+   Compiling libc v0.2.186
+   Compiling once_cell v1.21.4
+   Compiling cfg-if v1.0.4
+   Compiling stable_deref_trait v1.2.1
+   Compiling shlex v1.3.0
+   Compiling version_check v0.9.5
+   Compiling find-msvc-tools v0.1.9
+   Compiling cc v1.2.62
+   Compiling target-lexicon v0.12.16
+   Compiling itoa v1.0.18
+   Compiling bytes v1.11.1
+   Compiling pin-project-lite v0.2.17
+   Compiling smallvec v1.15.1
+   Compiling futures-core v0.3.32
+   Compiling serde_core v1.0.228
+   Compiling litemap v0.8.2
+   Compiling writeable v0.6.3
+   Compiling socket2 v0.6.3
+   Compiling mio v1.2.0
+   Compiling ring v0.17.14
+   Compiling utf8_iter v1.0.4
+   Compiling futures-sink v0.3.32
+   Compiling serde v1.0.228
+   Compiling icu_normalizer_data v2.2.0
+   Compiling icu_properties_data v2.2.0
+   Compiling syn v2.0.117
+   Compiling synstructure v0.13.2
+   Compiling zerofrom-derive v0.1.7
+   Compiling zerofrom v0.1.8
+   Compiling yoke-derive v0.8.2
+   Compiling zerovec-derive v0.11.3
+   Compiling displaydoc v0.2.5
+   Compiling serde_derive v1.0.228
+   Compiling pyo3-build-config v0.22.6
+   Compiling yoke v0.8.2
+   Compiling zerovec v0.11.6
+   Compiling zerotrie v0.2.4
+   Compiling tinystr v0.8.3
+   Compiling icu_locale_core v2.2.0
+   Compiling potential_utf v0.1.5
+   Compiling icu_collections v2.2.0
+   Compiling tokio v1.52.3
+   Compiling http v1.4.0
+   Compiling generic-array v0.14.7
+   Compiling memchr v2.8.0
+   Compiling zeroize v1.8.2
+mbx[warning]: cc cache bypassed: compiler invocation names no output file
+   Compiling percent-encoding v2.3.2
+   Compiling rustls-pki-types v1.14.1
+   Compiling icu_provider v2.2.0
+   Compiling http-body v1.0.1
+   Compiling getrandom v0.2.17
+   Compiling httparse v1.10.1
+   Compiling futures-task v0.3.32
+   Compiling untrusted v0.9.0
+   Compiling slab v0.4.12
+   Compiling typenum v1.20.0
+   Compiling zerocopy v0.8.48
+   Compiling futures-io v0.3.32
+   Compiling futures-util v0.3.32
+   Compiling icu_properties v2.2.0
+   Compiling icu_normalizer v2.2.0
+   Compiling ahash v0.8.12
+   Compiling rustls v0.23.40
+   Compiling try-lock v0.2.5
+   Compiling tower-service v0.3.3
+   Compiling want v0.3.1
+   Compiling idna_adapter v1.2.2
+   Compiling rustls-webpki v0.103.13
+   Compiling form_urlencoded v1.2.2
+   Compiling futures-channel v0.3.32
+   Compiling tracing-core v0.1.36
+   Compiling pkg-config v0.3.33
+   Compiling zmij v1.0.21
+   Compiling subtle v2.6.1
+   Compiling atomic-waker v1.1.2
+   Compiling unicase v2.9.0
+   Compiling vcpkg v0.2.15
+   Compiling mime_guess v2.0.5
+   Compiling libsqlite3-sys v0.30.1
+   Compiling hyper v1.9.0
+   Compiling tracing v0.1.44
+   Compiling idna v1.1.0
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling sync_wrapper v1.0.2
+   Compiling serde_json v1.0.149
+   Compiling getrandom v0.4.2
+   Compiling equivalent v1.0.2
+   Compiling ipnet v2.12.0
+   Compiling tower-layer v0.3.3
+   Compiling bitflags v2.11.1
+   Compiling hashbrown v0.17.1
+   Compiling base64 v0.22.1
+   Compiling tokio-rustls v0.26.4
+   Compiling hyper-util v0.1.20
+   Compiling indexmap v2.14.0
+   Compiling tower v0.5.3
+   Compiling url v2.5.8
+   Compiling digest v0.10.7
+   Compiling hashbrown v0.14.5
+   Compiling serde_spanned v0.6.9
+   Compiling toml_datetime v0.6.11
+   Compiling webpki-roots v1.0.7
+   Compiling pyo3-ffi v0.22.6
+   Compiling pyo3-macros-backend v0.22.6
+   Compiling cpufeatures v0.2.17
+   Compiling time-core v0.1.8
+   Compiling winnow v0.7.15
+   Compiling thiserror v1.0.69
+   Compiling powerfmt v0.2.0
+   Compiling num-conv v0.2.2
+   Compiling mime v0.3.17
+   Compiling toml_write v0.1.2
+   Compiling autocfg v1.5.0
+   Compiling ryu v1.0.23
+   Compiling memoffset v0.9.1
+   Compiling serde_urlencoded v0.7.1
+   Compiling toml_edit v0.22.27
+   Compiling time-macros v0.2.27
+   Compiling deranged v0.5.8
+   Compiling hyper-rustls v0.27.9
+   Compiling hashlink v0.9.1
+   Compiling tower-http v0.6.11
+   Compiling http-body-util v0.1.3
+   Compiling thiserror-impl v1.0.69
+   Compiling fallible-iterator v0.3.0
+   Compiling fallible-streaming-iterator v0.1.9
+   Compiling log v0.4.29
+   Compiling heck v0.5.0
+   Compiling reqwest v0.12.28
+   Compiling rusqlite v0.32.1
+   Compiling uuid v1.23.1
+   Compiling time v0.3.47
+   Compiling toml v0.8.23
+   Compiling sha2 v0.10.9
+   Compiling pyo3 v0.22.6
+   Compiling fs2 v0.4.3
+   Compiling synth_optimizer_platform v0.2.22 (/Users/joshuapurtell/GitHub/worktrees/optimizers-tunnel-v2-20261008/rust/crates/synth_optimizer_platform)
+   Compiling sha1 v0.10.6
+   Compiling unindent v0.2.4
+   Compiling indoc v2.0.7
+   Compiling pyo3-macros v0.22.6
+   Compiling synth_gepa v0.2.22 (/Users/joshuapurtell/GitHub/worktrees/optimizers-tunnel-v2-20261008/rust/crates/synth_gepa)
+mbx[progress]: 15s elapsed; 167 hits, 1 misses, 3 bypassed, 54 not looked up; ~1m 25s compiler work saved
+   Compiling synth_optimizers_py v0.2.22 (/Users/joshuapurtell/GitHub/worktrees/optimizers-tunnel-v2-20261008/rust/crates/synth_optimizers_py)
+error: linking with `cc` failed: exit status: 1
+  |
+  = note:  "cc" "-Wl,-exported_symbols_list" "-Wl,/Users/joshuapurtell/GitHub/worktrees/optimizers-tunnel-v2-20261008/target/debug/deps/rustcNdy0yi/list" "/Users/joshuapurtell/GitHub/worktrees/optimizers-tunnel-v2-20261008/target/debug/deps/rustcNdy0yi/symbols.o" "<17 object files omitted>" "/Users/joshuapurtell/GitHub/worktrees/optimizers-tunnel-v2-20261008/target/debug/deps/{libsynth_gepa-0174e89e1ad02553,libsha1-a71f44aa8f367554,libsynth_optimizer_platform-3ddb7301c807e119,libtoml-496d061fde5ed6e8,libtoml_edit-9c7351f5f2298ddb,libserde_spanned-9e1ffee8b0ba9daf,libindexmap-f88260322c9ac0db,libequivalent-d6d60dfc40ac3398,libhashbrown-34026e857d661bcb,libwinnow-767f63169dc600ca,libtoml_write-b492fa1668d8817b,libtoml_datetime-c3cd8a7221b5ecac,libuuid-ae9a21e55092b26c,libgetrandom-915cdc6c769063f8,libfs2-e00a0f31a7a3592d,libthiserror-103073b7707cb6dd,libtime-75120fc6c9b59b75,libtime_core-3b684018e6a170de,libnum_conv-bd64ef2de71da7b7,libderanged-7a7633733feb23ba,libpowerfmt-3ff909e8c10a75ed,librusqlite-83b3a66f907300cf,libfallible_streaming_iterator-0e1441e3c31b59bc,libfallible_iterator-c5617c2ea2b52d7e,libhashlink-40d5ccd0839cc709,libhashbrown-228577ec2bdb0573,libahash-f330b116673abfd3,libzerocopy-09298bfc0a52a4b0,liblibsqlite3_sys-d4387950c6294849,libsha2-680b6c8875d6b41a,libdigest-4bb7e37d25cc3162,libblock_buffer-67e8b13d9f211502,libcrypto_common-1a4b65178d6b989f,libgeneric_array-0898e1a2db199e6b,libtypenum-1709ef45c5779c4e,libreqwest-6f6f724204fef43a,libhyper_rustls-29e190b0f5ec999b,libwebpki_roots-f14448273995c66b,libtokio_rustls-0608007281ba51fa,librustls-426a81b83e21aaee,libsubtle-6a18727f75d12160,libwebpki-0aa002cad842fec9,libring-9397edd7586483fb,libgetrandom-1f638a83de7f7445,libuntrusted-9dd6ba3a2f2743f0,librustls_pki_types-d6d212ea1e73bd19,libzeroize-1e9cbce18dd397d0,libserde_urlencoded-1aacc92ec13fde38,libryu-a3e7516c0c691dfe,libserde-ba96b5b9efa37803,libmime_guess-ad3f2e4503144fb0,libunicase-860523599f4086fb,libmime-54e4560fc5c32268,libtower_http-a7acdec367ae1e5e,libbitflags-69dc1009f016acf8,libtower-f9a30b44f939d896,libtower_layer-861118904b53eb3d,libhyper_util-4ee59f86d49deceb,libbase64-35589c29a679fc09,libipnet-e6ad9f1d79c7cd77,libtower_service-3acf895906ac0309,libtracing-3b20cf68c5347a09,libtracing_core-6545df21a4a143b1,libhyper-9a1520047d6dabd5,libwant-2697c18ce1c9f289,libtry_lock-b6b1def1f0bc04fa,libhttparse-88e04a4f8dab4331,libatomic_waker-a9788ddb5905c48d,libfutures_channel-362231c84702a196,libtokio-7ab5deb6b5874756,libsocket2-ac550130eeda9090,libmio-3c4b22ecd247713f,libhttp_body_util-b6833232a6de01b3,libhttp_body-dc00e9c427326779,liblog-a87e328d068c7e2d,libfutures_util-d3b549602c64c703,libfutures_io-11b47850a9c8b3f2,libslab-5dfa14751fe1c87b,libpin_project_lite-3f008d50a50c3bdd,libfutures_sink-5ba92c6e93c8787b,libfutures_task-fe504f543b3420b0,liburl-2d476dbe2a947af2,libidna-5e5d1d4528386fd1,libidna_adapter-d31eb95499d134be,libicu_properties-56a48da261713aea,libicu_properties_data-3647813125d5c062,libicu_normalizer-1532f9cf9b592c82,libsmallvec-fa62de87b1724ec4,libicu_normalizer_data-23f02467511f5ac1,libicu_collections-44c671e236c83da8,libutf8_iter-3d1699a1449aca4a,libpotential_utf-8e7fe34b71ed9236,libicu_provider-ac0567b635a6b6a2,libicu_locale_core-5ff25cce707d238c,libtinystr-88356838ed034596,liblitemap-5fb36511a8ef4d7b,libwriteable-6c50d51fba2b0735,libzerovec-566a81574ba1babd,libzerotrie-55331a47a98e429b,libyoke-f638b30cde24c689,libstable_deref_trait-347bfbfa91e97210,libzerofrom-15af7ae2437ddee5,libform_urlencoded-1a4ff509cc7e42cf,libpercent_encoding-17645fa2909f7167,libhttp-a82e7886323a5157,libbytes-e58230321121f692,libsync_wrapper-08e7256d08618498,libfutures_core-89fd1142cd252912,libserde_json-24cb2f1d38223391,libmemchr-28251c65885899db,libitoa-026cf0f37cb458ff,libzmij-d7e075732fd15dee,libserde_core-4d1721042c134617,libpyo3-e8b182bcb53df772,libcfg_if-dd44da4100d549b3,libmemoffset-de75af37a7b13f43,libonce_cell-26ccf122468ba71b,libpyo3_ffi-ba397aca6536797e,liblibc-259df0b9de2373d4,libunindent-203d0f03ab346ee0}.rlib" "<sysroot>/lib/rustlib/aarch64-apple-darwin/lib/{libstd-*,libpanic_unwind-*,libobject-*,libmemchr-*,libaddr2line-*,libgimli-*,libcfg_if-*,librustc_demangle-*,libstd_detect-*,libhashbrown-*,librustc_std_workspace_alloc-*,libminiz_oxide-*,libadler2-*,libunwind-*,liblibc-*,librustc_std_workspace_core-*,liballoc-*,libcore-*,libcompiler_builtins-*}.rlib" "-liconv" "-lSystem" "-lc" "-lm" "-arch" "arm64" "-mmacosx-version-min=11.0.0" "-L" "/Users/joshuapurtell/GitHub/worktrees/optimizers-tunnel-v2-20261008/target/debug/build/ring-2ed4c26671f46be3/out" "-L" "/Users/joshuapurtell/GitHub/worktrees/optimizers-tunnel-v2-20261008/target/debug/build/libsqlite3-sys-299e92bc6985722b/out" "-o" "/Users/joshuapurtell/GitHub/worktrees/optimizers-tunnel-v2-20261008/target/debug/deps/lib_synth_optimizers.dylib" "-Wl,-dead_strip" "-dynamiclib" "-nodefaultlibs"
+  = note: some arguments are omitted. use `--verbose` to show all linker arguments
+  = note: ld: warning: object file (/Users/joshuapurtell/GitHub/worktrees/optimizers-tunnel-v2-20261008/target/debug/deps/liblibsqlite3_sys-d4387950c6294849.rlib[5](c877a2978823c39d-sqlite3.o)) was built for newer 'macOS' version (26.5) than being linked (11.0)
+          ld: warning: object file (/Users/joshuapurtell/GitHub/worktrees/optimizers-tunnel-v2-20261008/target/debug/deps/libring-9397edd7586483fb.rlib[20](25ac62e5b3c53843-curve25519.o)) was built for newer 'macOS' version (26.5) than being linked (11.0)
+          ld: warning: object file (/Users/joshuapurtell/GitHub/worktrees/optimizers-tunnel-v2-20261008/target/debug/deps/libring-9397edd7586483fb.rlib[21](0bbbd18bda93c05b-aes_nohw.o)) was built for newer 'macOS' version (26.5) than being linked (11.0)
+          ld: warning: object file (/Users/joshuapurtell/GitHub/worktrees/optimizers-tunnel-v2-20261008/target/debug/deps/libring-9397edd7586483fb.rlib[22](00c879ee3285a50d-montgomery.o)) was built for newer 'macOS' version (26.5) than being linked (11.0)
+          ld: warning: object file (/Users/joshuapurtell/GitHub/worktrees/optimizers-tunnel-v2-20261008/target/debug/deps/libring-9397edd7586483fb.rlib[23](00c879ee3285a50d-montgomery_inv.o)) was built for newer 'macOS' version (26.5) than being linked (11.0)
+          ld: warning: object file (/Users/joshuapurtell/GitHub/worktrees/optimizers-tunnel-v2-20261008/target/debug/deps/libring-9397edd7586483fb.rlib[24](a0330e891e733f4e-ecp_nistz.o)) was built for newer 'macOS' version (26.5) than being linked (11.0)
+          ld: warning: object file (/Users/joshuapurtell/GitHub/worktrees/optimizers-tunnel-v2-20261008/target/debug/deps/libring-9397edd7586483fb.rlib[26](a0330e891e733f4e-gfp_p384.o)) was built for newer 'macOS' version (26.5) than being linked (11.0)
+          ld: warning: object file (/Users/joshuapurtell/GitHub/worktrees/optimizers-tunnel-v2-20261008/target/debug/deps/libring-9397edd7586483fb.rlib[28](aaa1ba3e455ee2e1-limbs.o)) was built for newer 'macOS' version (26.5) than being linked (11.0)
+          ld: warning: object file (/Users/joshuapurtell/GitHub/worktrees/optimizers-tunnel-v2-20261008/target/debug/deps/libring-9397edd7586483fb.rlib[29](a4019cc0736b0423-mem.o)) was built for newer 'macOS' version (26.5) than being linked (11.0)
+          ld: warning: object file (/Users/joshuapurtell/GitHub/worktrees/optimizers-tunnel-v2-20261008/target/debug/deps/libring-9397edd7586483fb.rlib[30](d5a9841f3dc6e253-poly1305.o)) was built for newer 'macOS' version (26.5) than being linked (11.0)
+          ld: warning: object file (/Users/joshuapurtell/GitHub/worktrees/optimizers-tunnel-v2-20261008/target/debug/deps/libring-9397edd7586483fb.rlib[31](a0330e891e733f4e-p256-nistz.o)) was built for newer 'macOS' version (26.5) than being linked (11.0)
+          ld: warning: object file (/Users/joshuapurtell/GitHub/worktrees/optimizers-tunnel-v2-20261008/target/debug/deps/libring-9397edd7586483fb.rlib[32](c322a0bcc369f531-chacha-armv8-ios64.o)) was built for newer 'macOS' version (26.5) than being linked (11.0)
+          ld: warning: object file (/Users/joshuapurtell/GitHub/worktrees/optimizers-tunnel-v2-20261008/target/debug/deps/libring-9397edd7586483fb.rlib[33](c322a0bcc369f531-chacha20_poly1305_armv8-ios64.o)) was built for newer 'macOS' version (26.5) than being linked (11.0)
+          ld: warning: object file (/Users/joshuapurtell/GitHub/worktrees/optimizers-tunnel-v2-20261008/target/debug/deps/libring-9397edd7586483fb.rlib[34](c322a0bcc369f531-aesv8-armx-ios64.o)) was built for newer 'macOS' version (26.5) than being linked (11.0)
+          ld: warning: object file (/Users/joshuapurtell/GitHub/worktrees/optimizers-tunnel-v2-20261008/target/debug/deps/libring-9397edd7586483fb.rlib[35](c322a0bcc369f531-aesv8-gcm-armv8-ios64.o)) was built for newer 'macOS' version (26.5) than being linked (11.0)
+          ld: warning: object file (/Users/joshuapurtell/GitHub/worktrees/optimizers-tunnel-v2-20261008/target/debug/deps/libring-9397edd7586483fb.rlib[36](c322a0bcc369f531-ghash-neon-armv8-ios64.o)) was built for newer 'macOS' version (26.5) than being linked (11.0)
+          ld: warning: object file (/Users/joshuapurtell/GitHub/worktrees/optimizers-tunnel-v2-20261008/target/debug/deps/libring-9397edd7586483fb.rlib[37](c322a0bcc369f531-ghashv8-armx-ios64.o)) was built for newer 'macOS' version (26.5) than being linked (11.0)
+          ld: warning: object file (/Users/joshuapurtell/GitHub/worktrees/optimizers-tunnel-v2-20261008/target/debug/deps/libring-9397edd7586483fb.rlib[38](c322a0bcc369f531-vpaes-armv8-ios64.o)) was built for newer 'macOS' version (26.5) than being linked (11.0)
+          ld: warning: object file (/Users/joshuapurtell/GitHub/worktrees/optimizers-tunnel-v2-20261008/target/debug/deps/libring-9397edd7586483fb.rlib[39](c322a0bcc369f531-armv8-mont-ios64.o)) was built for newer 'macOS' version (26.5) than being linked (11.0)
+          ld: warning: object file (/Users/joshuapurtell/GitHub/worktrees/optimizers-tunnel-v2-20261008/target/debug/deps/libring-9397edd7586483fb.rlib[40](c322a0bcc369f531-p256-armv8-asm-ios64.o)) was built for newer 'macOS' version (26.5) than being linked (11.0)
+          ld: warning: object file (/Users/joshuapurtell/GitHub/worktrees/optimizers-tunnel-v2-20261008/target/debug/deps/libring-9397edd7586483fb.rlib[41](c322a0bcc369f531-sha512-armv8-ios64.o)) was built for newer 'macOS' version (26.5) than being linked (11.0)
+          ld: warning: object file (/Users/joshuapurtell/GitHub/worktrees/optimizers-tunnel-v2-20261008/target/debug/deps/libring-9397edd7586483fb.rlib[42](c322a0bcc369f531-sha256-armv8-ios64.o)) was built for newer 'macOS' version (26.5) than being linked (11.0)
+          Undefined symbols for architecture arm64:
+            "_PyBaseObject_Type", referenced from:
+                __RNCNvXs1_NtNtCs8INpjeiApfr_4pyo35types3anyNtB7_5PyAnyNtNtBb_11type_object10PyTypeInfo15type_object_raw0Cs9zgoWGgiRbP_17__synth_optimizers in _synth_optimizers._synth_optimizers.6f741ae72144a863-cgu.08.rcgu.o
+                __RNvXs8_NtNtCs8INpjeiApfr_4pyo36pycell5impl_INtB5_17PyClassObjectBaseNtNtCsgYlABaOG8We_8pyo3_ffi6object8PyObjectEINtB5_19PyClassObjectLayoutNtNtNtB9_5types3any5PyAnyE10tp_deallocCs9zgoWGgiRbP_17__synth_optimizers in _synth_optimizers._synth_optimizers.6f741ae72144a863-cgu.15.rcgu.o
+                __RNvNvXNtCs8INpjeiApfr_4pyo312pyclass_initINtB4_23PyNativeTypeInitializerpEINtB4_12PyObjectInitpE15into_new_object5inner in libpyo3-e8b182bcb53df772.rlib[6](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.2.rcgu.o)
+            "_PyBool_Type", referenced from:
+                __RNvNtCsgYlABaOG8We_8pyo3_ffi10boolobject12PyBool_CheckCs8INpjeiApfr_4pyo3 in libpyo3-e8b182bcb53df772.rlib[9](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.5.rcgu.o)
+            "_PyBytes_AsString", referenced from:
+                __RNvMs0_NtNtCs8INpjeiApfr_4pyo35types5bytesINtNtB9_8instance8BorrowedNtB5_7PyBytesE8as_bytes in libpyo3-e8b182bcb53df772.rlib[4](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.0.rcgu.o)
+            "_PyBytes_Size", referenced from:
+                __RNvMs0_NtNtCs8INpjeiApfr_4pyo35types5bytesINtNtB9_8instance8BorrowedNtB5_7PyBytesE8as_bytes in libpyo3-e8b182bcb53df772.rlib[4](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.0.rcgu.o)
+            "_PyCMethod_New", referenced from:
+                __RNvNtCsgYlABaOG8We_8pyo3_ffi12methodobject17PyCFunction_NewExCs8INpjeiApfr_4pyo3 in libpyo3-e8b182bcb53df772.rlib[6](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.2.rcgu.o)
+            "_PyDict_New", referenced from:
+                __RNvMNtNtCs8INpjeiApfr_4pyo35types4dictNtB2_6PyDict9new_bound in libpyo3-e8b182bcb53df772.rlib[8](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.4.rcgu.o)
+            "_PyDict_Next", referenced from:
+                __RNvXNtNtNtCs8INpjeiApfr_4pyo35types4dict13borrowed_iterNtB2_16BorrowedDictIterNtNtNtNtCsgtPOCBgevO_4core4iter6traits8iterator8Iterator4nextCs9zgoWGgiRbP_17__synth_optimizers in _synth_optimizers._synth_optimizers.6f741ae72144a863-cgu.11.rcgu.o
+            "_PyDict_SetItem", referenced from:
+                __RNvNvXs_NtNtCs8INpjeiApfr_4pyo35types4dictINtNtBa_8instance5BoundNtB6_6PyDictENtB6_13PyDictMethods8set_item5inner in libpyo3-e8b182bcb53df772.rlib[8](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.4.rcgu.o)
+            "_PyDict_Size", referenced from:
+                __RNvNtNtCs8INpjeiApfr_4pyo35types4dict8dict_len in libpyo3-e8b182bcb53df772.rlib[8](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.4.rcgu.o)
+            "_PyErr_Fetch", referenced from:
+                __RNvMs2_NtCs8INpjeiApfr_4pyo33errNtB5_5PyErr5__take in libpyo3-e8b182bcb53df772.rlib[5](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.1.rcgu.o)
+                __RNvNtNtCs8INpjeiApfr_4pyo33err9err_state30lazy_into_normalized_ffi_tuple in libpyo3-e8b182bcb53df772.rlib[8](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.4.rcgu.o)
+            "_PyErr_GivenExceptionMatches", referenced from:
+                __RNvMs2_NtCs8INpjeiApfr_4pyo33errNtB5_5PyErr17is_instance_boundB7_ in libpyo3-e8b182bcb53df772.rlib[5](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.1.rcgu.o)
+            "_PyErr_NewExceptionWithDoc", referenced from:
+                __RNvMs2_NtCs8INpjeiApfr_4pyo33errNtB5_5PyErr14new_type_bound in libpyo3-e8b182bcb53df772.rlib[5](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.1.rcgu.o)
+            "_PyErr_NormalizeException", referenced from:
+                __RNvMs0_NtNtCs8INpjeiApfr_4pyo33err9err_stateNtB5_10PyErrState9normalize in libpyo3-e8b182bcb53df772.rlib[8](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.4.rcgu.o)
+                __RNvNtNtCs8INpjeiApfr_4pyo33err9err_state30lazy_into_normalized_ffi_tuple in libpyo3-e8b182bcb53df772.rlib[8](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.4.rcgu.o)
+            "_PyErr_Print", referenced from:
+                __RNvNtCs8INpjeiApfr_4pyo33err17panic_after_error in libpyo3-e8b182bcb53df772.rlib[5](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.1.rcgu.o)
+            "_PyErr_PrintEx", referenced from:
+                __RNvMs2_NtCs8INpjeiApfr_4pyo33errNtB5_5PyErr22print_panic_and_unwind in libpyo3-e8b182bcb53df772.rlib[5](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.1.rcgu.o)
+                __RNvMs2_NtCs8INpjeiApfr_4pyo33errNtB5_5PyErr5print in libpyo3-e8b182bcb53df772.rlib[5](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.1.rcgu.o)
+            "_PyErr_Restore", referenced from:
+                __RNvMs0_NtNtCs8INpjeiApfr_4pyo33err9err_stateNtB5_10PyErrState7restore in libpyo3-e8b182bcb53df772.rlib[8](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.4.rcgu.o)
+            "_PyErr_SetObject", referenced from:
+                __RNvNtNtCs8INpjeiApfr_4pyo33err9err_state10raise_lazy in libpyo3-e8b182bcb53df772.rlib[8](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.4.rcgu.o)
+            "_PyErr_SetString", referenced from:
+                __RNvNtNtCs8INpjeiApfr_4pyo33err9err_state10raise_lazy in libpyo3-e8b182bcb53df772.rlib[8](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.4.rcgu.o)
+            "_PyErr_WriteUnraisable", referenced from:
+                __RNvMs2_NtCs8INpjeiApfr_4pyo33errNtB5_5PyErr22write_unraisable_boundCs9zgoWGgiRbP_17__synth_optimizers in _synth_optimizers._synth_optimizers.6f741ae72144a863-cgu.11.rcgu.o
+                __RNvMs2_NtCs8INpjeiApfr_4pyo33errNtB5_5PyErr22write_unraisable_boundB7_ in libpyo3-e8b182bcb53df772.rlib[5](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.1.rcgu.o)
+            "_PyEval_RestoreThread", referenced from:
+                __RNvXs4_NtCs8INpjeiApfr_4pyo33gilNtB5_10SuspendGILNtNtNtCsgtPOCBgevO_4core3ops4drop4Drop4drop in libpyo3-e8b182bcb53df772.rlib[7](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.3.rcgu.o)
+            "_PyEval_SaveThread", referenced from:
+                __RNCNvNtCs8INpjeiApfr_4pyo33gil27prepare_freethreaded_python0B5_ in libpyo3-e8b182bcb53df772.rlib[7](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.3.rcgu.o)
+                __RNvMs3_NtCs8INpjeiApfr_4pyo33gilNtB5_10SuspendGIL3new in libpyo3-e8b182bcb53df772.rlib[7](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.3.rcgu.o)
+            "_PyExc_AttributeError", referenced from:
+                __RNCNvXsY_NtCs8INpjeiApfr_4pyo310exceptionsNtB7_16PyAttributeErrorNtNtB9_11type_object10PyTypeInfo15type_object_raw0B9_ in libpyo3-e8b182bcb53df772.rlib[6](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.2.rcgu.o)
+                __RNCNvXsY_NtCs8INpjeiApfr_4pyo310exceptionsNtB7_16PyAttributeErrorNtNtB9_11type_object10PyTypeInfo15type_object_raw0B9_ in libpyo3-e8b182bcb53df772.rlib[6](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.2.rcgu.o)
+            "_PyExc_BaseException", referenced from:
+                __RNCNvXs4_NtCs8INpjeiApfr_4pyo310exceptionsNtB7_15PyBaseExceptionNtNtB9_11type_object10PyTypeInfo15type_object_raw0B9_ in libpyo3-e8b182bcb53df772.rlib[6](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.2.rcgu.o)
+                __RNCNvXs4_NtCs8INpjeiApfr_4pyo310exceptionsNtB7_15PyBaseExceptionNtNtB9_11type_object10PyTypeInfo15type_object_raw0B9_ in libpyo3-e8b182bcb53df772.rlib[6](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.2.rcgu.o)
+            "_PyExc_ImportError", referenced from:
+                __RNCNvXs1x_NtCs8INpjeiApfr_4pyo310exceptionsNtB8_13PyImportErrorNtNtBa_11type_object10PyTypeInfo15type_object_raw0Ba_ in libpyo3-e8b182bcb53df772.rlib[6](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.2.rcgu.o)
+                __RNCNvXs1x_NtCs8INpjeiApfr_4pyo310exceptionsNtB8_13PyImportErrorNtNtBa_11type_object10PyTypeInfo15type_object_raw0Ba_ in libpyo3-e8b182bcb53df772.rlib[6](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.2.rcgu.o)
+            "_PyExc_OverflowError", referenced from:
+                __RNCNvXs2k_NtCs8INpjeiApfr_4pyo310exceptionsNtB8_15PyOverflowErrorNtNtBa_11type_object10PyTypeInfo15type_object_raw0Ba_ in libpyo3-e8b182bcb53df772.rlib[6](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.2.rcgu.o)
+                __RNCNvXs2k_NtCs8INpjeiApfr_4pyo310exceptionsNtB8_15PyOverflowErrorNtNtBa_11type_object10PyTypeInfo15type_object_raw0Ba_ in libpyo3-e8b182bcb53df772.rlib[6](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.2.rcgu.o)
+            "_PyExc_RuntimeError", referenced from:
+                __RNCNvXs2r_NtCs8INpjeiApfr_4pyo310exceptionsNtB8_14PyRuntimeErrorNtNtBa_11type_object10PyTypeInfo15type_object_raw0Ba_ in libpyo3-e8b182bcb53df772.rlib[6](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.2.rcgu.o)
+                __RNCNvXs2r_NtCs8INpjeiApfr_4pyo310exceptionsNtB8_14PyRuntimeErrorNtNtBa_11type_object10PyTypeInfo15type_object_raw0Ba_ in libpyo3-e8b182bcb53df772.rlib[6](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.2.rcgu.o)
+            "_PyExc_TypeError", referenced from:
+                __RNCNvXs3e_NtCs8INpjeiApfr_4pyo310exceptionsNtB8_11PyTypeErrorNtNtBa_11type_object10PyTypeInfo15type_object_raw0Ba_ in libpyo3-e8b182bcb53df772.rlib[6](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.2.rcgu.o)
+                __RNCNvXs3e_NtCs8INpjeiApfr_4pyo310exceptionsNtB8_11PyTypeErrorNtNtBa_11type_object10PyTypeInfo15type_object_raw0Ba_ in libpyo3-e8b182bcb53df772.rlib[6](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.2.rcgu.o)
+            "_PyExc_ValueError", referenced from:
+                __RNCNvXs41_NtCs8INpjeiApfr_4pyo310exceptionsNtB8_12PyValueErrorNtNtBa_11type_object10PyTypeInfo15type_object_raw0Ba_ in libpyo3-e8b182bcb53df772.rlib[6](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.2.rcgu.o)
+                __RNCNvXs41_NtCs8INpjeiApfr_4pyo310exceptionsNtB8_12PyValueErrorNtNtBa_11type_object10PyTypeInfo15type_object_raw0Ba_ in libpyo3-e8b182bcb53df772.rlib[6](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.2.rcgu.o)
+            "_PyException_GetCause", referenced from:
+                __RNvMs2_NtCs8INpjeiApfr_4pyo33errNtB5_5PyErr5cause in libpyo3-e8b182bcb53df772.rlib[5](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.1.rcgu.o)
+            "_PyException_GetTraceback", referenced from:
+                __RNvMs0_NtNtCs8INpjeiApfr_4pyo33err9err_stateNtB5_10PyErrState10normalized in libpyo3-e8b182bcb53df772.rlib[8](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.4.rcgu.o)
+            "_PyException_SetCause", referenced from:
+                __RNvMs2_NtCs8INpjeiApfr_4pyo33errNtB5_5PyErr9set_cause in libpyo3-e8b182bcb53df772.rlib[5](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.1.rcgu.o)
+            "_PyException_SetTraceback", referenced from:
+                __RNvMs2_NtCs8INpjeiApfr_4pyo33errNtB5_5PyErr10into_value in libpyo3-e8b182bcb53df772.rlib[5](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.1.rcgu.o)
+            "_PyFloat_FromDouble", referenced from:
+                __RNvMNtNtCs8INpjeiApfr_4pyo35types5floatNtB2_7PyFloat9new_bound in libpyo3-e8b182bcb53df772.rlib[6](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.2.rcgu.o)
+            "_PyGILState_Ensure", referenced from:
+                __RNvMNtCs8INpjeiApfr_4pyo33gilNtB2_8GILGuard17acquire_unchecked in libpyo3-e8b182bcb53df772.rlib[7](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.3.rcgu.o)
+            "_PyGILState_Release", referenced from:
+                __RNvXs_NtCs8INpjeiApfr_4pyo33gilNtB4_8GILGuardNtNtNtCsgtPOCBgevO_4core3ops4drop4Drop4drop in libpyo3-e8b182bcb53df772.rlib[7](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.3.rcgu.o)
+            "_PyInterpreterState_Get", referenced from:
+                __RNvMs_NtNtCs8INpjeiApfr_4pyo35impl_8pymoduleNtB4_9ModuleDef11make_module in libpyo3-e8b182bcb53df772.rlib[8](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.4.rcgu.o)
+            "_PyInterpreterState_GetID", referenced from:
+                __RNvMs_NtNtCs8INpjeiApfr_4pyo35impl_8pymoduleNtB4_9ModuleDef11make_module in libpyo3-e8b182bcb53df772.rlib[8](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.4.rcgu.o)
+            "_PyIter_Next", referenced from:
+                __RNvMs0_NtNtCs8INpjeiApfr_4pyo35types8iteratorINtNtB9_8instance8BorrowedNtB5_10PyIteratorE4next in libpyo3-e8b182bcb53df772.rlib[4](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.0.rcgu.o)
+            "_PyList_Append", referenced from:
+                __RNvNvXs_NtNtCs8INpjeiApfr_4pyo35types4listINtNtBa_8instance5BoundNtB6_6PyListENtB6_13PyListMethods6append5inner in libpyo3-e8b182bcb53df772.rlib[9](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.5.rcgu.o)
+            "_PyList_New", referenced from:
+                __RNvMNtNtCs8INpjeiApfr_4pyo35types4listNtB2_6PyList11empty_bound in libpyo3-e8b182bcb53df772.rlib[9](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.5.rcgu.o)
+            "_PyLong_AsLong", referenced from:
+                __RNvXsi_NtNtNtCs8INpjeiApfr_4pyo311conversions3std3numxNtNtBb_10conversion12FromPyObject13extract_bound in libpyo3-e8b182bcb53df772.rlib[8](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.4.rcgu.o)
+            "_PyLong_AsUnsignedLongLong", referenced from:
+                __RNvXsr_NtNtNtCs8INpjeiApfr_4pyo311conversions3std3numyNtNtBb_10conversion12FromPyObject13extract_bound in libpyo3-e8b182bcb53df772.rlib[8](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.4.rcgu.o)
+                __RNvXsr_NtNtNtCs8INpjeiApfr_4pyo311conversions3std3numyNtNtBb_10conversion12FromPyObject13extract_bound in libpyo3-e8b182bcb53df772.rlib[8](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.4.rcgu.o)
+            "_PyLong_FromLong", referenced from:
+                __RNvXsh_NtNtNtCs8INpjeiApfr_4pyo311conversions3std3numxINtNtBb_10conversion6IntoPyINtNtBb_8instance2PyNtNtNtBb_5types3any5PyAnyEE7into_py in libpyo3-e8b182bcb53df772.rlib[8](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.4.rcgu.o)
+            "_PyLong_FromSsize_t", referenced from:
+                __RNvNtNtCs8INpjeiApfr_4pyo35impl_7pyclass30get_sequence_item_from_mapping in libpyo3-e8b182bcb53df772.rlib[9](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.5.rcgu.o)
+                __RNvNtNtCs8INpjeiApfr_4pyo35impl_7pyclass33assign_sequence_item_from_mapping in libpyo3-e8b182bcb53df772.rlib[9](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.5.rcgu.o)
+            "_PyLong_FromUnsignedLongLong", referenced from:
+                __RNvXsq_NtNtNtCs8INpjeiApfr_4pyo311conversions3std3numyINtNtBb_10conversion6IntoPyINtNtBb_8instance2PyNtNtNtBb_5types3any5PyAnyEE7into_pyCs9zgoWGgiRbP_17__synth_optimizers in _synth_optimizers._synth_optimizers.6f741ae72144a863-cgu.08.rcgu.o
+            "_PyModule_Create2", referenced from:
+                __RNvNtCsgYlABaOG8We_8pyo3_ffi10modsupport15PyModule_CreateCs8INpjeiApfr_4pyo3 in libpyo3-e8b182bcb53df772.rlib[5](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.1.rcgu.o)
+            "_PyModule_GetNameObject", referenced from:
+                __RNvXs_NtNtCs8INpjeiApfr_4pyo35types6moduleINtNtB8_8instance5BoundNtB4_8PyModuleENtB4_15PyModuleMethods4name in libpyo3-e8b182bcb53df772.rlib[4](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.0.rcgu.o)
+            "_PyNumber_Index", referenced from:
+                __RNvXsr_NtNtNtCs8INpjeiApfr_4pyo311conversions3std3numyNtNtBb_10conversion12FromPyObject13extract_bound in libpyo3-e8b182bcb53df772.rlib[8](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.4.rcgu.o)
+            "_PyObject_CallNoArgs", referenced from:
+                __RNvXs_NtNtCs8INpjeiApfr_4pyo35types3anyINtNtB8_8instance5BoundNtB4_5PyAnyENtB4_12PyAnyMethods5call0B8_ in libpyo3-e8b182bcb53df772.rlib[4](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.0.rcgu.o)
+            "_PyObject_DelItem", referenced from:
+                __RNvNtNtCs8INpjeiApfr_4pyo35impl_7pyclass33assign_sequence_item_from_mapping in libpyo3-e8b182bcb53df772.rlib[9](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.5.rcgu.o)
+            "_PyObject_GC_UnTrack", referenced from:
+                __RINvNtNtCs8INpjeiApfr_4pyo35impl_7pyclass18tp_dealloc_with_gcNtCs9zgoWGgiRbP_17__synth_optimizers13GepaRunResultEBZ_ in _synth_optimizers._synth_optimizers.6f741ae72144a863-cgu.15.rcgu.o
+                __RINvNtNtCs8INpjeiApfr_4pyo35impl_7pyclass18tp_dealloc_with_gcNtCs9zgoWGgiRbP_17__synth_optimizers7GepaRunEBZ_ in _synth_optimizers._synth_optimizers.6f741ae72144a863-cgu.15.rcgu.o
+            "_PyObject_GenericGetDict", referenced from:
+                __RNvMNtNtCs8INpjeiApfr_4pyo37pyclass18create_type_objectNtB2_13PyTypeBuilder31finalize_methods_and_properties in libpyo3-e8b182bcb53df772.rlib[11](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.7.rcgu.o)
+            "_PyObject_GenericSetDict", referenced from:
+                __RNvMNtNtCs8INpjeiApfr_4pyo37pyclass18create_type_objectNtB2_13PyTypeBuilder31finalize_methods_and_properties in libpyo3-e8b182bcb53df772.rlib[11](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.7.rcgu.o)
+            "_PyObject_GetAttr", referenced from:
+                __RNvNvXs_NtNtCs8INpjeiApfr_4pyo35types3anyINtNtBa_8instance5BoundNtB6_5PyAnyENtB6_12PyAnyMethods7getattr5inner in libpyo3-e8b182bcb53df772.rlib[8](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.4.rcgu.o)
+            "_PyObject_GetItem", referenced from:
+                __RNvNtNtCs8INpjeiApfr_4pyo35impl_7pyclass30get_sequence_item_from_mapping in libpyo3-e8b182bcb53df772.rlib[9](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.5.rcgu.o)
+            "_PyObject_GetIter", referenced from:
+                __RNvMNtNtCs8INpjeiApfr_4pyo35types8iteratorNtB2_10PyIterator17from_bound_object in libpyo3-e8b182bcb53df772.rlib[8](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.4.rcgu.o)
+            "_PyObject_Repr", referenced from:
+                __RNvXs_NtNtCs8INpjeiApfr_4pyo35types3anyINtNtB8_8instance5BoundNtB4_5PyAnyENtB4_12PyAnyMethods4repr in libpyo3-e8b182bcb53df772.rlib[4](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.0.rcgu.o)
+            "_PyObject_SetAttr", referenced from:
+                __RNvNvXs_NtNtCs8INpjeiApfr_4pyo35types3anyINtNtBa_8instance5BoundNtB6_5PyAnyENtB6_12PyAnyMethods7setattr5inner in libpyo3-e8b182bcb53df772.rlib[8](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.4.rcgu.o)
+            "_PyObject_SetAttrString", referenced from:
+                __RNvNtNtNtCs8INpjeiApfr_4pyo35impl_7pyclass16lazy_type_object18initialize_tp_dict in libpyo3-e8b182bcb53df772.rlib[9](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.5.rcgu.o)
+            "_PyObject_SetItem", referenced from:
+                __RNvNtNtCs8INpjeiApfr_4pyo35impl_7pyclass33assign_sequence_item_from_mapping in libpyo3-e8b182bcb53df772.rlib[9](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.5.rcgu.o)
+            "_PyObject_Str", referenced from:
+                __RNvXs_NtNtCs8INpjeiApfr_4pyo35types3anyINtNtB8_8instance5BoundNtB4_5PyAnyENtB4_12PyAnyMethods3str in libpyo3-e8b182bcb53df772.rlib[4](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.0.rcgu.o)
+            "_PySequence_Check", referenced from:
+                __RINvNtNtCs8INpjeiApfr_4pyo35types8sequence16extract_sequenceNtNtCslJsSqIQKwiA_5alloc6string6StringECs9zgoWGgiRbP_17__synth_optimizers in _synth_optimizers._synth_optimizers.6f741ae72144a863-cgu.12.rcgu.o
+            "_PySequence_Size", referenced from:
+                __RNvXs_NtNtCs8INpjeiApfr_4pyo35types8sequenceINtNtB8_8instance5BoundNtB4_10PySequenceENtB4_17PySequenceMethods3lenCs9zgoWGgiRbP_17__synth_optimizers in _synth_optimizers._synth_optimizers.6f741ae72144a863-cgu.15.rcgu.o
+            "_PyTuple_GetItem", referenced from:
+                __RNvMs0_NtNtCs8INpjeiApfr_4pyo35types5tupleINtNtB9_8instance8BorrowedNtB5_7PyTupleE17get_borrowed_item in libpyo3-e8b182bcb53df772.rlib[4](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.0.rcgu.o)
+            "_PyTuple_New", referenced from:
+                __RINvNtNtCs8INpjeiApfr_4pyo35types5tuple16array_into_tupleKj1_EB6_ in libpyo3-e8b182bcb53df772.rlib[5](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.1.rcgu.o)
+            "_PyTuple_SetItem", referenced from:
+                __RINvNtNtCs8INpjeiApfr_4pyo35types5tuple16array_into_tupleKj1_EB6_ in libpyo3-e8b182bcb53df772.rlib[5](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.1.rcgu.o)
+            "_PyTuple_Size", referenced from:
+                __RNvXs_NtNtCs8INpjeiApfr_4pyo35types5tupleINtNtB8_8instance5BoundNtB4_7PyTupleENtB4_14PyTupleMethods3len in libpyo3-e8b182bcb53df772.rlib[4](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.0.rcgu.o)
+            "_PyType_FromSpec", referenced from:
+                __RNvMNtNtCs8INpjeiApfr_4pyo37pyclass18create_type_objectNtB2_13PyTypeBuilder5build in libpyo3-e8b182bcb53df772.rlib[11](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.7.rcgu.o)
+            "_PyType_GenericAlloc", referenced from:
+                __RNvNvXNtCs8INpjeiApfr_4pyo312pyclass_initINtB4_23PyNativeTypeInitializerpEINtB4_12PyObjectInitpE15into_new_object5inner in libpyo3-e8b182bcb53df772.rlib[6](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.2.rcgu.o)
+            "_PyType_GetFlags", referenced from:
+                __RNvNtCsgYlABaOG8We_8pyo3_ffi6object17PyType_HasFeatureCs9zgoWGgiRbP_17__synth_optimizers in _synth_optimizers._synth_optimizers.6f741ae72144a863-cgu.10.rcgu.o
+                __RNvNtCsgYlABaOG8We_8pyo3_ffi6object17PyType_HasFeatureCs8INpjeiApfr_4pyo3 in libpyo3-e8b182bcb53df772.rlib[9](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.5.rcgu.o)
+            "_PyType_GetName", referenced from:
+                __RNvXs_NtNtCs8INpjeiApfr_4pyo35types10typeobjectINtNtB8_8instance5BoundNtB4_6PyTypeENtB4_13PyTypeMethods4name in libpyo3-e8b182bcb53df772.rlib[4](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.0.rcgu.o)
+            "_PyType_GetQualName", referenced from:
+                __RNvXs_NtNtCs8INpjeiApfr_4pyo35types10typeobjectINtNtB8_8instance5BoundNtB4_6PyTypeENtB4_13PyTypeMethods8qualname in libpyo3-e8b182bcb53df772.rlib[4](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.0.rcgu.o)
+            "_PyType_GetSlot", referenced from:
+                __RNvXs7_NtNtCs8INpjeiApfr_4pyo38internal8get_slotINtB5_4SlotKl4a_ENtB5_11GetSlotImpl8get_slotCs9zgoWGgiRbP_17__synth_optimizers in _synth_optimizers._synth_optimizers.6f741ae72144a863-cgu.07.rcgu.o
+                __RNvXs3_NtNtCs8INpjeiApfr_4pyo38internal8get_slotINtB5_4SlotKl2f_ENtB5_11GetSlotImpl8get_slotB9_ in libpyo3-e8b182bcb53df772.rlib[11](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.7.rcgu.o)
+                __RNvXs4_NtNtCs8INpjeiApfr_4pyo38internal8get_slotINtB5_4SlotKl30_ENtB5_11GetSlotImpl8get_slotB9_ in libpyo3-e8b182bcb53df772.rlib[11](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.7.rcgu.o)
+                __RNvXs5_NtNtCs8INpjeiApfr_4pyo38internal8get_slotINtB5_4SlotKl33_ENtB5_11GetSlotImpl8get_slotB9_ in libpyo3-e8b182bcb53df772.rlib[11](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.7.rcgu.o)
+                __RNvXs6_NtNtCs8INpjeiApfr_4pyo38internal8get_slotINtB5_4SlotKl36_ENtB5_11GetSlotImpl8get_slotB9_ in libpyo3-e8b182bcb53df772.rlib[11](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.7.rcgu.o)
+            "_PyType_IsSubtype", referenced from:
+                __RNvNtCsgYlABaOG8We_8pyo3_ffi6object18PyObject_TypeCheckCs9zgoWGgiRbP_17__synth_optimizers in _synth_optimizers._synth_optimizers.6f741ae72144a863-cgu.10.rcgu.o
+            "_PyUnicode_AsEncodedString", referenced from:
+                __RNvMs0_NtNtCs8INpjeiApfr_4pyo35types6stringINtNtB9_8instance8BorrowedNtB5_8PyStringE15to_string_lossy in libpyo3-e8b182bcb53df772.rlib[4](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.0.rcgu.o)
+            "_PyUnicode_AsUTF8AndSize", referenced from:
+                __RNvMs0_NtNtCs8INpjeiApfr_4pyo35types6stringINtNtB9_8instance8BorrowedNtB5_8PyStringE6to_str in libpyo3-e8b182bcb53df772.rlib[4](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.0.rcgu.o)
+            "_PyUnicode_FromStringAndSize", referenced from:
+                __RNvMNtNtCs8INpjeiApfr_4pyo35types6stringNtB2_8PyString12intern_bound in libpyo3-e8b182bcb53df772.rlib[6](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.2.rcgu.o)
+                __RNvMNtNtCs8INpjeiApfr_4pyo35types6stringNtB2_8PyString9new_bound in libpyo3-e8b182bcb53df772.rlib[6](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.2.rcgu.o)
+            "_PyUnicode_InternInPlace", referenced from:
+                __RNvMNtNtCs8INpjeiApfr_4pyo35types6stringNtB2_8PyString12intern_bound in libpyo3-e8b182bcb53df772.rlib[6](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.2.rcgu.o)
+            "_Py_InitializeEx", referenced from:
+                __RNCNvNtCs8INpjeiApfr_4pyo33gil27prepare_freethreaded_python0B5_ in libpyo3-e8b182bcb53df772.rlib[7](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.3.rcgu.o)
+            "_Py_IsInitialized", referenced from:
+                __RNCNvMNtCs8INpjeiApfr_4pyo33gilNtB4_8GILGuard7acquire0B6_ in libpyo3-e8b182bcb53df772.rlib[7](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.3.rcgu.o)
+                __RNCNvNtCs8INpjeiApfr_4pyo33gil27prepare_freethreaded_python0B5_ in libpyo3-e8b182bcb53df772.rlib[7](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.3.rcgu.o)
+            "__Py_DecRef", referenced from:
+                __RNvXs6_NtCs8INpjeiApfr_4pyo38instanceINtB5_5BoundNtCs9zgoWGgiRbP_17__synth_optimizers13GepaRunResultENtNtNtCsgtPOCBgevO_4core3ops4drop4Drop4dropBN_ in _synth_optimizers._synth_optimizers.6f741ae72144a863-cgu.15.rcgu.o
+                __RNvXs6_NtCs8INpjeiApfr_4pyo38instanceINtB5_5BoundNtCs9zgoWGgiRbP_17__synth_optimizers7GepaRunENtNtNtCsgtPOCBgevO_4core3ops4drop4Drop4dropBN_ in _synth_optimizers._synth_optimizers.6f741ae72144a863-cgu.15.rcgu.o
+                __RNvXs6_NtCs8INpjeiApfr_4pyo38instanceINtB5_5BoundNtNtB7_10exceptions15PyBaseExceptionENtNtNtCsgtPOCBgevO_4core3ops4drop4Drop4dropB7_ in libpyo3-e8b182bcb53df772.rlib[4](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.0.rcgu.o)
+                __RNvXs6_NtCs8INpjeiApfr_4pyo38instanceINtB5_5BoundNtNtNtB7_5types10boolobject6PyBoolENtNtNtCsgtPOCBgevO_4core3ops4drop4Drop4dropB7_ in libpyo3-e8b182bcb53df772.rlib[4](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.0.rcgu.o)
+                __RNvXs6_NtCs8INpjeiApfr_4pyo38instanceINtB5_5BoundNtNtNtB7_5types10typeobject6PyTypeENtNtNtCsgtPOCBgevO_4core3ops4drop4Drop4dropB7_ in libpyo3-e8b182bcb53df772.rlib[4](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.0.rcgu.o)
+                __RNvXs6_NtCs8INpjeiApfr_4pyo38instanceINtB5_5BoundNtNtNtB7_5types3any5PyAnyENtNtNtCsgtPOCBgevO_4core3ops4drop4Drop4dropB7_ in libpyo3-e8b182bcb53df772.rlib[4](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.0.rcgu.o)
+                __RNvXs6_NtCs8INpjeiApfr_4pyo38instanceINtB5_5BoundNtNtNtB7_5types4dict6PyDictENtNtNtCsgtPOCBgevO_4core3ops4drop4Drop4dropB7_ in libpyo3-e8b182bcb53df772.rlib[4](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.0.rcgu.o)
+                ...
+            "__Py_FalseStruct", referenced from:
+                __RNvNtCsgYlABaOG8We_8pyo3_ffi10boolobject8Py_FalseCs9zgoWGgiRbP_17__synth_optimizers in _synth_optimizers._synth_optimizers.6f741ae72144a863-cgu.15.rcgu.o
+            "__Py_IncRef", referenced from:
+                __RNvMsn_NtCs8INpjeiApfr_4pyo38instanceINtB5_2PyNtCs9zgoWGgiRbP_17__synth_optimizers13GepaRunResultE9clone_refBK_ in _synth_optimizers._synth_optimizers.6f741ae72144a863-cgu.15.rcgu.o
+                __RNvMsn_NtCs8INpjeiApfr_4pyo38instanceINtB5_2PyNtCs9zgoWGgiRbP_17__synth_optimizers7GepaRunE9clone_refBK_ in _synth_optimizers._synth_optimizers.6f741ae72144a863-cgu.15.rcgu.o
+                __RNvMsn_NtCs8INpjeiApfr_4pyo38instanceINtB5_2PyNtNtNtB7_5types10boolobject6PyBoolE9clone_refCs9zgoWGgiRbP_17__synth_optimizers in _synth_optimizers._synth_optimizers.6f741ae72144a863-cgu.15.rcgu.o
+                __RNvMsn_NtCs8INpjeiApfr_4pyo38instanceINtB5_2PyNtNtB7_10exceptions15PyBaseExceptionE9clone_refB7_ in libpyo3-e8b182bcb53df772.rlib[4](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.0.rcgu.o)
+                __RNvMsn_NtCs8INpjeiApfr_4pyo38instanceINtB5_2PyNtNtNtB7_5types10typeobject6PyTypeE9clone_refB7_ in libpyo3-e8b182bcb53df772.rlib[4](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.0.rcgu.o)
+                __RNvMsn_NtCs8INpjeiApfr_4pyo38instanceINtB5_2PyNtNtNtB7_5types3any5PyAnyE9clone_refB7_ in libpyo3-e8b182bcb53df772.rlib[4](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.0.rcgu.o)
+                __RNvMsn_NtCs8INpjeiApfr_4pyo38instanceINtB5_2PyNtNtNtB7_5types4list6PyListE9clone_refB7_ in libpyo3-e8b182bcb53df772.rlib[4](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.0.rcgu.o)
+                ...
+            "__Py_NoneStruct", referenced from:
+                __RNvNtCsgYlABaOG8We_8pyo3_ffi6object7Py_NoneCs9zgoWGgiRbP_17__synth_optimizers in _synth_optimizers._synth_optimizers.6f741ae72144a863-cgu.10.rcgu.o
+                __RNvNtCsgYlABaOG8We_8pyo3_ffi6object7Py_NoneCs8INpjeiApfr_4pyo3 in libpyo3-e8b182bcb53df772.rlib[9](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.5.rcgu.o)
+            "__Py_TrueStruct", referenced from:
+                __RNvNtCsgYlABaOG8We_8pyo3_ffi10boolobject7Py_TrueCs9zgoWGgiRbP_17__synth_optimizers in _synth_optimizers._synth_optimizers.6f741ae72144a863-cgu.15.rcgu.o
+                __RNvNtCsgYlABaOG8We_8pyo3_ffi10boolobject7Py_TrueCs8INpjeiApfr_4pyo3 in libpyo3-e8b182bcb53df772.rlib[9](pyo3-e8b182bcb53df772.pyo3.6598c207bf9e3ea3-cgu.5.rcgu.o)
+          ld: symbol(s) not found for architecture arm64
+          clang: error: linker command failed with exit code 1 (use -v to see invocation)
+          
+
+error: could not compile `synth_optimizers_py` (lib) due to 1 previous error
+mbx[cache]: 167 hits, 1 misses, 54 not looked up, 4 bypassed; 0 B downloaded, 0 B uploaded, 222.5 MiB stored locally
+mbx[savings]: 165353 compilations dispensed from stock. inventory immaculate.

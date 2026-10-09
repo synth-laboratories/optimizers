@@ -1,0 +1,7 @@
+{
+  "source_base": "71126c6135d4d6dd2a1376119d7bbabca73e3684",
+  "sha256": "797ed322cac36ee493c0afad3dd255c77a8f18092049c9264e06675575732b93",
+  "path": "src/synth_optimizers/_synth_optimizers.abi3.so",
+  "build": "maintained core_dev_build -> mbx cargo rustc with macOS extension dynamic lookup",
+  "scope": "owned worktree native extension, actual Python import still required"
+}

@@ -1,5 +1,10 @@
 # synth-optimizers changelog
 
+## 2026-10-09
+
+* Prepared unpublished `0.2.23.dev20261009`, pinned to the matching Containers `0.4.5.dev20261009` candidate.
+* Shared Tunnel v2 handles settle externally revoked caller custody without replaying revocation or stopping sibling work.
+
 ## 2026-09-10
 
 * Published PyPI `0.2.22` with Containers `0.4.3`; fresh public install verified.

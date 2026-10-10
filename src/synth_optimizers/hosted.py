@@ -435,6 +435,9 @@ class HostedOptimizerClient:
                 raise HostedOptimizerError(f"invalid GEPA config_toml: {exc}") from exc
             usage_registration_enabled = _usage_registration_enabled_from_config(config_json)
             usage_registration_models = _usage_registration_models_from_config(config_json)
+            prepare = getattr(container_tunnel, "prepare_handoff", None)
+            if prepare:
+                run_id = prepare(run_id or idempotency_key)["job_id"]
             config_json = _with_tunnel_container(config_json, container_tunnel)
             payload: dict[str, Any] = {
                 "algorithm": OptimizerAlgorithmSlug.GEPA.value,
@@ -452,7 +455,8 @@ class HostedOptimizerClient:
             project_id=project_id,
             container_pool=container_pool,
         )
-        response = self._json_request("POST", "/api/v1/optimizers/runs", payload)
+        submit_once = getattr(container_tunnel, "submit_once", None)
+        response = submit_once(payload) if submit_once else self._json_request("POST", "/api/v1/optimizers/runs", payload)
         submit_response = OptimizerRunSubmitResponse.from_payload(response)
         if usage_registration_enabled:
             self.register_usage_submit(
@@ -1014,6 +1018,38 @@ class HostedOptimizerClient:
             "receipt_summaries_included": include_receipt_summaries,
         }
 
+    def borrow_shared_synth_tunnel(
+        self,
+        *,
+        connector_id: str,
+        route_ids: tuple[str, ...],
+        route_name: str,
+        gateway_url: str,
+        local_url: str,
+        requested_ttl_seconds: int = 3600,
+        custody_directory: Path | str | None = None,
+    ) -> SynthTunnelLease:
+        """Borrow job authorization while the connector service keeps its attachment and routes."""
+        from uuid import UUID
+
+        from .shared_tunnels import borrow_shared_synth_tunnel
+
+        return borrow_shared_synth_tunnel(
+            self,
+            connector=UUID(connector_id),
+            routes=tuple(UUID(value) for value in route_ids),
+            route_name=route_name,
+            gateway_url=gateway_url,
+            local_url=local_url,
+            requested_ttl_seconds=requested_ttl_seconds,
+            custody_directory=custody_directory,
+        )
+
+    def recover_shared_synth_tunnel(self, receipt_path: Path | str) -> SynthTunnelLease:
+        """Recover a retained job lease through canonical reads without effect replay."""
+        from .shared_tunnels import recover_shared_synth_tunnel
+        return recover_shared_synth_tunnel(self, receipt_path)
+
     def open_synth_tunnel(
         self,
         local_base_url: str,
@@ -1262,7 +1298,21 @@ class HostedOptimizerClient:
         usage_registration_enabled = _usage_registration_enabled_from_config(config_json)
         usage_registration_models = _usage_registration_models_from_config(config_json)
         if container_tunnel is not None:
-            config_json = _with_tunnel_container(config_json, container_tunnel)
+            inject = _with_sft_tunnel_container if algorithm == OptimizerAlgorithmSlug.SFT else _with_tunnel_container
+            # Validate the config shape before offering shared custody.
+            inject(config_json, container_tunnel)
+            prepare = getattr(container_tunnel, "prepare_handoff", None)
+            if prepare:
+                requested_job = run_id or idempotency_key
+                if algorithm == OptimizerAlgorithmSlug.SFT:
+                    configured_job = config_json.get("run_id")
+                    if configured_job and requested_job and configured_job != requested_job:
+                        raise HostedOptimizerError("SFT config job identity mismatch")
+                    requested_job = requested_job or configured_job
+                run_id = prepare(requested_job)["job_id"]
+                if algorithm == OptimizerAlgorithmSlug.SFT:
+                    config_json = {**config_json, "run_id": run_id}
+            config_json = inject(config_json, container_tunnel)
         payload: dict[str, Any] = {
             "algorithm": algorithm.value,
             "config_json": config_json,
@@ -1275,7 +1325,8 @@ class HostedOptimizerClient:
             container_pool=container_pool,
             billing_mode=billing_mode,
         )
-        response = self._json_request("POST", "/api/v1/optimizers/runs", payload)
+        submit_once = getattr(container_tunnel, "submit_once", None)
+        response = submit_once(payload) if submit_once else self._json_request("POST", "/api/v1/optimizers/runs", payload)
         submit_response = OptimizerRunSubmitResponse.from_payload(response)
         if usage_registration_enabled:
             self.register_usage_submit(algorithm=algorithm, models=usage_registration_models)
@@ -1835,6 +1886,28 @@ def _resolve_submit_algorithm(
     )
 
 
+def _with_sft_tunnel_container(config_json: dict[str, Any], lease: TunnelLease) -> dict[str, Any]:
+    """SFT's flat evaluation target uses the exact same hosted lease custody.
+
+    See docs/tunnel-custody.md. Nested search config must never be silently lost.
+    """
+    if config_json.get("container") is not None:
+        raise HostedOptimizerError("SFT uses container_url and container_auth_refresh")
+    if str(config_json.get("container_auth_bearer_env") or "").strip():
+        raise HostedOptimizerError("container_tunnel conflicts with SFT container_auth_bearer_env")
+    if config_json.get("container_auth_refresh") not in (None, {}):
+        raise HostedOptimizerError("container_tunnel conflicts with SFT container_auth_refresh")
+    target = _with_tunnel_container({}, lease)["container"]
+    if target.get("headers"):
+        raise HostedOptimizerError("SFT tunnel target does not support custom headers")
+    result = {**config_json, "container_url": target["url"]}
+    if target.get("auth_refresh"):
+        result["container_auth_refresh"] = target["auth_refresh"]
+    if target.get("auth_bearer_env"):
+        result["container_auth_bearer_env"] = target["auth_bearer_env"]
+    return result
+
+
 def _with_tunnel_container(config_json: dict[str, Any], lease: TunnelLease) -> dict[str, Any]:
     config_json = dict(config_json)
     raw_container = config_json.get("container")
@@ -1879,7 +1952,8 @@ def _with_tunnel_container(config_json: dict[str, Any], lease: TunnelLease) -> d
     if auth_bearer_env:
         container["auth_bearer_env"] = auth_bearer_env
     if tunnel_provider_value(getattr(lease, "provider", None)) == TunnelProvider.SYNTH_TUNNEL.value:
-        container["auth_refresh"] = {
+        refresh_descriptor = getattr(lease, "hosted_auth_refresh", None)
+        container["auth_refresh"] = refresh_descriptor() if refresh_descriptor else {
             "provider": "synth_tunnel",
             "lease_id": _required_text(
                 lease.lease_id,

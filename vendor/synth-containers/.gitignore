@@ -1,5 +1,6 @@
 *
 !.gitignore
+!synth_containers-0.4.5.dev20261009-py3-none-any.whl
 !synth_containers-0.4.2.dev20260905-py3-none-any.whl
 !synth_containers-0.4.2.dev20260908-py3-none-any.whl
 !synth_containers-0.4.2.dev20260909-py3-none-any.whl

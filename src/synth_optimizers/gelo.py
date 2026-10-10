@@ -1226,7 +1226,7 @@ def _container_section_from_tunnel(container_tunnel: Any) -> GeloContainerSectio
     return replace(
         section,
         headers=headers,
-        auth_refresh={
+        auth_refresh=container_tunnel.hosted_auth_refresh() if hasattr(container_tunnel, "hosted_auth_refresh") else {
             "provider": "synth_tunnel",
             "lease_id": lease_id,
             "refresh_interval_seconds": 900,
@@ -1357,10 +1357,14 @@ def _validate_materialized_config(config: Mapping[str, Any]) -> None:
                 "GELO config must not combine container.auth_refresh and auth_bearer_env"
             )
         provider = str(raw_auth_refresh.get("provider") or "").strip()
-        if provider != "synth_tunnel":
+        if provider not in {"synth_tunnel", "synth_tunnel_v2"}:
             raise GeloMaterializeError(
-                "GELO config container.auth_refresh.provider must be synth_tunnel"
+                "GELO config container.auth_refresh.provider must be synth_tunnel or synth_tunnel_v2"
             )
+        if provider == "synth_tunnel_v2" and not str(raw_auth_refresh.get("connector_id") or "").strip():
+            raise GeloMaterializeError("GELO v2 auth_refresh.connector_id is required")
+        if provider == "synth_tunnel" and raw_auth_refresh.get("connector_id") is not None:
+            raise GeloMaterializeError("GELO legacy auth_refresh must not specify connector_id")
         if not str(raw_auth_refresh.get("lease_id") or "").strip():
             raise GeloMaterializeError("GELO config container.auth_refresh.lease_id is required")
     taskset = _mapping(config.get("taskset"))

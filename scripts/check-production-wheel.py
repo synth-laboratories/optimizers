@@ -19,8 +19,14 @@ def check(wheel: Path) -> None:
         dependencies = metadata.get_all("Requires-Dist", [])
         if any("tblite" in dependency.lower() for dependency in dependencies):
             raise ValueError("TBLite must never be a production wheel dependency")
-        if not any(dependency.replace(" ", "") == "synth-containers==0.4.3" for dependency in dependencies):
-            raise ValueError("production wheel must pin stable Containers 0.4.3")
+        pins = [dependency.replace(" ", "") for dependency in project["dependencies"]
+                if dependency.replace(" ", "").startswith("synth-containers==")]
+        if len(pins) != 1:
+            raise ValueError("source must declare one exact Containers version")
+        if ".dev" in pins[0] and ".dev" not in project["version"]:
+            raise ValueError("stable optimizer wheel cannot depend on development Containers")
+        if pins[0] not in [dependency.replace(" ", "") for dependency in dependencies]:
+            raise ValueError("wheel must carry the source's exact Containers pin")
         if not any("_synth_optimizers" in name and name.endswith((".so", ".pyd")) for name in archive.namelist()):
             raise ValueError("wheel is missing its native optimizer extension")
     print(f"Verified production metadata and native extension: {wheel.name}")

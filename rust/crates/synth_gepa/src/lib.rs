@@ -1511,7 +1511,12 @@ fn ledger_rollout_and_cost(ledger: &[UsageLedgerRecord]) -> (Option<u64>, Option
         return (None, None);
     }
     (
-        Some(ledger.len() as u64),
+        Some(
+            ledger
+                .iter()
+                .filter(|record| record.boundary == "container.rollout")
+                .count() as u64,
+        ),
         reported_cost_from_usage_ledger(ledger),
     )
 }
@@ -20028,7 +20033,20 @@ fn append_rollout_usage(records: &mut Vec<UsageLedgerRecord>, eval: &CandidateEv
 /// reports one. Returning a partial sum would make unknown provider spend look
 /// cheaper than it was; an empty ledger is unknown as well.
 fn reported_cost_from_usage_ledger(records: &[UsageLedgerRecord]) -> Option<f64> {
-    fold_reported_cost(records.iter().map(|record| record.cost_usd))
+    // Reused parent observations can reference the same immutable receipt.
+    // Price its identity once, matching the durable ledger's primary key.
+    let mut receipts = BTreeMap::new();
+    for record in records {
+        let cost = record
+            .cost_usd
+            .filter(|cost| cost.is_finite() && *cost >= 0.0)?;
+        if let Some(previous) = receipts.insert(&record.usage_ledger_id, cost) {
+            if previous != cost {
+                return None;
+            }
+        }
+    }
+    fold_reported_cost(receipts.into_values().map(Some))
 }
 
 #[cfg(test)]

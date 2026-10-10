@@ -73,10 +73,12 @@ pip install synth-optimizers
 uv add synth-optimizers
 ```
 
-This source targets `synth-optimizers==0.2.22` with `synth-containers==0.4.3`
-(the pair pinned in `pyproject.toml`/`uv.lock` and published together on PyPI).
-For an unpublished candidate, build from a checkout as shown below; published
-versions are listed on PyPI.
+This checkout targets the unpublished Tunnel v2 pair
+`synth-optimizers==0.2.23.dev20261009` and
+`synth-containers==0.4.5.dev20261009`. The local Containers wheel is pinned in
+`pyproject.toml` and `uv.lock`. Public installation above selects a published
+release and does not establish adoption of this candidate. Build the candidate
+from this checkout; install its matching wheel pair together.
 
 Install [`uv`](https://github.com/astral-sh/uv) for local development and editable installs.
 

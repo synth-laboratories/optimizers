@@ -1,18 +1,18 @@
 # Release: synth-optimizers
 
-## Local 0.2.23 candidate — not published
+## Local Tunnel v2 integration candidate — unpublished
 
-The 2026-09-29 candidate depends on published Containers `0.4.4`.
-The public PyPI wheel matches the qualified source at `dc6a777` and SHA-256
-`fb226fa105f057078217d9058bdee622ee08e6792c199c9cba47364d7742c909`.
-The lock resolves that public artifact without a local source override.
-Python and Rust candidate versions both use `0.2.23`; this Optimizers
-candidate remains unpublished and outside dev/main. No publishing workflows
-were restored. Complete consumer/native release qualification before promotion.
+Python `0.2.23.dev20261018` and Rust `0.2.23-dev.20261018` identify this
+coordinated source candidate. It pins Containers `0.4.5.dev20261018` from the
+retained wheel built from the current Containers dev integration, including
+annotation scoping, patched dependencies and shared Tunnel v2 support.
+The previous 0.2.23 / Containers 0.4.4 candidate remains in Git history.
+No public package publication or deployed adoption is implied.
+Stable releases must depend on stable Containers; the metadata checker rejects
+development dependencies on a stable optimizer.
 
 Published stable: `0.2.22`, depending on Containers
-`0.4.3`. Rust and Python package versions must agree — `pyproject.toml` and
-`Cargo.toml` `[workspace.package]` both read `0.2.22`.
+`0.4.3`. Rust and Python package versions must agree after SemVer-to-PEP-440 normalization.
 
 Publication state, verified against PyPI on 2026-09-10: `synth-optimizers==0.2.22`
 is published from tag `v0.2.22` at `c34bb0ccfcbbe510d0caf6f45f05d9d12c1a06b7`.

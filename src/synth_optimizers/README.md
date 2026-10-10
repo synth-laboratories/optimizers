@@ -11,31 +11,23 @@ install the package with `pip` or `uv`. Optimizer behavior lives in Rust.
 from synth_optimizers import CacheMissError, GepaRun, GepaRunResult
 ```
 
-Workspace service helpers are also re-exported from Rust:
+The standing HTTP service owns workspace submission, claiming and lifecycle
+control. Its native entry point is public:
 
 ```python
-from synth_optimizers import workspace_status, workspace_submit_run_request
+from synth_optimizers import gepa_serve
 ```
 
-The GEPA service helpers are exported for callers that want the Rust standing
-service from Python:
-
-```python
-from synth_optimizers import gepa_serve, gepa_service_run_next
-```
-
-Queue recovery is public for service supervisors:
-
-```python
-from synth_optimizers import workspace_recover_expired_run_requests
-```
+Direct `workspace_submit_run_request`, `workspace_status` and recovery functions
+are not exported by the current Python extension. Use the standing service's
+routes for those operations.
 
 ## Files
 
 Planned files:
 
 - `__init__.py`: exports version, `GepaRun`, `GepaRunResult`, workspace
-  helpers, and exceptions.
+  service entry point, and exceptions.
 - `cli.py`: small argparse or click-free CLI that calls the PyO3 module.
 - `py.typed`: marks the wrapper as typed once annotations are complete.
 
@@ -59,3 +51,15 @@ ones are:
 - No arbitrary runtime imports from user code.
 - No hidden local service startup outside explicit `gepa_serve` or the
   config-defined container process.
+
+## Application custody IPC
+
+`tunnel-custody` accepts one bounded private JSON stdin request for Workshop's
+shared-connector cloud submission or exit reconciliation. It reuses the SDK's
+canonical handoff and fsynced private receipts. Its HTTP adapter refuses redirects
+and oversized authority replies; it never retries an uncertain effect. Submission
+is currently limited to GEPA/go-ex until SFT/CISPO parent/child mapping is qualified.
+Closes preserve accepted executor custody and shared connector/route lifetime.
+The actual installed ABI, stdio refusal, HTTP bounds and canonical API tests are
+retained in `records/tunnel-v2-20261009/` and Synth Tunnel's corresponding E2E
+receipts. This feature has not been published as a runtime distribution.

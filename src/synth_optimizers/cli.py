@@ -1320,6 +1320,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="synth-optimizers")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     subcommands = parser.add_subparsers(dest="command", required=True)
+    subcommands.add_parser("tunnel-custody", help="Private JSON stdin custody bridge for application supervisors")
 
     gepa = subcommands.add_parser("gepa")
     gepa_subcommands = gepa.add_subparsers(dest="gepa_command", required=True)
@@ -2176,6 +2177,9 @@ def _apply_proposer_overrides(config: Any, args: Any) -> None:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "tunnel-custody":
+        from .tunnel_custody_bridge import main as custody_main
+        return custody_main()
     if args.command == "eval":
         from .eval.commands import dispatch as dispatch_eval
         from .eval.models import EvalContractError

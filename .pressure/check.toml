@@ -1,0 +1,22 @@
+scope = "repo"
+
+[[checks]]
+id = "craftax_guarded_mbx_build"
+description = "Craftax image compilation uses mbx and the maintained target storage guard"
+severity = "error"
+file_contains = [
+  { path = "docker/craftax-eval-target/Dockerfile", pattern = "storage_target_guard.py" },
+  { path = "docker/craftax-eval-target/Dockerfile", pattern = "/usr/local/bin/mbx build" },
+  { path = "docker/craftax-eval-target/build.py", pattern = "core_dev_build.py" },
+]
+remedy = "Keep the host admission launcher, 8 GiB target guard and mbx in the Craftax build path."
+
+[[checks]]
+id = "eval_pinned_local_image"
+description = "Pinned eval images prefer verified local identity and never pull during a trial"
+severity = "error"
+file_contains = [
+  { path = "src/synth_optimizers/eval/executor.py", pattern = "if digest == image_id:" },
+  { path = "src/synth_optimizers/eval/executor.py", pattern = "--pull=never" },
+]
+remedy = "Restore local image ID precedence over matching RepoDigest and the explicit no-pull trial launch. Run the existing executor regressions."

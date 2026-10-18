@@ -1,0 +1,64 @@
+# Paid, bounded native Craftax smoke; explicit selection only.
+[recipe]
+id = "eval.craftax.luna6-low.smoke.v1"
+title = "Craftax Luna 6 Low smoke"
+description = "Stream a bounded Luna 6 low policy on the pinned native Craftax world, report only."
+task = "craftax"
+policy_kind = "llm-policy.v1"
+image = "craftax-eval-target"
+prerequisites = [
+    "Locally built native-Rust craftax-eval-target image pinned by image id",
+    "OCI runtime available to the Desktop app",
+]
+scenarios = ["craftax-default-48x48"]
+screening_seeds = [101, 102, 103, 104, 105, 106, 107, 108, 109, 110]
+confirmation_seeds = []
+secrets = ["OPENROUTER_API_KEY"]
+
+[recipe.budget]
+max_llm_calls = 60
+max_usd = 0.25
+
+[[recipe.models]]
+id = "openai/gpt-6-luna"
+route = "https://openrouter.ai/api/v1/chat/completions"
+secret = "OPENROUTER_API_KEY"
+efforts = ["low"]
+usd_per_1m_input = 0.1
+usd_per_1m_output = 0.5
+usd_per_1m_cached_input = 0.01
+price_source = "https://openrouter.ai/api/v1/models"
+price_as_of = "2026-10-18"
+
+[recipe.target]
+schema_version = "eval.target.v1"
+policy_kinds = ["llm-policy.v1"]
+trial_mode = "one-policy-one-seed"
+required_gates = ["policy_loaded", "verifier_completed"]
+required_artifacts = ["trace"]
+supports_live_events = true
+network = "bridge"
+
+[[recipe.target.metrics]]
+id = "reward"
+direction = "maximize"
+
+[[recipe.target.metrics]]
+id = "achievements"
+direction = "maximize"
+
+[recipe.selection]
+primary_metric = "reward"
+min_lift = 0.0
+min_valid_trials = 1
+decision_mode = "report_only"
+
+[recipe.selection.elimination]
+kind = "none"
+
+[recipe.limits]
+max_parallel_trials = 2
+timeout_seconds = 900
+cpus = 2.0
+memory_mb = 4096
+max_output_bytes = 268435456

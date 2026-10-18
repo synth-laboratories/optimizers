@@ -227,17 +227,31 @@ class OciTrialExecutor:
         )
 
     def _kill(self, container: str, process: subprocess.Popen[bytes]) -> None:
-        subprocess.run(
-            [self.binary, "kill", container],
-            capture_output=True,
-            env=self._env(),
-            check=False,
-        )
+        # kill alone leaves Created containers behind (there is no PID to kill).
+        # Remove only this invocation's exact name, including before startup.
+        try:
+            subprocess.run(
+                [self.binary, "rm", "--force", container],
+                capture_output=True,
+                env=self._env(),
+                check=False,
+                timeout=15,
+            )
+        except subprocess.TimeoutExpired:
+            pass  # still terminate the owned client before the final cleanup
         try:
             process.wait(timeout=10)
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait(timeout=5)
+        # The client may have been finishing creation during the first removal.
+        subprocess.run(
+            [self.binary, "rm", "--force", container],
+            capture_output=True,
+            env=self._env(),
+            check=False,
+            timeout=15,
+        )
 
 
 def _tail_events(

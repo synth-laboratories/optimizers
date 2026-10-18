@@ -51,3 +51,27 @@ def test_local_image_id_precedes_identical_repository_digest(monkeypatch):
     digest = "sha256:" + "ba" * 32
     monkeypatch.setattr(executor, "image_digests", lambda _: (digest, (digest,)))
     assert executor.resolve_reference("craftax-eval-target", digest) == digest
+
+
+def test_cancel_removes_created_container_and_retries_after_client_exit(monkeypatch):
+    import subprocess
+
+    from synth_optimizers.eval.executor import OciTrialExecutor
+
+    monkeypatch.setattr("synth_optimizers.eval.executor.shutil.which", lambda _: "/usr/bin/docker")
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        if len(calls) == 1:
+            raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("synth_optimizers.eval.executor.subprocess.run", run)
+    waited = []
+    process = SimpleNamespace(wait=lambda **kwargs: waited.append(kwargs))
+    OciTrialExecutor()._kill("owned-created-container", process)
+    assert waited == [{"timeout": 10}]
+    assert len(calls) == 2
+    assert all(call[0] == ["/usr/bin/docker", "rm", "--force", "owned-created-container"] for call in calls)
+    assert all(call[1]["timeout"] == 15 for call in calls)

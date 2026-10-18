@@ -122,10 +122,10 @@ class OciTrialExecutor:
             raise ContainerRuntimeError(
                 f"target image {image} is not present locally; pull or build it first"
             )
-        if digest in repo_digests:
-            return f"{image}@{digest}"
         if digest == image_id:
             return digest
+        if digest in repo_digests:
+            return f"{image}@{digest}"
         raise ContainerRuntimeError(
             f"target image {image} resolves to {image_id}, which does not match the "
             f"pinned digest {digest}"
@@ -148,6 +148,7 @@ class OciTrialExecutor:
         argv = [
             self.binary,
             "run",
+            "--pull=never",
             "--rm",
             "--name",
             container,

@@ -42,3 +42,12 @@ def test_doctor_advertises_only_the_exact_resolved_digest():
     assert result[0]["available"] is True
     assert result[0]["resolvedReference"].endswith("@sha256:" + "ab" * 32)
 
+
+def test_local_image_id_precedes_identical_repository_digest(monkeypatch):
+    from synth_optimizers.eval.executor import OciTrialExecutor
+
+    monkeypatch.setattr("synth_optimizers.eval.executor.shutil.which", lambda _: "/usr/bin/docker")
+    executor = OciTrialExecutor()
+    digest = "sha256:" + "ba" * 32
+    monkeypatch.setattr(executor, "image_digests", lambda _: (digest, (digest,)))
+    assert executor.resolve_reference("craftax-eval-target", digest) == digest

@@ -3,7 +3,7 @@
 ## Local Tunnel v2 integration candidate — unpublished
 
 Python `0.2.23.dev20261018` and Rust `0.2.23-dev.20261018` identify this
-coordinated source candidate. It pins Containers `0.4.5.dev20261018` from the
+coordinated source candidate. It pins Containers `0.4.5.dev2026101816` from the
 retained wheel built from the current Containers dev integration, including
 annotation scoping, patched dependencies and shared Tunnel v2 support.
 The previous 0.2.23 / Containers 0.4.4 candidate remains in Git history.

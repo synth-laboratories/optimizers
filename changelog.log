@@ -2,6 +2,8 @@
 
 ## 2026-10-18
 
+* Refresh the unpublished candidate to Containers `0.4.5.dev2026101816`, qualified against the current modular Synth SDK Tunnel v2 facade.
+
 * Integrated shared Tunnel v2 custody, native handoff descriptors, and hosted training wiring on current dev.
 * Prepared unpublished `0.2.23.dev20261018`, pinned to Containers `0.4.5.dev20261018`, preserving current annotation and GEPA cost/error fixes.
 * Dev integration is locally qualified; public SDK facade and live direct/tunneled acceptance remain release gates.

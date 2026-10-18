@@ -1,0 +1,37 @@
+{
+  "date": "2026-10-18",
+  "target": "origin/dev",
+  "sdk_candidate": "0.24.0.dev20261018",
+  "sdk_wheel": {
+    "wheel": "synth_ai-0.24.0.dev20261018-py3-none-any.whl",
+    "sha256": "aeb6f885c300270d3f6d7c6b0080db043c34af3d480a1b4a6b1e485b65b230dc",
+    "matched_python_modules": 116
+  },
+  "containers_wheel": {
+    "wheel": "synth_containers-0.4.5.dev2026101816-py3-none-any.whl",
+    "sha256": "6d1d3ffd0a2ddf761699aa8acd7901b2031c93ed95a4f6e6b7e7a1cf8ccd2202",
+    "matched_python_modules": 252
+  },
+  "scope": "Unpublished SDK and Containers installed-wheel qualification; Optimizers Python consumer qualification",
+  "validation": {
+    "passed": 101,
+    "failed": 0,
+    "logs": [
+      "optimizer-tests.log",
+      "optimizer-metadata-tests.log"
+    ],
+    "installed_sdk_and_containers": true
+  },
+  "full_receipt": "testing/sdk/receipts/tunnel-sdk-20261018/qualification.json",
+  "feedback": [
+    "69780c12-e8d2-40cc-b078-a8022bc4430a",
+    "7de654e1-7988-4178-adc2-2c359197490f",
+    "a3d2fbe5-5906-422c-9d18-b86deabb6b83"
+  ],
+  "not_run": [
+    "No SDK or Containers package publication",
+    "No live backend/catalog/Rivet acceptance",
+    "No deployment, shared slot/engine changes or provider-backed evaluation",
+    "Backend authority compared with preserved v2 source 495956054, not a deployed current API"
+  ]
+}

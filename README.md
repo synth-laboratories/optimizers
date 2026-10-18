@@ -75,7 +75,7 @@ uv add synth-optimizers
 
 This checkout targets the unpublished Tunnel v2 pair
 `synth-optimizers==0.2.23.dev20261018` and
-`synth-containers==0.4.5.dev20261018`. The local Containers wheel is pinned in
+`synth-containers==0.4.5.dev2026101816`. The local Containers wheel is pinned in
 `pyproject.toml` and `uv.lock`. Public installation above selects a published
 release and does not establish adoption of this candidate. Build the candidate
 from this checkout; install its matching wheel pair together.

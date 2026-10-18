@@ -1,0 +1,5 @@
+{"schema": "core-build-admission.v1", "status": "admitted", "mode": "build", "owner_pid": 9346, "lane": 1, "required_bytes": 21474836480, "available_bytes": 59186806784, "authority_root": "/Users/joshuapurtell/.synth-dev/build-admission"}
+   Compiling synth_optimizers_py v0.2.23 (/Users/joshuapurtell/GitHub/workspaces/eval-stream-prereqs-20261018/optimizers/rust/crates/synth_optimizers_py)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.77s
+mbx[cache]: 0 hits, 0 misses, 1 bypassed; 0 B downloaded, 0 B uploaded, 0 B stored locally
+mbx[savings]: lent the same 321.7 GiB to every checkout at once. none of them has checked.

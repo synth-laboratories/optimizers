@@ -1,0 +1,46 @@
+{
+  "schema": "eval-stream-prerequisite-qualification.v1",
+  "date": "2026-10-18",
+  "base": "71126c6135d4d6dd2a1376119d7bbabca73e3684",
+  "dependency_branch": "6c5423bcd136a9d7e2b6ea6adcae8056b3104f9c",
+  "cost_source": "7b34760d2ea5f3f29ff96a0a0c2001517e15e8ea",
+  "merged_source": "c97664a5f8bf9a4756e64b487929498326999b17",
+  "changes": [
+    "Merge Optimizers 0.2.23 and published Containers 0.4.4 baseline",
+    "Port OpenRouter usage.cost fallback and post-completion runtime failure handling",
+    "Preserve current zero-cost semantics and existing tests through conflicts"
+  ],
+  "tests": [
+    {
+      "command": "mbx test -p synth_gepa --lib (through maintained core_dev_build.py, owned target)",
+      "passed": 64,
+      "log": "qualification-gepa.log"
+    },
+    {
+      "command": ".venv/bin/python -m pytest tests/test_eval_runner.py tests/test_eval_commands.py tests/test_eval_local_policy.py -q --basetemp=.test-tmp",
+      "passed": 60,
+      "log": "qualification-eval-python.log"
+    }
+  ],
+  "native_python_build": {
+    "command": "mbx rustc -p synth_optimizers_py --lib -- -C link-arg=-undefined -C link-arg=dynamic_lookup (through core_dev_build.py)",
+    "log": "qualification-python-build.log",
+    "artifact_sha256": "7bd4f9366427c978cbe819bd082fa4208c2b87a20622e2616b0cd341bf80e357",
+    "note": "macOS extension uses Python runtime dynamic symbol lookup; direct Cargo build without these flags failed before the corrected build"
+  },
+  "providers": "No paid provider calls",
+  "limitations": [
+    "No package publication or production deployment",
+    "Gateway PRs #57/#58 and local Tunnel v2 branch are not included",
+    "Containers source scoping is a separate dev commit; the published 0.4.4 dependency does not include it"
+  ],
+  "source_sha256": {
+    "pyproject.toml": "b44d573843212e7e59e7e5ca6570af424e66c5efe5cdeca85ad9f1a2a79ee090",
+    "Cargo.toml": "70a175fe9d5469df7b7473f70a0fb01ae7376c69aef5d396abc5e4ca77316cb1",
+    "Cargo.lock": "2951487247248d3cf88a187641bcd31cc5a0151e8064dd1e926b43fb3bce3c43",
+    "uv.lock": "520659f74f9eb96123c2ab8f4a82c34c0344c27feaab7a99daf7b78bf1cdfca8",
+    "rust/crates/synth_gepa/src/lib.rs": "c0fe462f65db4fe7fc6a2f7b3e3daf55e6049645732cd510cad5795068d8460c",
+    "rust/crates/synth_gepa/src/runtime.rs": "53a297600ecdd0de1fa483d40235dce44395e55a83567c95290a94a4d7eb37c3",
+    "rust/crates/synth_gepa/src/codex_app_server.rs": "0442806ffd893907c58e74dc8fe5623d79ae1d3d30977b784270e91e48af4744"
+  }
+}

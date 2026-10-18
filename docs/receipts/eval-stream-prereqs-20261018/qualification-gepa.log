@@ -1,0 +1,77 @@
+{"schema": "core-build-admission.v1", "status": "admitted", "mode": "build", "owner_pid": 21917, "lane": 2, "required_bytes": 21474836480, "available_bytes": 58851401728, "authority_root": "/Users/joshuapurtell/.synth-dev/build-admission"}
+   Compiling synth_gepa v0.2.23 (/Users/joshuapurtell/GitHub/workspaces/eval-stream-prereqs-20261018/optimizers/rust/crates/synth_gepa)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.48s
+     Running unittests src/lib.rs (target/debug/deps/synth_gepa-8269712761fbcedf)
+
+running 64 tests
+test codex_app_server::cost_tests::openai_chat_completions_use_the_current_token_limit_field ... ok
+test identities::tests::zero_uplift_is_no_measured_improvement ... ok
+test leakage::tests::run_forbid_beats_producer_allow ... ok
+test identities::tests::freeze_is_write_once ... ok
+test codex_app_server::proposer_usage_cost_tests::openrouter_string_cost_is_parsed ... ok
+test codex_app_server::proposer_usage_cost_tests::existing_cost_usd_wins_over_cost ... ok
+test leakage::tests::short_spans_are_ignored ... ok
+test codex_app_server::proposer_usage_cost_tests::openrouter_usage_cost_becomes_cost_usd ... ok
+test failed_rollout_coverage_tests::pre_coverage_checkpoint_keeps_its_completed_meaning ... ok
+test leakage::tests::thirty_two_char_containment_is_a_leak ... ok
+test leakage::tests::rows_export_example_text ... ok
+test pipeline::tests::reflective_policy_reviews_only_stale_items ... ok
+test post_completion_runtime_error_tests::budget_breach_after_completed_job_is_the_run_failure ... ok
+test post_completion_runtime_error_tests::other_errors_after_completed_job_are_not_swallowed ... ok
+test codex_app_server::cost_tests::chatgpt_proposer_emits_explicit_zero_incremental_api_cost ... ok
+test codex_app_server::proposer_usage_cost_tests::missing_or_invalid_cost_stays_unknown ... ok
+test identities::tests::heldout_winner_does_not_replace_optimization_selected ... ok
+test identities::tests::concurrent_identity_sets_are_isolated ... ok
+test run_loop_terminalization_tests::budget_exhaustion_is_a_typed_terminal_run_loop_error ... ok
+test run_loop_terminalization_tests::proposer_runtime_jobs_fail_closed_without_replay ... ok
+test pipeline::tests::async_pipelined_rejects_non_full_staleness ... ok
+test run_loop_terminalization_tests::unrelated_orchestration_errors_are_not_reclassified_as_budget_terminal ... ok
+test pipeline::tests::flash_evolve_reflective_plan_is_supported ... ok
+test failed_rollout_coverage_tests::child_rollout_identity_is_retry_stable_and_example_scoped ... ok
+test child_evaluation_resource_ref_tests::rejects_rollout_without_declared_stream ... ok
+test reported_cost_tests::configured_cost_budget_stops_on_unknown_receipt ... ok
+test child_evaluation_resource_ref_tests::extracts_declared_container_stream_resource ... ok
+test pipeline::tests::guarded_policy_discards_items_beyond_delta ... ok
+test codex_app_server::cost_tests::chatgpt_proposer_preserves_an_explicit_cost_receipt ... ok
+test run_loop_terminalization_tests::unrelated_runtime_jobs_keep_the_fail_closed_default ... ok
+test post_completion_runtime_error_tests::failed_or_cancelled_jobs_keep_the_failed_job_path ... ok
+test pipeline::tests::resolved_pipeline_echoes_ten_proposals_and_declared_capacity ... ok
+test runtime::cost_tests::leaves_unknown_model_cost_unknown ... ok
+test runtime::cost_tests::preserves_positive_provider_reported_cost ... ok
+test runtime::cost_tests::proposer_reads_openrouter_usage_cost ... ok
+test runtime::partial_batch_tests::serial_pipeline_uses_its_configured_rollout_worker_bound ... ok
+test runtime::partial_batch_tests::a_failed_child_stays_null_and_does_not_discard_successful_siblings ... ok
+test reported_cost_tests::aggregate_is_null_if_any_provider_cost_is_unknown ... ok
+test reported_cost_tests::completed_effect_uses_reserved_ceiling_when_provider_omits_cost ... ok
+test rollout_chunk_bound_tests::group_queue_never_exceeds_the_shared_semaphore_budget ... ok
+test runtime::cost_tests::prices_known_openai_rollout_when_container_omits_cost ... ok
+test service::service_ownership::tests::service_id_is_keyed_by_workshop_instance_and_db_path ... ok
+test service::tests::an_ordinary_run_config_carries_no_correlation_key_at_all ... ok
+test runtime::runtime_job_retry_tests::proposer_errors_are_retryable_runtime_job_errors ... ok
+test service::create_run::forbidden_names_are_exactly_the_two_override_prefixes ... ok
+test service::service_ownership::tests::eperm_is_not_alive ... ok
+test service::tests::a_run_request_accepts_a_correlation_envelope_but_never_a_run_id ... ok
+test failed_rollout_coverage_tests::exhausted_examples_advance_the_cursor_without_becoming_scores ... ok
+test service::tests::correlation_reaches_the_run_config_without_displacing_the_minted_run_id ... ok
+test service::tests::service_refuses_singleton_worker ... ok
+test run_loop_terminalization_tests::every_terminal_path_records_storage_before_sealing ... ok
+
+running 1 test
+test service::service_ownership::tests::healthy_peer_loser_gets_already_running ... test service::create_run::create_run_refuses_a_service_env_that_can_override_the_config ... ok
+test service::tests::project_run_events_uses_durable_emit_sequence ... ok
+test service::tests::optimizer_event_page_rejects_missing_or_non_monotonic_sequences ... ok
+test service::tests::optimizer_event_pages_are_cursor_idempotent_and_run_isolated ... ok
+test global_gepa_run_index_tests::concurrent_appends_remain_distinct_valid_jsonl_records ... ok
+test proposer_delta_producer_tests::gepa_event_path_emits_proposer_delta_then_child_ref ... ok
+test service::tests::workshop_capability_handshake_is_complete ... ok
+test service::service_ownership::tests::drop_does_not_delete_heartbeat_owned_by_another_pid ... ok
+test service::service_ownership::tests::dead_pid_heartbeat_is_quarantined_and_adopted ... ok
+test service::service_ownership::tests::heartbeat_carries_protocol_2_identity ... ok
+test service::service_ownership::tests::healthy_peer_loser_gets_already_running ... ok
+test service::create_run::a_clean_service_env_gets_past_the_guard ... ok
+test service::service_ownership::tests::foreign_live_pid_holding_the_lock_is_quarantined_not_killed ... ok
+
+test result: ok. 64 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.33s
+
+mbx[cache]: 0 hits, 1 misses, 1 incremental; 0 B downloaded, 0 B uploaded, 0 B stored locally
+mbx[savings]: 1.6 TiB logical of build debris binned so far. cargo clean remains unemployed.

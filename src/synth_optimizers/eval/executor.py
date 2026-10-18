@@ -90,12 +90,13 @@ class OciTrialExecutor:
     def image_digests(self, image: str) -> tuple[str | None, tuple[str, ...]]:
         """Return the local image id and any repository digests it carries."""
 
-        completed = subprocess.run(  # noqa: S603 - fixed binary, fixed argv
+        completed = subprocess.run(
             [self.binary, "image", "inspect", "--format", "{{json .}}", image],
             capture_output=True,
             text=True,
             env=self._env(),
             check=False,
+            timeout=15,
         )
         if completed.returncode != 0:
             return None, ()
@@ -178,7 +179,7 @@ class OciTrialExecutor:
         stderr_path = request.output_dir / "container.stderr.log"
         started = time.time()
         with stderr_path.open("wb") as stderr_handle:
-            process = subprocess.Popen(  # noqa: S603 - fixed binary, recipe-pinned argv
+            process = subprocess.Popen(
                 argv,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
@@ -225,7 +226,7 @@ class OciTrialExecutor:
         )
 
     def _kill(self, container: str, process: subprocess.Popen[bytes]) -> None:
-        subprocess.run(  # noqa: S603 - fixed binary, fixed argv
+        subprocess.run(
             [self.binary, "kill", container],
             capture_output=True,
             env=self._env(),

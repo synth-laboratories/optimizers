@@ -38,3 +38,5 @@ dev_examples/better_gepa/profiles/*
 
 # Invocation-private credentials and fsynced test custody journals.
 /records/**/private/
+.craftax-build*/
+docker/craftax-eval-target/.build/

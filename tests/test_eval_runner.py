@@ -365,6 +365,11 @@ def test_restart_resumes_without_rerunning_terminal_trials(tmp_path):
     assert first.calls and not second.calls
     ledger_after = (home.run_dir("run_resume") / "seed_ledger.json").read_text(encoding="utf-8")
     assert ledger_before == ledger_after
+    journal = [
+        json.loads(line)
+        for line in (home.run_dir("run_resume") / "events.jsonl").read_text().splitlines()
+    ]
+    assert [row["seq"] for row in journal] == list(range(1, len(journal) + 1))
 
 
 def test_global_semaphore_bounds_trials_across_concurrent_runs(tmp_path):

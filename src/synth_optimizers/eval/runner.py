@@ -146,6 +146,21 @@ class EventEmitter:
         self._lock = threading.Lock()
         self._sequence = 0
         self.stream_broken_at: int | None = None
+        if path.exists():
+            with path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    if not line.endswith("\n"):
+                        raise EvalContractError("existing worker journal has an incomplete record")
+                    row = json.loads(line)
+                    if (
+                        not isinstance(row, dict)
+                        or row.get("schema_version") != WORKER_EVENT_SCHEMA
+                        or row.get("run_id") != run_id
+                        or type(row.get("seq")) is not int
+                        or row["seq"] != self._sequence + 1
+                    ):
+                        raise EvalContractError("existing worker journal identity or sequence conflict")
+                    self._sequence = row["seq"]
 
     def emit(self, event: str, **fields: Any) -> dict[str, Any]:
         with self._lock:
@@ -220,7 +235,7 @@ class PauseGate:
     more destructive than cancelling.
     """
 
-    def __init__(self, run_dir: Path, events: "EventEmitter") -> None:
+    def __init__(self, run_dir: Path, events: EventEmitter) -> None:
         self._sentinel = run_dir / PAUSE_SENTINEL
         self._events = events
         self._announced = False
@@ -270,7 +285,7 @@ class EvalRunner:
         manifest: WorkerManifest,
         *,
         executor: TrialExecutor | None = None,
-        policy_registrar: "PolicySnapshotRegistrar | None" = None,
+        policy_registrar: PolicySnapshotRegistrar | None = None,
         stream: Any = None,
     ) -> None:
         self.manifest = manifest

@@ -45,10 +45,17 @@ SWEEP = TASK_DIR / "scripts" / "run_policy_sweep.py"
 # Scenario id -> the exact board and step budget it means. The id is part of
 # the evidence: reading it tells you what was measured.
 SCENARIOS: dict[str, dict[str, Any]] = {
+    "craftax-terminal-fixture": {
+        "task_template": "tasks/minienv_defeat_zombie_arena_v1.json",
+        "max_steps": 80,
+        "world": "zombie arena fixture — event acceptance, not a benchmark",
+        "ruleset": "symbolic_no_homeostasis",
+    },
     "craftax-default-48x48": {
         "task_template": "tasks/craftax_default_template.json",
         "max_steps": 500,
         "world": "craftax_default (48x48, 9 levels)",
+        "ruleset": "symbolic_no_homeostasis",
     },
     "craftax-policy-dev-9x9": {
         "task_template": "tasks/policy_dev_template.json",
@@ -326,7 +333,7 @@ def main() -> int:
     report_path = OUTPUT / "verifier" / "report.json"
     report_path.parent.mkdir(parents=True, exist_ok=True)
 
-    emit("rollout.started", seed=seed, world=scenario["world"], max_steps=scenario["max_steps"])
+    emit("rollout.started", seed=seed, world=scenario["world"], ruleset=scenario.get("ruleset"), max_steps=scenario["max_steps"])
     rollout_events = work / "rollout-events.jsonl"
     replay_dir = work / "replays"
     replay_dir.mkdir(parents=True, exist_ok=True)

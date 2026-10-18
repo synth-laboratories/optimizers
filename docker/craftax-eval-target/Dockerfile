@@ -3,11 +3,18 @@
 # The GameBench craftax-singleplayer task and its native Rust REPL are baked in,
 # so a trial needs no host substrate, registry, or network. build.sh stages the
 # task from a pinned GameBench checkout; nothing is vendored into this repo.
-FROM rust:1.97-slim AS rust-builder
+FROM rust:1.97.1-slim-bookworm AS rust-builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends python3 procps && rm -rf /var/lib/apt/lists/*
+COPY toolchain/mbx /usr/local/bin/mbx
+COPY build-policy /opt/build-policy
 
 COPY gamebench /opt/gamebench
 WORKDIR /opt/gamebench/tasks/craftax-singleplayer/gold_rust
-RUN cargo build --release --locked --bin craftax_repl
+ENV CARGO_TARGET_DIR=/Users/joshuapurtell/GitHub/craftax-target/target \
+    MBX_TARGET_VIEWS=0 \
+    CARGO_BUILD_JOBS=2
+RUN python3 /opt/build-policy/storage_target_guard.py --target "$CARGO_TARGET_DIR" --limit-bytes 8589934592 -- /usr/local/bin/mbx build --release --locked --bin craftax_repl
 
 FROM python:3.11-slim
 
@@ -21,7 +28,7 @@ LABEL ai.synth.eval.target.source-subpath="${GAMEBENCH_SOURCE_SUBPATH}"
 RUN useradd --create-home --uid 10001 target
 COPY gamebench /opt/gamebench
 COPY --from=rust-builder \
-    /opt/gamebench/tasks/craftax-singleplayer/gold_rust/target/release/craftax_repl \
+    /Users/joshuapurtell/GitHub/craftax-target/target/release/craftax_repl \
     /tmp/craftax_repl
 # This image has just built the REPL from the exact source tree copied above.
 # Put that binary where GameBench's non-fixture host path expects it and make

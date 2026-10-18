@@ -1,0 +1,60 @@
+....................................F................................... [ 71%]
+.............................                                            [100%]
+=================================== FAILURES ===================================
+______ test_production_wheel_contract[False-True-0.4.5.dev20261009-True] _______
+
+tmp_path = PosixPath('/Users/joshuapurtell/GitHub/workspaces/tunnel-cohort-integration-20261018/optimizers/.test-tmp-tunnel/test_production_wheel_contract0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10a61c110>
+tblite = False, native = True, containers = '0.4.5.dev20261009', valid = True
+
+    @pytest.mark.parametrize("tblite,native,containers,valid", [
+        (False, True, "0.4.5.dev20261009", True),
+        (True, True, "0.4.5.dev20261009", False),
+        (False, False, "0.4.5.dev20261009", False),
+        (False, True, "0.4.3", False),
+    ])
+    def test_production_wheel_contract(tmp_path, monkeypatch, tblite, native, containers, valid):
+        monkeypatch.chdir(Path(__file__).parents[1])
+        project = tomllib.loads(Path("pyproject.toml").read_text())["project"]
+        wheel = tmp_path / "test.whl"
+        with ZipFile(wheel, "w") as archive:
+            metadata = f"Name: synth-optimizers\nVersion: {project['version']}\nRequires-Dist: synth-containers=={containers}\n"
+            if tblite:
+                metadata += "Requires-Dist: synth-harbor-tblite==0.1.1\n"
+            archive.writestr(f"synth_optimizers-{project['version']}.dist-info/METADATA", metadata)
+            if native:
+                archive.writestr("synth_optimizers/_synth_optimizers.abi3.so", b"fixture")
+        if valid:
+>           module.check(wheel)
+
+tests/test_production_wheel_metadata.py:33:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+wheel = PosixPath('/Users/joshuapurtell/GitHub/workspaces/tunnel-cohort-integration-20261018/optimizers/.test-tmp-tunnel/test_production_wheel_contract0/test.whl')
+
+    def check(wheel: Path) -> None:
+        project = tomllib.loads(Path("pyproject.toml").read_text())["project"]
+        with ZipFile(wheel) as archive:
+            metadata_names = [name for name in archive.namelist() if name.endswith(".dist-info/METADATA")]
+            if len(metadata_names) != 1:
+                raise ValueError("wheel must contain exactly one package metadata record")
+            metadata = BytesParser().parsebytes(archive.read(metadata_names[0]))
+            if metadata["Name"] != project["name"] or metadata["Version"] != project["version"]:
+                raise ValueError("wheel identity differs from the release source")
+            dependencies = metadata.get_all("Requires-Dist", [])
+            if any("tblite" in dependency.lower() for dependency in dependencies):
+                raise ValueError("TBLite must never be a production wheel dependency")
+            pins = [dependency.replace(" ", "") for dependency in project["dependencies"]
+                    if dependency.replace(" ", "").startswith("synth-containers==")]
+            if len(pins) != 1:
+                raise ValueError("source must declare one exact Containers version")
+            if ".dev" in pins[0] and ".dev" not in project["version"]:
+                raise ValueError("stable optimizer wheel cannot depend on development Containers")
+            if pins[0] not in [dependency.replace(" ", "") for dependency in dependencies]:
+>               raise ValueError("wheel must carry the source's exact Containers pin")
+E               ValueError: wheel must carry the source's exact Containers pin
+
+scripts/check-production-wheel.py:29: ValueError
+=========================== short test summary info ============================
+FAILED tests/test_production_wheel_metadata.py::test_production_wheel_contract[False-True-0.4.5.dev20261009-True]
+1 failed, 100 passed in 16.24s

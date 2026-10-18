@@ -13,14 +13,18 @@ spec.loader.exec_module(module)
 
 
 @pytest.mark.parametrize("tblite,native,containers,valid", [
-    (False, True, "0.4.5.dev20261009", True),
-    (True, True, "0.4.5.dev20261009", False),
-    (False, False, "0.4.5.dev20261009", False),
+    (False, True, None, True),
+    (True, True, None, False),
+    (False, False, None, False),
     (False, True, "0.4.3", False),
 ])
 def test_production_wheel_contract(tmp_path, monkeypatch, tblite, native, containers, valid):
     monkeypatch.chdir(Path(__file__).parents[1])
     project = tomllib.loads(Path("pyproject.toml").read_text())["project"]
+    if containers is None:
+        pin = next(value for value in project["dependencies"]
+                   if value.startswith("synth-containers=="))
+        containers = pin.split("==", 1)[1]
     wheel = tmp_path / "test.whl"
     with ZipFile(wheel, "w") as archive:
         metadata = f"Name: synth-optimizers\nVersion: {project['version']}\nRequires-Dist: synth-containers=={containers}\n"

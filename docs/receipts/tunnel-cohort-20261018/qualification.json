@@ -1,0 +1,61 @@
+{
+  "date": "2026-10-18",
+  "target": "origin/dev",
+  "kind": "local unpublished integration candidate",
+  "base": "fdb1a458282e02cb225d07cf63ab0ddf21998552",
+  "selected_source": "a9a89b90b8d9e8d748ca78f5409221cc448c9246",
+  "superseded_sources": {
+    "19dfae2": "Shared connector behavior present with additional identity validation",
+    "3358cfd": "Hosted/CLI/native custody behavior present with newer SFT handoff validation",
+    "b17cc24": "Old vendored closed-origin fix superseded by rebuilt Containers candidate with source fix 4e25fe3"
+  },
+  "python_version": "0.2.23.dev20261018",
+  "rust_version": "0.2.23-dev.20261018",
+  "containers_dependency": {
+    "version": "0.4.5.dev20261018",
+    "filename": "synth_containers-0.4.5.dev20261018-py3-none-any.whl",
+    "sha256": "6dfca1780f17c96daa5669030501ce94f817d46bd5e9136159b8ba380e775892",
+    "source_modules_matched": 252
+  },
+  "retained_from_current_dev": [
+    "GEPA reward/cost normalization and single-boundary receipt accounting",
+    "Structured optimizer container errors and proposer usage accounting",
+    "Evaluator local policy and Jesterky integration"
+  ],
+  "validation": {
+    "rust": {
+      "passed": 146,
+      "failed": 0,
+      "suites": {
+        "synth_gepa": 67,
+        "synth_optimizer_platform": 79
+      },
+      "command": "CARGO_TARGET_DIR=$PWD/target python3 /Users/joshuapurtell/GitHub/synth-dev/local_dev/scripts/core_dev_build.py --label tunnel-cohort-rust --wait-seconds 60 -- /Users/joshuapurtell/.cargo/bin/mbx test -p synth_gepa -p synth_optimizer_platform --lib",
+      "log": "rust-tests.log"
+    },
+    "python": {
+      "unique_tests_passed_after_fix": 101,
+      "initial_result": "100 passed, 1 failed (stale wheel version in metadata fixture)",
+      "fix_result": "Metadata fixture derives valid version from current exact pin; all 5 metadata tests passed",
+      "command": "PYTHONPATH=$PWD/src .venv/bin/python -m pytest tests/test_shared_tunnel_custody.py tests/test_tunnel_custody_bridge.py tests/test_tunnel_native_custody.py tests/test_hosted_sft.py tests/test_hosted_training.py tests/test_production_wheel_metadata.py tests/test_eval_runner.py tests/test_eval_commands.py tests/test_eval_local_policy.py -q --basetemp=.test-tmp-tunnel",
+      "fix_command": "PYTHONPATH=$PWD/src .venv/bin/python -m pytest tests/test_production_wheel_metadata.py -q --basetemp=.test-tmp-metadata",
+      "final_result": "101 passed in 7.27s",
+      "final_log": "python-tests.log"
+    },
+    "native_extension": {
+      "source": "Built by guarded mbx rustc with absolute PYO3_PYTHON and macOS dynamic_lookup flags; copied into source package for ABI tests",
+      "sha256": "a340a4b1246be938b10cfa9f63676e08356b9e8a7a2f8245e8ca9fabf4d50046"
+    },
+    "containers_install": "Installed vendored candidate wheel, not sibling editable source"
+  },
+  "not_run": [
+    "Optimizer wheel packaging/publication",
+    "Live hosted SDK/backend/Rivet acceptance",
+    "Provider-backed direct/tunneled GEPA acceptance",
+    "Production deployment"
+  ],
+  "feedback": [
+    "122357fd-85a0-464a-8921-5952d880b517",
+    "d49ee1cc-4577-42ad-8936-93d64ac00896"
+  ]
+}

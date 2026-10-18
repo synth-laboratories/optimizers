@@ -1,5 +1,15 @@
 # Release: synth-optimizers
 
+## Local 0.2.23 candidate — not published
+
+The 2026-09-29 candidate depends on published Containers `0.4.4`.
+The public PyPI wheel matches the qualified source at `dc6a777` and SHA-256
+`fb226fa105f057078217d9058bdee622ee08e6792c199c9cba47364d7742c909`.
+The lock resolves that public artifact without a local source override.
+Python and Rust candidate versions both use `0.2.23`; this Optimizers
+candidate remains unpublished and outside dev/main. No publishing workflows
+were restored. Complete consumer/native release qualification before promotion.
+
 Published stable: `0.2.22`, depending on Containers
 `0.4.3`. Rust and Python package versions must agree — `pyproject.toml` and
 `Cargo.toml` `[workspace.package]` both read `0.2.22`.

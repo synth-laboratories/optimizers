@@ -664,7 +664,7 @@ def test_full_trace_consumes_the_whole_llm_plan_before_another_call(tmp_path: Pa
     session = {}
     results = []
     for ply in range(4):
-        results.append(policy.choose_actions(observation_text="world", session=session, valid_actions=["left", "do", "up", "noop"], readout={}, seed=101, ply=ply)["actions"])
+        results.append(policy.choose_actions(observation_text="world", session=dict(session), valid_actions=["left", "do", "up", "noop"], readout={}, seed=101, ply=ply)["actions"])
     assert results == [["left"], ["do"], ["up"], ["left"]]
     assert len(calls) == 2
     assert len((tmp_path / "usage.jsonl").read_text().splitlines()) == 2

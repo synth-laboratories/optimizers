@@ -26,7 +26,7 @@ id = "craftax_llm_plan_retention"
 description = "Full-trace Craftax runs retain the rest of each paid model plan"
 severity = "error"
 file_contains = [
-  { path = "docker/shared/llm_policy.py", pattern = 'session["_eval_llm_pending_actions"] = plan[1:]' },
+  { path = "docker/shared/llm_policy.py", pattern = '_STATE["pending_actions"] = plan[1:]' },
   { path = "tests/test_eval_runner.py", pattern = "test_full_trace_consumes_the_whole_llm_plan_before_another_call" },
 ]
 remedy = "Preserve per-episode plan retention and qualify that every planned action executes before the next paid call."

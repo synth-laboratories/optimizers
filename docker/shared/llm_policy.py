@@ -189,6 +189,14 @@ def choose_actions(
     seed: int,
     ply: int,
 ) -> dict[str, Any]:
+    # Full-trace GameBench executes one action per policy invocation. Retain
+    # the rest of the model plan in episode state instead of paying to replace
+    # it on every step. Returning one action also keeps non-trace runs honest.
+    pending = session.get("_eval_llm_pending_actions") or []
+    while pending:
+        action = pending.pop(0)
+        if action in valid_actions:
+            return {"actions": [action], "rationale": "queued llm plan"}
     fallback = "noop" if "noop" in valid_actions else valid_actions[0]
 
     # Past the budget this is no longer the candidate's policy — it is `noop`
@@ -269,4 +277,5 @@ def choose_actions(
     )
     if not plan:
         return {"actions": [fallback], "rationale": "no legal action parsed"}
-    return {"actions": plan, "rationale": "llm plan"}
+    session["_eval_llm_pending_actions"] = plan[1:]
+    return {"actions": plan[:1], "rationale": "llm plan"}

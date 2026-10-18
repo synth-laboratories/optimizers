@@ -646,3 +646,25 @@ def test_a_policy_with_no_budget_reports_no_coverage_rather_than_zero():
     payload = _scored("python-code.v1", [{"cost_usd": 0.0}])
     assert payload["policy_step_fraction"] is None
     assert payload["trials"]["budget_exhausted"] == 0
+
+
+def test_full_trace_consumes_the_whole_llm_plan_before_another_call(tmp_path: Path, monkeypatch):
+    policy_path = Path(__file__).parents[1] / "docker/shared/llm_policy.py"
+    spec = importlib.util.spec_from_file_location("test_llm_policy_queue", policy_path)
+    policy = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(policy)
+    policy.USAGE_PATH = str(tmp_path / "usage.jsonl")
+    calls = []
+
+    def complete(messages):
+        calls.append(messages)
+        return '{"actions": ["left", "do", "up"]}', {"prompt_tokens": 10, "completion_tokens": 10, "cached_tokens": 0}
+
+    monkeypatch.setattr(policy, "_complete", complete)
+    session = {}
+    results = []
+    for ply in range(4):
+        results.append(policy.choose_actions(observation_text="world", session=session, valid_actions=["left", "do", "up", "noop"], readout={}, seed=101, ply=ply)["actions"])
+    assert results == [["left"], ["do"], ["up"], ["left"]]
+    assert len(calls) == 2
+    assert len((tmp_path / "usage.jsonl").read_text().splitlines()) == 2

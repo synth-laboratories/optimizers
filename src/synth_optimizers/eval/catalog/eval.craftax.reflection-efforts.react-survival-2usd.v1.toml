@@ -58,7 +58,7 @@ decision_mode = "report_only"
 kind = "none"
 
 [recipe.limits]
-max_parallel_trials = 40
+max_parallel_trials = 4
 timeout_seconds = 900
 cpus = 2.0
 memory_mb = 4096

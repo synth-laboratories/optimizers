@@ -39,6 +39,7 @@ class TrialRunRequest:
     network: str
     secrets: Mapping[str, str] = field(default_factory=dict)
     extra_hosts: tuple[str, ...] = ()
+    provider_admission_dir: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,6 +170,10 @@ class OciTrialExecutor:
             "--mount",
             f"type=bind,source={request.output_dir},target=/output",
         ]
+        if request.provider_admission_dir is not None:
+            request.provider_admission_dir.mkdir(parents=True, exist_ok=True)
+            argv.extend(["--mount", f"type=bind,source={request.provider_admission_dir.resolve()},target=/provider-admission",
+                         "--env", "EVAL_REFLECTION_ADMISSION_DIR=/provider-admission"])
         for name, value in request.secrets.items():
             argv.extend(["--env", f"{name}={value}"])
         for mapping in request.extra_hosts:

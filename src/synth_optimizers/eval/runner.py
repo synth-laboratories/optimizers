@@ -722,6 +722,8 @@ class EvalRunner:
                     limits=self.recipe.limits,
                     network=self.recipe.target.network,
                     secrets=self._secrets(),
+                    provider_admission_dir=(self.home.root.parent / "reflection-admission"
+                        if candidate.kind == "llm-policy.v1" and "REFLECTION_API_KEY" in self.recipe.secrets else None),
                     extra_hosts=tuple(
                         str(value)
                         for value in (self.manifest.provider_routes or {}).get("extra_hosts", [])

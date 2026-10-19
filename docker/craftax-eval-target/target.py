@@ -254,8 +254,8 @@ def _mirror_usage(path: Path, offset: int) -> int:
                     payload = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if isinstance(payload, dict) and payload.get("event") == "policy.call":
-                    emit("policy.call", **{key: value for key, value in payload.items() if key != "event"})
+                if isinstance(payload, dict) and payload.get("event") in {"policy.call", "policy.wait"}:
+                    emit(payload["event"], **{key: value for key, value in payload.items() if key != "event"})
     except OSError:
         pass
     return offset
@@ -379,6 +379,7 @@ def main() -> int:
             **policy_env,
             "GAMEBENCH_ROLLOUT_EVENT_PATH": str(rollout_events),
             "EVAL_TRIAL_ID": trial_id,
+            "EVAL_LLM_DEADLINE_AT": str(time.time() + max(1, trial["limits"]["timeout_seconds"] - 15)),
         },
     )
     if work_report.is_file():
@@ -486,6 +487,7 @@ def main() -> int:
         status="evaluated",
         benchmark_status=("invalid" if any(not g["passed"] for g in gates) else "passed" if reward > 0 else "failed"),
         metrics={"reward": reward, "achievements": achievements},
+        error=usage.get("last_error"),
         gates=gates,
         artifacts=_artifacts(report_path),
         started=started,

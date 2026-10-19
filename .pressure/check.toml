@@ -89,3 +89,14 @@ file_contains = [
   { path = "docker/shared/canonical_policy.py", pattern = "max_input_tokens=int(os.environ['EVAL_LLM_MAX_INPUT_TOKENS'])" },
 ]
 remedy = "Preserve trusted recipe→manifest→target→Budget propagation; requalify installed image and blocked-before-provider behavior."
+
+[[checks]]
+id = "reflection_resilient_trials"
+description = "Reflection uses bounded rollout fanout and a shared provider admission mount"
+severity = "error"
+file_contains = [
+  { path = "src/synth_optimizers/eval/catalog/eval.craftax.reflection-efforts.react-survival-2usd.v1.toml", pattern = "max_parallel_trials = 4" },
+  { path = "src/synth_optimizers/eval/executor.py", pattern = "target=/provider-admission" },
+  { path = "docker/shared/canonical_policy.py", pattern = "'stop_episode':True,'stop_reason':type(error).__name__" },
+]
+remedy = "Preserve shared mount, reduced concurrency and partial evidence on provider failure; never convert incomplete runs into valid scores."

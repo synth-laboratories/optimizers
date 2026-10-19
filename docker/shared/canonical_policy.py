@@ -48,6 +48,7 @@ class InstrumentedReAct(ReActHarness):
         usd = self.budget.rates.cost(prompt, completion, cached or 0)
         record({'event':'policy.call', 'ply':self._actions_taken, 'seed':self.seed,
                 'model':self.model, 'effort':self.reasoning_effort,
+                'requested_max_completion_tokens':body.get('max_completion_tokens'),
                 'elapsed_s':round(time.time()-started,6), 'prompt_tokens':prompt,
                 'completion_tokens':completion, 'cached_tokens':cached,
                 'cache_reported':cached is not None, 'usd':usd,
@@ -86,5 +87,5 @@ def choose_actions(*, observation_text, session, valid_actions, readout, seed, p
         return {'actions':[], 'stop_episode':True,'stop_reason':error.reason}
     except Exception as error:
         record({'event':'policy.error','error':type(error).__name__+': '+str(error),'ply':ply})
-        raise
+        return {'actions':[], 'stop_episode':True,'stop_reason':type(error).__name__+': '+str(error)}
     return {'actions':[action], 'rationale':'frontend append-only ReAct'}

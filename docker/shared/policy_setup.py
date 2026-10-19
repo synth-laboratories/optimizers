@@ -125,6 +125,7 @@ def summarize_usage(work: Path) -> dict[str, Any]:
         # a score the model earned from one a fallback coasted to.
         "budget_exhausted": None,
         "exhausted_at_ply": None,
+        "last_error": None,
     }
     if not path.is_file():
         return summary
@@ -141,10 +142,11 @@ def summarize_usage(work: Path) -> dict[str, Any]:
             summary["exhausted_at_ply"] = int(ply) if isinstance(ply, int) else None
             continue
         summary["llm_seconds"] += float(entry.get("elapsed_s") or 0.0)
-        if entry.get("event") == "policy.protocol":
+        if entry.get("event") in {"policy.protocol", "policy.wait"}:
             continue
         if entry.get("error"):
             summary["route_errors"] += 1
+            summary["last_error"] = str(entry["error"])
             continue
         summary["calls"] += 1
         summary["prompt_tokens"] += int(entry.get("prompt_tokens") or 0)

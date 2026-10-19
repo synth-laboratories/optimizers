@@ -65,3 +65,15 @@ file_contains = [
   { path = "src/synth_optimizers/eval/catalog/eval.craftax.beam1-efforts.react-survival.v1.toml", pattern = 'image = "craftax-eval-target:beam-reasoning-20261019"' },
 ]
 remedy = "Preserve the distinct Beam image reference and verify OciTrialExecutor.resolve_reference plus EvalRunner._validate_inputs against the actual pinned image before publishing a launcher command."
+
+[[checks]]
+id = "craftax_matched_two_dollar_recipes"
+description = "Direct Reflection and OpenRouter Luna declare matched two-dollar per-rollout budgets"
+severity = "error"
+file_contains = [
+  { path = "src/synth_optimizers/eval/catalog/eval.craftax.luna6-efforts.react-survival-2usd.v1.toml", pattern = "max_usd = 2.0" },
+  { path = "src/synth_optimizers/eval/catalog/eval.craftax.reflection-efforts.react-survival-2usd.v1.toml", pattern = "max_usd = 2.0" },
+  { path = "src/synth_optimizers/eval/catalog/eval.craftax.reflection-efforts.react-survival-2usd.v1.toml", pattern = 'secret = "REFLECTION_API_KEY"' },
+  { path = "src/synth_optimizers/eval/catalog/eval.craftax.reflection-efforts.react-survival-2usd.v1.toml", pattern = "https://api.reflection.ai/openai/v1/chat/completions" },
+]
+remedy = "Keep provider identity and pricing provenance explicit; verify real worker inputs, forty seeds/configurations and multi-turn provider continuation before publishing commands."

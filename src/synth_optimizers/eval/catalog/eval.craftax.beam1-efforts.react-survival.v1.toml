@@ -5,7 +5,7 @@ title = "Craftax Beam 1.0 reasoning effort matrix"
 description = "Compare bounded Beam 1.0 low/medium/high/xhigh policies on the pinned native Craftax world, report only."
 task = "craftax"
 policy_kind = "llm-policy.v1"
-image = "craftax-eval-target"
+image = "craftax-eval-target:beam-catalog-20261019"
 prerequisites = [
     "Locally built native-Rust craftax-eval-target image pinned by image id",
     "OCI runtime available to the Desktop app",

@@ -56,3 +56,12 @@ file_contains = [
   { path = "src/synth_optimizers/eval/catalog/eval.craftax.luna6-efforts.react-survival.v1.toml", pattern = "max_usd = 0.50" },
 ]
 remedy = "Preserve explicit effort allowlist, concurrency and per-trial limits; requalify all forty native policy configurations before changing this matrix."
+
+[[checks]]
+id = "craftax_beam_image_reference"
+description = "Beam recipe resolves its catalogue image without repointing the Luna image tag"
+severity = "error"
+file_contains = [
+  { path = "src/synth_optimizers/eval/catalog/eval.craftax.beam1-efforts.react-survival.v1.toml", pattern = 'image = "craftax-eval-target:beam-catalog-20261019"' },
+]
+remedy = "Preserve the distinct Beam image reference and verify OciTrialExecutor.resolve_reference plus EvalRunner._validate_inputs against the actual pinned image before publishing a launcher command."

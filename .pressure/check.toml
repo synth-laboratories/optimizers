@@ -44,3 +44,15 @@ file_contains = [
   { path = "docker/craftax-eval-target/build.py", pattern = 'GameBench must match the canonical frontend harness source pin' },
 ]
 remedy = "Restore actual frontend harness/source identity and survival/completion/coverage checks. Qualify the trusted native driver before paying for model calls; never weaken the arbitrary code-policy sandbox."
+
+[[checks]]
+id = "craftax_effort_matrix"
+description = "Forty-rollout Luna effort comparison declares all treatments and bounded per-trial budgets"
+severity = "error"
+file_contains = [
+  { path = "src/synth_optimizers/eval/catalog/eval.craftax.luna6-efforts.react-survival.v1.toml", pattern = 'efforts = ["low", "medium", "high", "xhigh"]' },
+  { path = "src/synth_optimizers/eval/catalog/eval.craftax.luna6-efforts.react-survival.v1.toml", pattern = "max_parallel_trials = 40" },
+  { path = "src/synth_optimizers/eval/catalog/eval.craftax.luna6-efforts.react-survival.v1.toml", pattern = "max_llm_calls = 128" },
+  { path = "src/synth_optimizers/eval/catalog/eval.craftax.luna6-efforts.react-survival.v1.toml", pattern = "max_usd = 0.50" },
+]
+remedy = "Preserve explicit effort allowlist, concurrency and per-trial limits; requalify all forty native policy configurations before changing this matrix."

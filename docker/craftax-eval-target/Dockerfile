@@ -21,6 +21,7 @@ FROM python:3.11-slim
 ARG GAMEBENCH_SOURCE_COMMIT=unknown
 ARG GAMEBENCH_SOURCE_SUBPATH=tasks/craftax-singleplayer
 LABEL ai.synth.eval.target.contract="eval.target.v1"
+LABEL ai.synth.eval.craftax.protocol="frontend-react-survival.v2"
 LABEL ai.synth.eval.target.source-repo="gamebench"
 LABEL ai.synth.eval.target.source-commit="${GAMEBENCH_SOURCE_COMMIT}"
 LABEL ai.synth.eval.target.source-subpath="${GAMEBENCH_SOURCE_SUBPATH}"
@@ -59,15 +60,20 @@ sweep = Path("/opt/gamebench/tasks/craftax-singleplayer/scripts/run_policy_sweep
 source = sweep.read_text(encoding="utf-8")
 needle = '''    return trusted_declarative or (\n'''
 replacement = '''    trusted_outer_container = (\n        os.environ.get("EVAL_TRUSTED_OUTER_CONTAINER") == "report_only"\n        and isinstance(receipt, Mapping)\n        and receipt.get("contract") == "process_observation_action.v1"\n        and receipt.get("sandbox") == "process_fallback"\n        and receipt.get("suite_visible") is False\n        and receipt.get("output_visible") is False\n    )\n    return trusted_declarative or trusted_outer_container or (\n'''
-if source.count(needle) != 1:
+if source.count(needle) == 1:
+    sweep.write_text(source.replace(needle, replacement), encoding="utf-8")
+elif "def _isolation_receipt_is_valid" in source:
     raise SystemExit("unexpected GameBench isolation receipt validator")
-sweep.write_text(source.replace(needle, replacement), encoding="utf-8")
+# The frontend's pinned source predates this optional outer-boundary validator.
+# It still executes the same isolated policy worker inside the owned container.
 PY
+COPY evals /opt/evals
 COPY target.py /app/target.py
 COPY shared /opt/eval
 # The outer eval container is the security boundary. GameBench records this as
 # container_standalone and avoids attempting a nested bubblewrap namespace.
-ENV GAMEBENCH_STANDALONE=1 \
+ENV PYTHONPATH=/opt/evals \
+    GAMEBENCH_STANDALONE=1 \
     GAMEBENCH_USE_BAKED_REPL=1 \
     EVAL_TRUSTED_OUTER_CONTAINER=report_only \
     PYTHONDONTWRITEBYTECODE=1 \

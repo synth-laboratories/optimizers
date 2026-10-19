@@ -668,3 +668,30 @@ def test_full_trace_consumes_the_whole_llm_plan_before_another_call(tmp_path: Pa
     assert results == [["left"], ["do"], ["up"], ["left"]]
     assert len(calls) == 2
     assert len((tmp_path / "usage.jsonl").read_text().splitlines()) == 2
+
+
+def test_canonical_protocol_refuses_history_rewrite_and_incomplete_episode(tmp_path):
+    module_path = Path(__file__).parents[1] / "docker/shared/canonical_verification.py"
+    spec = importlib.util.spec_from_file_location("canonical_verify", module_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    source = {"files": {}}
+    (tmp_path / "canonical-source.json").write_text(json.dumps(source))
+    opening = [{"role": "system", "content": "fixed"}, {"role": "user", "content": "obs0"}]
+    continuation = opening + [{"role": "assistant", "content": "plan"}, {"role": "tool", "content": "obs1"}]
+    rows = [{"event": "policy.protocol", "harness": "frontend.ReActHarness", "rules": "symbolic_survival", "source": source}]
+    rows += [{"event": "policy.call", "request_messages": messages, "prefix_verified": True, "compactions": 0, "compaction_boundary": False, "cache_mode": "append_only"} for messages in (opening, continuation)]
+    report = {"episodes": [{"state": {"private": {"step_index": 450, "terminated": False}}}]}
+    receipt, _ = module.verify_canonical(rows, report, tmp_path, max_steps=450)
+    assert receipt["benchmark_eligible"]
+    rows[-1]["request_messages"] = [{"role": "system", "content": "rewritten"}]
+    receipt, _ = module.verify_canonical(rows, report, tmp_path, max_steps=450)
+    assert not receipt["gates"]["append_only_context"]
+    rows[-1]["request_messages"] = continuation
+    report["episodes"][0]["state"]["private"]["step_index"] = 40
+    receipt, _ = module.verify_canonical(rows, report, tmp_path, max_steps=450)
+    assert not receipt["gates"]["episode_complete"]
+    report["episodes"][0]["state"]["private"]["terminated"] = True
+    rows.append({"event": "policy.error", "error": "route failed"})
+    receipt, _ = module.verify_canonical(rows, report, tmp_path, max_steps=450)
+    assert not receipt["gates"]["model_coverage"]

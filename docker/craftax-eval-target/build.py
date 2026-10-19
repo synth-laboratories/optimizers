@@ -19,6 +19,8 @@ def main() -> int:
     parser.add_argument("--mbx-linux", type=Path, required=True)
     parser.add_argument("--synth-dev-root", type=Path, required=True)
     parser.add_argument("--stage", type=Path)
+    parser.add_argument("--evals-root", type=Path, required=True)
+    parser.add_argument("--evals-revision", default="HEAD")
     args = parser.parse_args()
     here = Path(__file__).resolve().parent
     stage = (args.stage or here / ".build" / uuid4().hex).resolve()
@@ -84,8 +86,38 @@ def main() -> int:
         "heavy_admission.py",
     ):
         shutil.copy2(args.synth_dev_root / "local_dev/scripts" / name, policy / name)
+    evals_commit = subprocess.check_output(
+        ["git", "-C", str(args.evals_root), "rev-parse", args.evals_revision + "^{commit}"], text=True
+    ).strip()
+    canonical = stage / "evals"
+    model_cards = subprocess.check_output(["git", "-C", str(args.evals_root), "ls-tree", "-r", "--name-only", evals_commit, "core/model_cards"], text=True).splitlines()
+    files = ["core/models.py", "core/_env.py", "core/provider_fallback.py",
+             "core/party_mcp/native_comm.py", "core/model_cards/openrouter.json",
+             "suites/external/nanobench/harbor/environment/reference.py"]
+    files += ["suites/nonproduct/craftax/" + name for name in (
+        "harness.py", "budget.py", "code_script.py", "failures.py", "failures.toml",
+        "achievements.py", "achievements.toml", "tiles.py", "source.py", "source.toml")]
+    files = sorted(set(files + [name for name in model_cards if name.endswith(".json")]))
+    for name in files:
+        path = canonical / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(subprocess.check_output(["git", "-C", str(args.evals_root), "show", f"{evals_commit}:{name}"]))
+        # Namespace-only import entrypoints avoid importing unrelated HTTP runners.
+        for parent in path.parents:
+            if parent == canonical:
+                break
+            (parent / "__init__.py").touch(exist_ok=True)
+    (canonical / "core/party_mcp/__init__.py").write_text("from .native_comm import strip_native_comm_actions\n")
+    (canonical / "suites/nonproduct/craftax/__init__.py").write_text("from .source import load_pin\n")
+    pin = __import__("tomllib").loads((canonical / "suites/nonproduct/craftax/source.toml").read_text())
+    if pin["source"]["commit"] != commit:
+        raise ValueError("GameBench must match the canonical frontend harness source pin")
+    canonical_manifest = {"evals_commit": evals_commit, "gamebench_commit": commit,
+                          "files": {name: hashlib.sha256((canonical / name).read_bytes()).hexdigest() for name in files}}
+    (canonical / "canonical-source.json").write_text(json.dumps(canonical_manifest, indent=2) + "\n")
     manifest = {
         "schema_version": "eval.craftax-build-inputs.v1",
+        "evals_commit": evals_commit,
         "gamebench_commit": commit,
         "files": {
             str(p.relative_to(stage)): hashlib.sha256(p.read_bytes()).hexdigest()

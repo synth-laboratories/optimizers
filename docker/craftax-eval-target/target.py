@@ -45,6 +45,12 @@ SWEEP = TASK_DIR / "scripts" / "run_policy_sweep.py"
 # Scenario id -> the exact board and step budget it means. The id is part of
 # the evidence: reading it tells you what was measured.
 SCENARIOS: dict[str, dict[str, Any]] = {
+    "craftax-survival-default-48x48": {
+        "task_template": "tasks/craftax_default_template.json",
+        "max_steps": 450,
+        "world": "craftax_default (48x48, 9 levels)",
+        "ruleset": "symbolic_survival",
+    },
     "craftax-terminal-fixture": {
         "task_template": "tasks/minienv_defeat_zombie_arena_v1.json",
         "max_steps": 80,
@@ -318,6 +324,17 @@ def main() -> int:
         )
         return 0
 
+    canonical = trial["scenario"] == "craftax-survival-default-48x48"
+    if canonical:
+        task = json.loads((TASK_DIR / scenario["task_template"]).read_text())
+        task["rules"] = {"base": "symbolic_survival"}
+        task["max_steps"] = scenario["max_steps"]
+        task["world"]["seed"] = seed
+        task["world"]["max_steps"] = scenario["max_steps"]
+        task_path = work / "survival-task.json"
+        task_path.write_text(json.dumps(task))
+        scenario = {**scenario, "task_template": str(task_path)}
+
     suite = {
         "schema": "gamebench.craftax.policy_sweep.v1",
         "suite_id": f"eval_{trial['scenario']}_{seed}",
@@ -423,6 +440,21 @@ def main() -> int:
         for replay in replay_dir.glob("*.gif"):
             (public_replays / replay.name).write_bytes(replay.read_bytes())
     write_trace(report, trial_id, seed)
+    if canonical:
+        from canonical_verification import verify_canonical
+        rows = [json.loads(line) for line in usage_path.read_text().splitlines() if line.strip()]
+        protocol, protocol_gates = verify_canonical(rows, report, Path("/opt/evals"), max_steps=scenario["max_steps"])
+        resolved_rules = json.loads((TASK_DIR / "defaults/rules/symbolic_survival.json").read_text())
+        survival_ok = resolved_rules.get("homeostasis") is True and json.loads(task_path.read_text())["rules"]["base"] == "symbolic_survival"
+        protocol["gates"]["survival_enabled"] = survival_ok
+        for gate in protocol_gates:
+            if gate["id"] == "survival_enabled":
+                gate["passed"] = survival_ok
+        protocol["benchmark_eligible"] = all(protocol["gates"].values())
+        protocol["task"] = json.loads(task_path.read_text())
+        protocol["rules"] = resolved_rules
+        (OUTPUT / "protocol.json").write_text(json.dumps(protocol, indent=2))
+        gates.extend(protocol_gates)
     gates.append({"id": "verifier_completed", "passed": True})
     reward = float(report.get("mean_reward", 0.0))
     achievements = float(report.get("unique_achievement_count", 0))
@@ -449,7 +481,7 @@ def main() -> int:
     write_result(
         trial_id,
         status="evaluated",
-        benchmark_status="passed" if reward > 0 else "failed",
+        benchmark_status=("invalid" if any(not g["passed"] for g in gates) else "passed" if reward > 0 else "failed"),
         metrics={"reward": reward, "achievements": achievements},
         gates=gates,
         artifacts=_artifacts(report_path),
@@ -462,6 +494,7 @@ def main() -> int:
 def _artifacts(report_path: Path) -> list[dict[str, Any]]:
     artifacts = [
         {"role": "trace", "path": "trace.jsonl"},
+        {"role": "protocol", "path": "protocol.json"},
         {"role": "events", "path": "events.jsonl"},
         {"role": "suite", "path": "suite.json"},
         {"role": "usage", "path": "usage.jsonl"},

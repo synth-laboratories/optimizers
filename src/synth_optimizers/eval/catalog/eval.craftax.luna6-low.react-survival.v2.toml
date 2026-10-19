@@ -1,7 +1,7 @@
 # Paid, bounded native Craftax smoke; explicit selection only.
 [recipe]
-id = "eval.craftax.luna6-low.smoke.v1"
-title = "Craftax Luna 6 Low smoke"
+id = "eval.craftax.luna6-low.react-survival.v2"
+title = "Craftax Luna 6 Low canonical ReAct survival"
 description = "Stream a bounded Luna 6 low policy on the pinned native Craftax world, report only."
 task = "craftax"
 policy_kind = "llm-policy.v1"
@@ -10,14 +10,14 @@ prerequisites = [
     "Locally built native-Rust craftax-eval-target image pinned by image id",
     "OCI runtime available to the Desktop app",
 ]
-scenarios = ["craftax-default-48x48"]
+scenarios = ["craftax-survival-default-48x48"]
 screening_seeds = [101, 102, 103, 104, 105, 106, 107, 108, 109, 110]
 confirmation_seeds = []
 secrets = ["OPENROUTER_API_KEY"]
 
 [recipe.budget]
 max_llm_calls = 60
-max_usd = 0.25
+max_usd = 0.50
 
 [[recipe.models]]
 id = "openai/gpt-6-luna"
@@ -34,8 +34,8 @@ price_as_of = "2026-10-18"
 schema_version = "eval.target.v1"
 policy_kinds = ["llm-policy.v1"]
 trial_mode = "one-policy-one-seed"
-required_gates = ["policy_loaded", "verifier_completed"]
-required_artifacts = ["trace"]
+required_gates = ["policy_loaded", "verifier_completed", "canonical_harness", "append_only_context", "survival_enabled", "model_coverage", "episode_complete"]
+required_artifacts = ["trace", "protocol", "usage"]
 supports_live_events = true
 network = "bridge"
 

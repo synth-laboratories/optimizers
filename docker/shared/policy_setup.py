@@ -95,7 +95,10 @@ def _llm_policy(trial: dict[str, Any], input_dir: Path, work: Path) -> tuple[Pat
             f"{route['secret']} is not present in the trial container; the recipe "
             f"must declare it and the eval home must supply it"
         )
-    return LLM_POLICY, env
+    canonical = trial["scenario"] == "craftax-survival-default-48x48"
+    if canonical:
+        env["EVAL_CANONICAL_REACT"] = "1"
+    return Path("/opt/eval/canonical_policy.py") if canonical else LLM_POLICY, env
 
 
 def summarize_usage(work: Path) -> dict[str, Any]:
@@ -136,13 +139,19 @@ def summarize_usage(work: Path) -> dict[str, Any]:
             summary["exhausted_at_ply"] = int(ply) if isinstance(ply, int) else None
             continue
         summary["llm_seconds"] += float(entry.get("elapsed_s") or 0.0)
+        if entry.get("event") == "policy.protocol":
+            continue
         if entry.get("error"):
             summary["route_errors"] += 1
             continue
         summary["calls"] += 1
         summary["prompt_tokens"] += int(entry.get("prompt_tokens") or 0)
         summary["completion_tokens"] += int(entry.get("completion_tokens") or 0)
-        summary["cached_tokens"] += int(entry.get("cached_tokens") or 0)
+        cached = entry.get("cached_tokens")
+        if cached is None:
+            summary["cached_tokens"] = None
+        elif summary["cached_tokens"] is not None:
+            summary["cached_tokens"] += int(cached)
         summary["cost_usd"] += float(entry.get("usd") or 0.0)
     summary["cost_usd"] = round(summary["cost_usd"], 6)
     summary["llm_seconds"] = round(summary["llm_seconds"], 3)

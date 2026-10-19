@@ -369,6 +369,9 @@ def main() -> int:
             "--replay-dir",
             str(replay_dir),
         ]
+    if canonical:
+        command = [sys.executable, "/opt/eval/canonical_sweep.py", "--suite", str(suite_path),
+                   "--output", str(work_report), "--replay-dir", str(replay_dir)]
     completed = run_sweep(
         command,
         env={

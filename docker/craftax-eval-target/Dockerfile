@@ -18,6 +18,9 @@ RUN python3 /opt/build-policy/storage_target_guard.py --target "$CARGO_TARGET_DI
 
 FROM python:3.11-slim
 
+# The pinned native REPL encodes its replay evidence through ffmpeg.
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
+
 ARG GAMEBENCH_SOURCE_COMMIT=unknown
 ARG GAMEBENCH_SOURCE_SUBPATH=tasks/craftax-singleplayer
 LABEL ai.synth.eval.target.contract="eval.target.v1"

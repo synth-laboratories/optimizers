@@ -30,3 +30,17 @@ file_contains = [
   { path = "tests/test_eval_runner.py", pattern = "test_full_trace_consumes_the_whole_llm_plan_before_another_call" },
 ]
 remedy = "Preserve per-episode plan retention and qualify that every planned action executes before the next paid call."
+
+[[checks]]
+id = "craftax_canonical_survival_evidence"
+description = "Benchmark Craftax uses the pinned frontend agent, survival rules and fail-closed evidence gates"
+severity = "error"
+require_paths = ["docker/shared/canonical_sweep.py", "docker/shared/canonical_verification.py"]
+file_contains = [
+  { path = "docker/shared/canonical_policy.py", pattern = "from suites.nonproduct.craftax.harness import ReActHarness" },
+  { path = "docker/shared/canonical_sweep.py", pattern = 'if decision.get("stop_episode"):' },
+  { path = "docker/craftax-eval-target/target.py", pattern = '"symbolic_survival"' },
+  { path = "docker/shared/canonical_verification.py", pattern = "'episode_complete':complete" },
+  { path = "docker/craftax-eval-target/build.py", pattern = 'GameBench must match the canonical frontend harness source pin' },
+]
+remedy = "Restore actual frontend harness/source identity and survival/completion/coverage checks. Qualify the trusted native driver before paying for model calls; never weaken the arbitrary code-policy sandbox."

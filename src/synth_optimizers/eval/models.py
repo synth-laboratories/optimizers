@@ -448,6 +448,7 @@ class TrialBudget:
 
     max_llm_calls: int
     max_usd: float
+    max_input_tokens: int | None = None
 
     @classmethod
     def from_mapping(cls, value: Any) -> TrialBudget:
@@ -460,10 +461,17 @@ class TrialBudget:
                 data.get("max_llm_calls"), field_name="budget.max_llm_calls"
             ),
             max_usd=float(max_usd),
+            max_input_tokens=(
+                _positive_int(data["max_input_tokens"], field_name="budget.max_input_tokens")
+                if "max_input_tokens" in data else None
+            ),
         )
 
     def to_json(self) -> dict[str, Any]:
-        return {"max_llm_calls": self.max_llm_calls, "max_usd": self.max_usd}
+        payload = {"max_llm_calls": self.max_llm_calls, "max_usd": self.max_usd}
+        if self.max_input_tokens is not None:
+            payload["max_input_tokens"] = self.max_input_tokens
+        return payload
 
 
 @dataclass(frozen=True, slots=True)

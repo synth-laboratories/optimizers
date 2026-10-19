@@ -90,6 +90,8 @@ def _llm_policy(trial: dict[str, Any], input_dir: Path, work: Path) -> tuple[Pat
         "EVAL_LLM_USD_PER_1M_CACHED_INPUT": str(route["usd_per_1m_cached_input"]),
         "EVAL_LLM_USAGE_PATH": str(usage_path),
     }
+    if budget.get("max_input_tokens") is not None:
+        env["EVAL_LLM_MAX_INPUT_TOKENS"] = str(budget["max_input_tokens"])
     if not os.environ.get(route["secret"], "").strip():
         raise CandidateError(
             f"{route['secret']} is not present in the trial container; the recipe "

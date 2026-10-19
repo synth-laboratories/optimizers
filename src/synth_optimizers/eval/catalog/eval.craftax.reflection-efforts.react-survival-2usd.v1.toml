@@ -18,6 +18,7 @@ secrets = ["REFLECTION_API_KEY"]
 [recipe.budget]
 max_llm_calls = 128
 max_usd = 2.0
+max_input_tokens = 2000000
 
 [[recipe.models]]
 id = "Beam-501B-A23B"

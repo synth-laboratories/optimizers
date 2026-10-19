@@ -72,7 +72,9 @@ def choose_actions(*, observation_text, session, valid_actions, readout, seed, p
                                 temperature=0,reasoning_effort=os.environ['EVAL_LLM_EFFORT'],
                                 plan_min=5,plan_max=20,compact_every=16,max_attempts=1,
                                 budget=Budget(max_calls=int(os.environ['EVAL_LLM_MAX_CALLS']),
-                                              max_usd=float(os.environ['EVAL_LLM_MAX_USD']),rates=rates))
+                                              max_usd=float(os.environ['EVAL_LLM_MAX_USD']),rates=rates,
+                                              max_input_tokens=int(os.environ['EVAL_LLM_MAX_INPUT_TOKENS'])
+                                              if os.environ.get('EVAL_LLM_MAX_INPUT_TOKENS') else None))
         manifest=json.loads(Path('/opt/evals/canonical-source.json').read_text())
         record({'event':'policy.protocol','harness':'frontend.ReActHarness',
                 'cache_mode':'append_only','rules':'symbolic_survival',
@@ -80,7 +82,7 @@ def choose_actions(*, observation_text, session, valid_actions, readout, seed, p
     try:
         action=_AGENT.choose(readout)
     except BudgetExhausted as error:
-        record({'event':'budget_exhausted','reason':error.reason,'ply':ply})
+        record({'event':'budget_exhausted','reason':error.reason,'detail':error.detail,'ply':ply})
         return {'actions':[], 'stop_episode':True,'stop_reason':error.reason}
     except Exception as error:
         record({'event':'policy.error','error':type(error).__name__+': '+str(error),'ply':ply})

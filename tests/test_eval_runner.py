@@ -695,3 +695,11 @@ def test_canonical_protocol_refuses_history_rewrite_and_incomplete_episode(tmp_p
     rows.append({"event": "policy.error", "error": "route failed"})
     receipt, _ = module.verify_canonical(rows, report, tmp_path, max_steps=450)
     assert not receipt["gates"]["model_coverage"]
+    rows.pop()
+    report["episodes"][0]["state"]["private"].update(terminated=False, step_index=40)
+    rows.append({"event": "budget_exhausted", "reason": "usd_budget_exhausted", "ply": 40})
+    receipt, _ = module.verify_canonical(rows, report, tmp_path, max_steps=450)
+    assert receipt["benchmark_eligible"]
+    rows[-1]["reason"] = "call_budget_exhausted"
+    receipt, _ = module.verify_canonical(rows, report, tmp_path, max_steps=450)
+    assert not receipt["benchmark_eligible"]

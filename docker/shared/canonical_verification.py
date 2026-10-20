@@ -27,8 +27,11 @@ def verify_canonical(rows: list[dict], report: dict, root: Path, *, max_steps: i
         prefixes=prefixes and row.get('prefix_verified') is True and row.get('cache_mode')=='append_only'
         previous=messages;compactions=current
     private=[(e.get('state') or {}).get('private') or {} for e in report.get('episodes') or []]
-    complete=len(private)==1 and (private[0].get('terminated') is True or private[0].get('step_index')==max_steps)
-    no_errors=not any(r.get('event') in ('policy.error','budget_exhausted') or r.get('error') for r in rows)
+    # Running out of spend (dollars, or input tokens when the route is unpriced) is a valid way to end an episode.
+    spend_reasons=('usd_budget_exhausted','input_token_budget_exhausted')
+    usd_exhausted=any(r.get('event')=='budget_exhausted' and r.get('reason') in spend_reasons for r in rows)
+    complete=len(private)==1 and (private[0].get('terminated') is True or private[0].get('step_index')==max_steps or usd_exhausted)
+    no_errors=not any(r.get('event')=='policy.error' or (r.get('event')=='budget_exhausted' and r.get('reason') not in spend_reasons) or r.get('error') for r in rows)
     passed={
         'canonical_harness':source_ok and len(protocol)==1 and protocol[0].get('harness')=='frontend.ReActHarness' and protocol[0].get('source')==source,
         'append_only_context':prefixes,

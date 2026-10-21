@@ -107,3 +107,12 @@ The builder records the inspected OCI index/manifest/config kind and actual
 platform. Local containerd image IDs can be OCI index digests; they must not be
 labeled as config digests. Digest-pinned local references do not claim registry
 publication.
+
+Native journals are explicitly bound to `/output/native-storage`. The local
+witness reopens copies of those retained journals in two fresh, network-disabled
+container processes per row, replays the original start, and checks zero native
+compute calls. Original output hashes must remain unchanged. This tests the actual
+adapter entrypoint and its storage binding, in addition to HTTP-level fixtures.
+Observed prompt/rubric identities are checked against the frozen rows; reward is
+recomputed from the retained judgments and frozen signed rubric weights. Split
+names alone never establish row disjointness.

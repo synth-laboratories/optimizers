@@ -1,0 +1,21 @@
+{
+  "failed_before_provider": {
+    "home": "eval-home",
+    "reason": "shared resolver produced invalid digest-only repo@digest reference",
+    "external_calls": 0
+  },
+  "execution_without_durable_native_store": {
+    "home": "eval-home-accepted",
+    "run_id": "healthbench-native-accepted-20261021",
+    "provider_reported_usd": 0.067452,
+    "execution_valid": true,
+    "native_cold_recovery_qualified": false,
+    "reason": "env storage hint not consumed; explicit storage_root required"
+  },
+  "accepted_durable_attempt": {
+    "home": "eval-home-durable",
+    "run_id": "healthbench-native-durable-20261021",
+    "status": "completed",
+    "provider_reported_usd": 0.066232
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "evals": {
+    "commit": "b395909b6baa9a644136a602d4594830828eaec9"
+  },
+  "optimizers": {
+    "commit": "b528db39e8ac54d18008cbfc94e5ef51a2e4a5e8"
+  },
+  "native_adapter": {
+    "path": "../evals/containers/images/healthbench2/eval_native.py",
+    "sha256": "5b2139f2b82973f26acfa5441c0ce9e78ac459d83371fecd0ca724430bdbd2d4"
+  }
+}

@@ -43,3 +43,4 @@ docker/craftax-eval-target/.build/
 
 # Retained local HealthBench witness assets and provider-private evidence.
 /artifacts/healthbench-e2e/
+/artifacts/healthbench-native-20261021/

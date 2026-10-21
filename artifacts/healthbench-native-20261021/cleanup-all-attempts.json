@@ -1,0 +1,19 @@
+{
+  "exact_owned_names": [
+    "healthbench-native-cold-0-1-20261021",
+    "healthbench-native-cold-0-2-20261021",
+    "healthbench-native-cold-1-1-20261021",
+    "healthbench-native-cold-1-2-20261021",
+    "synth-eval-trial_confirm_policy_617d0549cb48_health-7147a7577e95",
+    "synth-eval-trial_confirm_policy_dfbc5438372f_health-6cd6f06459c5",
+    "synth-eval-trial_confirm_policy_f62f615054cb_health-aa1919e9757a",
+    "synth-eval-trial_screen_policy_07118256c05f_healthb-241775743de1",
+    "synth-eval-trial_screen_policy_617d0549cb48_healthb-3900c9185b04",
+    "synth-eval-trial_screen_policy_dfbc5438372f_healthb-d8fd05fd8bf4",
+    "synth-eval-trial_screen_policy_f4504b241a44_healthb-2782c58c8457",
+    "synth-eval-trial_screen_policy_f62f615054cb_healthb-e8e8e8c3f548",
+    "synth-eval-trial_screen_policy_fa410038df81_healthb-9b75de9c6fc1"
+  ],
+  "all_independently_confirmed_absent": true,
+  "foreign_resources_untouched": true
+}

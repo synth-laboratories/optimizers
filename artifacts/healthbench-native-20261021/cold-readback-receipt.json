@@ -1,0 +1,54 @@
+{
+  "fresh_native_processes": [
+    {
+      "child_id": "healthbench-aa1919e9757aaaf5b8f8ebc4",
+      "status": "completed",
+      "trace_digest": "sha256:8dd9b6555bf492dba3a6d9094b11762d0a098f06abb3da5b247ef696af9cd485",
+      "high_water": 25,
+      "start_replayed": true,
+      "native_compute_calls": 0,
+      "container_name": "healthbench-native-cold-0-1-20261021",
+      "image": "sha256:260ba75608f68765b30899fd7dd2b83223b602552693bb47f20aeaa9f7ae765d",
+      "network": "none",
+      "credentials_provided": false
+    },
+    {
+      "child_id": "healthbench-aa1919e9757aaaf5b8f8ebc4",
+      "status": "completed",
+      "trace_digest": "sha256:8dd9b6555bf492dba3a6d9094b11762d0a098f06abb3da5b247ef696af9cd485",
+      "high_water": 25,
+      "start_replayed": true,
+      "native_compute_calls": 0,
+      "container_name": "healthbench-native-cold-0-2-20261021",
+      "image": "sha256:260ba75608f68765b30899fd7dd2b83223b602552693bb47f20aeaa9f7ae765d",
+      "network": "none",
+      "credentials_provided": false
+    },
+    {
+      "child_id": "healthbench-e8e8e8c3f548682a89ad0776",
+      "status": "completed",
+      "trace_digest": "sha256:ae3d1ef4e5549f9e0aa210f590f30425d980372589df91710166317e78d6440a",
+      "high_water": 34,
+      "start_replayed": true,
+      "native_compute_calls": 0,
+      "container_name": "healthbench-native-cold-1-1-20261021",
+      "image": "sha256:260ba75608f68765b30899fd7dd2b83223b602552693bb47f20aeaa9f7ae765d",
+      "network": "none",
+      "credentials_provided": false
+    },
+    {
+      "child_id": "healthbench-e8e8e8c3f548682a89ad0776",
+      "status": "completed",
+      "trace_digest": "sha256:ae3d1ef4e5549f9e0aa210f590f30425d980372589df91710166317e78d6440a",
+      "high_water": 34,
+      "start_replayed": true,
+      "native_compute_calls": 0,
+      "container_name": "healthbench-native-cold-1-2-20261021",
+      "image": "sha256:260ba75608f68765b30899fd7dd2b83223b602552693bb47f20aeaa9f7ae765d",
+      "network": "none",
+      "credentials_provided": false
+    }
+  ],
+  "original_outputs_unchanged": true,
+  "all_owned_readers_confirmed_absent": true
+}

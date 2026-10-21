@@ -1,0 +1,185 @@
+{
+  "cohort_digest": "sha256:e0caceaf310ad7e594f28429d0ac1823ff591f3a37bfff7f9286f4d7c7e52dc0",
+  "profile": "local-linux-arm64-native-prepare-start.v1",
+  "image": "sha256:260ba75608f68765b30899fd7dd2b83223b602552693bb47f20aeaa9f7ae765d",
+  "build_input_digest": "sha256:9c7f5b5d87d7c5bafc30eaeeebaa38863e57e1fb19e9d0e8615a9f842beca0f7",
+  "protocol_digest": "sha256:870111404baf65d5a649d9b30e1e63e949c4663b56c9a625b56ae148e2407719",
+  "run_id": "healthbench-native-durable-20261021",
+  "trials": [
+    {
+      "trial_id": "trial_confirm_policy_f62f615054cb_healthbench-local-rubric-v1_1",
+      "valid": true,
+      "reward": 0.4067796610169492,
+      "capability_digest": "sha256:692675ea5da808ae2251c92caa0d64d5de74f451165d9872478075257bc7ebda",
+      "operation": {
+        "run_id": "healthbench-native-durable-20261021",
+        "attempt_id": "trial_confirm_policy_f62f615054cb_healthbench-local-rubric-v1_1",
+        "child_id": "healthbench-aa1919e9757aaaf5b8f8ebc4",
+        "protocol_digest": "sha256:870111404baf65d5a649d9b30e1e63e949c4663b56c9a625b56ae148e2407719",
+        "state": "closed",
+        "sequence": 9,
+        "capability_digest": "sha256:692675ea5da808ae2251c92caa0d64d5de74f451165d9872478075257bc7ebda",
+        "stream_id": "stream:healthbench-aa1919e9757aaaf5b8f8ebc4",
+        "native_status": "completed",
+        "request_digest": "sha256:1da99a13ada65e93be579c2d694daaf8b9544b4f17cfc7e412e03790aef01da1",
+        "native_terminated": true,
+        "outcome": "completed",
+        "http_server_stopped": true
+      },
+      "native_stream": {
+        "subscribe_before_start": true,
+        "sse_reconnected_with_scoped_id": true,
+        "captured_events": 25,
+        "high_water": 25,
+        "closed": true,
+        "chain_head": "16379e133ff11ea5550fbfb7fa599ce2b8743dc3d79db79f57fa1c2bf106443e",
+        "trace_digest": "sha256:8dd9b6555bf492dba3a6d9094b11762d0a098f06abb3da5b247ef696af9cd485"
+      },
+      "row_identity": {
+        "seed": 1,
+        "actual_row_digest": "sha256:6d71c65141cc201af9a2a5797d60f21571ddf22b5f8930232e5be1b1cacde094",
+        "frozen_row_digest": "sha256:6d71c65141cc201af9a2a5797d60f21571ddf22b5f8930232e5be1b1cacde094",
+        "rubric_count": 10,
+        "reward_recomputed": 0.4067796610169492,
+        "all_frozen_rubric_fields_match": true
+      },
+      "answer_calls": 1,
+      "judge_calls": 10
+    },
+    {
+      "trial_id": "trial_screen_policy_f62f615054cb_healthbench-local-rubric-v1_0",
+      "valid": true,
+      "reward": 0.8461538461538461,
+      "capability_digest": "sha256:ade392ba23166f5c128f89837be62c6ebac8e9685dfe5f2690889ef8e9df71c7",
+      "operation": {
+        "run_id": "healthbench-native-durable-20261021",
+        "attempt_id": "trial_screen_policy_f62f615054cb_healthbench-local-rubric-v1_0",
+        "child_id": "healthbench-e8e8e8c3f548682a89ad0776",
+        "protocol_digest": "sha256:870111404baf65d5a649d9b30e1e63e949c4663b56c9a625b56ae148e2407719",
+        "state": "closed",
+        "sequence": 9,
+        "capability_digest": "sha256:ade392ba23166f5c128f89837be62c6ebac8e9685dfe5f2690889ef8e9df71c7",
+        "stream_id": "stream:healthbench-e8e8e8c3f548682a89ad0776",
+        "native_status": "completed",
+        "request_digest": "sha256:41bf3f91dcb2c3d3fade6c686336dc3cee731807e1a0216c9770d506658c95cc",
+        "native_terminated": true,
+        "outcome": "completed",
+        "http_server_stopped": true
+      },
+      "native_stream": {
+        "subscribe_before_start": true,
+        "sse_reconnected_with_scoped_id": true,
+        "captured_events": 34,
+        "high_water": 34,
+        "closed": true,
+        "chain_head": "c855e6c3a1dcda3b46b0847834e6b315b63aea27f125ca629c02dd96e80646e9",
+        "trace_digest": "sha256:ae3d1ef4e5549f9e0aa210f590f30425d980372589df91710166317e78d6440a"
+      },
+      "row_identity": {
+        "seed": 0,
+        "actual_row_digest": "sha256:f8b7d401de5b9f96718c5d9741bd853f9a83105ce79fd94efc2570202e01a9a2",
+        "frozen_row_digest": "sha256:f8b7d401de5b9f96718c5d9741bd853f9a83105ce79fd94efc2570202e01a9a2",
+        "rubric_count": 19,
+        "reward_recomputed": 0.8461538461538461,
+        "all_frozen_rubric_fields_match": true
+      },
+      "answer_calls": 1,
+      "judge_calls": 19
+    }
+  ],
+  "sources": {
+    "optimizers": "b528db39e8ac54d18008cbfc94e5ef51a2e4a5e8",
+    "evals": "b395909b6baa9a644136a602d4594830828eaec9"
+  },
+  "charge_final": true,
+  "provider_reported_usd": 0.066232,
+  "cleanup_complete": true,
+  "scope": "execution_support_only",
+  "cold_readback": {
+    "fresh_native_processes": [
+      {
+        "child_id": "healthbench-aa1919e9757aaaf5b8f8ebc4",
+        "status": "completed",
+        "trace_digest": "sha256:8dd9b6555bf492dba3a6d9094b11762d0a098f06abb3da5b247ef696af9cd485",
+        "high_water": 25,
+        "start_replayed": true,
+        "native_compute_calls": 0,
+        "container_name": "healthbench-native-cold-0-1-20261021",
+        "image": "sha256:260ba75608f68765b30899fd7dd2b83223b602552693bb47f20aeaa9f7ae765d",
+        "network": "none",
+        "credentials_provided": false
+      },
+      {
+        "child_id": "healthbench-aa1919e9757aaaf5b8f8ebc4",
+        "status": "completed",
+        "trace_digest": "sha256:8dd9b6555bf492dba3a6d9094b11762d0a098f06abb3da5b247ef696af9cd485",
+        "high_water": 25,
+        "start_replayed": true,
+        "native_compute_calls": 0,
+        "container_name": "healthbench-native-cold-0-2-20261021",
+        "image": "sha256:260ba75608f68765b30899fd7dd2b83223b602552693bb47f20aeaa9f7ae765d",
+        "network": "none",
+        "credentials_provided": false
+      },
+      {
+        "child_id": "healthbench-e8e8e8c3f548682a89ad0776",
+        "status": "completed",
+        "trace_digest": "sha256:ae3d1ef4e5549f9e0aa210f590f30425d980372589df91710166317e78d6440a",
+        "high_water": 34,
+        "start_replayed": true,
+        "native_compute_calls": 0,
+        "container_name": "healthbench-native-cold-1-1-20261021",
+        "image": "sha256:260ba75608f68765b30899fd7dd2b83223b602552693bb47f20aeaa9f7ae765d",
+        "network": "none",
+        "credentials_provided": false
+      },
+      {
+        "child_id": "healthbench-e8e8e8c3f548682a89ad0776",
+        "status": "completed",
+        "trace_digest": "sha256:ae3d1ef4e5549f9e0aa210f590f30425d980372589df91710166317e78d6440a",
+        "high_water": 34,
+        "start_replayed": true,
+        "native_compute_calls": 0,
+        "container_name": "healthbench-native-cold-1-2-20261021",
+        "image": "sha256:260ba75608f68765b30899fd7dd2b83223b602552693bb47f20aeaa9f7ae765d",
+        "network": "none",
+        "credentials_provided": false
+      }
+    ],
+    "original_outputs_unchanged": true,
+    "all_owned_readers_confirmed_absent": true
+  },
+  "cancellation": {
+    "provider_free": true,
+    "external_provider_calls": 0,
+    "fixture_image": "sha256:720d042601953f96ee7891e6cab7803a8c008fc8de8414d8f5dd5a8ec6848441",
+    "parent_image": "sha256:260ba75608f68765b30899fd7dd2b83223b602552693bb47f20aeaa9f7ae765d",
+    "supervisor_status": "cancelled",
+    "native_last_observed_state": "running",
+    "native_terminal_cancel_not_fabricated": true,
+    "partial_events_and_cursor_retained": true,
+    "unsettled_reservation_retained": true,
+    "exact_container": "synth-eval-trial_screen_policy_fa410038df81_healthb-9b75de9c6fc1",
+    "independently_confirmed_absent": true
+  },
+  "final_panel_evaluated": false,
+  "proposer_calls": 0,
+  "reference_protocol_equivalent": false,
+  "exports": [
+    {
+      "path": "healthbench2-eval-1.1.0-linux-arm64-accepted.tar",
+      "digest": "sha256:9784933bdb2bdc773857b81e255acb43d59b3952392a635a770d45fdbcb59931",
+      "bytes": 83365376
+    },
+    {
+      "path": "healthbench2-eval-1.1.0-startup.tar.gz",
+      "digest": "sha256:5092a58be04513265ebb593da43f8362206e3d9f04a04a71724a8d45bfbf9090",
+      "bytes": 10059828
+    },
+    {
+      "path": "installed-optimizer-development-snapshot.zip",
+      "digest": "sha256:0f50096b400ee103f07919d17bba475b9c239e452b1096f9b99062d82dc06ec9",
+      "bytes": 8148137
+    }
+  ]
+}

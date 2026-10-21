@@ -1,0 +1,133 @@
+{
+  "ship-evidence": {
+    "ticket": "SYN-4926",
+    "cohort": "sha256:e0caceaf310ad7e594f28429d0ac1823ff591f3a37bfff7f9286f4d7c7e52dc0",
+    "receipt": "artifacts/healthbench-native-20261021/acceptance.json",
+    "acceptance": [
+      {
+        "item": "durable_adapter_state_machine",
+        "checked": true
+      },
+      {
+        "item": "native_prepare_subscribe_start",
+        "checked": true
+      },
+      {
+        "item": "scoped_events_paging_sse_reconnect",
+        "checked": true
+      },
+      {
+        "item": "envelope_chain_terminal_seal",
+        "checked": true
+      },
+      {
+        "item": "duplicate_start_and_conflict",
+        "checked": true
+      },
+      {
+        "item": "lost_response_original_child_lookup",
+        "checked": true
+      },
+      {
+        "item": "completed_native_cold_process_recovery",
+        "checked": true
+      },
+      {
+        "item": "unsettled_restart_refuses",
+        "checked": true
+      },
+      {
+        "item": "owned_supervisor_cancel_retains_partial_evidence",
+        "checked": true
+      },
+      {
+        "item": "actual_row_rubric_identity_offline_reward",
+        "checked": true
+      },
+      {
+        "item": "two_installed_process_readback",
+        "checked": true
+      },
+      {
+        "item": "original_run_reconnect_without_compute",
+        "checked": true
+      },
+      {
+        "item": "provider_role_charge_reconciliation",
+        "checked": true
+      },
+      {
+        "item": "independent_owned_cleanup",
+        "checked": true
+      }
+    ],
+    "cleanup_complete": true,
+    "charge_final": true
+  },
+  "profile": "local-linux-arm64-native-prepare-start.v1",
+  "run_id": "healthbench-native-durable-20261021",
+  "image": "sha256:260ba75608f68765b30899fd7dd2b83223b602552693bb47f20aeaa9f7ae765d",
+  "tests": {
+    "evals": 70,
+    "optimizers": 39
+  },
+  "provider_reported_usd": 0.066232,
+  "limitations": [
+    "No per-rollout native cancellation API; cancellation belongs to owned OCI supervisor",
+    "Unresolved in-flight execution restart refuses; it does not resume computation",
+    "No Rhodes or Synth Tunnel qualification",
+    "Development install with reused unused native extension; no newly published optimizer wheel",
+    "Custom rubric judge is not reference protocol equivalent",
+    "No proposer and no optimization uplift claim; final panel remains unobserved"
+  ],
+  "receipts": [
+    {
+      "path": "cohort.json",
+      "digest": "sha256:a8ca03d42861cf38c286b53de1912c04b9f3f1d70006c0e5726d60fb2c978d2d"
+    },
+    {
+      "path": "source-pins.json",
+      "digest": "sha256:d5772e9947a8adbf806b4147eae5c10367d32ec869168dca1e2b240dac7ee4bc"
+    },
+    {
+      "path": "cold-readback-receipt.json",
+      "digest": "sha256:07db1cb704306a2b7ae435562f3a67245360af3379d3d11218cd67e0f36bf6d9"
+    },
+    {
+      "path": "cancel-receipt-durable.json",
+      "digest": "sha256:9f7ff04642511fe05a798d28f87f373dde593461fd82a64276f53f8946b1febc"
+    },
+    {
+      "path": "cleanup-accepted.json",
+      "digest": "sha256:565c07a4d8d7d6333e1aa4ba131d9053cbdeb12ac6d0da9ff5d848fc9a25442c"
+    },
+    {
+      "path": "reconnect-accepted.json",
+      "digest": "sha256:993c9b570773cc5c2b04ddd5772eec2df028cdcddc22526d5252737590e147ec"
+    },
+    {
+      "path": "provider-charges-durable.json",
+      "digest": "sha256:3e1d50d28ef8bab2dd87ec5d4ae6e38b73f7f6097ffcb4f22c544688b3bebda8"
+    },
+    {
+      "path": "all-healthbench-tests.log",
+      "digest": "sha256:c224ed0eaa9120e0f9ee8fb754816e45835440072d18ea63434eff6ae29e223f"
+    },
+    {
+      "path": "optimizer-tests.log",
+      "digest": "sha256:8b148f00b848ace84ec40add20c60e1920bbcae4614b27be03c9fc157fa07429"
+    },
+    {
+      "path": "failure-history.json",
+      "digest": "sha256:a28aeb76f761d38682b6c2cb29169a781ac19aa33524975f5c9f7fb837f90779"
+    },
+    {
+      "path": "live-native-watch.txt",
+      "digest": "sha256:8df97fa4490e129daeeb7a083495d611cf5e94d37a111f4580eb7141c18e8022"
+    },
+    {
+      "path": "cleanup-all-attempts.json",
+      "digest": "sha256:e9c00d83f0b9a866597a02a73c175be5ac766934e00c4fe52e20d55944215721"
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "ticket": "SYN-4926",
+  "profile": "local-linux-arm64-native-prepare-start.v1",
+  "acceptance": ["durable_adapter_state_machine", "native_prepare_subscribe_start", "scoped_events_paging_sse_reconnect", "envelope_chain_terminal_seal", "duplicate_start_and_conflict", "lost_response_original_child_lookup", "completed_native_cold_process_recovery", "unsettled_restart_refuses", "owned_supervisor_cancel_retains_partial_evidence", "actual_row_rubric_identity_offline_reward", "two_installed_process_readback", "original_run_reconnect_without_compute", "provider_role_charge_reconciliation", "independent_owned_cleanup"],
+  "limitations": ["No per-rollout native cancellation API; cancellation belongs to owned OCI supervisor", "Unresolved in-flight execution restart refuses; it does not resume computation", "No Rhodes or Synth Tunnel qualification", "Development install with reused unused native extension; no newly published optimizer wheel", "Custom rubric judge is not reference protocol equivalent", "No proposer and no optimization uplift claim; final panel remains unobserved"],
+  "provider_free_tests": {"evals": 70, "optimizers": 39},
+  "original_aggregate_max_usd": 2.0,
+  "active_run_max_usd": 1.6,
+  "previous_known_or_token_priced_usd": 0.2634832
+}

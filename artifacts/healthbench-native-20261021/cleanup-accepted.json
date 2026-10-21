@@ -1,0 +1,11 @@
+{
+  "exact_owned_containers": [
+    "synth-eval-trial_confirm_policy_f62f615054cb_health-aa1919e9757a",
+    "synth-eval-trial_screen_policy_f62f615054cb_healthb-e8e8e8c3f548"
+  ],
+  "independently_confirmed_absent": true,
+  "http_services_stopped": true,
+  "cleanup_complete": true,
+  "foreign_resources_untouched": true,
+  "observed_at": "2026-10-21T21:29:13.829314+00:00"
+}

@@ -112,10 +112,45 @@ def test_active_run_reconnect_observes_instead_of_dispatch(tmp_path, monkeypatch
     called = []
     monkeypatch.setattr(healthbench, "_run", lambda args: pytest.fail("duplicate compute"))
     monkeypatch.setattr(healthbench, "watch", lambda args: called.append(args.run_id) or 0)
-    with (tmp_path / "healthbench-controller.lock").open("a") as lease:
+    root = tmp_path / "runs/original"
+    root.mkdir(parents=True)
+    (root / "result_manifest.json").write_text(json.dumps({"trials": [{"valid": True}]}))
+    with (tmp_path / "healthbench-controller.lock").open("w") as lease:
+        json.dump({"run_id": "original"}, lease)
+        lease.flush()
         fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
         assert healthbench.run(SimpleNamespace(home=tmp_path, run_id="original")) == 0
     assert called == ["original"]
+
+
+def test_active_home_refuses_attachment_to_different_run(tmp_path, monkeypatch):
+    import fcntl
+
+    monkeypatch.setattr(healthbench, "watch", lambda args: pytest.fail("wrong run attached"))
+    with (tmp_path / "healthbench-controller.lock").open("w") as lease:
+        json.dump({"run_id": "original"}, lease)
+        lease.flush()
+        fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(ValueError, match="different_run"):
+            healthbench.run(SimpleNamespace(home=tmp_path, run_id="different"))
+
+
+def test_cancel_only_requests_owned_supervisor(tmp_path, capsys):
+    root = tmp_path / "runs/original"
+    root.mkdir(parents=True)
+    assert healthbench.cancel(SimpleNamespace(home=tmp_path, run_id="original")) == 0
+    assert (root / "CANCEL").exists()
+    assert json.loads(capsys.readouterr().out)["authority"] == "owned_oci_supervisor"
+
+
+def test_shared_executor_normalizes_tagged_local_image_to_verified_id():
+    pin = "sha256:" + "a" * 64
+    executor = object.__new__(healthbench.SharedOciExecutor)
+    executor.executor = SimpleNamespace(image_digests=lambda image: (pin, (pin,)))
+    assert executor.resolve_reference("mutable-display-name", pin) == pin
+    executor.executor = SimpleNamespace(image_digests=lambda image: ("sha256:" + "b" * 64, (pin,)))
+    with pytest.raises(healthbench.EvalContractError, match="mismatched"):
+        executor.resolve_reference("mutable-display-name", pin)
 
 
 def test_invalid_trial_is_not_successful_run(tmp_path):

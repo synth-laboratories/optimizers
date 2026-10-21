@@ -191,7 +191,7 @@ class SharedOciExecutor:
             raise EvalRuntimeError(str(error)) from error
 
 
-def run(args):
+def run(args, *, profile=None):
     args.home.mkdir(parents=True, exist_ok=True)
     with (args.home / "healthbench-controller.lock").open("a+") as lease:
         try:
@@ -211,10 +211,16 @@ def run(args):
         if (args.home / "runs" / args.run_id / "result_manifest.json").exists():
             read(args)
             return result_exit_code(args)
-        return _run(args)
+        return _run(args, **profile) if profile is not None else _run(args)
 
 
-def _run(args):
+def _run(
+    args,
+    *,
+    package_id="healthbench2-eval-1.1.0",
+    recipe=RECIPE,
+    policy_kind="healthbench-prompt.v1",
+):
     from synth_containers.package_build import plan_container_package
     from synth_containers.package_models import ContainerArtifactDescriptor
 
@@ -223,7 +229,7 @@ def _run(args):
     from .staging import CandidateSource, stage_candidate_set
 
     descriptor = ContainerArtifactDescriptor.model_validate_json(args.artifact.read_text())
-    if descriptor.plan.manifest.package_id != "healthbench2-eval-1.1.0":
+    if descriptor.plan.manifest.package_id != package_id:
         raise ValueError("wrong_healthbench_release")
     if (
         plan_container_package(args.bundle / "container-package.toml").input_digest
@@ -243,7 +249,7 @@ def _run(args):
     if not retained.exists():
         retained.write_text(args.artifact.read_text())
     # Home pins only this trusted catalog recipe, never a candidate-provided image.
-    (home.root / "pins.toml").write_text(f'[pins."{RECIPE}"]\nimage_digest = "{pin}"\n')
+    (home.root / "pins.toml").write_text(f'[pins."{recipe}"]\nimage_digest = "{pin}"\n')
     manifest = home.root / "healthbench-worker.json"
     if not manifest.exists():
         candidates = stage_candidate_set(
@@ -253,7 +259,7 @@ def _run(args):
                     "baseline",
                     args.bundle / "prompt.json",
                     "prompt.json",
-                    "healthbench-prompt.v1",
+                    policy_kind,
                     True,
                 )
             ],
@@ -263,7 +269,7 @@ def _run(args):
                 {
                     "schema_version": "eval.worker-manifest.v1",
                     "run_id": args.run_id,
-                    "recipe_id": RECIPE,
+                    "recipe_id": recipe,
                     "home": str(home.root),
                     "candidate_set_path": str(candidates.root / "candidate_set.json"),
                 },

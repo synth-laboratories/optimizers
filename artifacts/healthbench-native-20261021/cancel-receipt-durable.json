@@ -1,0 +1,13 @@
+{
+  "provider_free": true,
+  "external_provider_calls": 0,
+  "fixture_image": "sha256:720d042601953f96ee7891e6cab7803a8c008fc8de8414d8f5dd5a8ec6848441",
+  "parent_image": "sha256:260ba75608f68765b30899fd7dd2b83223b602552693bb47f20aeaa9f7ae765d",
+  "supervisor_status": "cancelled",
+  "native_last_observed_state": "running",
+  "native_terminal_cancel_not_fabricated": true,
+  "partial_events_and_cursor_retained": true,
+  "unsettled_reservation_retained": true,
+  "exact_container": "synth-eval-trial_screen_policy_fa410038df81_healthb-9b75de9c6fc1",
+  "independently_confirmed_absent": true
+}

@@ -1,0 +1,68 @@
+{
+  "cohort_digest": "sha256:c3e4ca1201452777b7cbf7e1ca7aba95a6cdc11743857f980846fb396483a5f7",
+  "profile": "local-linux-arm64-command-http-adapter",
+  "image": "sha256:047c5d59e67e745aa9c7d226999ad423cd67c93e7bcd1b20f2447160ef48d9a8",
+  "build_input_digest": "sha256:add93345a99120b6a9276512506ad51bbcdf8a919c1f3359ef110ab7e365f5f8",
+  "protocol_digest": "sha256:7aac061930fe06e333f3868966967a37356a106f90219f0d0ab3fa98d5726d0c",
+  "run_id": "healthbench-eval-accepted-20261021",
+  "trials": [
+    {
+      "trial_id": "trial_confirm_policy_e90833dd9384_healthbench-local-rubric-v1_1",
+      "valid": true,
+      "reward": 0.2711864406779661,
+      "capability_digest": "sha256:0bc680d8d1cae29a7493bed452345680c45f2be330073cc5c30828190a771c89",
+      "operation": {
+        "run_id": "healthbench-eval-accepted-20261021",
+        "attempt_id": "trial_confirm_policy_e90833dd9384_healthbench-local-rubric-v1_1",
+        "child_id": "healthbench-5903b73d6739134156110021",
+        "state": "submitted",
+        "protocol_digest": "sha256:7aac061930fe06e333f3868966967a37356a106f90219f0d0ab3fa98d5726d0c"
+      },
+      "answer_calls": 1,
+      "judge_calls": 10
+    },
+    {
+      "trial_id": "trial_screen_policy_e90833dd9384_healthbench-local-rubric-v1_0",
+      "valid": true,
+      "reward": 0.9230769230769231,
+      "capability_digest": "sha256:21bf4cccebb877e59e34a8e601471b03938128692c19b1d0501a95852a815993",
+      "operation": {
+        "run_id": "healthbench-eval-accepted-20261021",
+        "attempt_id": "trial_screen_policy_e90833dd9384_healthbench-local-rubric-v1_0",
+        "child_id": "healthbench-a175037fff4ea3bab524e6ac",
+        "state": "submitted",
+        "protocol_digest": "sha256:7aac061930fe06e333f3868966967a37356a106f90219f0d0ab3fa98d5726d0c"
+      },
+      "answer_calls": 1,
+      "judge_calls": 19
+    }
+  ],
+  "sources": {
+    "optimizers": "a7cc40b579d21234f407bf02ea2d3e2258909815",
+    "evals": "f14f3f74cac89ddd7c61e784007ba3928ba07a7b"
+  },
+  "charge_final": true,
+  "provider_reported_usd": 0.0650544,
+  "cleanup_complete": true,
+  "scope": "execution_support_only",
+  "final_panel_evaluated": false,
+  "proposer_calls": 0,
+  "reference_protocol_equivalent": false,
+  "exports": [
+    {
+      "path": "healthbench2-eval-1.0.0-linux-arm64-accepted.tar",
+      "digest": "sha256:b13143e2450738468f6b56e7cf14d2fe3da0b0bfe3267a9bf171ee155835c267",
+      "bytes": 83358720
+    },
+    {
+      "path": "healthbench2-eval-1.0.0-startup.tar.gz",
+      "digest": "sha256:da00657c09d7958a303f813f2d22022e2d17fa2fdd8f8bea4863d34d1e62136d",
+      "bytes": 10054149
+    },
+    {
+      "path": "installed-optimizer-development-snapshot.zip",
+      "digest": "sha256:7a122cab5105be500e489f4c465e2df7727e6d154a76f14e4b1bf5a20fea3059",
+      "bytes": 8146770
+    }
+  ]
+}

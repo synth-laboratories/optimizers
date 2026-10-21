@@ -40,3 +40,6 @@ dev_examples/better_gepa/profiles/*
 /records/**/private/
 .craftax-build*/
 docker/craftax-eval-target/.build/
+
+# Retained local HealthBench witness assets and provider-private evidence.
+/artifacts/healthbench-e2e/

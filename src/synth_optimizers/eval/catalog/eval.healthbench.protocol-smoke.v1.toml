@@ -1,0 +1,45 @@
+[recipe]
+id = "eval.healthbench.protocol-smoke.v1"
+title = "HealthBench container protocol smoke"
+description = "Frozen two-row HTTP-backed Eval witness; custom judge, report only."
+task = "healthbench"
+policy_kind = "healthbench-prompt.v1"
+image = "synth-eval-healthbench-target"
+prerequisites = ["Versioned healthbench2 Eval bundle built and pinned locally"]
+scenarios = ["healthbench-local-rubric-v1"]
+screening_seeds = [0]
+confirmation_seeds = [1]
+secrets = ["OPENROUTER_API_KEY"]
+
+[recipe.budget]
+max_llm_calls = 128
+max_usd = 2.0
+
+[recipe.target]
+schema_version = "eval.target.v1"
+policy_kinds = ["healthbench-prompt.v1"]
+trial_mode = "one-policy-one-seed"
+required_gates = ["policy_loaded", "verifier_completed", "frozen_protocol", "disjoint_rows"]
+required_artifacts = ["trace", "protocol", "usage", "events", "provider", "operation"]
+supports_live_events = true
+network = "bridge"
+
+[[recipe.target.metrics]]
+id = "reward"
+direction = "maximize"
+
+[recipe.selection]
+primary_metric = "reward"
+min_lift = 0.0
+min_valid_trials = 1
+decision_mode = "report_only"
+
+[recipe.selection.elimination]
+kind = "none"
+
+[recipe.limits]
+max_parallel_trials = 1
+timeout_seconds = 900
+cpus = 1.0
+memory_mb = 2048
+max_output_bytes = 67108864

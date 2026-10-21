@@ -143,6 +143,16 @@ def test_cancel_only_requests_owned_supervisor(tmp_path, capsys):
     assert json.loads(capsys.readouterr().out)["authority"] == "owned_oci_supervisor"
 
 
+def test_shared_executor_normalizes_tagged_local_image_to_verified_id():
+    pin = "sha256:" + "a" * 64
+    executor = object.__new__(healthbench.SharedOciExecutor)
+    executor.executor = SimpleNamespace(image_digests=lambda image: (pin, (pin,)))
+    assert executor.resolve_reference("mutable-display-name", pin) == pin
+    executor.executor = SimpleNamespace(image_digests=lambda image: ("sha256:" + "b" * 64, (pin,)))
+    with pytest.raises(healthbench.EvalContractError, match="mismatched"):
+        executor.resolve_reference("mutable-display-name", pin)
+
+
 def test_invalid_trial_is_not_successful_run(tmp_path):
     root = tmp_path / "runs/original"
     root.mkdir(parents=True)

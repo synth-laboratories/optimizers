@@ -157,7 +157,13 @@ class SharedOciExecutor:
     def resolve_reference(self, image, pin):
         # A local build returns an OCI config digest, independently of mutable
         # recipe tags. Resolve that exact identity through the shared primitive.
-        return self.executor.resolve_reference(pin, pin)
+        # Tagged containerd images also expose repository digests. Passing a
+        # raw ID as a repository name to resolve_reference would produce
+        # sha256:ID@sha256:ID; this local profile verifies and runs the ID itself.
+        actual, _ = self.executor.image_digests(pin)
+        if actual != pin:
+            raise EvalContractError("pinned_local_image_missing_or_mismatched")
+        return pin
 
     def run(self, request, **kwargs):
         from synth_containers.oci_trial import ContainerRuntimeError, TrialRunRequest

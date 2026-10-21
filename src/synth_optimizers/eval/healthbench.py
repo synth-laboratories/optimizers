@@ -20,7 +20,7 @@ from types import SimpleNamespace
 
 from .models import EvalContractError
 
-RECIPE = "eval.healthbench.protocol-smoke.v1"
+RECIPE = "eval.healthbench.native-smoke.v1"
 
 
 def digest(value):
@@ -42,7 +42,7 @@ def freeze(args):
         root / "healthbench_chat",
         ignore=shutil.ignore_patterns("__pycache__"),
     )
-    for name in ("eval_adapter.py", "build_eval.py"):
+    for name in ("eval_adapter.py", "eval_native.py", "build_eval.py"):
         shutil.copy2(source / name, root / name)
     (root / "build_eval.py").chmod(0o755)
     wheelhouse = root / "wheels"
@@ -64,7 +64,8 @@ def freeze(args):
         "sha256:" + hashlib.sha256((root / "healthbench_chat/runtime.py").read_bytes()).hexdigest()
     )
     protocol = {
-        "schema_version": "healthbench.eval-protocol.v1",
+        "schema_version": "healthbench.eval-protocol.v2",
+        "execution_profile": "native-prepare-start.v1",
         "purpose": "execution_support_only",
         "reference_protocol_equivalent": False,
         "grader_protocol": "healthbench.local_rubric.v1",
@@ -72,7 +73,7 @@ def freeze(args):
         "dataset_digest": "sha256:" + hashlib.sha256(data.encode()).hexdigest(),
         "source_dataset_digest": "sha256:" + hashlib.sha256(args.dataset.read_bytes()).hexdigest(),
         "prompt_digest": digest(prompt),
-        "trial_max_usd": 0.9,
+        "trial_max_usd": 0.8,
         "proposer": {"enabled": False, "calls": 0},
         "truncation": "refuse_length_finish",
         "panels": {
@@ -114,10 +115,10 @@ def freeze(args):
     )
     wheel = next(w for w in wheels if w.name.startswith("synth_containers-"))
     manifest = f'''schema_version = "synth.container-package.v1"
-package_id = "healthbench2-eval-1.0.0"
+package_id = "healthbench2-eval-1.1.0"
 [build]
 entrypoint = "build_eval.py"
-inputs = ["Dockerfile", "eval_adapter.py", "healthbench_chat", "wheels", "dataset.jsonl", "prompt.json", "protocol.json", "provider-models.json"]
+inputs = ["Dockerfile", "eval_adapter.py", "eval_native.py", "healthbench_chat", "wheels", "dataset.jsonl", "prompt.json", "protocol.json", "provider-models.json"]
 platform = "{args.platform}"
 [runtime]
 profile = "command"
@@ -132,6 +133,9 @@ version = "eval.container-result.v1"
 [[contracts]]
 name = "gepa"
 version = "synth_optimizers.gepa.v2"
+[[contracts]]
+name = "containers"
+version = "container_contract.v1"
 [[credentials]]
 name = "OPENROUTER_API_KEY"
 reference = "secretref://eval/healthbench/openrouter"
@@ -183,11 +187,21 @@ class SharedOciExecutor:
 
 def run(args):
     args.home.mkdir(parents=True, exist_ok=True)
-    with (args.home / "healthbench-controller.lock").open("a") as lease:
+    with (args.home / "healthbench-controller.lock").open("a+") as lease:
         try:
             fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            return watch(SimpleNamespace(home=args.home, run_id=args.run_id, once=False))
+            lease.seek(0)
+            owner = json.load(lease)
+            if owner.get("run_id") != args.run_id:
+                raise ValueError("eval_home_owned_by_different_run")
+            watch(SimpleNamespace(home=args.home, run_id=args.run_id, once=False))
+            return result_exit_code(args)
+        lease.seek(0)
+        lease.truncate()
+        json.dump({"run_id": args.run_id}, lease)
+        lease.flush()
+        os.fsync(lease.fileno())
         if (args.home / "runs" / args.run_id / "result_manifest.json").exists():
             read(args)
             return result_exit_code(args)
@@ -203,7 +217,7 @@ def _run(args):
     from .staging import CandidateSource, stage_candidate_set
 
     descriptor = ContainerArtifactDescriptor.model_validate_json(args.artifact.read_text())
-    if descriptor.plan.manifest.package_id != "healthbench2-eval-1.0.0":
+    if descriptor.plan.manifest.package_id != "healthbench2-eval-1.1.0":
         raise ValueError("wrong_healthbench_release")
     if (
         plan_container_package(args.bundle / "container-package.toml").input_digest
@@ -297,8 +311,13 @@ def watch(args):
         display = []
         for key, event in rows.items():
             native = event.get("container_event", {})
+            operation = root / "trials" / key / "output/operation.json"
+            state = json.loads(operation.read_text()).get("state") if operation.exists() else None
+            job = root / "trials" / key / "job_result.json"
+            if state and job.exists() and json.loads(job.read_text())["status"] == "cancelled":
+                state = "cancelled; native last=" + state
             display.append(
-                f"{key}  {native.get('kind', native.get('type', native.get('event', event['event'])))}"
+                f"{key}  {state + '  ' if state else ''}{native.get('kind', native.get('type', native.get('event', event['event'])))}"
             )
         if sys.stdout.isatty():
             columns, height = shutil.get_terminal_size()
@@ -406,6 +425,18 @@ def reconcile(args):
     return 0
 
 
+def cancel(args):
+    from .runner import request_cancel
+
+    found = request_cancel(args.home, args.run_id)
+    print(
+        json.dumps(
+            {"run_id": args.run_id, "cancel_requested": found, "authority": "owned_oci_supervisor"}
+        )
+    )
+    return 0 if found else 1
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="python -m synth_optimizers.eval.healthbench")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -419,7 +450,7 @@ def main(argv=None):
     p.add_argument("--bundle", type=Path, required=True)
     p.add_argument("--home", type=Path, required=True)
     p.add_argument("--run-id", required=True)
-    for name in ("watch", "read", "reconcile"):
+    for name in ("watch", "read", "reconcile", "cancel"):
         p = commands.add_parser(name)
         p.add_argument("--home", type=Path, required=True)
         p.add_argument("--run-id", required=True)
@@ -428,9 +459,14 @@ def main(argv=None):
         elif name == "reconcile":
             p.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
-    return {"freeze": freeze, "run": run, "watch": watch, "read": read, "reconcile": reconcile}[
-        args.command
-    ](args) or 0
+    return {
+        "freeze": freeze,
+        "run": run,
+        "watch": watch,
+        "read": read,
+        "reconcile": reconcile,
+        "cancel": cancel,
+    }[args.command](args) or 0
 
 
 if __name__ == "__main__":

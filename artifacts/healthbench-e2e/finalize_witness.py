@@ -74,22 +74,30 @@ save(ROOT / "reconnect-accepted.json", {"two_process_readback": True, "artifact_
 exports = [ROOT / "healthbench2-eval-1.0.0-linux-arm64-accepted.tar",
            ROOT / "healthbench2-eval-1.0.0-startup.tar.gz",
            ROOT / "installed-optimizer-development-snapshot.zip"]
-subprocess.run(["docker", "save", "--output", str(exports[0]), image], check=True)
-with tarfile.open(exports[1], "w:gz") as archive:
-    archive.add(ROOT / "release-accepted", arcname="healthbench2-eval-1.0.0")
+if not exports[0].exists():
+    subprocess.run(["docker", "save", "--output", str(exports[0]), image], check=True)
+if not exports[1].exists():
+    with tarfile.open(exports[1], "w:gz") as archive:
+        archive.add(ROOT / "release-accepted", arcname="healthbench2-eval-1.0.0")
 installed = ROOT / "venv/lib/python3.12/site-packages/synth_optimizers"
 files = {str(p.relative_to(installed)): hash_file(p) for p in installed.rglob("*")
          if p.is_file() and "__pycache__" not in p.parts}
 save(ROOT / "installed-accepted.json", {"kind": "development_package_install",
      "host_profile": "macos-arm64-python3.12", "native_build": False,
      "native_used_for_evaluation": False, "files": files})
-with zipfile.ZipFile(exports[2], "w", zipfile.ZIP_DEFLATED) as archive:
-    for name in files:
-        archive.write(installed / name, "synth_optimizers/" + name)
+if not exports[2].exists():
+    with zipfile.ZipFile(exports[2], "w", zipfile.ZIP_DEFLATED) as archive:
+        for name in files:
+            archive.write(installed / name, "synth_optimizers/" + name)
 charges = read(ROOT / "provider-charges-accepted.json")
 assert charges["charge_final"] and len(charges["generations"]) == 31
 sources = {name: subprocess.check_output(["git", "-C", str(PROJECT.parent / name), "rev-parse", "HEAD"], text=True).strip()
            for name in ("optimizers", "evals")}
+if (ROOT / "cohort.json").exists():
+    retained = read(ROOT / "cohort.json")
+    sources = retained["sources"]
+    for artifact in retained["exports"]:
+        assert hash_file(ROOT / artifact["path"]) == artifact["digest"]
 cohort = {"profile": "local-linux-arm64-command-http-adapter", "image": image,
           "build_input_digest": descriptor["plan"]["input_digest"],
           "protocol_digest": rows[0]["operation"]["protocol_digest"], "run_id": RUN_ID,

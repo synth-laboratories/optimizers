@@ -1,0 +1,13 @@
+{
+  "exact_owned_names": [
+    "banking77-native-cold-0-1-20261021",
+    "banking77-native-cold-0-2-20261021",
+    "banking77-native-cold-1-1-20261021",
+    "banking77-native-cold-1-2-20261021",
+    "synth-eval-trial_confirm_policy_32bbcea59e58_bankin-092aa3b869e1",
+    "synth-eval-trial_screen_policy_32bbcea59e58_banking-6569b4635005",
+    "synth-eval-trial_screen_policy_45c4e52ba043_banking-3c2df1a1404d"
+  ],
+  "all_independently_confirmed_absent": true,
+  "foreign_resources_untouched": true
+}

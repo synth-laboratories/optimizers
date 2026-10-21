@@ -1,0 +1,133 @@
+{
+  "ship-evidence": {
+    "ticket": "SYN-4927",
+    "cohort": "sha256:b15d4a68252f33a6854a5771e2123a012cabc482c8ecb97a1400d0e1166acd35",
+    "receipt": "artifacts/banking77-native-20261021/acceptance.json",
+    "acceptance": [
+      {
+        "item": "portable_frozen_release_and_real_dataset_provenance",
+        "checked": true
+      },
+      {
+        "item": "actual_row_and_query_disjointness",
+        "checked": true
+      },
+      {
+        "item": "provider_free_parsing_and_negative_fixtures",
+        "checked": true
+      },
+      {
+        "item": "direct_native_prepare_subscribe_start",
+        "checked": true
+      },
+      {
+        "item": "ordered_adapter_custody_states",
+        "checked": true
+      },
+      {
+        "item": "scoped_paging_and_live_sse_reconnect",
+        "checked": true
+      },
+      {
+        "item": "envelope_chain_and_terminal_seal_verification",
+        "checked": true
+      },
+      {
+        "item": "idempotent_start_conflict_and_lost_response_original_child_lookup",
+        "checked": true
+      },
+      {
+        "item": "private_gold_and_offline_reward_recomputation",
+        "checked": true
+      },
+      {
+        "item": "separate_answer_deterministic_judge_and_proposer_accounting",
+        "checked": true
+      },
+      {
+        "item": "two_installed_readers_and_live_terminal_reconnect",
+        "checked": true
+      },
+      {
+        "item": "four_fresh_networkless_native_readers_zero_compute",
+        "checked": true
+      },
+      {
+        "item": "unresolved_execution_restart_refuses",
+        "checked": true
+      },
+      {
+        "item": "owned_supervisor_cancellation_retains_partial_custody",
+        "checked": true
+      },
+      {
+        "item": "provider_charges_reconciled",
+        "checked": true
+      },
+      {
+        "item": "independent_owned_cleanup",
+        "checked": true
+      }
+    ],
+    "cleanup_complete": true,
+    "charge_final": true
+  },
+  "run_id": "banking77-native-20261021",
+  "image": "sha256:2251f2e593e1cb9647ea9f2be28e97a6bd23b28ecab02a98c6e7e09756c6e5f3",
+  "profile": "local-linux-arm64-native-prepare-start.v1",
+  "tests": {
+    "evals": 147,
+    "optimizer_runner_cli": 43
+  },
+  "provider_reported_usd": 0.000466,
+  "limits": [
+    "Local Linux ARM64 development installation; no public optimizer wheel publication",
+    "Hosted Rhodes/Synth Tunnel not qualified",
+    "No native per-rollout cancellation API; owned OCI supervisor is authority",
+    "Completed histories recover; unresolved in-flight computation refuses",
+    "Two-row execution smoke, not general benchmark accuracy or optimization uplift",
+    "Separate GEPA/Banking77 initial matrix witness remains pending"
+  ],
+  "receipts": [
+    {
+      "path": "cohort.json",
+      "digest": "sha256:f02128010733de05388621c2af069849f31b09f9a0696a327c377eee22784f3b"
+    },
+    {
+      "path": "cold-readback-receipt.json",
+      "digest": "sha256:9552cd8884d1c4466e478303b37bcb2c76788a003f2ffd22cc977c328e5c05db"
+    },
+    {
+      "path": "cancel-receipt.json",
+      "digest": "sha256:ee21fb0f836716342f079d240ad94521a7123a4bef5654600bf1c1c9093a67e8"
+    },
+    {
+      "path": "cleanup-accepted.json",
+      "digest": "sha256:b6c989a4b4f60647bbc9a20ae4a4b2086a5249de63ab2c92f752f62963542840"
+    },
+    {
+      "path": "cleanup-all-attempts.json",
+      "digest": "sha256:ca222b5f625e248c4da16b145e4c709b9133ef97752b7ce03aa4ed4765218f2a"
+    },
+    {
+      "path": "reconnect-accepted.json",
+      "digest": "sha256:9a28d35016d63512506a73274cfa7a103c7f48243b7392063e8f44d5bd2f6500"
+    },
+    {
+      "path": "provider-charges.json",
+      "digest": "sha256:4826c97106f951eacde24dabbd148d53b36b5d9128d939619d40bc75e450291f"
+    },
+    {
+      "path": "all-evals-tests.log",
+      "digest": "sha256:314ddee36df6915f589aebf1e25c442f515eeb2336d86a990d4d716eac08d027"
+    },
+    {
+      "path": "optimizer-tests.log",
+      "digest": "sha256:ca832e308816b2de5c309aa585e97b15c225e018fe9fa95bd7cbe6322f4514a1"
+    },
+    {
+      "path": "live-watch.txt",
+      "digest": "sha256:0b094e7e7d9bea0cd808a9a1d1d4556c1094b5e870688ce963d56d925774c32e"
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+# SYN-4927 local signoff
+
+All16 acceptance items are checked against retained receipts. The two real native trials closed; their scored0/1 outcomes are retained honestly.190 provider-free checks pass, including HealthBench regressions. Frozen actual row/query identities, private gold boundaries, offline reward recomputation, complete original events/cursors/seals and provider generation receipts are retained. Four fresh networkless native readers performed zero compute, and two installed readers plus concurrent/terminal attachment preserve original custody. All owned containers across paid/cancellation/readback work are independently absent. Charge_final and cleanup_complete are true; provider-reported spend is $0.000466 under the $0.20 aggregate cap.
+
+Signed off for local Linux ARM64 execution support only. No GEPA optimization, general accuracy/uplift, hosted/Tunnel, newly published wheel, native per-rollout cancellation or in-flight compute continuation is claimed. No shared slot, controller or engine was changed. The original GEPA/Banking77 matrix witness remains pending.

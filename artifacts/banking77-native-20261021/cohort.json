@@ -1,0 +1,211 @@
+{
+  "cohort_digest": "sha256:b15d4a68252f33a6854a5771e2123a012cabc482c8ecb97a1400d0e1166acd35",
+  "source_provenance": {
+    "repository": "PolyAI-LDN/task-specific-datasets",
+    "commit": "57ec275d8078af65b7731c2a98be812d844a6d6b",
+    "files": {
+      "train": {
+        "url": "https://raw.githubusercontent.com/PolyAI-LDN/task-specific-datasets/57ec275d8078af65b7731c2a98be812d844a6d6b/banking_data/train.csv",
+        "digest": "sha256:b06e26ac675513959a63135f11b94ea7786ed02da65db93a5650d8838cbc664b",
+        "bytes": 839073
+      },
+      "heldout": {
+        "url": "https://raw.githubusercontent.com/PolyAI-LDN/task-specific-datasets/57ec275d8078af65b7731c2a98be812d844a6d6b/banking_data/test.csv",
+        "digest": "sha256:d12d6e3bc4c3103966ae786dc435913c0c563dfa328f5a3646d0e62cfeeb474d",
+        "bytes": 239961
+      }
+    }
+  },
+  "dataset_digests": {
+    "train": "sha256:b06e26ac675513959a63135f11b94ea7786ed02da65db93a5650d8838cbc664b",
+    "heldout": "sha256:d12d6e3bc4c3103966ae786dc435913c0c563dfa328f5a3646d0e62cfeeb474d"
+  },
+  "profile": "local-linux-arm64-native-prepare-start.v1",
+  "image": "sha256:2251f2e593e1cb9647ea9f2be28e97a6bd23b28ecab02a98c6e7e09756c6e5f3",
+  "build_input_digest": "sha256:18b66614107fb47b898138956826f78c1d95fd735aada56a424ba641458a0f15",
+  "protocol_digest": "sha256:f28ed3332ed082c0c5e0de7a1ae66818d0e61cc4851dd11c65f224803508a0ca",
+  "run_id": "banking77-native-20261021",
+  "trials": [
+    {
+      "trial_id": "trial_confirm_policy_32bbcea59e58_banking77-label-accuracy-v1_40",
+      "valid": true,
+      "reward": 1.0,
+      "capability_digest": "sha256:307fa2bfadf25b4d97a0477918ae325d309a05648e290b6b40355dbdba34b1bf",
+      "operation": {
+        "run_id": "banking77-native-20261021",
+        "attempt_id": "trial_confirm_policy_32bbcea59e58_banking77-label-accuracy-v1_40",
+        "child_id": "banking77-092aa3b869e1e0cce380fbf8",
+        "protocol_digest": "sha256:f28ed3332ed082c0c5e0de7a1ae66818d0e61cc4851dd11c65f224803508a0ca",
+        "state": "closed",
+        "sequence": 9,
+        "capability_digest": "sha256:307fa2bfadf25b4d97a0477918ae325d309a05648e290b6b40355dbdba34b1bf",
+        "stream_id": "stream:banking77-092aa3b869e1e0cce380fbf8",
+        "native_status": "completed",
+        "request_digest": "sha256:11c1e5bbcea9e033bbde475bebd4ee9341b659f1c7f7fca4e42d88b4b9dfee0c",
+        "native_terminated": true,
+        "outcome": "completed",
+        "http_server_stopped": true
+      },
+      "native_stream": {
+        "subscribe_before_start": true,
+        "sse_reconnected_with_scoped_id": true,
+        "captured_events": 13,
+        "high_water": 13,
+        "closed": true,
+        "chain_head": "cb8a3b5d13e7059dab9096995fc6868d85a6cbcc1f634494ca9b62494b438128",
+        "trace_digest": "sha256:b444af2fff103d62a26929fa925124e93c222a592412896159cc5771f6dc96c3"
+      },
+      "row_identity": {
+        "seed": 40,
+        "split": "heldout",
+        "actual_query_digest": "sha256:a16ef1fce48d21f7d7e14882af8b8439bc259588e67f55d4a76399ab4ca2a1f4",
+        "frozen_query_digest": "sha256:a16ef1fce48d21f7d7e14882af8b8439bc259588e67f55d4a76399ab4ca2a1f4",
+        "frozen_row_digest": "sha256:ae3fe46e838e4d957c03ff3b92fb49fb4fdf88963190cad9cefe4f8a48b8317c",
+        "prediction": "card_linking",
+        "reward_recomputed": 1.0,
+        "gold_not_in_public_observation": true,
+        "scoring_protocol": "banking77.normalized-label-accuracy.v1"
+      },
+      "answer_calls": 1,
+      "judge_calls": 0
+    },
+    {
+      "trial_id": "trial_screen_policy_32bbcea59e58_banking77-label-accuracy-v1_0",
+      "valid": true,
+      "reward": 0.0,
+      "capability_digest": "sha256:d9e4faedc610923f527830b667451f0d8efd6f2dd0d8e25076ffbceb0bc80fde",
+      "operation": {
+        "run_id": "banking77-native-20261021",
+        "attempt_id": "trial_screen_policy_32bbcea59e58_banking77-label-accuracy-v1_0",
+        "child_id": "banking77-6569b4635005a8497d430adf",
+        "protocol_digest": "sha256:f28ed3332ed082c0c5e0de7a1ae66818d0e61cc4851dd11c65f224803508a0ca",
+        "state": "closed",
+        "sequence": 9,
+        "capability_digest": "sha256:d9e4faedc610923f527830b667451f0d8efd6f2dd0d8e25076ffbceb0bc80fde",
+        "stream_id": "stream:banking77-6569b4635005a8497d430adf",
+        "native_status": "completed",
+        "request_digest": "sha256:2b06a0df18de17c22f25a4b50dfa20313201873543ffa4b2464ff34116051493",
+        "native_terminated": true,
+        "outcome": "completed",
+        "http_server_stopped": true
+      },
+      "native_stream": {
+        "subscribe_before_start": true,
+        "sse_reconnected_with_scoped_id": true,
+        "captured_events": 13,
+        "high_water": 13,
+        "closed": true,
+        "chain_head": "27f9434e04b538091a05a885f67793f5c78f013d17ae9797c9e9ce7a3f5a0b21",
+        "trace_digest": "sha256:af80aa52e634cb535ff1a286fde3a9328dca5fb6bfbaf9eaa788c8a3cf11f8ef"
+      },
+      "row_identity": {
+        "seed": 0,
+        "split": "heldout",
+        "actual_query_digest": "sha256:57b937e602df21f6a3d8bd51b04bdd4c4f3256170c3508755c0a3578abd8cf38",
+        "frozen_query_digest": "sha256:57b937e602df21f6a3d8bd51b04bdd4c4f3256170c3508755c0a3578abd8cf38",
+        "frozen_row_digest": "sha256:8945884ff7ba911cc00623dec25360cceae12a4701d791300cb5ee72ab71e81c",
+        "prediction": "card_about_to_expire",
+        "reward_recomputed": 0.0,
+        "gold_not_in_public_observation": true,
+        "scoring_protocol": "banking77.normalized-label-accuracy.v1"
+      },
+      "answer_calls": 1,
+      "judge_calls": 0
+    }
+  ],
+  "sources": {
+    "optimizers": "354daa0e4b274518aecea62b333e9beb2e9a9990",
+    "evals": "6b2add25626dabe390e0bf6527c6b23aadb2222e"
+  },
+  "charge_final": true,
+  "provider_reported_usd": 0.000466,
+  "cleanup_complete": true,
+  "scope": "execution_support_only",
+  "cold_readback": {
+    "fresh_native_processes": [
+      {
+        "child_id": "banking77-092aa3b869e1e0cce380fbf8",
+        "status": "completed",
+        "trace_digest": "sha256:b444af2fff103d62a26929fa925124e93c222a592412896159cc5771f6dc96c3",
+        "high_water": 13,
+        "start_replayed": true,
+        "native_compute_calls": 0,
+        "container_name": "banking77-native-cold-0-1-20261021",
+        "image": "sha256:2251f2e593e1cb9647ea9f2be28e97a6bd23b28ecab02a98c6e7e09756c6e5f3",
+        "network": "none",
+        "credentials_provided": false
+      },
+      {
+        "child_id": "banking77-092aa3b869e1e0cce380fbf8",
+        "status": "completed",
+        "trace_digest": "sha256:b444af2fff103d62a26929fa925124e93c222a592412896159cc5771f6dc96c3",
+        "high_water": 13,
+        "start_replayed": true,
+        "native_compute_calls": 0,
+        "container_name": "banking77-native-cold-0-2-20261021",
+        "image": "sha256:2251f2e593e1cb9647ea9f2be28e97a6bd23b28ecab02a98c6e7e09756c6e5f3",
+        "network": "none",
+        "credentials_provided": false
+      },
+      {
+        "child_id": "banking77-6569b4635005a8497d430adf",
+        "status": "completed",
+        "trace_digest": "sha256:af80aa52e634cb535ff1a286fde3a9328dca5fb6bfbaf9eaa788c8a3cf11f8ef",
+        "high_water": 13,
+        "start_replayed": true,
+        "native_compute_calls": 0,
+        "container_name": "banking77-native-cold-1-1-20261021",
+        "image": "sha256:2251f2e593e1cb9647ea9f2be28e97a6bd23b28ecab02a98c6e7e09756c6e5f3",
+        "network": "none",
+        "credentials_provided": false
+      },
+      {
+        "child_id": "banking77-6569b4635005a8497d430adf",
+        "status": "completed",
+        "trace_digest": "sha256:af80aa52e634cb535ff1a286fde3a9328dca5fb6bfbaf9eaa788c8a3cf11f8ef",
+        "high_water": 13,
+        "start_replayed": true,
+        "native_compute_calls": 0,
+        "container_name": "banking77-native-cold-1-2-20261021",
+        "image": "sha256:2251f2e593e1cb9647ea9f2be28e97a6bd23b28ecab02a98c6e7e09756c6e5f3",
+        "network": "none",
+        "credentials_provided": false
+      }
+    ],
+    "original_outputs_unchanged": true,
+    "all_owned_readers_confirmed_absent": true
+  },
+  "cancellation": {
+    "provider_free": true,
+    "external_provider_calls": 0,
+    "fixture_image": "sha256:d8881ce37fa3bafa04234a80ed66b55299395aeb47d8f5ca9464d17ccd3bf253",
+    "parent_image": "sha256:2251f2e593e1cb9647ea9f2be28e97a6bd23b28ecab02a98c6e7e09756c6e5f3",
+    "supervisor_status": "cancelled",
+    "native_last_observed_state": "running",
+    "native_terminal_cancel_not_fabricated": true,
+    "partial_events_and_cursor_retained": true,
+    "unsettled_reservation_retained": true,
+    "exact_container": "synth-eval-trial_screen_policy_45c4e52ba043_banking-3c2df1a1404d",
+    "independently_confirmed_absent": true
+  },
+  "final_panel_evaluated": false,
+  "proposer_calls": 0,
+  "scoring_protocol": "banking77.normalized-label-accuracy.v1",
+  "exports": [
+    {
+      "path": "banking77-eval-1.0.0-linux-arm64-accepted.tar",
+      "digest": "sha256:1af71531e94011e5a5d896ebd7006bedc1f2ced3cbfa33f81d6dc364b38cb7d1",
+      "bytes": 83574784
+    },
+    {
+      "path": "banking77-eval-1.0.0-startup.tar.gz",
+      "digest": "sha256:1f75fe5802f3575280bcf229eac906c92920807949bfc9bb32cad6509cb1c993",
+      "bytes": 10269266
+    },
+    {
+      "path": "installed-optimizer-development-snapshot.zip",
+      "digest": "sha256:346a22b45da1ade18027092872370dc89d3e0b8a4b53712532290ac242120e11",
+      "bytes": 8152269
+    }
+  ]
+}

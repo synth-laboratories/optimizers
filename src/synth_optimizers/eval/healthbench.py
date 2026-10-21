@@ -355,6 +355,7 @@ def reconcile(args):
                     "call_id": record["call_id"],
                     "role": record["role"],
                     "generation_id": receipt["id"],
+                    "completion_usage": receipt.get("usage"),
                 }
             )
     if not calls or len({c["generation_id"] for c in calls}) != len(calls):
@@ -367,6 +368,18 @@ def reconcile(args):
             response = client.get(
                 "https://openrouter.ai/api/v1/generation", params={"id": call["generation_id"]}
             )
+            if response.status_code == 404:
+                # Generation metadata can lag or be unavailable. The completed
+                # response's provider-reported cost is a separate authority;
+                # retain the exact source instead of inventing metadata.
+                cost = (call.get("completion_usage") or {}).get("cost")
+                if isinstance(cost, (int, float)) and cost >= 0:
+                    return {
+                        **call,
+                        "provider": {"id": call["generation_id"], "total_cost": cost},
+                        "charge_source": "completion_usage",
+                        "metadata_lookup_status": 404,
+                    }
             response.raise_for_status()
             data = response.json()["data"]
             cost = data.get("total_cost")
@@ -376,14 +389,14 @@ def reconcile(args):
                 or cost < 0
             ):
                 raise ValueError("provider_charge_not_final")
-            return {**call, "provider": data}
+            return {**call, "provider": data, "charge_source": "generation_metadata"}
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
             charges = list(pool.map(fetch, calls))
     receipt = {
         "run_id": args.run_id,
         "charge_final": True,
-        "source": "openrouter_generation_metadata",
+        "source": "openrouter_provider_reported_charges",
         "observed_at": datetime.now(UTC).isoformat(),
         "generations": charges,
         "total_cost_usd": sum(c["provider"]["total_cost"] for c in charges),

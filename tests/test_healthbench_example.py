@@ -116,3 +116,45 @@ def test_active_run_reconnect_observes_instead_of_dispatch(tmp_path, monkeypatch
         fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
         assert healthbench.run(SimpleNamespace(home=tmp_path, run_id="original")) == 0
     assert called == ["original"]
+
+
+def test_invalid_trial_is_not_successful_run(tmp_path):
+    root = tmp_path / "runs/original"
+    root.mkdir(parents=True)
+    (root / "result_manifest.json").write_text(json.dumps({"trials": [{"valid": False}]}))
+    assert healthbench.result_exit_code(SimpleNamespace(home=tmp_path, run_id="original")) == 1
+
+
+def test_charge_reconciliation_keeps_completion_authority_when_metadata_missing(
+    tmp_path, monkeypatch
+):
+    import httpx
+
+    output = tmp_path / "runs/original/trials/one/output"
+    output.mkdir(parents=True)
+    records = [
+        {"state": "reserved"},
+        {
+            "state": "completed",
+            "call_id": "call-0",
+            "role": "answer",
+            "provider_receipt": {
+                "provider": "openrouter",
+                "id": "gen-original",
+                "usage": {"cost": 0.01},
+            },
+        },
+    ]
+    (output / "provider.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records))
+    client = httpx.Client
+    transport = httpx.MockTransport(lambda request: httpx.Response(404))
+    monkeypatch.setattr(httpx, "Client", lambda **kwargs: client(transport=transport, **kwargs))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-only")
+    receipt = tmp_path / "charges.json"
+    assert (
+        healthbench.reconcile(SimpleNamespace(home=tmp_path, run_id="original", output=receipt))
+        == 0
+    )
+    value = json.loads(receipt.read_text())
+    assert value["total_cost_usd"] == 0.01 and value["charge_final"] is True
+    assert value["generations"][0]["charge_source"] == "completion_usage"

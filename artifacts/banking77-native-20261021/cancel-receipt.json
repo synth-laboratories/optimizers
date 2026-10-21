@@ -1,0 +1,13 @@
+{
+  "provider_free": true,
+  "external_provider_calls": 0,
+  "fixture_image": "sha256:d8881ce37fa3bafa04234a80ed66b55299395aeb47d8f5ca9464d17ccd3bf253",
+  "parent_image": "sha256:2251f2e593e1cb9647ea9f2be28e97a6bd23b28ecab02a98c6e7e09756c6e5f3",
+  "supervisor_status": "cancelled",
+  "native_last_observed_state": "running",
+  "native_terminal_cancel_not_fabricated": true,
+  "partial_events_and_cursor_retained": true,
+  "unsettled_reservation_retained": true,
+  "exact_container": "synth-eval-trial_screen_policy_45c4e52ba043_banking-3c2df1a1404d",
+  "independently_confirmed_absent": true
+}

@@ -1,0 +1,54 @@
+{
+  "fresh_native_processes": [
+    {
+      "child_id": "banking77-092aa3b869e1e0cce380fbf8",
+      "status": "completed",
+      "trace_digest": "sha256:b444af2fff103d62a26929fa925124e93c222a592412896159cc5771f6dc96c3",
+      "high_water": 13,
+      "start_replayed": true,
+      "native_compute_calls": 0,
+      "container_name": "banking77-native-cold-0-1-20261021",
+      "image": "sha256:2251f2e593e1cb9647ea9f2be28e97a6bd23b28ecab02a98c6e7e09756c6e5f3",
+      "network": "none",
+      "credentials_provided": false
+    },
+    {
+      "child_id": "banking77-092aa3b869e1e0cce380fbf8",
+      "status": "completed",
+      "trace_digest": "sha256:b444af2fff103d62a26929fa925124e93c222a592412896159cc5771f6dc96c3",
+      "high_water": 13,
+      "start_replayed": true,
+      "native_compute_calls": 0,
+      "container_name": "banking77-native-cold-0-2-20261021",
+      "image": "sha256:2251f2e593e1cb9647ea9f2be28e97a6bd23b28ecab02a98c6e7e09756c6e5f3",
+      "network": "none",
+      "credentials_provided": false
+    },
+    {
+      "child_id": "banking77-6569b4635005a8497d430adf",
+      "status": "completed",
+      "trace_digest": "sha256:af80aa52e634cb535ff1a286fde3a9328dca5fb6bfbaf9eaa788c8a3cf11f8ef",
+      "high_water": 13,
+      "start_replayed": true,
+      "native_compute_calls": 0,
+      "container_name": "banking77-native-cold-1-1-20261021",
+      "image": "sha256:2251f2e593e1cb9647ea9f2be28e97a6bd23b28ecab02a98c6e7e09756c6e5f3",
+      "network": "none",
+      "credentials_provided": false
+    },
+    {
+      "child_id": "banking77-6569b4635005a8497d430adf",
+      "status": "completed",
+      "trace_digest": "sha256:af80aa52e634cb535ff1a286fde3a9328dca5fb6bfbaf9eaa788c8a3cf11f8ef",
+      "high_water": 13,
+      "start_replayed": true,
+      "native_compute_calls": 0,
+      "container_name": "banking77-native-cold-1-2-20261021",
+      "image": "sha256:2251f2e593e1cb9647ea9f2be28e97a6bd23b28ecab02a98c6e7e09756c6e5f3",
+      "network": "none",
+      "credentials_provided": false
+    }
+  ],
+  "original_outputs_unchanged": true,
+  "all_owned_readers_confirmed_absent": true
+}

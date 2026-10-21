@@ -1,0 +1,11 @@
+# Banking77 native Eval witness
+
+SYN-4927 qualified local native evaluation, cohort `sha256:b15d4a68252f33a6854a5771e2123a012cabc482c8ecb97a1400d0e1166acd35`.
+
+Frozen real PolyAI source heldout indices0 and40 ran through prepare → subscribed SSE → start → terminal/reward/trace → retained → close. Source commit, full CSV hashes, prompt, normalized-label scoring source, model route, token limits and row/query-disjoint baseline/selection/final manifest are pinned. Index80 remains unobserved. No GEPA optimization was performed.
+
+Both trials are valid execution evidence. Seed0 predicted card_about_to_expire and scored0; seed40 predicted card_linking and scored1. Rewards were independently recomputed against evaluator-owned gold; gold stays outside the public observation and prompt candidate. These two rows do not estimate general benchmark accuracy or uplift. Two answer calls cost $0.000466 provider-reported in total; the deterministic scorer and proposer made zero provider calls.
+
+Each native stream retains13 committed events, a closed scoped cursor and verified trace seal. Deliberate live SSE reconnect, duplicate-start replay and conflict refusal add no compute. The native journal is explicitly retained. Four fresh network-disabled native processes recovered original operations with zero compute; two installed readers and concurrent/terminal reconnect preserve original run hashes. Unresolved computation restart refuses. Zero-provider cancellation retains partial events/cursor/reservation under owned OCI supervisor authority. All exact owned containers are independently absent.190 free checks pass (147 Evals and43 optimizer/runner/CLI, including HealthBench regressions).
+
+See acceptance.json for checked scope/receipt hashes, cohort.json for source/image/protocol/portable export identities, and signoff.md. Reproduction scripts and concise receipts are committed; raw run/source/provider evidence, the portable image/startup archives, dependency wheels and installed development snapshot remain retained locally in this directory. No credentials are embedded. The development installation reuses a pre-existing unused native extension; no Rust build or public optimizer wheel is claimed. Hosted Rhodes/Tunnel and native per-rollout cancellation remain outside this local profile. The separate GEPA/Banking77 matrix witness stays pending.

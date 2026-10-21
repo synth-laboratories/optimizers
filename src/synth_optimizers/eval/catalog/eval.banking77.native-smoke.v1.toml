@@ -1,0 +1,45 @@
+[recipe]
+id = "eval.banking77.native-smoke.v1"
+title = "Banking77 native lifecycle smoke"
+description = "Native prepare, subscribe, start, cursor replay and sealed results; deterministic label accuracy, report only."
+task = "banking77"
+policy_kind = "banking77-prompt.v1"
+image = "synth-eval-banking77-target"
+prerequisites = ["Versioned banking77 Eval bundle built and pinned locally"]
+scenarios = ["banking77-label-accuracy-v1"]
+screening_seeds = [0]
+confirmation_seeds = [40]
+secrets = ["OPENROUTER_API_KEY"]
+
+[recipe.budget]
+max_llm_calls = 2
+max_usd = 0.2
+
+[recipe.target]
+schema_version = "eval.target.v1"
+policy_kinds = ["banking77-prompt.v1"]
+trial_mode = "one-policy-one-seed"
+required_gates = ["policy_loaded", "verifier_completed", "frozen_protocol", "disjoint_rows", "native_lifecycle", "native_event_seal", "private_gold", "offline_reward"]
+required_artifacts = ["trace", "protocol", "usage", "events", "provider", "operation", "lifecycle", "native_stream", "row_identity"]
+supports_live_events = true
+network = "bridge"
+
+[[recipe.target.metrics]]
+id = "reward"
+direction = "maximize"
+
+[recipe.selection]
+primary_metric = "reward"
+min_lift = 0.0
+min_valid_trials = 1
+decision_mode = "report_only"
+
+[recipe.selection.elimination]
+kind = "none"
+
+[recipe.limits]
+max_parallel_trials = 1
+timeout_seconds = 180
+cpus = 1.0
+memory_mb = 2048
+max_output_bytes = 67108864

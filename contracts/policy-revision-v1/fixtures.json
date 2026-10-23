@@ -1,0 +1,43 @@
+{
+  "schema_version": "synth.policy-revision.fixtures.v1",
+  "valid": [
+    {
+      "name": "ascii",
+      "manifest": {
+        "schema_version": "synth.policy-revision.v1",
+        "namespace": "fixtures",
+        "name": "ascii",
+        "harness": "fixture",
+        "components": {
+          "config": {
+            "system_prompt": "hello",
+            "temperature": 0.3
+          }
+        },
+        "source": {}
+      },
+      "canonical_json": "{\"components\":{\"config\":{\"system_prompt\":\"hello\",\"temperature\":0.3}},\"harness\":\"fixture\",\"name\":\"ascii\",\"namespace\":\"fixtures\",\"schema_version\":\"synth.policy-revision.v1\",\"source\":{}}",
+      "digest": "sha256:1ffea5ed8d535a0f246ee39541afce51a6c10bc1ff63cb4e6886053884cc82f0",
+      "policy_revision_id": "polrev_1ffea5ed8d535a0f246ee39541afce51a6c10bc1ff63cb4e6886053884cc82f0"
+    },
+    {
+      "name": "unicode",
+      "manifest": {
+        "schema_version": "synth.policy-revision.v1",
+        "namespace": "fixtures",
+        "name": "unicode",
+        "harness": "fixture",
+        "components": {
+          "config": {
+            "system_prompt": "caf\u00e9 \ud83d\ude42",
+            "max_tokens": 64
+          }
+        },
+        "source": {}
+      },
+      "canonical_json": "{\"components\":{\"config\":{\"max_tokens\":64,\"system_prompt\":\"caf\\u00e9 \\ud83d\\ude42\"}},\"harness\":\"fixture\",\"name\":\"unicode\",\"namespace\":\"fixtures\",\"schema_version\":\"synth.policy-revision.v1\",\"source\":{}}",
+      "digest": "sha256:90efbcdbf4963dde222bd9010f00f57aa22e1c400e591ea24cfc5695424057d6",
+      "policy_revision_id": "polrev_90efbcdbf4963dde222bd9010f00f57aa22e1c400e591ea24cfc5695424057d6"
+    }
+  ]
+}

@@ -18,6 +18,7 @@ pub mod evidence;
 pub mod failures;
 pub mod fsm;
 pub mod http;
+mod policy_revision;
 pub mod invariants;
 pub mod jesterky;
 pub mod jobs;

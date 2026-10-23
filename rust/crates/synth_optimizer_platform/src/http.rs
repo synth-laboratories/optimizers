@@ -1,3 +1,4 @@
+use std::sync::{Arc, Mutex};
 use std::{collections::BTreeMap, env, time::Duration};
 
 use reqwest::{
@@ -20,6 +21,7 @@ pub struct ContainerClient {
     client: Client,
     headers: HeaderMap,
     bearer_env: Option<String>,
+    revisions: Arc<Mutex<crate::policy_revision::RevisionTransport>>,
 }
 
 impl ContainerClient {
@@ -74,6 +76,7 @@ impl ContainerClient {
             apply_bearer_env(&mut probe, bearer_env)?;
         }
         Ok(Self {
+            revisions: Arc::default(),
             base_url,
             client,
             headers,
@@ -93,11 +96,18 @@ impl ContainerClient {
     }
 
     pub fn metadata(&self) -> Result<Value> {
-        self.get("/metadata")
+        let metadata = self.get("/metadata")?;
+        self.revisions
+            .lock()
+            .map_err(|_| {
+                OptimizerError::Container("policy revision transport lock poisoned".into())
+            })?
+            .observe(&metadata);
+        Ok(metadata)
     }
 
     pub fn metadata_typed(&self) -> Result<ContainerMetadataResponse> {
-        self.get_typed("/metadata")
+        Ok(serde_json::from_value(self.metadata()?)?)
     }
 
     pub fn program(&self) -> Result<Value> {
@@ -134,7 +144,23 @@ impl ContainerClient {
     }
 
     pub fn rollout(&self, request: &Value) -> Result<Value> {
-        self.post("/rollout", request)
+        let (pinned, revision) = self
+            .revisions
+            .lock()
+            .map_err(|_| {
+                OptimizerError::Container("policy revision transport lock poisoned".into())
+            })?
+            .pin(request, |path, body| self.post(path, body))?;
+        let response = self.post("/rollout", &pinned)?;
+        if let Some(revision) = revision {
+            if response.get("policy_revision_id").and_then(Value::as_str) != Some(revision.as_str())
+            {
+                return Err(OptimizerError::Container(
+                    "rollout did not confirm policy binding".into(),
+                ));
+            }
+        }
+        Ok(response)
     }
 
     pub fn resume_rollout(
@@ -186,7 +212,7 @@ impl ContainerClient {
     }
 
     pub fn rollout_typed(&self, request: &Value) -> Result<RolloutResponse> {
-        let response: RolloutResponse = self.post_typed("/rollout", request)?;
+        let response: RolloutResponse = serde_json::from_value(self.rollout(request)?)?;
         response.validate_for_gepa()?;
         Ok(response)
     }

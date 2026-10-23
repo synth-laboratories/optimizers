@@ -1,0 +1,412 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "synth.policy-revision.v1",
+  "$defs": {
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Digest",
+          "type": "string"
+        },
+        "uri": {
+          "minLength": 1,
+          "title": "Uri",
+          "type": "string"
+        }
+      },
+      "required": [
+        "digest",
+        "uri"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "CodeBundle": {
+      "additionalProperties": false,
+      "properties": {
+        "language": {
+          "enum": [
+            "python",
+            "rust"
+          ],
+          "title": "Language",
+          "type": "string"
+        },
+        "entrypoint": {
+          "minLength": 1,
+          "title": "Entrypoint",
+          "type": "string"
+        },
+        "files": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Files",
+          "type": "object"
+        },
+        "serve_contract": {
+          "minLength": 1,
+          "title": "Serve Contract",
+          "type": "string"
+        },
+        "dependency_digest": {
+          "anyOf": [
+            {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dependency Digest"
+        },
+        "build_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "state_schema_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "language",
+        "entrypoint",
+        "files",
+        "serve_contract"
+      ],
+      "title": "CodeBundle",
+      "type": "object"
+    },
+    "Components": {
+      "additionalProperties": false,
+      "properties": {
+        "prompt_fields": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Prompt Fields"
+        },
+        "module_demos": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Module Demos"
+        },
+        "code_bundle": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CodeBundle"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "config": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Config"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "weights_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "renderer_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "sampler_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "protocol": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "policy_set": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PolicySet"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "Components",
+      "type": "object"
+    },
+    "PolicySet": {
+      "additionalProperties": false,
+      "properties": {
+        "topology_ref": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "members": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "minProperties": 1,
+          "title": "Members",
+          "type": "object"
+        }
+      },
+      "required": [
+        "topology_ref",
+        "members"
+      ],
+      "title": "PolicySet",
+      "type": "object"
+    },
+    "PolicyManifest": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "synth.policy-revision.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "namespace": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Namespace",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "harness": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Harness",
+          "type": "string"
+        },
+        "components": {
+          "$ref": "#/$defs/Components"
+        },
+        "parent_revision_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Revision Id"
+        },
+        "source": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Source",
+          "type": "object"
+        }
+      },
+      "required": [
+        "schema_version",
+        "namespace",
+        "name",
+        "harness",
+        "components"
+      ],
+      "title": "PolicyManifest",
+      "type": "object"
+    },
+    "PrepareRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "operation_id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "profile": {
+          "default": "next_rollout_update.v1",
+          "title": "Profile",
+          "type": "string"
+        },
+        "timeout_s": {
+          "default": 10,
+          "maximum": 30,
+          "minimum": 1,
+          "title": "Timeout S",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "operation_id"
+      ],
+      "title": "PrepareRequest",
+      "type": "object"
+    },
+    "RevisionReceipt": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "policy_revision_id",
+        "digest",
+        "state",
+        "actual_binding",
+        "durability"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "synth.policy-revision.v1"
+        },
+        "policy_revision_id": {
+          "type": "string",
+          "pattern": "^polrev_[0-9a-f]{64}$"
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "state": {
+          "enum": [
+            "published",
+            "preparing",
+            "ready",
+            "failed"
+          ]
+        },
+        "actual_binding": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "policy_revision_id": {
+              "type": "string"
+            },
+            "policy_ref": {
+              "type": "object"
+            },
+            "harness": {
+              "type": "string"
+            },
+            "readiness": {
+              "type": "object"
+            }
+          },
+          "additionalProperties": true
+        },
+        "durability": {
+          "const": "process_local"
+        },
+        "idempotent": {
+          "type": "boolean"
+        },
+        "operation_id": {
+          "type": "string"
+        },
+        "profile": {
+          "type": "string"
+        },
+        "failure": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

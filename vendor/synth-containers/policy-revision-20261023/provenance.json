@@ -1,0 +1,9 @@
+{
+  "schema": "policy-revision.installed-source.v1",
+  "source_commit": "d5e2b48b93213a95d3c5fde9fbca85e7237f028c",
+  "wheel": "synth_containers-0.4.6.dev2026102302-py3-none-any.whl",
+  "sha256": "eafb803dfefbc6645d430de202df200b1d0efcf76d5b527ce82d3b9ba854a818",
+  "version": "0.4.6.dev2026102302",
+  "python_files_matched": 314,
+  "loaded_module": "/Users/joshuapurtell/GitHub/workspaces/containers-policy-revisions-20261023/.local/installed/lib/python3.12/site-packages/synth_containers/__init__.py"
+}

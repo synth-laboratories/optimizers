@@ -23,6 +23,10 @@ from typing import Any, Protocol
 
 from .models import EvalContractError, TrialLimits
 
+# A retained native binding is data, not an OCI program. Its executor must
+# explicitly opt into that protocol; absence must never start a container.
+REQUIRED_EXECUTORS = {"rhodes.native-binding.v1": "rhodes-retained"}
+
 
 class ContainerRuntimeError(RuntimeError):
     """The OCI runtime, not the evaluated policy, is what went wrong."""

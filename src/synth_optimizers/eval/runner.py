@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .executor import (
+    REQUIRED_EXECUTORS,
     ContainerRuntimeError,
     OciTrialExecutor,
     TrialExecutor,
@@ -441,6 +442,11 @@ class EvalRunner:
     # ---------------------------------------------------------------- inputs
 
     def _resolve_executor(self) -> TrialExecutor:
+        required = REQUIRED_EXECUTORS.get(self.recipe.policy_kind)
+        if required is not None and getattr(self._executor, "execution_adapter", None) != required:
+            raise EvalContractError(
+                f"recipe {self.recipe.id} requires explicit {required} executor; OCI fallback is forbidden"
+            )
         if self._executor is None:
             self._executor = OciTrialExecutor(self.home.config.container_runtime)
         return self._executor

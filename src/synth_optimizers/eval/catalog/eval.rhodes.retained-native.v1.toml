@@ -1,0 +1,47 @@
+# Read-only adoption of a completed, owner-bound Rhodes native execution.
+# Never schedules provider work or substitutes a different episode on recovery.
+[recipe]
+id = "eval.rhodes.retained-native.v1"
+title = "Retained Rhodes native evaluation"
+description = "Verify and analyze an original Rhodes rollout and its committed native trace."
+task = "rhodes-native"
+policy_kind = "rhodes.native-binding.v1"
+image = "rhodes-native-target"
+prerequisites = ["Explicit private Rhodes target", "Completed original rollout with committed native archive", "Rhodes retained-result executor"]
+scenarios = ["retained-native"]
+screening_seeds = [101]
+confirmation_seeds = []
+secrets = []
+
+[recipe.target]
+schema_version = "eval.target.v1"
+policy_kinds = ["rhodes.native-binding.v1"]
+trial_mode = "one-policy-one-seed"
+required_gates = ["rhodes_identity", "observed_image", "scored_terminal", "trace_committed"]
+required_artifacts = ["trace"]
+supports_live_events = true
+network = "bridge"
+
+[[recipe.target.metrics]]
+id = "reward"
+direction = "maximize"
+
+[[recipe.target.metrics]]
+id = "steps"
+direction = "maximize"
+
+[recipe.selection]
+primary_metric = "reward"
+min_lift = 0.0
+min_valid_trials = 1
+decision_mode = "report_only"
+
+[recipe.selection.elimination]
+kind = "none"
+
+[recipe.limits]
+max_parallel_trials = 4
+timeout_seconds = 120
+cpus = 1.0
+memory_mb = 512
+max_output_bytes = 16777216

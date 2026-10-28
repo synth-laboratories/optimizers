@@ -1,0 +1,91 @@
+{
+  "adapter_id": "mapo-craftax-multiagent",
+  "approved_by": "Josh",
+  "authority": {
+    "environment_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "source_contract": "syn4648.fixture.source_contract.v1",
+    "source_digests": {
+      "envs/craftax_ma/serve.py": "3333333333333333333333333333333333333333333333333333333333333333"
+    }
+  },
+  "benchmark_id": "craftax-multiagent",
+  "budget": {
+    "max_model_cost_usd": 25.0,
+    "max_rollouts": 568,
+    "max_wall_time_seconds": 7200,
+    "rate_cap_usd_per_hour": 10.0
+  },
+  "campaign_id": "syn4648-mapo-campaign-fixture",
+  "frozen_at": "2026-10-28T00:00:00Z",
+  "metrics": {
+    "noninferiority_margin": 0.02,
+    "primary_metric": "success_rate"
+  },
+  "models": {
+    "baseline": "gpt-4.1-nano",
+    "executor": "gpt-4.1-nano",
+    "proposer": "gpt-5.4"
+  },
+  "optimizer": {
+    "algorithm_id": "synth_mapo.v1",
+    "generations": 4,
+    "proposals_per_generation": 4,
+    "selection_repeats": 1,
+    "selection_top_k": 3,
+    "train_repeats": 3
+  },
+  "pairing": {
+    "heldout_pairs_per_arm": 20,
+    "key_fields": [
+      "seed",
+      "episode_index",
+      "task_instance_id"
+    ],
+    "terminal_arms": [
+      "baseline",
+      "champion"
+    ]
+  },
+  "schema_version": "debrief.campaign_manifest.v1",
+  "splits": {
+    "heldout_ids": [
+      "seed:201",
+      "seed:202",
+      "seed:203",
+      "seed:204",
+      "seed:205",
+      "seed:206",
+      "seed:207",
+      "seed:208",
+      "seed:209",
+      "seed:210",
+      "seed:211",
+      "seed:212",
+      "seed:213",
+      "seed:214",
+      "seed:215",
+      "seed:216",
+      "seed:217",
+      "seed:218",
+      "seed:219",
+      "seed:220"
+    ],
+    "selection_ids": [
+      "seed:101",
+      "seed:102",
+      "seed:103",
+      "seed:104"
+    ],
+    "train_ids": [
+      "seed:1",
+      "seed:2",
+      "seed:3",
+      "seed:4",
+      "seed:5",
+      "seed:6",
+      "seed:7",
+      "seed:8"
+    ]
+  },
+  "status": "frozen"
+}

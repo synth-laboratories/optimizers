@@ -1,0 +1,52 @@
+# SYN-4648 authored MAPO TOML -> resolved MapoConfig (MapoConfig::from_toml_file + resolved_config_value).
+[run]
+run_id = "syn4648_mapo_fixture"
+output_dir = "runs"
+seed = 7
+
+[container]
+url = "http://127.0.0.1:9921/"
+command = ["python", "-m", "craftax_multiagent.serve", "--port", "9921"]
+cwd = "container"
+startup_timeout_seconds = 45
+
+[taskset]
+train_seeds = [11, 12]
+selection_seeds = [21]
+heldout_seeds = [31, 32]
+task_instance_template = "craftax-ma-{seed}"
+
+[policy]
+enabled = true
+provider = "openai"
+model = "gpt-4.1-nano"
+proxy_mode = "proxy_only"
+
+[proposer]
+timeout_seconds = 600
+message_stall_timeout_seconds = 300
+
+[mapo]
+proposer_mode = "deterministic_grid"
+max_generations = 2
+proposals_per_generation = 3
+rollouts_per_candidate = 2
+selection_rollouts_per_candidate = 1
+selection_top_k = 2
+max_steps = 64
+request_timeout_seconds = 120.0
+container_connect_timeout_seconds = 15.0
+
+[seed_candidate]
+id = "syn4648_seed"
+
+[seed_candidate.protocol]
+max_chars = 280
+
+[seed_candidate.roles]
+agent_0 = "gatherer"
+agent_1 = "crafter"
+
+[evidence]
+benchmark_id = "craftax-multiagent"
+claim_label = "exploratory"

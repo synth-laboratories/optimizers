@@ -1,0 +1,18 @@
+{
+  "families": {
+    "mapo_campaign": {
+      "authored_sha256": "sha256:a08df054e80ed887708271323bf04cbef5cc0e6a0b3bbfcf86d2208c5028ca72",
+      "inputs": {
+        "campaign_manifest.json": "sha256:b8246e5e35a7e46a2cd5fedd551cddd3fad017691c0f0de15f3ad1cceb58212b"
+      },
+      "native_sha256": "sha256:ee1f852ecbebaf22aea544b67318718ea4359c709efb9100e8801699f313a2e7",
+      "producer": "synth_mapo::MapoConfig::from_toml_file() + CampaignBinding::load().{evidence_value,receipt_value}"
+    },
+    "mapo_config": {
+      "authored_sha256": "sha256:2e5fde6c50fc8f94cb718c37dc67db9b4d7c5a7743853ad35b34fca997d99e10",
+      "native_sha256": "sha256:fc15e1ff5dbcac313700001ec55d440d82a61af8dd6361ceba26ab8253bcb8bf",
+      "producer": "synth_mapo::MapoConfig::from_toml_file().resolved_config_value()"
+    }
+  },
+  "schema_version": "syn4648.mapo-rust-fixtures.v1"
+}

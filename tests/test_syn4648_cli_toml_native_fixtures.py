@@ -300,3 +300,24 @@ def test_gepa_auth_refresh_refuses_unknown_field(tmp_path: Path) -> None:
     )
     with pytest.raises(ValidationError):
         GepaConfig.from_toml(_write(tmp_path, "gepa", text))
+
+
+@pytest.mark.parametrize(
+    ("needle", "replacement"),
+    [
+        ('provider = "synth_tunnel_v2"', 'provider = "ngrok"'),
+        ('connector_id = "connector-fixture-0001"\n', ""),
+    ],
+    ids=["unknown-provider", "v2-without-connector"],
+)
+def test_gepa_auth_refresh_follows_gelo_provider_rule(
+    tmp_path: Path, needle: str, replacement: str
+) -> None:
+    """Same rule as GELO and Rust ContainerConfig::validate_auth_refresh."""
+    table = AUTH_REFRESH_TOML.replace(needle, replacement)
+    assert table != AUTH_REFRESH_TOML
+    text = _authored("gepa").replace(
+        "startup_timeout_seconds = 45\n", "startup_timeout_seconds = 45\n" + table
+    )
+    with pytest.raises(ValidationError):
+        GepaConfig.from_toml(_write(tmp_path, "gepa", text))

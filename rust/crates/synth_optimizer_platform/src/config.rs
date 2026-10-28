@@ -452,6 +452,7 @@ impl SynthOptimizerConfig {
                 "container.url or container.pool.pool_id is required".to_string(),
             ));
         }
+        self.container.validate_auth_refresh()?;
         if self.taskset.train_ids.is_empty() {
             return Err(OptimizerError::Config(
                 "taskset.train_ids must contain at least one task id".to_string(),
@@ -739,6 +740,38 @@ pub struct ContainerConfig {
 }
 
 impl ContainerConfig {
+    /// Same rule as the Python GELO/GEPA parsers: a known Synth Tunnel
+    /// provider, a lease, and a connector for the v2 provider.
+    pub fn validate_auth_refresh(&self) -> Result<()> {
+        let Some(refresh) = &self.auth_refresh else {
+            return Ok(());
+        };
+        if !matches!(refresh.provider.as_str(), "synth_tunnel" | "synth_tunnel_v2") {
+            return Err(OptimizerError::Config(format!(
+                "container.auth_refresh.provider must be synth_tunnel or synth_tunnel_v2, got {:?}",
+                refresh.provider
+            )));
+        }
+        if refresh.lease_id.trim().is_empty() {
+            return Err(OptimizerError::Config(
+                "container.auth_refresh.lease_id is required".to_string(),
+            ));
+        }
+        if refresh.provider == "synth_tunnel_v2"
+            && refresh
+                .connector_id
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+        {
+            return Err(OptimizerError::Config(
+                "container.auth_refresh.connector_id is required for synth_tunnel_v2".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn resolve_pool_target(&mut self) -> Result<()> {
         let Some(pool) = &self.pool else {
             return Ok(());

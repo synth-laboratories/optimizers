@@ -1,0 +1,154 @@
+{
+  "artifact_verification": "not_checked",
+  "output": {
+    "action": "resolve",
+    "artifact": {
+      "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "digest_kind": "oci_manifest",
+      "kind": "oci_image",
+      "platform": "linux/arm64",
+      "reference": "ghcr.io/synth-laboratories/fixture@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    "input_digest": "sha256:6afc9487ea9076b0fdd23e8f06b708754993de222ac1a4239277dd5e8d06db47",
+    "schema_version": "synth.container-build-output.v1"
+  },
+  "plan": {
+    "directories": [
+      "healthbench_chat",
+      "wheels"
+    ],
+    "files": [
+      {
+        "digest": "sha256:a69ef5f6f812db92dd9e6deb66078060dacccb8887181245f821881a1628769d",
+        "executable": false,
+        "path": "Dockerfile",
+        "size_bytes": 316
+      },
+      {
+        "digest": "sha256:c504c0263d12b0713495d1c9e70d8f0fde9d8e927e3a3cc5c535a4c44470d5b2",
+        "executable": true,
+        "path": "build_eval.py",
+        "size_bytes": 71
+      },
+      {
+        "digest": "sha256:fc97a8df90f2973c152f854f121e411f394d88d3ce3e5604b8a56a508d1d64dd",
+        "executable": false,
+        "path": "container-package.toml",
+        "size_bytes": 978
+      },
+      {
+        "digest": "sha256:a0277a77b97cd98024c72b9ed8e8efda818d6d1874aaf35d99cc34905228a90a",
+        "executable": false,
+        "path": "dataset.jsonl",
+        "size_bytes": 342
+      },
+      {
+        "digest": "sha256:469021d48274fd110003c42148b4ddc3c8f410f3746d66e48ef19f12313c0141",
+        "executable": false,
+        "path": "eval_adapter.py",
+        "size_bytes": 19
+      },
+      {
+        "digest": "sha256:179b7101ae2303b73d64c77a8df994d3293f49143f38a2a9479be1586bd2f73e",
+        "executable": false,
+        "path": "eval_native.py",
+        "size_bytes": 27
+      },
+      {
+        "digest": "sha256:dcfd2ab1d51fd77962d2670c4ec32be3cc7f8e27c9a0dff8e683e028cbd344dc",
+        "executable": false,
+        "path": "healthbench_chat/runtime.py",
+        "size_bytes": 26
+      },
+      {
+        "digest": "sha256:5be66ff4baa3ce1c91bde1cac99628cb0d60ff9bf950851349c7f5b59ac69906",
+        "executable": false,
+        "path": "prompt.json",
+        "size_bytes": 175
+      },
+      {
+        "digest": "sha256:1b3a5e26bcc57cefc4f83beb8d5f1f3ad1cc4d78d55f91af2f93107475d2e63f",
+        "executable": false,
+        "path": "protocol.json",
+        "size_bytes": 1845
+      },
+      {
+        "digest": "sha256:ae8e2ad625956c73c291c365e996ee27d1273b8a87be4e6e002c1b70f896fad6",
+        "executable": false,
+        "path": "provider-models.json",
+        "size_bytes": 194
+      },
+      {
+        "digest": "sha256:642566463a17b135662cd137c0dc3e758ac78d40c8b596a8c08ed178dbf740cb",
+        "executable": false,
+        "path": "wheels/synth_containers-0.4.6-py3-none-any.whl",
+        "size_bytes": 29
+      }
+    ],
+    "input_digest": "sha256:6afc9487ea9076b0fdd23e8f06b708754993de222ac1a4239277dd5e8d06db47",
+    "manifest": {
+      "build": {
+        "arguments": [],
+        "entrypoint": "build_eval.py",
+        "inputs": [
+          "Dockerfile",
+          "eval_adapter.py",
+          "eval_native.py",
+          "healthbench_chat",
+          "wheels",
+          "dataset.jsonl",
+          "prompt.json",
+          "protocol.json",
+          "provider-models.json"
+        ],
+        "platform": "linux/arm64"
+      },
+      "contracts": [
+        {
+          "name": "eval",
+          "version": "eval.container-result.v1"
+        },
+        {
+          "name": "gepa",
+          "version": "synth_optimizers.gepa.v2"
+        },
+        {
+          "name": "containers",
+          "version": "container_contract.v1"
+        }
+      ],
+      "credentials": [
+        {
+          "name": "OPENROUTER_API_KEY",
+          "reference": "secretref://eval/healthbench/openrouter"
+        }
+      ],
+      "dependencies": [
+        {
+          "digest": "sha256:642566463a17b135662cd137c0dc3e758ac78d40c8b596a8c08ed178dbf740cb",
+          "name": "synth-containers",
+          "reference": "wheels/synth_containers-0.4.6-py3-none-any.whl"
+        }
+      ],
+      "package_id": "healthbench2-eval-1.1.0",
+      "runtime": {
+        "command": [
+          "python",
+          "/app/release/eval_adapter.py"
+        ],
+        "profile": "command",
+        "readiness": {
+          "adapter": "healthbench-http-eval-v1",
+          "kind": "adapter",
+          "path": null,
+          "port": null
+        },
+        "working_directory": "/app"
+      },
+      "schema_version": "synth.container-package.v1"
+    },
+    "schema_version": "synth.container-build-plan.v1"
+  },
+  "runtime_validation": "not_run",
+  "schema_version": "synth.container-artifact.v1"
+}

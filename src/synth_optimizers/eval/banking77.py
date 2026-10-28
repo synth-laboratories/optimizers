@@ -64,7 +64,15 @@ def freeze(args):
     spec = importlib.util.spec_from_file_location("banking77_freeze_world", world)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
+    # Never write __pycache__ into the frozen bundle: banking77_classify is a
+    # declared build input, and a timestamped .pyc would make the package's
+    # complete-input cache identity non-reproducible (SYN-4648).
+    previous = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = previous
     prompt = {"system_prompt": module.CLASSIFY_SYSTEM}
     (root / "prompt.json").write_text(json.dumps(prompt, indent=2) + "\n")
     prices = json.loads(args.prices.read_text())

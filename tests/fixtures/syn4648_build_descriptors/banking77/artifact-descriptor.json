@@ -1,0 +1,180 @@
+{
+  "artifact_verification": "not_checked",
+  "output": {
+    "action": "resolve",
+    "artifact": {
+      "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "digest_kind": "oci_manifest",
+      "kind": "oci_image",
+      "platform": "linux/arm64",
+      "reference": "ghcr.io/synth-laboratories/fixture@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    "input_digest": "sha256:d872bb2f59aa6f7d7053fa4891f6b943061eb2ad5fcdb1d6507d72667801b308",
+    "schema_version": "synth.container-build-output.v1"
+  },
+  "plan": {
+    "directories": [
+      "banking77_classify",
+      "dataset",
+      "wheels"
+    ],
+    "files": [
+      {
+        "digest": "sha256:a69ef5f6f812db92dd9e6deb66078060dacccb8887181245f821881a1628769d",
+        "executable": false,
+        "path": "Dockerfile",
+        "size_bytes": 316
+      },
+      {
+        "digest": "sha256:cd61bc70c65052441595758258b4e6f8b118da1af6d31704eb7d1195bfc3e352",
+        "executable": false,
+        "path": "banking77_classify/runtime.py",
+        "size_bytes": 26
+      },
+      {
+        "digest": "sha256:52e3fd66cdf3af738bacb5f34898cac5e856fbffd4fa411138cb0b692f3c2a2c",
+        "executable": false,
+        "path": "banking77_classify/world.py",
+        "size_bytes": 114
+      },
+      {
+        "digest": "sha256:c504c0263d12b0713495d1c9e70d8f0fde9d8e927e3a3cc5c535a4c44470d5b2",
+        "executable": true,
+        "path": "build_eval.py",
+        "size_bytes": 71
+      },
+      {
+        "digest": "sha256:87e0a68dbc2e5b47bb38dc176ae523c39b0c2e36b41b44c039c957d34ef43c81",
+        "executable": false,
+        "path": "container-package.toml",
+        "size_bytes": 985
+      },
+      {
+        "digest": "sha256:2720a110813a1ca1430c4dd0a955a1da9337be929848f38fa3bcd4fdf2a96a83",
+        "executable": false,
+        "path": "dataset/banking77-heldout.csv",
+        "size_bytes": 2434
+      },
+      {
+        "digest": "sha256:e6abdf5ba6976830dc64194f8582c564e7cefbc6ea9eefaf87cda60fe4a88d64",
+        "executable": false,
+        "path": "dataset/banking77-train.csv",
+        "size_bytes": 68
+      },
+      {
+        "digest": "sha256:4cd3930e659bc97d931eb8fc9be591c48d1841bf8e4217591acf1c66f1c3e46c",
+        "executable": false,
+        "path": "dataset/source-provenance.json",
+        "size_bytes": 260
+      },
+      {
+        "digest": "sha256:c9c0152e8479b0b6656f0f40659a761fba755d7bb95780f77395144359d70a27",
+        "executable": false,
+        "path": "eval_adapter.py",
+        "size_bytes": 29
+      },
+      {
+        "digest": "sha256:469021d48274fd110003c42148b4ddc3c8f410f3746d66e48ef19f12313c0141",
+        "executable": false,
+        "path": "eval_budget.py",
+        "size_bytes": 19
+      },
+      {
+        "digest": "sha256:179b7101ae2303b73d64c77a8df994d3293f49143f38a2a9479be1586bd2f73e",
+        "executable": false,
+        "path": "eval_native.py",
+        "size_bytes": 27
+      },
+      {
+        "digest": "sha256:6313d824f7d227eee2ac60d352b8e9634fb352540c50362a4197d186f08d3f7a",
+        "executable": false,
+        "path": "prompt.json",
+        "size_bytes": 60
+      },
+      {
+        "digest": "sha256:3c6127123e772ff88cb19aa353b705ca4d3a93a24c265b9883b090f1945e890d",
+        "executable": false,
+        "path": "protocol.json",
+        "size_bytes": 2167
+      },
+      {
+        "digest": "sha256:ae8e2ad625956c73c291c365e996ee27d1273b8a87be4e6e002c1b70f896fad6",
+        "executable": false,
+        "path": "provider-models.json",
+        "size_bytes": 194
+      },
+      {
+        "digest": "sha256:642566463a17b135662cd137c0dc3e758ac78d40c8b596a8c08ed178dbf740cb",
+        "executable": false,
+        "path": "wheels/synth_containers-0.4.6-py3-none-any.whl",
+        "size_bytes": 29
+      }
+    ],
+    "input_digest": "sha256:d872bb2f59aa6f7d7053fa4891f6b943061eb2ad5fcdb1d6507d72667801b308",
+    "manifest": {
+      "build": {
+        "arguments": [],
+        "entrypoint": "build_eval.py",
+        "inputs": [
+          "Dockerfile",
+          "eval_adapter.py",
+          "eval_native.py",
+          "eval_budget.py",
+          "banking77_classify",
+          "wheels",
+          "dataset",
+          "prompt.json",
+          "protocol.json",
+          "provider-models.json"
+        ],
+        "platform": "linux/arm64"
+      },
+      "contracts": [
+        {
+          "name": "eval",
+          "version": "eval.container-result.v1"
+        },
+        {
+          "name": "gepa",
+          "version": "synth_optimizers.gepa.v2"
+        },
+        {
+          "name": "containers",
+          "version": "container_contract.v1"
+        }
+      ],
+      "credentials": [
+        {
+          "name": "OPENROUTER_API_KEY",
+          "reference": "secretref://eval/banking77/openrouter"
+        }
+      ],
+      "dependencies": [
+        {
+          "digest": "sha256:642566463a17b135662cd137c0dc3e758ac78d40c8b596a8c08ed178dbf740cb",
+          "name": "synth-containers",
+          "reference": "wheels/synth_containers-0.4.6-py3-none-any.whl"
+        }
+      ],
+      "package_id": "banking77-eval-1.0.0",
+      "runtime": {
+        "command": [
+          "python",
+          "/app/release/eval_adapter.py"
+        ],
+        "profile": "command",
+        "readiness": {
+          "adapter": "banking77-http-eval-v1",
+          "kind": "adapter",
+          "path": null,
+          "port": null
+        },
+        "working_directory": "/app"
+      },
+      "schema_version": "synth.container-package.v1"
+    },
+    "schema_version": "synth.container-build-plan.v1"
+  },
+  "runtime_validation": "not_run",
+  "schema_version": "synth.container-artifact.v1"
+}

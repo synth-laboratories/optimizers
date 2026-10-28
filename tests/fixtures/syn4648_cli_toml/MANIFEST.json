@@ -1,0 +1,25 @@
+{
+  "families": {
+    "gelo": {
+      "authored_sha256": "sha256:e111028f734d3f3fba44fd432e4283a8b0e26b848b1f87c957ffb4826b4ccaea",
+      "native_sha256": "sha256:b30bd927e04d3cc46186903a6d75e283d962403b3c3dcffc0b4c9ccae2f2ccbb",
+      "producer": "synth_optimizers.gelo.GeloMaterializer.from_paths().materialize()"
+    },
+    "gepa": {
+      "authored_sha256": "sha256:16f1a084d61c508e52c7ae75789366a1e4e8377db6b684630006e25cd28a92e8",
+      "native_sha256": "sha256:b500594a7fed5ad8cd1f1d57308ca6630f55984feab1c70aab8bb33f3b65a3a2",
+      "producer": "synth_optimizers.gepa.GepaConfig.from_toml().to_toml_dict()"
+    },
+    "rl_cispo": {
+      "authored_sha256": "sha256:08763b84c9c983d514b0f75a0f0cd2b1f931cbbf074d21d9aa3663f6870d3d4f",
+      "native_sha256": "sha256:d11c86bc75932fd26a117e976a56e0933a7d223ebe0eeb72bc85ff8ef58b98b4",
+      "producer": "synth_optimizers.rl.config.load().redacted_payload()"
+    },
+    "sft": {
+      "authored_sha256": "sha256:6a02a86ba7f8b0cd7bf0d3f39b086c7c12ab5f45f321887642e4a44a663bace8",
+      "native_sha256": "sha256:3250df4040d12a6cf2f59b1bde210cd83d2f755101b9f952cf251fc17be57e4e",
+      "producer": "synth_optimizers.sft._executor_config(SftConfig.from_toml())"
+    }
+  },
+  "schema_version": "syn4648.cli-toml-fixtures.v1"
+}

@@ -1,0 +1,18 @@
+# SYN-4648 authored SFT TOML -> native SFT executor config.
+run_id = "syn4648_sft_fixture"
+base_model = "openai/gpt-oss-20b"
+backend = "fixture"
+accelerator_slots = 1
+
+[training]
+steps = 4
+batch_size = 1
+checkpoint_every_steps = 2
+
+[[examples]]
+prompt = "What is 2 + 2?"
+completion = "4"
+
+[[examples]]
+prompt = "Capital of France?"
+completion = "Paris"

@@ -1,0 +1,29 @@
+schema_version = "synth.container-package.v1"
+package_id = "banking77-eval-1.0.0"
+[build]
+entrypoint = "build_eval.py"
+inputs = ["Dockerfile", "eval_adapter.py", "eval_native.py", "eval_budget.py", "banking77_classify", "wheels", "dataset", "prompt.json", "protocol.json", "provider-models.json"]
+platform = "linux/arm64"
+[runtime]
+profile = "command"
+command = ["python", "/app/release/eval_adapter.py"]
+working_directory = "/app"
+[runtime.readiness]
+kind = "adapter"
+adapter = "banking77-http-eval-v1"
+[[contracts]]
+name = "eval"
+version = "eval.container-result.v1"
+[[contracts]]
+name = "gepa"
+version = "synth_optimizers.gepa.v2"
+[[contracts]]
+name = "containers"
+version = "container_contract.v1"
+[[credentials]]
+name = "OPENROUTER_API_KEY"
+reference = "secretref://eval/banking77/openrouter"
+[[dependencies]]
+name = "synth-containers"
+reference = "wheels/synth_containers-0.4.6-py3-none-any.whl"
+digest = "sha256:642566463a17b135662cd137c0dc3e758ac78d40c8b596a8c08ed178dbf740cb"

@@ -1,0 +1,26 @@
+{
+  "accelerator_slots": 1,
+  "backend": "fixture",
+  "base_model": "openai/gpt-oss-20b",
+  "checkpoint_steps": [
+    2,
+    4
+  ],
+  "examples": [
+    {
+      "completion": "4",
+      "prompt": "What is 2 + 2?"
+    },
+    {
+      "completion": "Paris",
+      "prompt": "Capital of France?"
+    }
+  ],
+  "model_id": "openai/gpt-oss-20b",
+  "run_id": "syn4648_sft_fixture",
+  "training": {
+    "batch_size": 1,
+    "checkpoint_every_steps": 2,
+    "steps": 4
+  }
+}

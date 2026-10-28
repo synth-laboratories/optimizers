@@ -44,12 +44,29 @@ class GepaStalenessPolicy(StrEnum):
     REFLECTIVE = "reflective"
 
 
+class ContainerAuthRefreshTomlSection(BaseModel):
+    """Mirror of Rust ``ContainerAuthRefreshConfig`` (deny_unknown_fields)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str
+    lease_id: str
+    connector_id: str | None = None
+    offer_id: str | None = None
+    job_id: str | None = None
+    refresh_interval_seconds: int | None = None
+
+    def to_toml(self) -> dict[str, Any]:
+        return self.model_dump(exclude_none=True)
+
+
 class ContainerTomlSection(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     url: str | None = None
     headers: dict[str, str] = Field(default_factory=dict)
     auth_bearer_env: str | None = None
+    auth_refresh: ContainerAuthRefreshTomlSection | None = None
     pool: "ContainerPoolTomlSection | None" = None
     command: list[str] = Field(default_factory=list)
     cwd: str | Path | None = None
@@ -570,7 +587,9 @@ class DiskBudgetTomlSection(BaseModel):
 
 
 class GepaTomlDocument(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    # The Rust runner's SynthOptimizerConfig is deny_unknown_fields; an unknown
+    # top-level key here would otherwise vanish silently (SYN-4648).
+    model_config = ConfigDict(extra="forbid")
 
     container: ContainerTomlSection
     run: RunSettingsTomlSection = Field(default_factory=RunSettingsTomlSection)
@@ -594,6 +613,11 @@ class GepaTomlDocument(BaseModel):
             container=self.container.to_connection(),
             container_headers=dict(self.container.headers),
             container_auth_bearer_env=self.container.resolved_auth_bearer_env(),
+            container_auth_refresh=(
+                self.container.auth_refresh.to_toml()
+                if self.container.auth_refresh is not None
+                else None
+            ),
             container_command=list(self.container.command),
             container_cwd=self.container.cwd,
             container_startup_timeout_seconds=self.container.startup_timeout_seconds,
@@ -1374,6 +1398,7 @@ class GepaConfig:
     task_pools: GepaTaskPools
     container_headers: dict[str, str] = field(default_factory=dict)
     container_auth_bearer_env: str | None = None
+    container_auth_refresh: dict[str, Any] | None = None
     container_command: list[str] = field(default_factory=list)
     container_cwd: str | Path | None = None
     container_startup_timeout_seconds: int | None = None
@@ -1452,6 +1477,8 @@ class GepaConfig:
             container_payload["headers"] = dict(self.container_headers)
         if self.container_auth_bearer_env is not None:
             container_payload["auth_bearer_env"] = self.container_auth_bearer_env
+        if self.container_auth_refresh is not None:
+            container_payload["auth_refresh"] = dict(self.container_auth_refresh)
         if self.container_command:
             container_payload["command"] = list(self.container_command)
         if self.container_cwd is not None:

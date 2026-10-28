@@ -1,0 +1,52 @@
+# SYN-4648 authored MAPO TOML bound to a frozen debrief.campaign_manifest.v1
+# (evidence.campaign_manifest_path, resolved relative to this file).
+# Resolved request = MapoConfig::from_toml_file + CampaignBinding::load
+# (resolved config, evidence_value, receipt_value).
+[run]
+run_id = "syn4648_mapo_campaign_fixture"
+output_dir = "runs"
+
+[container]
+url = "http://127.0.0.1:9922/"
+
+[taskset]
+train_seeds = [1, 2, 3, 4, 5, 6, 7, 8]
+selection_seeds = [101, 102, 103, 104]
+heldout_seeds = [201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215, 216, 217, 218, 219, 220]
+
+[policy]
+enabled = true
+provider = "openai"
+model = "gpt-4.1-nano"
+
+[proposer]
+model = "gpt-5.4"
+
+[mapo]
+max_generations = 4
+proposals_per_generation = 4
+rollouts_per_candidate = 3
+selection_rollouts_per_candidate = 1
+selection_top_k = 3
+heldout_rollouts_per_arm = 20
+heldout_min_paired_episodes_per_arm = 20
+
+[evidence]
+campaign_manifest_path = "campaign_manifest.json"
+benchmark_id = "craftax-multiagent"
+paper_reference = "syn4648 fixture paper reference"
+environment_digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+model_snapshot = "gpt-4.1-nano"
+team_topology = "two_agent_leader_follower"
+prompt_protocol_digest = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+primary_metric = "success_rate"
+noninferiority_margin = 0.02
+scorer_version = "craftax-ma-scorer.v1"
+token_cost = { input_per_million_usd = 0.1, output_per_million_usd = 0.4 }
+latency = { p50_seconds = 1.5 }
+known_differences = ["fixture uses two agents"]
+claim_label = "synth_measured"
+
+[evidence.agent_roles]
+agent_0 = "gatherer"
+agent_1 = "crafter"

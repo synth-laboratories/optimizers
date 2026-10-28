@@ -97,6 +97,7 @@ impl MapoConfig {
     }
 
     pub fn validate(&self) -> Result<()> {
+        self.container.validate_auth_refresh()?;
         if self.run.run_id.trim().is_empty() {
             return Err(OptimizerError::Config("run.run_id is required".to_string()));
         }

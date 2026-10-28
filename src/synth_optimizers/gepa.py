@@ -9,10 +9,10 @@ from contextlib import closing
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from synth_containers import ContainerConnection, PromptProgram
 
 from ._synth_optimizers import GepaRun as _NativeGepaRun
@@ -49,12 +49,18 @@ class ContainerAuthRefreshTomlSection(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    provider: str
-    lease_id: str
+    provider: Literal["synth_tunnel", "synth_tunnel_v2"]
+    lease_id: str = Field(min_length=1)
     connector_id: str | None = None
     offer_id: str | None = None
     job_id: str | None = None
     refresh_interval_seconds: int | None = None
+
+    @model_validator(mode="after")
+    def _v2_requires_connector(self) -> "ContainerAuthRefreshTomlSection":
+        if self.provider == "synth_tunnel_v2" and not (self.connector_id or "").strip():
+            raise ValueError("container.auth_refresh.connector_id is required for synth_tunnel_v2")
+        return self
 
     def to_toml(self) -> dict[str, Any]:
         return self.model_dump(exclude_none=True)

@@ -154,10 +154,8 @@ fn rust_gepa_refuses_auth_refresh_without_lease_id() {
     assert!(matches!(error, OptimizerError::TomlDecode(_)), "{error:?}");
 }
 
+/// Same provider rule as Python GELO/GEPA (`synth_tunnel` | `synth_tunnel_v2`).
 #[test]
-#[ignore = "SYN-4648 gap: Rust ContainerAuthRefreshConfig.provider is a free String with no \
-            validation and no runtime consumer of container.auth_refresh exists in rust/crates; \
-            an unknown provider is accepted silently"]
 fn rust_gepa_refuses_unknown_auth_refresh_provider() {
     let table = AUTH_REFRESH.replace("synth_tunnel_v2", "not_a_provider");
     let path = scratch(
@@ -165,5 +163,20 @@ fn rust_gepa_refuses_unknown_auth_refresh_provider() {
         with_auth_refresh(&authored_text(), &table),
     );
     let error = SynthOptimizerConfig::from_toml_file(&path).expect_err("unknown provider accepted");
+    assert!(matches!(error, OptimizerError::Config(_)), "{error:?}");
+}
+
+#[test]
+fn rust_gepa_refuses_v2_auth_refresh_without_connector() {
+    let table: String = AUTH_REFRESH
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("connector_id"))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    let path = scratch(
+        "auth_refresh_v2_no_connector",
+        with_auth_refresh(&authored_text(), &table),
+    );
+    let error = SynthOptimizerConfig::from_toml_file(&path).expect_err("v2 without connector accepted");
     assert!(matches!(error, OptimizerError::Config(_)), "{error:?}");
 }

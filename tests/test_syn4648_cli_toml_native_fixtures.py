@@ -194,11 +194,6 @@ def test_gepa_unknown_field_in_strict_section_is_refused_with_typed_code(tmp_pat
     assert [error["type"] for error in caught.value.errors()] == ["extra_forbidden"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="KNOWN GAP (SYN-4648): Python GEPA sections use extra='ignore'; the Rust "
-    "SynthOptimizerConfig is deny_unknown_fields. Unknown top-level keys vanish silently.",
-)
 def test_gepa_unknown_top_level_field_is_refused(tmp_path: Path) -> None:
     path = _write(tmp_path, "gepa", _authored("gepa") + "\n[surprise]\nvalue = 1\n")
     with pytest.raises((ValidationError, ValueError)):
@@ -225,8 +220,9 @@ def test_sft_unsupported_backend_is_refused() -> None:
 
 @pytest.mark.xfail(
     strict=True,
-    reason="KNOWN GAP (SYN-4648): SftConfig retains the whole authored mapping; unknown "
-    "fields are forwarded to the executor instead of refused.",
+    reason="KNOWN GAP (SYN-4648): SftConfig forwards the whole authored mapping. No "
+    "closed SFT consumer exists (the executor reads keys ad hoc), so the accepted key "
+    "set is not a declared contract yet; refusing unknown fields needs that contract.",
 )
 def test_sft_unknown_field_is_refused() -> None:
     with pytest.raises(SftServiceError):
@@ -259,12 +255,6 @@ def test_gelo_python_preserves_rust_auth_refresh_fields() -> None:
     }
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="KNOWN GAP (SYN-4648): Python GEPA ContainerTomlSection has no auth_refresh "
-    "field and ignores extras, so the Rust-supported [container.auth_refresh] is dropped "
-    "from the native request.",
-)
 def test_gepa_python_preserves_rust_auth_refresh_fields(tmp_path: Path) -> None:
     text = _authored("gepa").replace(
         "startup_timeout_seconds = 45\n", "startup_timeout_seconds = 45\n" + AUTH_REFRESH_TOML
@@ -300,3 +290,13 @@ if __name__ == "__main__":
     if sys.argv[1:] != ["--regenerate"]:
         raise SystemExit("usage: test_syn4648_cli_toml_native_fixtures.py --regenerate")
     _regenerate()
+
+
+def test_gepa_auth_refresh_refuses_unknown_field(tmp_path: Path) -> None:
+    """Rust ``ContainerAuthRefreshConfig`` is deny_unknown_fields; so is Python's."""
+    text = _authored("gepa").replace(
+        "startup_timeout_seconds = 45\n",
+        "startup_timeout_seconds = 45\n" + AUTH_REFRESH_TOML + 'surprise = "x"\n',
+    )
+    with pytest.raises(ValidationError):
+        GepaConfig.from_toml(_write(tmp_path, "gepa", text))

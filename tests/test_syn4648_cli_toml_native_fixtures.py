@@ -218,15 +218,39 @@ def test_sft_unsupported_backend_is_refused() -> None:
         SftConfig.from_toml(text)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="KNOWN GAP (SYN-4648): SftConfig forwards the whole authored mapping. No "
-    "closed SFT consumer exists (the executor reads keys ad hoc), so the accepted key "
-    "set is not a declared contract yet; refusing unknown fields needs that contract.",
-)
-def test_sft_unknown_field_is_refused() -> None:
-    with pytest.raises(SftServiceError):
-        SftConfig.from_toml(_authored("sft") + '\nsurprise_knob = "x"\n')
+# SYN-5207: ``sft.config.v2`` is the closed authored SFT config. Keys are
+# prepended so they sit at the TOML top level (the fixture ends in an
+# ``[[examples]]`` table, which would otherwise own them).
+SFT_V2 = 'schema_version = "sft.config.v2"\n'
+
+
+def test_sft_v2_config_is_accepted_and_resolves_like_legacy() -> None:
+    legacy = SftConfig.from_toml(_authored("sft")).config_json
+    v2 = dict(SftConfig.from_toml(SFT_V2 + _authored("sft")).config_json)
+    assert v2.pop("schema_version") == "sft.config.v2"
+    assert v2 == legacy
+
+
+def test_sft_v2_unknown_top_level_field_is_refused() -> None:
+    with pytest.raises(SftServiceError, match="unknown top-level fields: surprise_knob"):
+        SftConfig.from_toml(SFT_V2 + 'surprise_knob = "x"\n' + _authored("sft"))
+
+
+def test_sft_v2_refuses_executor_owned_fields() -> None:
+    with pytest.raises(SftServiceError, match="resolved_checkpoint_plan"):
+        SftConfig.from_toml(SFT_V2 + 'resolved_checkpoint_plan = "x"\n' + _authored("sft"))
+
+
+def test_sft_unsupported_schema_version_is_refused() -> None:
+    with pytest.raises(SftServiceError, match="unsupported SFT config schema_version"):
+        SftConfig.from_toml('schema_version = "sft.config.v3"\n' + _authored("sft"))
+
+
+def test_sft_legacy_config_without_schema_version_stays_open() -> None:
+    """Existing hosted submissions keep working: the unversioned form forwards
+    unknown top-level keys unchanged (SYN-5207 option (a))."""
+    config = SftConfig.from_toml('surprise_knob = "x"\n' + _authored("sft"))
+    assert config.config_json["surprise_knob"] == "x"
 
 
 # --------------------------------------------------------------------------- #

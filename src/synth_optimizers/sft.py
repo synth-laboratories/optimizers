@@ -27,6 +27,45 @@ from .sft_executor import SftExecutor, TinkerSftExecutor
 
 SFT_ALGORITHM_ID = "sft"
 
+# SYN-5207: the closed authored SFT config. A config that declares this
+# schema_version may carry only these top-level keys (every key the SFT
+# path reads: sft.py, sft_executor.py, sft_dataset.py, training_eval.py and
+# contracts/checkpoint_plan.py). A config without schema_version is the
+# legacy open form and is forwarded unchanged, so existing submissions keep
+# working. Keys the executor writes itself (dataset_manifest,
+# resolved_checkpoint_plan, budget) are never authored.
+SFT_CONFIG_SCHEMA_V2 = "sft.config.v2"
+SFT_CONFIG_V2_KEYS = frozenset(
+    {
+        "schema_version",
+        "run_id",
+        "base_model",
+        "model_id",
+        "backend",
+        "accelerator_slots",
+        "training",
+        "max_steps",
+        "checkpoint_steps",
+        "checkpoint_schedule",
+        "checkpoint_evaluation",
+        "checkpoint_evaluation_policy",
+        "container_url",
+        "evaluation",
+        "evaluation_transport",
+        "evaluation_renderer_profile",
+        "dataset",
+        "examples",
+        "training_file_id",
+        "training_jsonl",
+        "system_prompt",
+        "renderer_version",
+        "seed",
+        "rank",
+        "runner_version",
+        "repeat_index",
+    }
+)
+
 
 class SftServiceError(ValueError):
     """An invalid public SFT request or an unavailable executor."""
@@ -57,6 +96,7 @@ class SftConfig:
         run_id: str | None = None,
     ) -> "SftConfig":
         data = _json_object(value, context="SFT config")
+        _check_schema(data)
         resolved_run_id = _non_empty_text(run_id or data.get("run_id"), field="run_id")
         base_model = _non_empty_text(
             data.get("base_model") or data.get("model_id") or "openai/gpt-oss-20b",
@@ -103,6 +143,22 @@ class SftConfig:
         except tomllib.TOMLDecodeError as exc:
             raise SftServiceError(f"invalid SFT TOML: {exc}") from exc
         return cls.from_mapping(value, run_id=run_id)
+
+
+def _check_schema(data: Mapping[str, Any]) -> None:
+    if "schema_version" not in data:
+        return
+    version = data["schema_version"]
+    if version != SFT_CONFIG_SCHEMA_V2:
+        raise SftServiceError(
+            f"unsupported SFT config schema_version {version!r}; "
+            f"expected {SFT_CONFIG_SCHEMA_V2!r} or no schema_version"
+        )
+    unknown = sorted(set(data) - SFT_CONFIG_V2_KEYS)
+    if unknown:
+        raise SftServiceError(
+            f"{SFT_CONFIG_SCHEMA_V2} config has unknown top-level fields: {', '.join(unknown)}"
+        )
 
 
 class SftPublicServiceClient:

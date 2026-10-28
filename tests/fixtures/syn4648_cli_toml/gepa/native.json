@@ -1,0 +1,162 @@
+{
+  "cache": {
+    "mode": "readwrite"
+  },
+  "candidate": {
+    "target_modules": [
+      "prompt"
+    ]
+  },
+  "container": {
+    "command": [
+      "python",
+      "-m",
+      "banking77_classify.serve",
+      "--port",
+      "9911"
+    ],
+    "cwd": "container",
+    "startup_timeout_seconds": 45,
+    "url": "http://127.0.0.1:9911"
+  },
+  "disk_budget": {
+    "enabled": true,
+    "hard_limit_gb": 10.0,
+    "soft_limit_gb": 5.0
+  },
+  "gepa": {
+    "acceptance_criterion": "primary_improvement",
+    "frontier_type": "per_example",
+    "max_cost_usd": 0.0,
+    "max_generations": 1,
+    "max_total_rollouts": 16,
+    "minibatch_accept_margin": 0.0,
+    "minibatch_acceptance_criterion": "improvement_or_equal",
+    "minibatch_size": 1,
+    "pipeline": {
+      "adaptive_rollout_concurrency": {
+        "decrease_step": 5,
+        "enabled": true,
+        "increase_after_successes": 20,
+        "increase_step": 5,
+        "initial": 8,
+        "max": 8,
+        "min": 1
+      },
+      "adaptive_stage_workers": {
+        "backlog_threshold": 2,
+        "enabled": false,
+        "max": 128,
+        "min": 1,
+        "stale_gap_threshold": 2
+      },
+      "delta_max": 2,
+      "max_in_flight_candidates": 1,
+      "mode": "sync_serial",
+      "speculative_completion": {
+        "alpha": 0.25,
+        "enabled": false
+      },
+      "staleness_policy": "full",
+      "workers": {
+        "evaluate": 1,
+        "propose": 1,
+        "rollout": 8
+      }
+    },
+    "proposals_per_generation": 1,
+    "rollout_async_timeout_seconds": 600,
+    "rollout_failure_rate_tolerance": 0.25,
+    "rollout_poll_interval_ms": 250,
+    "rollout_submission_mode": "async",
+    "task_pools": {
+      "heldout": [
+        "heldout:0"
+      ],
+      "minibatch": [
+        "train:0"
+      ],
+      "pareto": [
+        "train:0",
+        "train:1"
+      ],
+      "reflection": [
+        "train:0",
+        "train:1"
+      ]
+    }
+  },
+  "jesterky_workflow": {
+    "actor": "codex",
+    "command": "jesterky",
+    "concurrency": 4,
+    "enabled": false,
+    "fail_closed": true,
+    "spec": "examples/gepa_trace_annotate.json",
+    "timeout_seconds": 600
+  },
+  "policy": {
+    "api_family": "chat_completions",
+    "api_key_env": "OPENAI_API_KEY",
+    "config": {},
+    "credential_mode": "byok",
+    "disable_reasoning": "auto",
+    "enabled": true,
+    "model": "gpt-4.1-nano",
+    "policy_type": "dag",
+    "provider": "openai",
+    "proxy_mode": "proxy_only",
+    "tool_call_style": "none"
+  },
+  "proposer": {
+    "allow_unverified_model": false,
+    "api_family": "chat_completions",
+    "api_key_env": "OPENAI_API_KEY",
+    "approval_policy": "never",
+    "auth_mode": "api_key",
+    "backend": "codex_app_server",
+    "codex_home": "${CONFIG_DIR}/codex-home",
+    "copy_host_auth": false,
+    "execution_mode": "local_process",
+    "message_stall_timeout_seconds": 300,
+    "model": "gpt-5.4-mini",
+    "nano_codex": {
+      "allowed_tools": [
+        "search",
+        "read",
+        "apply_patch",
+        "exec"
+      ],
+      "enabled": false,
+      "max_turns_per_session": 16,
+      "mode": "live"
+    },
+    "prompt": {
+      "best_practices_path": "${CONFIG_DIR}/prompts/best_practices.md"
+    },
+    "provider": "openai",
+    "reasoning_effort": "medium",
+    "runtime_substrate": "local",
+    "sandbox_mode": "workspace-write",
+    "timeout_seconds": 600
+  },
+  "run": {
+    "output_dir": "runs",
+    "run_id": "syn4648_gepa_fixture",
+    "seed": 0
+  },
+  "seed_candidate": {
+    "prompt": "Classify the banking request into one Banking77 intent."
+  },
+  "taskset": {
+    "heldout_ids": [
+      "heldout:0"
+    ],
+    "heldout_split": "heldout",
+    "train_ids": [
+      "train:0",
+      "train:1"
+    ],
+    "train_split": "train"
+  }
+}

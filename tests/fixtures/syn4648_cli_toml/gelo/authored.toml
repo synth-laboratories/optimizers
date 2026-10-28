@@ -1,0 +1,38 @@
+# SYN-4648 authored GELO structured TOML -> native go-ex config JSON.
+[run]
+run_id = "syn4648_gelo_fixture"
+
+[container]
+url = "http://127.0.0.1:9922"
+
+[container.auth_refresh]
+provider = "synth_tunnel_v2"
+lease_id = "lease-fixture-0001"
+connector_id = "connector-fixture-0001"
+refresh_interval_seconds = 240
+
+[taskset]
+backend = "synth_containers"
+train_seeds = [3001, 3002]
+heldout_seeds = [7001]
+
+[taskset.context]
+containers_world_ref = "world:craftax@fixture"
+containers_environment_ref = "environment:craftax-gamebench-rust@fixture"
+containers_evaluation_plan_ref = "evaluation-plan:craftax-smoke@fixture"
+containers_policy_harness = "harness:react@fixture"
+
+[policy]
+provider = "openai"
+model = "gpt-4.1-nano"
+
+[go_ex]
+max_rollouts = 8
+proposer_rounds = 2
+
+[seed_candidate]
+prompt = "Explore, then exploit."
+
+[proposers.explorer]
+backend = "codex_app_server"
+model = "gpt-5.4-mini"

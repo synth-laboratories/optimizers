@@ -1,0 +1,15 @@
+{
+  "packages": {
+    "banking77": {
+      "artifact-descriptor.json": "sha256:e2421764144457302bbb1794a4ce04c9d9d7d7ce02b9f24a23f4e6af14769123",
+      "build-plan.json": "sha256:6019578884f520374e5e2f0a71cb8e69400289c20bc0eca3dd8f737f29778c2d",
+      "container-package.toml": "sha256:87e0a68dbc2e5b47bb38dc176ae523c39b0c2e36b41b44c039c957d34ef43c81"
+    },
+    "healthbench2": {
+      "artifact-descriptor.json": "sha256:055deaa3f5c82a1e6aea7ba13cbc22885ab37df701c40191ea07a8c60a559812",
+      "build-plan.json": "sha256:83b289e6d2a50612e1fd367627fcbd5a9331c5c849752aac8491daa92c43c930",
+      "container-package.toml": "sha256:fc97a8df90f2973c152f854f121e411f394d88d3ce3e5604b8a56a508d1d64dd"
+    }
+  },
+  "schema_version": "syn4648.build-descriptor-fixtures.v1"
+}

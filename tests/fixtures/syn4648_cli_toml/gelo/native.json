@@ -1,0 +1,47 @@
+{
+  "container": {
+    "auth_refresh": {
+      "connector_id": "connector-fixture-0001",
+      "lease_id": "lease-fixture-0001",
+      "provider": "synth_tunnel_v2",
+      "refresh_interval_seconds": 240
+    },
+    "url": "http://127.0.0.1:9922"
+  },
+  "go_ex": {
+    "max_rollouts": 8,
+    "proposer_rounds": 2
+  },
+  "policy": {
+    "model": "gpt-4.1-nano",
+    "provider": "openai"
+  },
+  "proposers": {
+    "explorer": {
+      "backend": "codex_app_server",
+      "model": "gpt-5.4-mini"
+    }
+  },
+  "run": {
+    "run_id": "syn4648_gelo_fixture"
+  },
+  "seed_candidate": {
+    "prompt": "Explore, then exploit."
+  },
+  "taskset": {
+    "backend": "synth_containers",
+    "context": {
+      "containers_environment_ref": "environment:craftax-gamebench-rust@fixture",
+      "containers_evaluation_plan_ref": "evaluation-plan:craftax-smoke@fixture",
+      "containers_policy_harness": "harness:react@fixture",
+      "containers_world_ref": "world:craftax@fixture"
+    },
+    "heldout_seeds": [
+      7001
+    ],
+    "train_seeds": [
+      3001,
+      3002
+    ]
+  }
+}

@@ -1,0 +1,153 @@
+{
+  "artifacts": {
+    "catalog": "artifacts/checkpoints.sqlite3",
+    "checkpoint_every_published_update": true,
+    "directory": "artifacts/runs",
+    "retain_training_state": true
+  },
+  "container": {
+    "auth_bearer_env": null,
+    "headers": {},
+    "timeout_seconds": 30.0,
+    "url": "http://127.0.0.1:8215"
+  },
+  "evaluation": {
+    "baseline_samples": 0,
+    "fixed_match_set": true,
+    "paired": false,
+    "trained_samples": 0
+  },
+  "expanded_plan": {
+    "auxiliary_learners": [],
+    "context_views": [
+      "actor"
+    ],
+    "correction": {
+      "enabled": false,
+      "kind": "staleness_drop",
+      "max_weight_staleness": 0
+    },
+    "credit": {
+      "kind": "length_weighted_leave_one_out",
+      "same_policy_reduction": "token_weighted_mean",
+      "skip_zero_advantage": true,
+      "weights": {},
+      "zero_advantage_atol": 1e-08
+    },
+    "objective": {
+      "eps_high": 4.0,
+      "eps_low": 1.0,
+      "granularity": "token",
+      "kind": "cispo",
+      "ratio_granularity": "token",
+      "variant": "cispo_minimax"
+    },
+    "preset": "cispo",
+    "reducer": {
+      "kind": "branch_aware_root_mean"
+    },
+    "rollout": {
+      "cardinality": 2,
+      "grouping": "task",
+      "origin": "task_reset",
+      "readiness": "group_complete"
+    },
+    "schedule": {
+      "actor_epochs": 1,
+      "groups_per_step": 1,
+      "max_steps_per_round": 15,
+      "policy_span_count": 1,
+      "publish_to": "new_pops_only",
+      "weight_mode": "sync_pin"
+    },
+    "scorers": [
+      {
+        "context_view": "actor",
+        "role": "old_actor",
+        "update": "frozen"
+      }
+    ]
+  },
+  "lifecycle": {
+    "resume_requires_rehandshake": true
+  },
+  "maximum_sampled_groups": 3,
+  "model": {
+    "family": "gpt_oss",
+    "id": "openai/gpt-oss-20b",
+    "learning_rate": 2e-05,
+    "policy_kind": "counter",
+    "provider": "tinker",
+    "rank": 8,
+    "resume_from_checkpoint": null,
+    "sampling_transport": "message_in_capture_out",
+    "wire_api": "chat_completions"
+  },
+  "offline": {
+    "accepted_staleness": 0,
+    "mode": "off",
+    "source_run_ids": []
+  },
+  "opponents": {
+    "allow_alias_resolution": false,
+    "match_set_revision": "match-set-0001"
+  },
+  "pipeline": {
+    "artifact_collection_seconds": 0.0,
+    "bounded_on_policy_batch": false,
+    "expected_horizon_seconds": 2.0,
+    "heartbeat_interval_seconds": 30.0,
+    "max_execution_slots": 2,
+    "max_open_groups": 1,
+    "maximum_policy_lag": 0,
+    "missed_heartbeats_allowed": 2,
+    "mode": "async_queued",
+    "poll_interval_seconds": 1.0,
+    "quiescence_seconds": 0.0,
+    "rollout_queue_capacity": 8,
+    "rollout_retries": 0,
+    "score_queue_capacity": 8,
+    "score_retries": 0,
+    "scored_result_queue_capacity": 8,
+    "stale_disposition": "discard",
+    "straggler_max_replacements": 1,
+    "train_ready_capacity": 1
+  },
+  "plan": {
+    "group_size": 2,
+    "groups_per_step": 1,
+    "maximum_sampled_groups": 3,
+    "overrides": {},
+    "preset": "cispo",
+    "steps_per_round": null,
+    "target_train_updates": 1
+  },
+  "plan_hash": "8d6c54f8412b57d077a17631da933684",
+  "reward": {
+    "horizon_grace_seconds": 0.0,
+    "optimized_channel": "score",
+    "require_quiescence": true,
+    "require_settlement_window": false
+  },
+  "run_id": "syn4648_cispo_fixture",
+  "schema_version": "cispo.container.v1",
+  "taskset": {
+    "evaluation_ids": [],
+    "evaluation_split": "train",
+    "taskset_id": null,
+    "train_ids": [
+      "counter.default"
+    ],
+    "train_split": "train"
+  },
+  "topology": {
+    "expected_topology_id": "counter.reference.solo.v1",
+    "minimum_viable_roster": 1,
+    "partial_roster": "refuse",
+    "policy_types": {},
+    "same_policy_reduction": "token_weighted_mean",
+    "trainable_teams": [
+      "team-0"
+    ]
+  }
+}

@@ -1,0 +1,46 @@
+# SYN-4648 authored GEPA TOML -> native GEPA TOML dict (consumed by the Rust GepaRun).
+[run]
+run_id = "syn4648_gepa_fixture"
+output_dir = "runs"
+
+[container]
+url = "http://127.0.0.1:9911/"
+command = ["python", "-m", "banking77_classify.serve", "--port", "9911"]
+cwd = "container"
+startup_timeout_seconds = 45
+
+[taskset]
+train_split = "train"
+heldout_split = "heldout"
+train_ids = ["train:0", "train:1"]
+heldout_ids = ["heldout:0"]
+
+[candidate]
+target_modules = ["prompt"]
+
+[seed_candidate]
+prompt = "Classify the banking request into one Banking77 intent."
+
+[policy]
+enabled = true
+provider = "openai"
+model = "gpt-4.1-nano"
+proxy_mode = "proxy_only"
+
+[proposer]
+timeout_seconds = 600
+message_stall_timeout_seconds = 300
+codex_home = "codex-home"
+
+[proposer.prompt]
+best_practices_path = "prompts/best_practices.md"
+
+[gepa]
+minibatch_acceptance_criterion = "improvement_or_equal"
+acceptance_criterion = "primary_improvement"
+
+[gepa.task_pools]
+pareto = ["train:0", "train:1"]
+minibatch = ["train:0"]
+reflection = ["train:0", "train:1"]
+heldout = ["heldout:0"]

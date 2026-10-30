@@ -8,10 +8,9 @@ pub(super) fn normalize(
     usage.insert("provider".into(), Value::String("openrouter".into()));
     usage.insert("model".into(), Value::String(model.into()));
     if reported_cost.is_none() {
-        let cost = usage
-            .get("cost")
-            .and_then(Value::as_f64)
-            .filter(|value| value.is_finite() && *value >= 0.0);
+        let cost =
+            crate::wire_cost::read_wire_cost(usage.get(crate::wire_cost::PROVIDER_COST_FIELD))
+                .known();
         if let Some(cost) = cost {
             usage.insert("cost_usd".into(), json!(cost));
             usage.insert(

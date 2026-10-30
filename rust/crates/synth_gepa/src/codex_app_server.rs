@@ -569,15 +569,19 @@ fn run_nano_codex_proposer(
         .run(request)
 }
 
-fn normalize_proposer_usage(config: &SynthOptimizerConfig, model: &str, usage: Value) -> Value {
+pub(crate) fn normalize_proposer_usage(
+    config: &SynthOptimizerConfig,
+    model: &str,
+    usage: Value,
+) -> Value {
     let Some(mut usage_map) = usage.as_object().cloned() else {
         return usage;
     };
     promote_provider_reported_cost(&mut usage_map);
     let provider = config.proposer.provider.trim().to_ascii_lowercase();
     let model_lower = model.trim().to_ascii_lowercase();
-    let reported_cost = usage_f64_from_map(&usage_map, "cost_usd")
-        .filter(|value| value.is_finite() && *value >= 0.0);
+    let reported_cost =
+        crate::wire_cost::read_wire_cost(usage_map.get(crate::wire_cost::COST_USD_FIELD)).known();
     if proposer_uses_chatgpt_auth(&config.proposer.auth_mode) {
         usage_map.insert(
             "provider".to_string(),
@@ -638,23 +642,35 @@ fn normalize_proposer_usage(config: &SynthOptimizerConfig, model: &str, usage: V
 
 /// OpenRouter reports the billed amount as `usage.cost` (USD). Other providers and
 /// earlier normalization use `usage.cost_usd`. Copy a finite, non-negative `cost`
-/// into `cost_usd` when `cost_usd` is absent so the budget ledger sees a known cost.
+/// (including a real zero) into `cost_usd` when `cost_usd` is not a known amount so
+/// the budget ledger sees a known cost. An absent or invalid cost stays unknown; an
+/// invalid one is tagged with a typed reason so the refusal names its cause.
 fn promote_provider_reported_cost(usage_map: &mut Map<String, Value>) {
-    let has_cost_usd = usage_f64_from_map(usage_map, "cost_usd")
-        .filter(|value| value.is_finite() && *value >= 0.0)
-        .is_some();
-    if has_cost_usd {
+    use crate::wire_cost::{
+        read_wire_cost, WireCost, COST_UNKNOWN_REASON_FIELD, COST_USD_FIELD, PROVIDER_COST_FIELD,
+        PROVIDER_COST_INVALID,
+    };
+    if read_wire_cost(usage_map.get(COST_USD_FIELD))
+        .known()
+        .is_some()
+    {
         return;
     }
-    let Some(cost) =
-        usage_f64_from_map(usage_map, "cost").filter(|value| value.is_finite() && *value >= 0.0)
-    else {
-        return;
-    };
-    usage_map.insert("cost_usd".to_string(), json!(cost));
-    usage_map
-        .entry("cost_source".to_string())
-        .or_insert_with(|| Value::String("provider_usage_cost".to_string()));
+    match read_wire_cost(usage_map.get(PROVIDER_COST_FIELD)) {
+        WireCost::Known(cost) => {
+            usage_map.insert(COST_USD_FIELD.to_string(), json!(cost));
+            usage_map
+                .entry("cost_source".to_string())
+                .or_insert_with(|| Value::String("provider_usage_cost".to_string()));
+        }
+        WireCost::Invalid => {
+            usage_map.insert(
+                COST_UNKNOWN_REASON_FIELD.to_string(),
+                Value::String(PROVIDER_COST_INVALID.to_string()),
+            );
+        }
+        WireCost::Absent => {}
+    }
 }
 
 fn normalize_openrouter_grok43_usage(model: &str, mut usage_map: Map<String, Value>) -> Value {

@@ -57,6 +57,7 @@ pub mod pipeline;
 pub mod planner;
 pub mod runtime;
 pub mod service;
+mod wire_cost;
 
 use machines::{
     CandidateEntity, CandidateState, CandidateTrigger, ProposerRoundEntity, ProposerRoundState,
@@ -20051,6 +20052,9 @@ fn reported_cost_from_usage_ledger(records: &[UsageLedgerRecord]) -> Option<f64>
 
 #[cfg(test)]
 mod reported_cost_tests;
+
+#[cfg(test)]
+mod wire_cost_r12_replay_tests;
 
 fn proposer_usage_record(
     config: &SynthOptimizerConfig,

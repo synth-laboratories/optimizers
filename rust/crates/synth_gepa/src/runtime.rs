@@ -672,10 +672,8 @@ impl<'a> GepaRuntimeExecutor<'a> {
             .get("usage")
             .and_then(proposer_reported_cost_usd)
             .or_else(|| {
-                response
-                    .get("cost_usd")
-                    .and_then(Value::as_f64)
-                    .filter(|value| value.is_finite() && *value >= 0.0)
+                crate::wire_cost::read_wire_cost(response.get(crate::wire_cost::COST_USD_FIELD))
+                    .known()
             })
             .or_else(|| proposer_static_cost_usd(self.config, &usage, &response));
         let cost_usd = reported_cost_usd.unwrap_or(0.0);
@@ -946,14 +944,9 @@ impl<'a> GepaRuntimeExecutor<'a> {
 }
 
 /// Provider-reported proposer spend from a usage payload. `cost_usd` is the normalized
-/// field; OpenRouter reports the same amount as `cost`.
-fn proposer_reported_cost_usd(usage: &Value) -> Option<f64> {
-    ["cost_usd", "cost"].into_iter().find_map(|key| {
-        usage
-            .get(key)
-            .and_then(Value::as_f64)
-            .filter(|value| value.is_finite() && *value >= 0.0)
-    })
+/// field; OpenRouter reports the same amount as `cost`. See [`crate::wire_cost`].
+pub(crate) fn proposer_reported_cost_usd(usage: &Value) -> Option<f64> {
+    crate::wire_cost::provider_cost_usd(usage)
 }
 
 fn proposer_static_cost_usd(
